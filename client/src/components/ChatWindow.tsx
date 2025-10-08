@@ -2,7 +2,6 @@ import { useState } from 'react';
 import { Send, MessageSquare, TrendingUp, DollarSign, Settings } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import { cn } from '@/lib/utils';
 
 type SidebarItem = 'sessions' | 'positions' | 'pnl' | 'settings';
@@ -102,7 +101,7 @@ export default function ChatWindow() {
       {/* Main Chat Area */}
       <div className="flex-1 flex flex-col">
         {/* Messages */}
-        <ScrollArea className="flex-1 p-6">
+        <div className="flex-1 p-6 overflow-y-auto">
           <div className="max-w-4xl mx-auto space-y-6">
             {messages.map(message => (
               <div
@@ -129,7 +128,7 @@ export default function ChatWindow() {
               </div>
             ))}
           </div>
-        </ScrollArea>
+        </div>
 
         {/* Input Bar */}
         <div className="border-t border-border bg-card p-4">
