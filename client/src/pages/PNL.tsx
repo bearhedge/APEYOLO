@@ -1,6 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
-import { Download, Filter } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Download, Link as LinkIcon } from 'lucide-react';
 import { DataTable } from '@/components/DataTable';
 import { SectionHeader } from '@/components/SectionHeader';
 import { Button } from '@/components/ui/button';
@@ -24,7 +24,47 @@ export function PNL() {
     return symbolMatch && dateMatch;
   });
 
-  const exportCSV = () => {
+  const [recordHash, setRecordHash] = useState<string>('');
+  const [datasetHash, setDatasetHash] = useState<string>('');
+  const [rowHashes, setRowHashes] = useState<Map<string, string>>(new Map());
+
+  const hashString = async (data: string): Promise<string> => {
+    const encoder = new TextEncoder();
+    const dataBuffer = encoder.encode(data);
+    const hashBuffer = await crypto.subtle.digest('SHA-256', dataBuffer);
+    const hashArray = Array.from(new Uint8Array(hashBuffer));
+    return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+  };
+
+  const computeRowHash = async (row: PnlRow): Promise<string> => {
+    const rowData = JSON.stringify(row);
+    const hash = await hashString(rowData);
+    return hash.substring(0, 8);
+  };
+
+  const computeDatasetHash = async (hashes: string[]): Promise<string> => {
+    const combinedHashes = hashes.join('');
+    return await hashString(combinedHashes);
+  };
+
+  const calculateHashes = async () => {
+    const newRowHashes = new Map<string, string>();
+    const hashPromises = filteredData.map(async (row) => {
+      const hash = await computeRowHash(row);
+      newRowHashes.set(row.tradeId, hash);
+      return hash;
+    });
+
+    const hashes = await Promise.all(hashPromises);
+    setRowHashes(newRowHashes);
+
+    if (hashes.length > 0) {
+      const dHash = await computeDatasetHash(hashes);
+      setDatasetHash(dHash);
+    }
+  };
+
+  const exportCSV = async () => {
     const headers = ['Trade ID', 'Timestamp', 'Symbol', 'Strategy', 'Side', 'Qty', 'Entry', 'Exit', 'Fees', 'Realized P/L', 'Run P/L', 'Notes'];
     const rows = filteredData.map(row => [
       row.tradeId,
@@ -49,10 +89,11 @@ export function PNL() {
     a.download = `pnl_export_${new Date().toISOString()}.csv`;
     a.click();
     
-    generateHash(csv);
+    const hash = await hashString(csv);
+    setRecordHash(hash);
   };
 
-  const exportJSON = () => {
+  const exportJSON = async () => {
     const json = JSON.stringify(filteredData, null, 2);
     const blob = new Blob([json], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
@@ -61,19 +102,15 @@ export function PNL() {
     a.download = `pnl_export_${new Date().toISOString()}.json`;
     a.click();
     
-    generateHash(json);
+    const hash = await hashString(json);
+    setRecordHash(hash);
   };
 
-  const generateHash = async (data: string) => {
-    const encoder = new TextEncoder();
-    const dataBuffer = encoder.encode(data);
-    const hashBuffer = await crypto.subtle.digest('SHA-256', dataBuffer);
-    const hashArray = Array.from(new Uint8Array(hashBuffer));
-    const hashHex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
-    setRecordHash(hashHex);
-  };
-
-  const [recordHash, setRecordHash] = useState<string>('');
+  useEffect(() => {
+    if (filteredData.length > 0) {
+      calculateHashes();
+    }
+  }, [filteredData]);
 
   const pnlColumns = [
     { header: 'Trade ID', accessor: 'tradeId' as keyof PnlRow, sortable: true },
@@ -104,6 +141,13 @@ export function PNL() {
       className: 'tabular-nums'
     },
     { header: 'Notes', accessor: (row: PnlRow) => row.notes || '-', className: 'text-sm text-silver' },
+    { 
+      header: 'Row Hash', 
+      accessor: (row: PnlRow) => (
+        <span className="font-mono text-xs">{rowHashes.get(row.tradeId) || '...'}</span>
+      ),
+      className: 'text-sm'
+    },
   ];
 
   if (isLoading) {
@@ -186,9 +230,33 @@ export function PNL() {
 
         {recordHash && (
           <div className="mt-6 p-4 bg-dark-gray rounded-lg border border-white/10">
-            <p className="text-sm text-silver mb-1">Record Hash (SHA-256):</p>
+            <p className="text-sm text-silver mb-1">Export Hash (SHA-256):</p>
             <p className="font-mono text-xs text-white break-all" data-testid="text-record-hash">
               {recordHash}
+            </p>
+          </div>
+        )}
+
+        {datasetHash && (
+          <div className="mt-6 p-4 bg-dark-gray rounded-lg border border-white/10">
+            <div className="flex items-center justify-between">
+              <div className="flex-1">
+                <p className="text-sm text-silver mb-1">Dataset Hash (SHA-256):</p>
+                <p className="font-mono text-xs text-white break-all" data-testid="text-dataset-hash">
+                  {datasetHash}
+                </p>
+              </div>
+              <Button
+                disabled
+                className="btn-secondary ml-4"
+                data-testid="button-anchor-chain"
+              >
+                <LinkIcon className="w-4 h-4 mr-2" />
+                Anchor to Chain
+              </Button>
+            </div>
+            <p className="text-xs text-silver mt-2">
+              This cryptographic hash represents the immutable state of your entire trading history
             </p>
           </div>
         )}
