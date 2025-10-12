@@ -10,6 +10,50 @@ import { SignJWT, importPKCS8 } from "jose";
 import { randomUUID } from "crypto";
 import { storage } from "../storage";
 
+type SsoResult = { ok: boolean; status: number; body?: any; reqId?: string };
+
+async function createSsoSession(baseUrl: string, accessToken: string): Promise<SsoResult> {
+  const base = (baseUrl || 'https://api.ibkr.com').replace(/\/$/, '');
+  const url = `${base}/gw/api/v1/sso-sessions`;
+  const ip = process.env.IBKR_ALLOWED_IP;
+  const username = process.env.IBKR_CREDENTIAL;
+  const clientId = process.env.IBKR_CLIENT_ID;
+  const kid = process.env.IBKR_CLIENT_KEY_ID;
+  const privateKeyPem = process.env.IBKR_PRIVATE_KEY;
+
+  if (!username || !clientId || !privateKeyPem || !kid) {
+    return { ok: false, status: 400, body: 'Missing required env for SSO (credential/clientId/key/kid)' };
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const key = await importPKCS8(privateKeyPem, 'RS256');
+  // Strict minimal claims per Authentication.txt
+  const claims: Record<string, any> = {
+    credential: username,
+    iss: clientId,
+    iat: now,
+    exp: now + 86400, // 24h window as specified
+  };
+  if (ip) claims.ip = ip;
+
+  const signed = await new SignJWT(claims)
+    .setProtectedHeader({ alg: 'RS256', kid, typ: 'JWT' })
+    .sign(key);
+
+  const reqId = randomUUID();
+  const res = await fetch(url, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/jwt' },
+    body: signed,
+  });
+  const text = await res.text();
+  const snippet = text.slice(0, 200);
+  console.log(`[IBKR][SSO JWT] status=${res.status} body=${snippet}`);
+  let json: any = undefined;
+  try { json = JSON.parse(text); } catch {}
+  return { ok: res.ok, status: res.status, body: json ?? text, reqId };
+}
+
 type PhaseStatus = { status: number | null; ts: string; requestId?: string };
 export type IbkrDiagnostics = {
   oauth: PhaseStatus;
@@ -87,81 +131,92 @@ class IbkrClient {
     const clientAssertion = await this.signClientAssertion();
 
     const url = `${this.baseUrl}/oauth2/api/v1/token`;
-    const body = new URLSearchParams({
-      grant_type: "client_credentials",
-      client_id: clientId,
-      client_assertion_type: "urn:ietf:params:oauth:client-assertion-type:jwt-bearer",
+    const scope = process.env.IBKR_SCOPE || process.env.IBKR_OAUTH_SCOPE || process.env.SCOPE || 'sso-sessions.write';
+    const form = new URLSearchParams({
+      grant_type: 'client_credentials',
+      scope,
+      client_assertion_type: 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
       client_assertion: clientAssertion,
     });
+    // Safe debug: only log keys, never values
+    console.log('[IBKR][OAuth][requestKeys]', Array.from(form.keys()));
 
     const oauthReqId = randomUUID();
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      body: body.toString(),
-    });
+    try {
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: form.toString(),
+      });
 
-    this.last.oauth = { status: resp.status, ts: new Date().toISOString(), requestId: oauthReqId };
-    if (!resp.ok) {
-      let snippet = "";
-      try { snippet = (await resp.text()).slice(0, 200); } catch {}
+      this.last.oauth = { status: resp.status, ts: new Date().toISOString(), requestId: oauthReqId };
+      if (!resp.ok) {
+        let errorBody = "";
+        try { errorBody = await resp.text(); } catch {}
+
+        // Decode JWT payload (for debugging payload only — no private key)
+        let jwtPayloadStr = "";
+        try {
+          const parts = clientAssertion.split(".");
+          if (parts.length >= 2) {
+            jwtPayloadStr = Buffer.from(parts[1], "base64url").toString("utf8");
+          }
+        } catch {}
+
+        const snippet = (errorBody || "").slice(0, 500);
+        // Structured console logs for debugging
+        console.error("[IBKR][OAuth][status]", resp.status, "req=", oauthReqId);
+        if (snippet) console.error("[IBKR][OAuth][errorBody]", snippet);
+        if (jwtPayloadStr) console.error("[IBKR][OAuth][jwtPayload]", jwtPayloadStr);
+        console.error("[IBKR][OAuth][result]", { error: "token_request_failed", status: resp.status, reqId: oauthReqId });
+
+        await storage.createAuditLog({
+          eventType: "IBKR_OAUTH_TOKEN",
+          details: `FAILED http=${resp.status} req=${oauthReqId} body=${snippet}`,
+          status: "FAILED",
+        });
+        throw new Error(`IBKR OAuth token request failed: ${resp.status}`);
+      }
+
+      const json = (await resp.json()) as OAuthToken;
+      this.accessToken = json.access_token;
+      this.accessTokenExpiryMs = this.now() + json.expires_in * 1000;
+
       await storage.createAuditLog({
         eventType: "IBKR_OAUTH_TOKEN",
-        details: `FAILED http=${resp.status} req=${oauthReqId} body=${snippet}`,
-        status: "FAILED",
+        details: `OK http=${resp.status} req=${oauthReqId}`,
+        status: "SUCCESS",
       });
-      console.error(`[IBKR][${oauthReqId}] POST /oauth2/api/v1/token -> ${resp.status} ${snippet}`);
-      throw new Error(`IBKR OAuth token request failed: ${resp.status}`);
+      return this.accessToken;
+    } catch (err) {
+      // Network/transport-level failure (no HTTP response)
+      // Decode JWT payload for context
+      let jwtPayloadStr = "";
+      try {
+        const parts = clientAssertion.split(".");
+        if (parts.length >= 2) {
+          jwtPayloadStr = Buffer.from(parts[1], "base64url").toString("utf8");
+        }
+      } catch {}
+      if (jwtPayloadStr) console.error("[IBKR][OAuth][jwtPayload]", jwtPayloadStr);
+      console.error("[IBKR][OAuth][transportError]", String((err as any)?.message || err));
+      await storage.createAuditLog({ eventType: "IBKR_OAUTH_TOKEN", details: "FAILED transport", status: "FAILED" });
+      throw err;
     }
-
-    const json = (await resp.json()) as OAuthToken;
-    this.accessToken = json.access_token;
-    this.accessTokenExpiryMs = this.now() + json.expires_in * 1000;
-
-    await storage.createAuditLog({
-      eventType: "IBKR_OAUTH_TOKEN",
-      details: `OK http=${resp.status} req=${oauthReqId}`,
-      status: "SUCCESS",
-    });
-    return this.accessToken;
   }
 
   private async createSSOSession(token: string): Promise<void> {
     if (this.ssoSessionId) return;
-
-    const credential = process.env.IBKR_CREDENTIAL;
-    const allowedIp = process.env.IBKR_ALLOWED_IP;
-    const url = `${this.baseUrl}/gw/api/v1/sso-sessions`;
-
-    const ssoReqId = randomUUID();
-    const resp = await fetch(url, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${token}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        credential,
-        claims: allowedIp ? { ip: allowedIp } : undefined,
-      }),
-    });
-    this.last.sso = { status: resp.status, ts: new Date().toISOString(), requestId: ssoReqId };
-    if (!resp.ok) {
-      let snippet = "";
-      try { snippet = (await resp.text()).slice(0, 200); } catch {}
-      await storage.createAuditLog({
-        eventType: "IBKR_SSO_SESSION",
-        details: `FAILED http=${resp.status} req=${ssoReqId} body=${snippet}`,
-        status: "FAILED",
-      });
-      console.error(`[IBKR][${ssoReqId}] POST /gw/api/v1/sso-sessions -> ${resp.status} ${snippet}`);
-      throw new Error(`IBKR SSO session failed: ${resp.status}`);
+    const r = await createSsoSession(this.baseUrl, token);
+    this.last.sso = { status: r.status, ts: new Date().toISOString(), requestId: r.reqId };
+    if (!r.ok) {
+      await storage.createAuditLog({ eventType: "IBKR_SSO_SESSION", details: `FAILED http=${r.status} req=${r.reqId}`, status: "FAILED" });
+      throw new Error(`IBKR SSO session failed: ${r.status}`);
     }
-    const json = (await resp.json()) as { session_id?: string };
-    this.ssoSessionId = json.session_id || "ok";
-    await storage.createAuditLog({ eventType: "IBKR_SSO_SESSION", details: `OK http=${resp.status} req=${ssoReqId}` , status: "SUCCESS" });
+    this.ssoSessionId = (r.body as any)?.session_id || "ok";
+    await storage.createAuditLog({ eventType: "IBKR_SSO_SESSION", details: `OK http=${r.status} req=${r.reqId}`, status: "SUCCESS" });
   }
 
   private async initBrokerage(token: string): Promise<void> {
@@ -193,6 +248,7 @@ class IbkrClient {
   private async ensureReady(retry = true): Promise<string> {
     try {
       const token = await this.getOAuthToken();
+      // Use helper to create SSO session; update last.sso and audit handled inside
       await this.createSSOSession(token);
       await this.initBrokerage(token);
       return token;
