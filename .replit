@@ -1,4 +1,6 @@
 modules = ["nodejs-20"]
+run = "npm run dev"
+
 [[ports]]
 localPort = 5000
 externalPort = 5000
@@ -9,3 +11,6 @@ externalPort = 80
 
 [nix]
 channel = "stable-25_05"
+
+[deployment]
+deploymentTarget = "cloudrun"

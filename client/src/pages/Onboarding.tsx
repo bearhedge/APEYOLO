@@ -186,6 +186,14 @@ export function Onboarding() {
                       'Connect IBKR Account'
                     )}
                   </Button>
+
+                  <Button
+                    onClick={() => setStep(3)}
+                    className="btn-secondary w-full text-lg py-6 mt-3"
+                    data-testid="button-skip-ibkr"
+                  >
+                    Skip for Now
+                  </Button>
                 </>
               ) : (
                 <div className="text-center py-8">
