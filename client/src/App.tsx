@@ -3,17 +3,15 @@ import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Route, Link, useLocation } from "wouter";
-import { Home as HomeIcon, LayoutDashboard, TrendingUp, Settings as SettingsIcon, Bot, Briefcase, List, CheckCircle, XCircle } from "lucide-react";
+import { CheckCircle, XCircle } from "lucide-react";
 import { Home } from "@/pages/Home";
 import { Onboarding } from "@/pages/Onboarding";
-import { Dashboard } from "@/pages/Dashboard";
 import { Agent } from "@/pages/Agent";
 import { Portfolio } from "@/pages/Portfolio";
 import { Trades } from "@/pages/Trades";
 import { Jobs } from "@/pages/Jobs";
 import { PNL } from "@/pages/PNL";
 import { Settings } from "@/pages/Settings";
-import { Sessions } from "@/pages/Sessions";
 import { getAccount, getDiag } from "@/lib/api";
 
 function Navigation() {
@@ -42,11 +40,9 @@ function Navigation() {
       <div className="px-6">
         <div className="flex items-center justify-between h-16">
           <div className="flex items-center gap-6">
-            <Link href="/">
-              <a className="flex flex-col" data-testid="link-logo">
-                <span className="text-xl font-bold tracking-wide">APEYOLO</span>
-                <span className="text-[10px] text-silver tracking-wider -mt-1">THE SAFEST WAY TO YOLO.</span>
-              </a>
+            <Link href="/" className="flex flex-col" data-testid="link-logo">
+              <span className="text-xl font-bold tracking-wide">APEYOLO</span>
+              <span className="text-[10px] text-silver tracking-wider -mt-1">THE SAFEST WAY TO YOLO.</span>
             </Link>
           </div>
           
@@ -90,8 +86,6 @@ function App() {
           <Navigation />
           <Route path="/" component={Home} />
           <Route path="/onboarding" component={Onboarding} />
-          <Route path="/sessions" component={Sessions} />
-          <Route path="/dashboard" component={Dashboard} />
           <Route path="/agent" component={Agent} />
           <Route path="/portfolio" component={Portfolio} />
           <Route path="/trades" component={Trades} />

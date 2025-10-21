@@ -1,13 +1,11 @@
 import { Link, useLocation } from 'wouter';
-import { LayoutDashboard, Bot, Briefcase, TrendingUp, List, Settings, MessageSquare, DollarSign } from 'lucide-react';
+import { Bot, Briefcase, TrendingUp, List, Settings, DollarSign } from 'lucide-react';
 
 const navItems = [
-  { path: '/dashboard', label: 'Dashboard', icon: LayoutDashboard },
   { path: '/agent', label: 'Agent', icon: Bot },
   { path: '/portfolio', label: 'Portfolio', icon: Briefcase },
   { path: '/trades', label: 'Trades', icon: TrendingUp },
   { path: '/jobs', label: 'Jobs', icon: List },
-  { path: '/sessions', label: 'Sessions', icon: MessageSquare },
   { path: '/pnl', label: 'PNL', icon: DollarSign },
   { path: '/settings', label: 'Settings', icon: Settings },
 ];

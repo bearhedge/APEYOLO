@@ -28,10 +28,16 @@ Preferred communication style: Simple, everyday language.
 **Application Routes:**
 - Home (`/`) - Landing page with value proposition
 - Onboarding (`/onboarding`) - Multi-step setup: Google OAuth → IBKR connection → Risk preferences
-- Sessions (`/sessions`) - Chat interface for agentic command execution
-- Dashboard (`/dashboard`) - Main trading interface with connection status, agent controls, risk snapshot, account overview, and positions table
+- Agent (`/agent`) - Main trading interface with three-column layout: LeftNav navigation, ChatCanvas for agentic commands, and ContextPanel showing Session/Portfolio/Risk/Allocation/Queue/Alerts cards
+- Portfolio (`/portfolio`) - Portfolio overview and holdings
+- Trades (`/trades`) - Trade history and execution details
+- Jobs (`/jobs`) - Background job queue and task management
 - PNL (`/pnl`) - Immutable trade history with cryptographic hashing for audit compliance
 - Settings (`/settings`) - IBKR connection management, risk controls, safety rails, notifications, and agent configuration
+
+**Page Layout:**
+- Agent page uses three-column layout: LeftNav (icon navigation) + ChatCanvas (natural language interface) + ContextPanel (6 cards in fixed order: Session → Portfolio → Risk → Allocation → Queue → Alerts)
+- All other pages use LeftNav for consistent navigation across the application
 
 **State Management:**
 - Zustand store handles authentication state (Google, IBKR connection)
