@@ -2,7 +2,7 @@ import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
-import { Route, Link, useLocation } from "wouter";
+import { Route, Link, useLocation, Redirect } from "wouter";
 import { CheckCircle, XCircle } from "lucide-react";
 import { Home } from "@/pages/Home";
 import { Onboarding } from "@/pages/Onboarding";
@@ -92,6 +92,13 @@ function App() {
           <Route path="/jobs" component={Jobs} />
           <Route path="/pnl" component={PNL} />
           <Route path="/settings" component={Settings} />
+          {/* Redirects for old routes */}
+          <Route path="/dashboard">
+            <Redirect to="/agent" />
+          </Route>
+          <Route path="/sessions">
+            <Redirect to="/agent" />
+          </Route>
         </div>
       </TooltipProvider>
     </QueryClientProvider>
