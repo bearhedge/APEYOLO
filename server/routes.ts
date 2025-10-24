@@ -222,7 +222,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/broker/diag', (_req, res) => {
     const last = broker.status.provider === 'ibkr'
       ? getIbkrDiagnostics()
-      : { oauth: { status: null, ts: '' }, sso: { status: null, ts: '' }, init: { status: null, ts: '' } };
+      : { oauth: { status: null, ts: '' }, sso: { status: null, ts: '' }, validate: { status: null, ts: '' }, init: { status: null, ts: '' } };
     res.json({ provider: broker.status.provider, env: broker.status.env, last });
   });
 

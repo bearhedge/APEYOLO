@@ -144,3 +144,39 @@ Contributions welcome! Please read CONTRIBUTING.md first.
 ---
 
 **Built for traders who understand that the safest YOLO is a calculated one.**
+
+---
+
+## ☁️ Deploy (GCP Cloud Run)
+
+This repo includes a Dockerfile and Cloud Build config to deploy the app to Cloud Run with CI/CD and map a custom domain (e.g., `app.apeyolo.com`).
+
+Prerequisites
+- gcloud CLI installed and authenticated
+- A GCP project (PROJECT_ID)
+- DNS access for your domain
+
+Bootstrap (one‑time)
+1. export PROJECT_ID=your-gcp-project
+2. bash scripts/gcp_bootstrap.sh
+   - Enables APIs, builds Docker image via Cloud Build, deploys to Cloud Run.
+   - Prints the temporary Cloud Run URL when done.
+
+Custom Domain (managed TLS)
+1. export PROJECT_ID=your-gcp-project
+2. export DOMAIN=app.apeyolo.com  # optional; defaults to app.apeyolo.com
+3. bash scripts/map_domain.sh
+4. Add the printed DNS records at your DNS host; wait for propagation
+
+CI/CD Trigger (GitHub)
+Run once to enable automatic deploys from pushes to `main`:
+
+gcloud builds triggers create github \
+  --name=apeyolo-deploy \
+  --repo-owner=YOUR_GH_USER --repo-name=YOUR_REPO \
+  --branch-pattern=^main$ --build-config=cloudbuild.yaml
+
+Notes
+- Cloud Run listens on the `PORT` env var; the server uses it automatically.
+- Build uses the included Dockerfile; runtime command is `node dist/index.js`.
+- Ensure production env variables are set in your Cloud Run service as needed.
