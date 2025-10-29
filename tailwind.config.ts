@@ -67,9 +67,9 @@ export default {
         silver: "#A6A6A6",
       },
       fontFamily: {
-        sans: ["Orbitron", "sans-serif"],
-        serif: ["var(--font-serif)"],
-        mono: ["monospace"],
+        sans: ["Inter", "system-ui", "-apple-system", "sans-serif"],
+        display: ["Space Grotesk", "Inter", "sans-serif"],
+        mono: ["IBM Plex Mono", "Consolas", "Monaco", "monospace"],
       },
       keyframes: {
         "accordion-down": {
