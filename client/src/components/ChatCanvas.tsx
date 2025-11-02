@@ -70,12 +70,12 @@ export function ChatCanvas({ initialMessage }: ChatCanvasProps) {
               }`}
             >
               <div
-                className={`max-w-[80%] rounded-lg p-4 ${
+                className={`max-w-[80%] p-4 ${
                   message.role === 'user'
-                    ? 'bg-white text-black'
+                    ? 'bg-white text-black border border-white'
                     : message.role === 'system'
-                    ? 'bg-dark-gray border border-white/10 text-silver'
-                    : 'bg-dark-gray border border-white/10'
+                    ? 'bg-dark-gray border border-white/20 text-silver'
+                    : 'bg-dark-gray border border-white/20'
                 }`}
                 data-testid={`message-${message.role}`}
               >
@@ -96,7 +96,7 @@ export function ChatCanvas({ initialMessage }: ChatCanvasProps) {
             <button
               key={preset.label}
               onClick={() => setInput(preset.label)}
-              className="flex-shrink-0 px-3 py-1.5 text-xs bg-dark-gray border border-white/10 rounded-md hover:bg-mid-gray transition-colors"
+              className="flex-shrink-0 px-3 py-1.5 text-xs bg-transparent border border-white/30 hover:bg-white/10 transition-colors uppercase tracking-wider"
               data-testid={`preset-${preset.label.slice(1)}`}
               title={preset.desc}
             >

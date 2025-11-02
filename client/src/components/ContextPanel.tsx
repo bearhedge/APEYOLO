@@ -136,17 +136,17 @@ export function ContextPanel() {
   ];
 
   return (
-    <div className="w-96 bg-charcoal border-l border-white/10 overflow-y-auto">
+    <div className="w-96 bg-charcoal border-l border-white/20 overflow-y-auto">
       <div className="p-4 space-y-4">
         {cards.map((card, index) => (
           <div
             key={card.title}
-            className="bg-dark-gray rounded-lg p-4 border border-white/10"
+            className="bg-dark-gray p-4 border border-white/20"
             data-testid={`context-card-${card.title.toLowerCase()}`}
           >
-            <div className="flex items-center gap-2 mb-3">
+            <div className="flex items-center gap-2 mb-3 pb-2 border-b border-white/10">
               {card.icon}
-              <h3 className="text-sm font-semibold">{card.title}</h3>
+              <h3 className="text-xs font-semibold uppercase tracking-wider">{card.title}</h3>
             </div>
             {card.content}
           </div>

@@ -57,12 +57,11 @@
   --sidebar-border: hsl(0, 0%, 100%, 0.1);
   --sidebar-ring: hsl(0, 0%, 100%);
   
-  /* Typography */
-  --font-body: 'Inter', system-ui, -apple-system, sans-serif;
-  --font-display: 'Space Grotesk', 'Inter', sans-serif;
+  /* Typography - Global Monospace for Technical Feel */
   --font-mono: 'IBM Plex Mono', 'Consolas', 'Monaco', monospace;
   
-  --radius: 0.5rem;
+  /* Sharp rectangular design - no rounded corners */
+  --radius: 0px;
 }
 
 .dark {
@@ -91,29 +90,34 @@
     @apply border-border;
   }
 
+  /* Global monospace font for scientific/terminal aesthetic */
   body {
     @apply antialiased bg-background text-foreground min-h-screen;
-    font-family: var(--font-body);
+    font-family: var(--font-mono);
     font-weight: 400;
-    letter-spacing: -0.011em;
+    letter-spacing: 0em;
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
-    text-rendering: optimizeLegibility;
+    text-rendering: optimizeLegidity;
   }
   
+  /* Headings also use monospace for consistency */
   h1, h2, h3, h4, h5, h6 {
-    font-family: var(--font-display);
+    font-family: var(--font-mono);
     font-weight: 600;
-    letter-spacing: -0.02em;
+    letter-spacing: 0.02em;
+    text-transform: uppercase;
   }
   
-  /* Monospace for numeric data, tickers, and code */
-  .font-mono,
+  /* All text elements use monospace */
+  * {
+    font-family: var(--font-mono);
+  }
+  
+  /* Tabular nums for all numeric data */
   .tabular-nums,
   [data-numeric="true"] {
-    font-family: var(--font-mono);
     font-variant-numeric: tabular-nums;
-    letter-spacing: -0.01em;
   }
 }
 
@@ -138,22 +142,35 @@
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-/* Card Styles */
+/* Card Styles - Rectangular & Technical */
 .card-monochrome {
-  @apply bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg;
+  @apply bg-charcoal p-6 border border-white/20;
+  border-radius: 0;
 }
 
-/* Button Styles */
+/* Button Styles - Rectangular */
 .btn-primary {
-  @apply bg-white text-black px-4 py-2 rounded-lg font-medium hover:bg-silver transition-colors;
+  @apply bg-white text-black px-4 py-2 font-medium hover:bg-silver transition-colors border border-white;
+  border-radius: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.875rem;
 }
 
 .btn-secondary {
-  @apply bg-mid-gray text-white px-4 py-2 rounded-lg font-medium hover:bg-dark-gray transition-colors;
+  @apply bg-transparent text-white px-4 py-2 font-medium hover:bg-white/10 transition-colors border border-white/30;
+  border-radius: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.875rem;
 }
 
 .btn-destructive {
-  @apply bg-red-500 text-white px-4 py-2 rounded-lg font-medium hover:bg-red-600 transition-colors;
+  @apply bg-transparent text-red-500 px-4 py-2 font-medium hover:bg-red-500/10 transition-colors border border-red-500;
+  border-radius: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.875rem;
 }
 
 /* Table Styles */
@@ -177,9 +194,11 @@
   @apply hover:bg-dark-gray transition-colors;
 }
 
-/* Input Styles */
+/* Input Styles - Rectangular & Terminal-like */
 .input-monochrome {
-  @apply bg-dark-gray text-white px-4 py-2 rounded-md border border-white/10 focus:border-white focus:outline-none transition-colors;
+  @apply bg-black text-white px-4 py-2 border border-white/30 focus:border-white focus:outline-none transition-colors;
+  border-radius: 0;
+  font-family: var(--font-mono);
 }
 
 /* Status Dot */
@@ -199,9 +218,12 @@
   @apply bg-amber-500;
 }
 
-/* Badge Styles */
+/* Badge Styles - Rectangular */
 .badge-monochrome {
-  @apply inline-flex items-center rounded-full px-2 py-1 text-xs font-medium;
+  @apply inline-flex items-center px-2 py-1 text-xs font-medium border;
+  border-radius: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
 }
 
 .badge-success {
@@ -239,7 +261,15 @@
 .tabular-nums {
   font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
-  letter-spacing: -0.01em;
+  letter-spacing: 0em;
+}
+
+/* Technical Grid Lines */
+.grid-lines {
+  background-image: 
+    linear-gradient(rgba(255, 255, 255, 0.05) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, 0.05) 1px, transparent 1px);
+  background-size: 20px 20px;
 }
 
 /* Responsive Utilities */
