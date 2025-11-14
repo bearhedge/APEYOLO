@@ -10,7 +10,7 @@ APEYOLO is a professional options trading platform featuring a clean monochrome 
 
 ## 🎯 Features
 
-- **AI-Powered Agent**: GPT-4 driven decision making with customizable strategies
+- **AI-Powered Agent**: AI driven decision making with customizable strategies
 - **Risk Management**: Configurable limits, circuit breakers, and automated position management
 - **Immutable Audit Trail**: Cryptographic SHA-256 hashing for compliance and verification
 - **Real-time Execution**: Direct IBKR integration with sub-second order placement
