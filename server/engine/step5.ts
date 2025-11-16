@@ -250,7 +250,4 @@ export async function testStep5(): Promise<void> {
   }
 }
 
-// Allow testing directly
-if (require.main === module) {
-  testStep5().catch(console.error);
-}
+// Test function can be called from a separate test file

@@ -292,7 +292,4 @@ export async function testEngine(): Promise<void> {
   console.log(JSON.stringify(engine.exportDecision(decision), null, 2));
 }
 
-// Allow testing directly
-if (require.main === module) {
-  testEngine().catch(console.error);
-}
+// Test function can be called from a separate test file

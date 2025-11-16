@@ -253,7 +253,4 @@ export async function testStep4(): Promise<void> {
   console.log(`Reasoning: ${sizing.reasoning}`);
 }
 
-// Allow testing directly
-if (require.main === module) {
-  testStep4().catch(console.error);
-}
+// Test function can be called from a separate test file
