@@ -42,7 +42,8 @@ export async function setupVite(app: Express, server: Server) {
   });
 
   app.use(vite.middlewares);
-  app.use("*", async (req, res, next) => {
+  // Express v5/path-to-regexp v6: avoid raw "*"; use a regex catch-all
+  app.use(/.*/, async (req, res, next) => {
     const url = req.originalUrl;
     try {
       const clientTemplate = path.resolve(clientRoot, "index.html");
@@ -68,7 +69,7 @@ export function serveStatic(app: Express) {
   app.use(express.static(distPath));
 
   // fall through to index.html if the file doesn't exist
-  app.use("*", (_req, res) => {
+  app.use(/.*/, (_req, res) => {
     res.sendFile(path.resolve(distPath, "index.html"));
   });
 }

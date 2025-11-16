@@ -150,28 +150,31 @@
 
 /* Button Styles - Rectangular */
 .btn-primary {
-  @apply bg-white text-black px-4 py-2 font-medium hover:bg-silver transition-colors border border-white;
+  @apply bg-white text-black px-4 py-2 font-medium transition-colors border border-white;
   border-radius: 0;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-size: 0.875rem;
 }
+.btn-primary:hover { @apply bg-silver; }
 
 .btn-secondary {
-  @apply bg-transparent text-white px-4 py-2 font-medium hover:bg-white/10 transition-colors border border-white/30;
+  @apply bg-transparent text-white px-4 py-2 font-medium transition-colors border border-white/30;
   border-radius: 0;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-size: 0.875rem;
 }
+.btn-secondary:hover { @apply bg-white/10; }
 
 .btn-destructive {
-  @apply bg-transparent text-red-500 px-4 py-2 font-medium hover:bg-red-500/10 transition-colors border border-red-500;
+  @apply bg-transparent text-red-500 px-4 py-2 font-medium transition-colors border border-red-500;
   border-radius: 0;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-size: 0.875rem;
 }
+.btn-destructive:hover { @apply bg-red-500/10; }
 
 /* Table Styles */
 .table-monochrome {
@@ -190,9 +193,8 @@
   @apply px-4 py-3 border-t border-white/10 font-normal tabular-nums;
 }
 
-.table-monochrome tbody tr {
-  @apply hover:bg-dark-gray transition-colors;
-}
+.table-monochrome tbody tr { @apply transition-colors; }
+.table-monochrome tbody tr:hover { @apply bg-dark-gray; }
 
 /* Input Styles - Rectangular & Terminal-like */
 .input-monochrome {

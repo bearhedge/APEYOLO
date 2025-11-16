@@ -7,6 +7,7 @@ import { CheckCircle, XCircle } from "lucide-react";
 import { Home } from "@/pages/Home";
 import { Onboarding } from "@/pages/Onboarding";
 import { Agent } from "@/pages/Agent";
+import { Engine } from "@/pages/Engine";
 import { Portfolio } from "@/pages/Portfolio";
 import { Trades } from "@/pages/Trades";
 import { Jobs } from "@/pages/Jobs";
@@ -87,6 +88,7 @@ function App() {
           <Route path="/" component={Home} />
           <Route path="/onboarding" component={Onboarding} />
           <Route path="/agent" component={Agent} />
+          <Route path="/engine" component={Engine} />
           <Route path="/portfolio" component={Portfolio} />
           <Route path="/trades" component={Trades} />
           <Route path="/jobs" component={Jobs} />

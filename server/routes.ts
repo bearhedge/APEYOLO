@@ -3,7 +3,8 @@ import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { storage } from "./storage";
 import { getBroker } from "./broker";
-import { getIbkrDiagnostics, placePaperStockOrder, listPaperOpenOrders } from "./broker/ibkr";
+import { getIbkrDiagnostics, ensureIbkrReady, placePaperStockOrder, listPaperOpenOrders } from "./broker/ibkr";
+import { TradingEngine } from "./engine/index.ts";
 import { 
   insertTradeSchema, 
   insertPositionSchema, 
@@ -54,6 +55,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Account info (via provider)
   app.get('/api/account', async (req, res) => {
     try {
+      if (broker.status.provider === 'ibkr') {
+        await ensureIbkrReady();
+      }
       const account = await broker.api.getAccount();
       res.json(account);
     } catch (error) {
@@ -64,6 +68,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Positions (via provider)
   app.get('/api/positions', async (req, res) => {
     try {
+      if (broker.status.provider === 'ibkr') {
+        await ensureIbkrReady();
+      }
       const positions = await broker.api.getPositions();
       res.json(positions);
     } catch (error) {
@@ -112,16 +119,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Option chains (via provider)
-  app.get('/api/options/chain/:symbol/:expiration?', async (req, res) => {
+  // Option chains (via provider) — express v5 does not allow 
+  // an optional param with a preceding slash; register two routes.
+  const optionsChainHandler = async (req: any, res: any) => {
     try {
-      const { symbol, expiration } = req.params;
+      const { symbol, expiration } = req.params as { symbol: string; expiration?: string };
       const chain = await broker.api.getOptionChain(symbol, expiration);
       res.json(chain);
     } catch (error) {
       res.status(500).json({ error: 'Failed to fetch option chain' });
     }
-  });
+  };
+  app.get('/api/options/chain/:symbol', optionsChainHandler);
+  app.get('/api/options/chain/:symbol/:expiration', optionsChainHandler);
 
   // Trades list (via provider)
   app.get('/api/trades', async (_req, res) => {
@@ -226,6 +236,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json({ provider: broker.status.provider, env: broker.status.env, last });
   });
 
+  // Warm the full IBKR flow and return diagnostics (JSON)
+  app.get('/api/broker/warm', async (_req, res) => {
+    try {
+      if (broker.status.provider !== 'ibkr') {
+        return res.status(400).json({ ok: false, error: 'Set BROKER_PROVIDER=ibkr' });
+      }
+      const diag = await ensureIbkrReady();
+      return res.status(200).json({ ok: true, diag });
+    } catch (err: any) {
+      const diag = getIbkrDiagnostics();
+      return res.status(502).json({ ok: false, error: err?.message || String(err), diag });
+    }
+  });
+
   // Paper stock order test endpoint (to validate OAuth/SSO/init pipeline)
   app.post('/api/broker/paper/order', async (req, res) => {
     if (broker.status.provider !== 'ibkr') {
@@ -269,6 +293,63 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/rules', async (req, res) => { ... });
   app.post('/api/rules', async (req, res) => { ... });
   */
+
+  // Trading Engine endpoints
+  app.get('/api/engine/status', async (req, res) => {
+    try {
+      const engine = new TradingEngine({
+        riskProfile: 'BALANCED',
+        underlyingSymbol: 'SPY',
+        underlyingPrice: 450, // Mock for now, will get from market
+        mockMode: true
+      });
+
+      // Get mock account info (will use real data later)
+      const accountInfo = {
+        cashBalance: 100000,
+        buyingPower: 666000,
+        currentPositions: 0
+      };
+
+      // Run the engine to get current decision
+      const decision = await engine.executeTradingDecision(accountInfo);
+
+      res.json({
+        timestamp: new Date().toISOString(),
+        canTrade: decision.canTrade,
+        reason: decision.reason,
+        summary: decision.canTrade ? {
+          direction: decision.direction?.direction,
+          putStrike: decision.strikes?.putStrike?.strike,
+          callStrike: decision.strikes?.callStrike?.strike,
+          contracts: decision.positionSize?.contracts,
+          expectedPremium: decision.strikes?.expectedPremium,
+          marginRequired: decision.positionSize?.totalMarginRequired,
+          stopLoss: decision.exitRules?.stopLossAmount
+        } : null,
+        steps: decision.audit?.map(step => ({
+          name: step.name,
+          passed: step.passed,
+          reason: step.reason
+        }))
+      });
+    } catch (error) {
+      console.error('Engine error:', error);
+      res.status(500).json({ error: 'Failed to get engine status' });
+    }
+  });
+
+  app.post('/api/engine/execute', async (req, res) => {
+    try {
+      // This endpoint will execute the trade once we have IBKR working
+      res.json({
+        message: 'Trade execution not yet implemented',
+        status: 'pending_ibkr_integration'
+      });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to execute trade' });
+    }
+  });
 
   // Audit logs
   app.get('/api/logs', async (req, res) => {
