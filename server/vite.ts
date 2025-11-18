@@ -4,10 +4,8 @@ import path from "path";
 import { fileURLToPath } from "url";
 // Avoid importing Vite in production: dynamically import inside setupVite
 import { type Server } from "http";
-import { nanoid } from "nanoid";
-
-// Re-export production-safe functions from utils
-export { log, serveStatic } from "./utils";
+// Import utils functions instead of re-exporting to avoid bundling this file
+import { log } from "./utils";
 
 // ESM-safe path resolution (Node 18 compatible)
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -16,6 +14,7 @@ const clientRoot = path.join(projectRoot, "client");
 
 export async function setupVite(app: Express, server: Server) {
   const { createServer: createViteServer } = await import('vite');
+  const { nanoid } = await import('nanoid'); // Dynamic import for dev only
   // Use a string variable to prevent ESBuild from bundling this
   const configPath = '../vite.config.js';
   const { default: viteConfig } = await import(configPath);
