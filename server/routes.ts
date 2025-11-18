@@ -13,8 +13,16 @@ import {
   type SpreadConfig 
 } from "@shared/schema";
 import { z } from "zod";
+import cookieParser from "cookie-parser";
+import authRoutes from "./auth.js";
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  // Add cookie parser middleware
+  app.use(cookieParser());
+
+  // Register auth routes
+  app.use('/api/auth', authRoutes);
+
   const httpServer = createServer(app);
 
   // WebSocket server for live data
@@ -247,6 +255,59 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (err: any) {
       const diag = getIbkrDiagnostics();
       return res.status(502).json({ ok: false, error: err?.message || String(err), diag });
+    }
+  });
+
+  // IBKR OAuth endpoint for frontend
+  app.post('/api/broker/oauth', async (_req, res) => {
+    try {
+      if (broker.status.provider !== 'ibkr') {
+        return res.status(400).json({ ok: false, error: 'IBKR provider not configured' });
+      }
+      // Run OAuth flow
+      const diag = await ensureIbkrReady();
+      if (diag.oauth.status === 200) {
+        return res.json({ ok: true, code: 200, traceId: diag.oauth.ts });
+      } else {
+        return res.status(502).json({ ok: false, code: diag.oauth.status || 500, error: 'OAuth failed' });
+      }
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err?.message || String(err) });
+    }
+  });
+
+  // IBKR SSO session creation endpoint for frontend
+  app.post('/api/broker/sso', async (_req, res) => {
+    try {
+      if (broker.status.provider !== 'ibkr') {
+        return res.status(400).json({ ok: false, error: 'IBKR provider not configured' });
+      }
+      // Create SSO session
+      const diag = await ensureIbkrReady();
+      if (diag.sso.status === 200) {
+        return res.json({ ok: true, code: 200, traceId: diag.sso.ts });
+      } else {
+        return res.status(502).json({ ok: false, code: diag.sso.status || 500, error: 'SSO creation failed' });
+      }
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err?.message || String(err) });
+    }
+  });
+
+  // IBKR validation endpoint for frontend (optional)
+  app.post('/api/broker/validate', async (_req, res) => {
+    try {
+      if (broker.status.provider !== 'ibkr') {
+        return res.status(400).json({ ok: false, error: 'IBKR provider not configured' });
+      }
+      const diag = getIbkrDiagnostics();
+      if (diag.validate.status === 200) {
+        return res.json({ ok: true, code: 200, traceId: diag.validate.ts });
+      } else {
+        return res.status(502).json({ ok: false, code: diag.validate.status || 500, error: 'Validation failed' });
+      }
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err?.message || String(err) });
     }
   });
 

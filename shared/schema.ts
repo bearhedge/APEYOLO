@@ -5,8 +5,14 @@ import { z } from "zod";
 
 export const users = pgTable("users", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  username: text("username").notNull().unique(),
-  password: text("password").notNull(),
+  email: text("email").notNull().unique(),
+  name: text("name"),
+  picture: text("picture"),
+  googleId: text("google_id").unique(),
+  username: text("username").unique(), // Keep for backward compatibility, now optional
+  password: text("password"), // Keep for backward compatibility, now optional
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
 export const positions = pgTable("positions", {
@@ -77,6 +83,10 @@ export const insertAuditLogSchema = createInsertSchema(auditLogs).omit({
 });
 
 export const insertUserSchema = createInsertSchema(users).pick({
+  email: true,
+  name: true,
+  picture: true,
+  googleId: true,
   username: true,
   password: true,
 });

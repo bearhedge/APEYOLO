@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Check, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -12,7 +12,7 @@ import { useQuery, useMutation } from '@tanstack/react-query';
 export function Onboarding() {
   const [step, setStep] = useState(1);
   const [, setLocation] = useLocation();
-  
+
   const {
     setGoogleConnected,
     setIBKRConnected,
@@ -42,9 +42,27 @@ export function Onboarding() {
     },
   });
 
+  // Check for OAuth callback
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const stepParam = params.get('step');
+    const error = params.get('error');
+
+    if (error) {
+      console.error('OAuth error:', error);
+      // Could show an error message to the user here
+    } else if (stepParam === '2') {
+      // User successfully authenticated with Google
+      setGoogleConnected(true);
+      setStep(2);
+      // Clean up URL
+      window.history.replaceState({}, '', '/onboarding');
+    }
+  }, [setGoogleConnected]);
+
   const handleGoogleLogin = () => {
-    setGoogleConnected(true);
-    setStep(2);
+    // Redirect to backend Google OAuth endpoint
+    window.location.href = '/api/auth/google';
   };
 
   const handleIBKRConnect = async () => {

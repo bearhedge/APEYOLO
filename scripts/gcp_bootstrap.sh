@@ -18,5 +18,5 @@ echo "Submitting Cloud Build (docker build + deploy to Cloud Run)..."
 gcloud builds submit --config cloudbuild.yaml --project "$PROJECT_ID" .
 
 echo "Fetching Cloud Run URL..."
-gcloud run services describe apeyolo-app --region us-central1 --format='value(status.url)'
+gcloud run services describe apeyolo --region asia-east1 --format='value(status.url)'
 
