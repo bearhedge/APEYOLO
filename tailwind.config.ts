@@ -7,8 +7,8 @@ const config: Config = {
     "./client/src/**/*.{js,jsx,ts,tsx,mdx}",
     "./shared/**/*.{js,jsx,ts,tsx,mdx}",
   ],
-  // Keep every class even if only used in @apply or constructed dynamically
-  safelist: [{ pattern: /.*/ }],
+  // Only safelist specific classes you need dynamically
+  // safelist: [],
   theme: {
     extend: {
       colors: {
