@@ -16,7 +16,9 @@ const clientRoot = path.join(projectRoot, "client");
 
 export async function setupVite(app: Express, server: Server) {
   const { createServer: createViteServer } = await import('vite');
-  const { default: viteConfig } = await import('../vite.config'); // <-- moved here
+  // Use a string variable to prevent ESBuild from bundling this
+  const configPath = '../vite.config.js';
+  const { default: viteConfig } = await import(configPath);
 
   const serverOptions = {
     middlewareMode: true,
