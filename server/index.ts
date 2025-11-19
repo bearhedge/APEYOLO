@@ -1,4 +1,7 @@
-import 'dotenv/config';
+// Only load .env file in development
+if (process.env.NODE_ENV !== 'production') {
+  require('dotenv').config();
+}
 import express, { type Request, type Response, type NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import { serveStatic, log } from "./utils"; // Production-safe utilities

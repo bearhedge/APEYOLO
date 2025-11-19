@@ -261,6 +261,7 @@ export function Onboarding() {
                   )}
 
                   {isIBKRConfigured && (
+                    <>
                     <Button
                       onClick={handleIBKRConnect}
                       className="btn-primary w-full text-lg py-6"
@@ -284,6 +285,8 @@ export function Onboarding() {
                   >
                     Skip for Now
                   </Button>
+                  </>
+                  )}
                 </>
               ) : (
                 <div className="text-center py-8">
