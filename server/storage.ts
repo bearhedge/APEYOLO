@@ -1,7 +1,7 @@
-import { 
-  type User, 
-  type InsertUser, 
-  type Position, 
+import {
+  type User,
+  type InsertUser,
+  type Position,
   type InsertPosition,
   type Trade,
   type InsertTrade,
@@ -9,6 +9,8 @@ import {
   type InsertRiskRules,
   type AuditLog,
   type InsertAuditLog,
+  type IbkrCredentials,
+  type InsertIbkrCredentials,
   type OptionChainData,
   type SpreadConfig,
   type TradeValidation,
@@ -58,6 +60,14 @@ export interface IStorage {
   
   // Validation
   validateTrade(spreadConfig: SpreadConfig): Promise<TradeValidation>;
+
+  // IBKR Credentials management
+  getIbkrCredentials(userId: string, environment?: "paper" | "live"): Promise<IbkrCredentials | undefined>;
+  getAllIbkrCredentials(userId: string): Promise<IbkrCredentials[]>;
+  createIbkrCredentials(credentials: InsertIbkrCredentials): Promise<IbkrCredentials>;
+  updateIbkrCredentials(id: string, updates: Partial<IbkrCredentials>): Promise<IbkrCredentials>;
+  deleteIbkrCredentials(id: string): Promise<void>;
+  updateIbkrConnectionStatus(id: string, status: "active" | "inactive" | "error", errorMessage?: string): Promise<void>;
 }
 
 export class MemStorage implements IStorage {
@@ -66,6 +76,7 @@ export class MemStorage implements IStorage {
   private trades: Map<string, Trade> = new Map();
   private riskRules: Map<string, RiskRules> = new Map();
   private auditLogs: Map<string, AuditLog> = new Map();
+  private ibkrCredentials: Map<string, IbkrCredentials> = new Map();
 
   constructor() {
     // Initialize with default risk rules
@@ -352,6 +363,131 @@ export class MemStorage implements IStorage {
       marginRequired,
       deltaImpact
     };
+  }
+
+  // IBKR Credentials management implementations
+  async getIbkrCredentials(userId: string, environment: "paper" | "live" = "paper"): Promise<IbkrCredentials | undefined> {
+    // Find credentials for the user with the specified environment
+    for (const cred of this.ibkrCredentials.values()) {
+      if (cred.userId === userId && cred.environment === environment) {
+        return cred;
+      }
+    }
+    return undefined;
+  }
+
+  async getAllIbkrCredentials(userId: string): Promise<IbkrCredentials[]> {
+    const userCreds: IbkrCredentials[] = [];
+    for (const cred of this.ibkrCredentials.values()) {
+      if (cred.userId === userId) {
+        userCreds.push(cred);
+      }
+    }
+    return userCreds;
+  }
+
+  async createIbkrCredentials(credentials: InsertIbkrCredentials): Promise<IbkrCredentials> {
+    const id = randomUUID();
+    const now = new Date();
+
+    const newCredentials: IbkrCredentials = {
+      id,
+      ...credentials,
+      status: "inactive",
+      lastConnectedAt: null,
+      errorMessage: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    this.ibkrCredentials.set(id, newCredentials);
+
+    // Create audit log
+    await this.createAuditLog({
+      eventType: "ibkr_credentials_created",
+      details: `IBKR credentials created for user ${credentials.userId} (${credentials.environment})`,
+      userId: credentials.userId,
+      status: "success",
+    });
+
+    return newCredentials;
+  }
+
+  async updateIbkrCredentials(id: string, updates: Partial<IbkrCredentials>): Promise<IbkrCredentials> {
+    const existing = this.ibkrCredentials.get(id);
+    if (!existing) {
+      throw new Error(`IBKR credentials not found: ${id}`);
+    }
+
+    const updated: IbkrCredentials = {
+      ...existing,
+      ...updates,
+      id: existing.id, // Ensure ID doesn't change
+      userId: existing.userId, // Ensure user ID doesn't change
+      updatedAt: new Date(),
+    };
+
+    this.ibkrCredentials.set(id, updated);
+
+    // Create audit log
+    await this.createAuditLog({
+      eventType: "ibkr_credentials_updated",
+      details: `IBKR credentials updated for user ${existing.userId}`,
+      userId: existing.userId,
+      status: "success",
+    });
+
+    return updated;
+  }
+
+  async deleteIbkrCredentials(id: string): Promise<void> {
+    const existing = this.ibkrCredentials.get(id);
+    if (!existing) {
+      throw new Error(`IBKR credentials not found: ${id}`);
+    }
+
+    this.ibkrCredentials.delete(id);
+
+    // Create audit log
+    await this.createAuditLog({
+      eventType: "ibkr_credentials_deleted",
+      details: `IBKR credentials deleted for user ${existing.userId} (${existing.environment})`,
+      userId: existing.userId,
+      status: "success",
+    });
+  }
+
+  async updateIbkrConnectionStatus(
+    id: string,
+    status: "active" | "inactive" | "error",
+    errorMessage?: string
+  ): Promise<void> {
+    const existing = this.ibkrCredentials.get(id);
+    if (!existing) {
+      throw new Error(`IBKR credentials not found: ${id}`);
+    }
+
+    const updates: Partial<IbkrCredentials> = {
+      status,
+      errorMessage: errorMessage || null,
+      lastConnectedAt: status === "active" ? new Date() : existing.lastConnectedAt,
+      updatedAt: new Date(),
+    };
+
+    const updated = {
+      ...existing,
+      ...updates,
+    };
+
+    this.ibkrCredentials.set(id, updated);
+
+    // Create audit log
+    await this.createAuditLog({
+      eventType: "ibkr_connection_status_changed",
+      details: `IBKR connection status changed to ${status}${errorMessage ? `: ${errorMessage}` : ""}`,
+      userId: existing.userId,
+      status: status === "error" ? "error" : "success",
+    });
   }
 }
 

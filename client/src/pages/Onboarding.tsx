@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Check, Loader2 } from 'lucide-react';
+import { Check, Loader2, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -27,18 +27,24 @@ export function Onboarding() {
     setMaxPerSymbol,
   } = useStore();
 
-  const { data: diagData, refetch: refetchDiag } = useQuery({
-    queryKey: ['/api/broker/diag'],
-    queryFn: getDiag,
+  // Fetch IBKR status
+  const { data: ibkrStatus, refetch: refetchIbkrStatus } = useQuery({
+    queryKey: ['/api/ibkr/status'],
+    queryFn: async () => {
+      const response = await fetch('/api/ibkr/status');
+      return response.json();
+    },
     enabled: step === 2,
+    refetchInterval: step === 2 ? 10000 : false, // Refresh every 10 seconds when on step 2
   });
 
-  const oauthMutation = useMutation({
+  // Test connection mutation
+  const testConnectionMutation = useMutation({
     mutationFn: async () => {
-      const oauthResult = await runOAuth();
-      const ssoResult = await createSSO();
-      await refetchDiag();
-      return { oauth: oauthResult, sso: ssoResult };
+      const response = await fetch('/api/ibkr/test', { method: 'POST' });
+      const data = await response.json();
+      await refetchIbkrStatus();
+      return data;
     },
   });
 
@@ -66,14 +72,19 @@ export function Onboarding() {
   };
 
   const handleIBKRConnect = async () => {
-    await oauthMutation.mutateAsync();
+    // Test the IBKR connection
+    const result = await testConnectionMutation.mutateAsync();
+    if (result.success) {
+      setIBKRConnected(true);
+    }
   };
 
   const handleFinish = () => {
     setLocation('/dashboard');
   };
 
-  const isIBKRConnected = diagData?.oauth === 200 && diagData?.sso === 200;
+  const isIBKRConnected = ibkrStatus?.connected || false;
+  const isIBKRConfigured = ibkrStatus?.configured || false;
 
   return (
     <div className="min-h-screen flex items-center justify-center px-6 py-12">
@@ -163,45 +174,106 @@ export function Onboarding() {
           {step === 2 && (
             <div className="space-y-6" data-testid="step-ibkr-connect">
               <div className="text-center mb-8">
-                <h2 className="text-2xl font-semibold mb-2">Connect Interactive Brokers</h2>
+                <h2 className="text-2xl font-semibold mb-2">Interactive Brokers Connection</h2>
                 <p className="text-silver">
-                  We'll establish a secure OAuth2 connection to your IBKR account
+                  Check your IBKR connection status and test the integration
                 </p>
+              </div>
+
+              {/* Connection Status */}
+              <div className={`p-4 rounded-lg border ${
+                isIBKRConnected ? 'bg-green-900/20 border-green-500/30' :
+                isIBKRConfigured ? 'bg-yellow-900/20 border-yellow-500/30' :
+                'bg-red-900/20 border-red-500/30'
+              }`}>
+                <div className="flex items-center gap-3 mb-3">
+                  {isIBKRConnected ? (
+                    <CheckCircle className="w-6 h-6 text-green-500" />
+                  ) : isIBKRConfigured ? (
+                    <AlertCircle className="w-6 h-6 text-yellow-500" />
+                  ) : (
+                    <XCircle className="w-6 h-6 text-red-500" />
+                  )}
+                  <div>
+                    <h3 className={`font-semibold ${
+                      isIBKRConnected ? 'text-green-400' :
+                      isIBKRConfigured ? 'text-yellow-400' :
+                      'text-red-400'
+                    }`}>
+                      {isIBKRConnected ? 'Connected' :
+                       isIBKRConfigured ? 'Configured but Not Connected' :
+                       'Not Configured'}
+                    </h3>
+                    <p className="text-sm text-silver">
+                      {isIBKRConnected ? 'Your IBKR account is connected and ready to trade' :
+                       isIBKRConfigured ? 'IBKR credentials are configured. Click Test Connection to verify.' :
+                       'IBKR credentials need to be configured in environment variables'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Connection Details */}
+                {ibkrStatus && (
+                  <div className="mt-3 pt-3 border-t border-white/10 space-y-2 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-silver">Environment:</span>
+                      <span className="font-mono">{ibkrStatus.environment}</span>
+                    </div>
+                    {ibkrStatus.accountId && (
+                      <div className="flex justify-between">
+                        <span className="text-silver">Account ID:</span>
+                        <span className="font-mono">{ibkrStatus.accountId}</span>
+                      </div>
+                    )}
+                    {ibkrStatus.diagnostics && (
+                      <div className="flex justify-between">
+                        <span className="text-silver">Status:</span>
+                        <div className="flex gap-2">
+                          <span className={ibkrStatus.diagnostics.oauth === 'Connected' ? 'text-green-400' : 'text-red-400'}>
+                            OAuth {ibkrStatus.diagnostics.oauth === 'Connected' ? '✓' : '✗'}
+                          </span>
+                          <span className={ibkrStatus.diagnostics.sso === 'Active' ? 'text-green-400' : 'text-red-400'}>
+                            SSO {ibkrStatus.diagnostics.sso === 'Active' ? '✓' : '✗'}
+                          </span>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
 
               {!isIBKRConnected ? (
                 <>
-                  <div className="bg-dark-gray rounded-lg p-4 border border-white/10">
-                    <h3 className="font-medium mb-3">Connection Requirements:</h3>
-                    <ul className="text-sm text-silver space-y-2">
-                      <li className="flex items-center gap-2">
-                        <div className="w-1.5 h-1.5 rounded-full bg-silver" />
-                        Active IBKR account with API access enabled
-                      </li>
-                      <li className="flex items-center gap-2">
-                        <div className="w-1.5 h-1.5 rounded-full bg-silver" />
-                        OAuth2 credentials configured in Client Portal
-                      </li>
-                      <li className="flex items-center gap-2">
-                        <div className="w-1.5 h-1.5 rounded-full bg-silver" />
-                        Two-factor authentication enabled
-                      </li>
-                    </ul>
-                  </div>
+                  {!isIBKRConfigured && (
+                    <div className="bg-dark-gray rounded-lg p-4 border border-white/10">
+                      <h3 className="font-medium mb-3">Setup Required:</h3>
+                      <p className="text-sm text-silver mb-3">
+                        IBKR OAuth credentials must be configured on the server. Please ensure the following environment variables are set:
+                      </p>
+                      <ul className="text-sm text-silver space-y-1 font-mono">
+                        <li>• IBKR_CLIENT_ID</li>
+                        <li>• IBKR_CLIENT_KEY_ID</li>
+                        <li>• IBKR_PRIVATE_KEY</li>
+                        <li>• IBKR_CREDENTIAL</li>
+                        <li>• IBKR_ACCOUNT_ID</li>
+                      </ul>
+                    </div>
+                  )}
 
-                  <Button
-                    onClick={handleIBKRConnect}
-                    className="btn-primary w-full text-lg py-6"
-                    disabled={oauthMutation.isPending}
-                    data-testid="button-connect-ibkr"
-                  >
-                    {oauthMutation.isPending ? (
-                      <>
-                        <Loader2 className="w-5 h-5 mr-3 animate-spin" />
-                        Connecting to IBKR...
+                  {isIBKRConfigured && (
+                    <Button
+                      onClick={handleIBKRConnect}
+                      className="btn-primary w-full text-lg py-6"
+                      disabled={testConnectionMutation.isPending}
+                      data-testid="button-test-connection"
+                    >
+                      {testConnectionMutation.isPending ? (
+                        <>
+                          <Loader2 className="w-5 h-5 mr-3 animate-spin" />
+                        Testing Connection...
                       </>
                     ) : (
-                      'Connect IBKR Account'
+                      'Test Connection'
                     )}
                   </Button>
 
@@ -220,7 +292,7 @@ export function Onboarding() {
                   </div>
                   <h3 className="text-xl font-semibold mb-2">Successfully Connected!</h3>
                   <p className="text-silver mb-6">
-                    Your IBKR account is now linked. OAuth: ✅ SSO: ✅
+                    Your IBKR account is now linked and ready to trade in {ibkrStatus?.environment || 'paper'} mode.
                   </p>
                   <Button
                     onClick={() => setStep(3)}

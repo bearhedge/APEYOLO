@@ -61,6 +61,24 @@ export const auditLogs = pgTable("audit_logs", {
   timestamp: timestamp("timestamp").notNull().defaultNow(),
 });
 
+// IBKR Credentials table for user-specific broker authentication
+export const ibkrCredentials = pgTable("ibkr_credentials", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  clientId: text("client_id").notNull(),
+  clientKeyId: text("client_key_id").notNull(),
+  privateKeyEncrypted: text("private_key_encrypted").notNull(), // Encrypted with AES-256-GCM
+  credential: text("credential").notNull(), // IBKR username
+  accountId: text("account_id"),
+  allowedIp: text("allowed_ip"),
+  environment: text("environment", { enum: ["paper", "live"] }).notNull().default("paper"),
+  status: text("status", { enum: ["active", "inactive", "error"] }).notNull().default("inactive"),
+  lastConnectedAt: timestamp("last_connected_at"),
+  errorMessage: text("error_message"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
 // Insert schemas
 export const insertPositionSchema = createInsertSchema(positions).omit({
   id: true,
@@ -91,6 +109,15 @@ export const insertUserSchema = createInsertSchema(users).pick({
   password: true,
 });
 
+export const insertIbkrCredentialsSchema = createInsertSchema(ibkrCredentials).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+  lastConnectedAt: true,
+  errorMessage: true,
+  status: true,
+});
+
 // Types
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
@@ -102,6 +129,8 @@ export type RiskRules = typeof riskRules.$inferSelect;
 export type InsertRiskRules = z.infer<typeof insertRiskRulesSchema>;
 export type AuditLog = typeof auditLogs.$inferSelect;
 export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
+export type IbkrCredentials = typeof ibkrCredentials.$inferSelect;
+export type InsertIbkrCredentials = z.infer<typeof insertIbkrCredentialsSchema>;
 
 // Option chain types
 export type OptionData = {

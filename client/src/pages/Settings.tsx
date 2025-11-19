@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { RefreshCw, Bell, Shield, Bot, Settings as SettingsIcon } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { RefreshCw, Bell, Shield, Bot, Settings as SettingsIcon, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
 import { SectionHeader } from '@/components/SectionHeader';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -28,9 +28,26 @@ export function Settings() {
   const [autoHedge, setAutoHedge] = useState(false);
   const [marketHoursOnly, setMarketHoursOnly] = useState(true);
   const [circuitBreaker, setCircuitBreaker] = useState(true);
+  const [testResult, setTestResult] = useState<any>(null);
 
-  const { data: brokerStatus } = useQuery<BrokerStatus>({
-    queryKey: ['/api/broker/diag'],
+  // Fetch IBKR status
+  const { data: ibkrStatus } = useQuery({
+    queryKey: ['/api/ibkr/status'],
+    queryFn: async () => {
+      const response = await fetch('/api/ibkr/status');
+      return response.json();
+    },
+    refetchInterval: 30000, // Refresh every 30 seconds
+  });
+
+  // Test connection mutation
+  const testConnectionMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch('/api/ibkr/test', { method: 'POST' });
+      const data = await response.json();
+      setTestResult(data);
+      return data;
+    },
   });
 
   const reconnectMutation = useMutation({
@@ -40,10 +57,16 @@ export function Settings() {
     },
   });
 
-  const getStatusBadge = (code: number | null) => {
-    if (!code) return <span className="badge-monochrome badge-error">NOT CONNECTED</span>;
-    if (code === 200) return <span className="badge-monochrome badge-success">CONNECTED</span>;
-    return <span className="badge-monochrome badge-warning">ERROR {code}</span>;
+  const getConnectionIcon = () => {
+    if (!ibkrStatus?.configured) return <AlertCircle className="w-5 h-5 text-yellow-500" />;
+    if (ibkrStatus?.connected) return <CheckCircle className="w-5 h-5 text-green-500" />;
+    return <XCircle className="w-5 h-5 text-red-500" />;
+  };
+
+  const getConnectionStatus = () => {
+    if (!ibkrStatus?.configured) return 'Not Configured';
+    if (ibkrStatus?.connected) return 'Connected';
+    return 'Disconnected';
   };
 
   return (
@@ -57,94 +80,137 @@ export function Settings() {
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Broker Connection */}
         <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
-          <div className="flex items-center gap-3 mb-6">
-            <SettingsIcon className="w-5 h-5" />
-            <h3 className="text-lg font-semibold">Broker Connection (IBKR OAuth2)</h3>
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-3">
+              <SettingsIcon className="w-5 h-5" />
+              <h3 className="text-lg font-semibold">IBKR Connection</h3>
+            </div>
+            <div className="flex items-center gap-2">
+              {getConnectionIcon()}
+              <span className={`text-sm font-medium ${
+                ibkrStatus?.connected ? 'text-green-500' :
+                ibkrStatus?.configured ? 'text-red-500' : 'text-yellow-500'
+              }`}>
+                {getConnectionStatus()}
+              </span>
+            </div>
           </div>
-          
-          <div className="space-y-4">
-            <div>
-              <Label className="text-silver">Client ID</Label>
-              <Input
-                value="IBKR-12345678"
-                readOnly
-                className="input-monochrome mt-1 bg-mid-gray cursor-not-allowed"
-                data-testid="input-client-id"
-              />
-            </div>
-            
-            <div>
-              <Label className="text-silver">Key ID</Label>
-              <Input
-                value="••••••••••••1234"
-                readOnly
-                className="input-monochrome mt-1 bg-mid-gray cursor-not-allowed"
-                data-testid="input-key-id"
-              />
-            </div>
-            
-            <div>
-              <Label className="text-silver">Account</Label>
-              <Input
-                value="U••••••89"
-                readOnly
-                className="input-monochrome mt-1 bg-mid-gray cursor-not-allowed"
-                data-testid="input-account"
-              />
-            </div>
 
-            <div className="border-t border-white/10 pt-4">
-              <div className="grid grid-cols-3 gap-3 mb-4">
-                <div>
-                  <p className="text-xs text-silver mb-1">OAuth 2.0</p>
-                  {getStatusBadge(brokerStatus?.oauth || null)}
+          <div className="space-y-4">
+            {/* Connection Info */}
+            <div className="p-4 bg-dark-gray rounded-lg border border-white/10">
+              <div className="space-y-2">
+                <div className="flex justify-between">
+                  <span className="text-sm text-silver">Environment:</span>
+                  <span className="text-sm font-mono">{ibkrStatus?.environment || 'paper'}</span>
                 </div>
-                <div>
-                  <p className="text-xs text-silver mb-1">SSO</p>
-                  {getStatusBadge(brokerStatus?.sso || null)}
+                <div className="flex justify-between">
+                  <span className="text-sm text-silver">Account ID:</span>
+                  <span className="text-sm font-mono">{ibkrStatus?.accountId || 'Not configured'}</span>
                 </div>
-                <div>
-                  <p className="text-xs text-silver mb-1">Session</p>
-                  {getStatusBadge(brokerStatus?.init || null)}
+                {ibkrStatus?.clientId && (
+                  <div className="flex justify-between">
+                    <span className="text-sm text-silver">Client ID:</span>
+                    <span className="text-sm font-mono">{ibkrStatus.clientId}</span>
+                  </div>
+                )}
+                <div className="flex justify-between">
+                  <span className="text-sm text-silver">Multi-User Mode:</span>
+                  <span className="text-sm">{ibkrStatus?.multiUserMode ? 'Enabled' : 'Disabled'}</span>
                 </div>
               </div>
+            </div>
 
-              {brokerStatus?.traceId && (
-                <p className="text-xs text-silver mb-4" data-testid="text-trace-id">
-                  Trace ID: {brokerStatus.traceId}
+            {/* Connection Status Details */}
+            {ibkrStatus?.configured && ibkrStatus.diagnostics && (
+              <div className="border-t border-white/10 pt-4">
+                <h4 className="text-sm font-medium mb-3">Connection Status</h4>
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="flex items-center gap-2">
+                    <div className={`w-2 h-2 rounded-full ${
+                      ibkrStatus.diagnostics.oauth === 'Connected' ? 'bg-green-500' : 'bg-red-500'
+                    }`} />
+                    <span className="text-xs">OAuth: {ibkrStatus.diagnostics.oauth}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className={`w-2 h-2 rounded-full ${
+                      ibkrStatus.diagnostics.sso === 'Active' ? 'bg-green-500' : 'bg-red-500'
+                    }`} />
+                    <span className="text-xs">SSO: {ibkrStatus.diagnostics.sso}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className={`w-2 h-2 rounded-full ${
+                      ibkrStatus.diagnostics.validated === 'Validated' ? 'bg-green-500' : 'bg-red-500'
+                    }`} />
+                    <span className="text-xs">Validation: {ibkrStatus.diagnostics.validated}</span>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <div className={`w-2 h-2 rounded-full ${
+                      ibkrStatus.diagnostics.initialized === 'Ready' ? 'bg-green-500' : 'bg-red-500'
+                    }`} />
+                    <span className="text-xs">Initialized: {ibkrStatus.diagnostics.initialized}</span>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Test Result */}
+            {testResult && (
+              <div className={`p-3 rounded-lg border ${
+                testResult.success ? 'bg-green-900/20 border-green-500/30' : 'bg-red-900/20 border-red-500/30'
+              }`}>
+                <p className={`text-sm font-medium mb-2 ${
+                  testResult.success ? 'text-green-400' : 'text-red-400'
+                }`}>
+                  {testResult.message}
                 </p>
+                {testResult.steps && (
+                  <div className="space-y-1">
+                    {Object.entries(testResult.steps).map(([key, step]: [string, any]) => (
+                      <div key={key} className="flex items-center gap-2 text-xs">
+                        {step.success ? (
+                          <CheckCircle className="w-3 h-3 text-green-500" />
+                        ) : (
+                          <XCircle className="w-3 h-3 text-red-500" />
+                        )}
+                        <span className="text-silver">{step.message}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Actions */}
+            <div className="border-t border-white/10 pt-4 space-y-2">
+              {!ibkrStatus?.configured && (
+                <div className="p-3 bg-yellow-900/20 border border-yellow-500/30 rounded-lg">
+                  <p className="text-sm text-yellow-400">
+                    IBKR credentials not configured. Please set up your IBKR OAuth credentials in the environment variables.
+                  </p>
+                </div>
               )}
 
-              <div className="grid grid-cols-2 gap-2">
-                <Button className="btn-secondary text-sm" data-testid="button-request-oauth">
-                  Request OAuth Token
-                </Button>
-                <Button className="btn-secondary text-sm" data-testid="button-create-sso">
-                  Create SSO Session
-                </Button>
-                <Button className="btn-secondary text-sm" data-testid="button-validate-sso">
-                  Validate SSO
-                </Button>
-                <Button className="btn-secondary text-sm" data-testid="button-init-session">
-                  Init Brokerage Session
-                </Button>
-                <Button className="btn-secondary text-sm" data-testid="button-tickle">
-                  Tickle
-                </Button>
-                <Button className="btn-secondary text-sm" data-testid="button-logout">
-                  Logout
-                </Button>
-              </div>
-
               <Button
-                onClick={() => reconnectMutation.mutate()}
-                className="btn-primary w-full mt-4"
-                disabled={reconnectMutation.isPending}
-                data-testid="button-reconnect"
+                onClick={() => testConnectionMutation.mutate()}
+                className="btn-primary w-full"
+                disabled={testConnectionMutation.isPending || !ibkrStatus?.configured}
+                data-testid="button-test-connection"
               >
-                <RefreshCw className="w-4 h-4 mr-2" />
-                {reconnectMutation.isPending ? 'Reconnecting...' : 'Reconnect'}
+                {testConnectionMutation.isPending ? 'Testing Connection...' : 'Test Connection'}
               </Button>
+
+              {ibkrStatus?.configured && !ibkrStatus?.connected && (
+                <Button
+                  onClick={() => reconnectMutation.mutate()}
+                  className="btn-secondary w-full"
+                  disabled={reconnectMutation.isPending}
+                  data-testid="button-reconnect"
+                >
+                  <RefreshCw className="w-4 h-4 mr-2" />
+                  {reconnectMutation.isPending ? 'Reconnecting...' : 'Reconnect'}
+                </Button>
+              )}
             </div>
           </div>
         </div>

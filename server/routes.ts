@@ -258,6 +258,107 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // IBKR Status endpoint - shows connection status and configuration
+  app.get('/api/ibkr/status', async (_req, res) => {
+    try {
+      const isConfigured = !!(
+        process.env.IBKR_CLIENT_ID &&
+        process.env.IBKR_CLIENT_KEY_ID &&
+        process.env.IBKR_PRIVATE_KEY &&
+        process.env.IBKR_CREDENTIAL
+      );
+
+      if (!isConfigured) {
+        return res.json({
+          configured: false,
+          connected: false,
+          environment: process.env.IBKR_ENV || 'paper',
+          message: 'IBKR credentials not configured in environment variables'
+        });
+      }
+
+      // Get diagnostics without trying to connect
+      const diag = getIbkrDiagnostics();
+
+      return res.json({
+        configured: true,
+        connected: diag.oauth.status === 200 && diag.sso.status === 200,
+        environment: process.env.IBKR_ENV || 'paper',
+        accountId: process.env.IBKR_ACCOUNT_ID || 'Not configured',
+        clientId: process.env.IBKR_CLIENT_ID?.substring(0, 10) + '***', // Partially masked
+        multiUserMode: process.env.ENABLE_MULTI_USER === 'true',
+        diagnostics: {
+          oauth: diag.oauth.status === 200 ? 'Connected' : 'Not connected',
+          sso: diag.sso.status === 200 ? 'Active' : 'Not active',
+          validated: diag.validate.status === 200 ? 'Validated' : 'Not validated',
+          initialized: diag.init.status === 200 ? 'Ready' : 'Not ready'
+        }
+      });
+    } catch (error: any) {
+      return res.status(500).json({
+        configured: false,
+        connected: false,
+        error: error.message || 'Failed to get IBKR status'
+      });
+    }
+  });
+
+  // IBKR Test Connection endpoint - attempts to connect and validate
+  app.post('/api/ibkr/test', async (_req, res) => {
+    try {
+      if (broker.status.provider !== 'ibkr') {
+        return res.json({
+          success: false,
+          message: 'IBKR provider not configured. Set BROKER_PROVIDER=ibkr in environment variables.'
+        });
+      }
+
+      // Try to ensure IBKR is ready
+      const diag = await ensureIbkrReady();
+
+      const allConnected =
+        diag.oauth.status === 200 &&
+        diag.sso.status === 200 &&
+        diag.validate.status === 200 &&
+        diag.init.status === 200;
+
+      return res.json({
+        success: allConnected,
+        message: allConnected
+          ? 'IBKR connection successful! Ready to trade.'
+          : 'IBKR connection failed. Check diagnostics for details.',
+        steps: {
+          oauth: {
+            status: diag.oauth.status,
+            success: diag.oauth.status === 200,
+            message: diag.oauth.status === 200 ? 'OAuth authenticated' : 'OAuth failed'
+          },
+          sso: {
+            status: diag.sso.status,
+            success: diag.sso.status === 200,
+            message: diag.sso.status === 200 ? 'SSO session created' : 'SSO session failed'
+          },
+          validate: {
+            status: diag.validate.status,
+            success: diag.validate.status === 200,
+            message: diag.validate.status === 200 ? 'Validation successful' : 'Validation failed'
+          },
+          init: {
+            status: diag.init.status,
+            success: diag.init.status === 200,
+            message: diag.init.status === 200 ? 'Initialization complete' : 'Initialization failed'
+          }
+        }
+      });
+    } catch (error: any) {
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to test IBKR connection',
+        error: error.message || String(error)
+      });
+    }
+  });
+
   // IBKR OAuth endpoint for frontend
   app.post('/api/broker/oauth', async (_req, res) => {
     try {
