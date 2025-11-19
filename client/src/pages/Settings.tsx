@@ -29,6 +29,7 @@ export function Settings() {
   const [marketHoursOnly, setMarketHoursOnly] = useState(true);
   const [circuitBreaker, setCircuitBreaker] = useState(true);
   const [testResult, setTestResult] = useState<any>(null);
+  const [orderResult, setOrderResult] = useState<any>(null);
 
   // Fetch IBKR status
   const { data: ibkrStatus } = useQuery({
@@ -54,6 +55,28 @@ export function Settings() {
     mutationFn: async () => {
       const response = await fetch('/api/broker/oauth', { method: 'POST' });
       return response.json();
+    },
+  });
+
+  // Test order mutation
+  const testOrderMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch('/api/broker/paper/order', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          symbol: 'SPY',
+          side: 'BUY',
+          quantity: 1,
+          orderType: 'MKT',
+          tif: 'DAY',
+        }),
+      });
+      const data = await response.json();
+      setOrderResult(data);
+      return data;
     },
   });
 
@@ -162,7 +185,7 @@ export function Settings() {
                 <p className={`text-sm font-medium mb-2 ${
                   testResult.success ? 'text-green-400' : 'text-red-400'
                 }`}>
-                  {testResult.message}
+                  Connection Test: {testResult.message}
                 </p>
                 {testResult.steps && (
                   <div className="space-y-1">
@@ -177,6 +200,25 @@ export function Settings() {
                       </div>
                     ))}
                   </div>
+                )}
+              </div>
+            )}
+
+            {/* Order Result */}
+            {orderResult && (
+              <div className={`p-3 rounded-lg border ${
+                orderResult.success ? 'bg-green-900/20 border-green-500/30' : 'bg-red-900/20 border-red-500/30'
+              }`}>
+                <p className={`text-sm font-medium mb-2 ${
+                  orderResult.success ? 'text-green-400' : 'text-red-400'
+                }`}>
+                  Test Order: {orderResult.message || (orderResult.success ? 'Order Submitted' : 'Order Failed')}
+                </p>
+                {orderResult.orderId && (
+                  <p className="text-xs text-silver">Order ID: {orderResult.orderId}</p>
+                )}
+                {orderResult.error && (
+                  <p className="text-xs text-red-400 mt-1">{orderResult.error}</p>
                 )}
               </div>
             )}
@@ -199,6 +241,17 @@ export function Settings() {
               >
                 {testConnectionMutation.isPending ? 'Testing Connection...' : 'Test Connection'}
               </Button>
+
+              {ibkrStatus?.connected && (
+                <Button
+                  onClick={() => testOrderMutation.mutate()}
+                  className="btn-secondary w-full"
+                  disabled={testOrderMutation.isPending}
+                  data-testid="button-test-order"
+                >
+                  {testOrderMutation.isPending ? 'Placing Test Order...' : 'Test Order (Buy 1 SPY)'}
+                </Button>
+              )}
 
               {ibkrStatus?.configured && !ibkrStatus?.connected && (
                 <Button
