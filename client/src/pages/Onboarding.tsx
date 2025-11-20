@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Check, Loader2, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { StatusStep } from '@/components/ui/StatusStep';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
@@ -46,6 +47,26 @@ export function Onboarding() {
       await refetchIbkrStatus();
       return data;
     },
+  });
+
+  // Fetch strategy configuration
+  const { data: strategyConfig, refetch: refetchStrategyConfig } = useQuery({
+    queryKey: ['/api/ibkr/strategy/status'],
+    queryFn: async () => {
+      // First initialize the strategy to get real NAV values
+      const initResponse = await fetch('/api/ibkr/strategy/init', { method: 'POST' });
+      const initData = await initResponse.json();
+      if (!initData.success) {
+        // If init fails, return default values
+        return null;
+      }
+      // Then get the status
+      const statusResponse = await fetch('/api/ibkr/strategy/status');
+      const statusData = await statusResponse.json();
+      return statusData.status;
+    },
+    enabled: step === 3 && isIBKRConnected,
+    refetchInterval: false,
   });
 
   // Check for OAuth callback
@@ -226,15 +247,33 @@ export function Onboarding() {
                       </div>
                     )}
                     {ibkrStatus.diagnostics && (
-                      <div className="flex justify-between">
-                        <span className="text-silver">Status:</span>
-                        <div className="flex gap-2">
-                          <span className={ibkrStatus.diagnostics.oauth === 'Connected' ? 'text-green-400' : 'text-red-400'}>
-                            OAuth {ibkrStatus.diagnostics.oauth === 'Connected' ? '✓' : '✗'}
-                          </span>
-                          <span className={ibkrStatus.diagnostics.sso === 'Active' ? 'text-green-400' : 'text-red-400'}>
-                            SSO {ibkrStatus.diagnostics.sso === 'Active' ? '✓' : '✗'}
-                          </span>
+                      <div className="mt-3">
+                        <span className="text-silver text-sm">Authentication Pipeline:</span>
+                        <div className="mt-2 space-y-2">
+                          <StatusStep
+                            name="OAuth Token"
+                            status={ibkrStatus.diagnostics.oauth?.status || 0}
+                            message={ibkrStatus.diagnostics.oauth?.message || ibkrStatus.diagnostics.oauth || 'Not attempted'}
+                            success={ibkrStatus.diagnostics.oauth?.success}
+                          />
+                          <StatusStep
+                            name="SSO Session"
+                            status={ibkrStatus.diagnostics.sso?.status || 0}
+                            message={ibkrStatus.diagnostics.sso?.message || ibkrStatus.diagnostics.sso || 'Not attempted'}
+                            success={ibkrStatus.diagnostics.sso?.success}
+                          />
+                          <StatusStep
+                            name="Validation"
+                            status={ibkrStatus.diagnostics.validate?.status || ibkrStatus.diagnostics.validated?.status || 0}
+                            message={ibkrStatus.diagnostics.validate?.message || ibkrStatus.diagnostics.validated?.message || ibkrStatus.diagnostics.validated || 'Not attempted'}
+                            success={ibkrStatus.diagnostics.validate?.success || ibkrStatus.diagnostics.validated?.success}
+                          />
+                          <StatusStep
+                            name="Initialization"
+                            status={ibkrStatus.diagnostics.init?.status || ibkrStatus.diagnostics.initialized?.status || 0}
+                            message={ibkrStatus.diagnostics.init?.message || ibkrStatus.diagnostics.initialized?.message || ibkrStatus.diagnostics.initialized || 'Not attempted'}
+                            success={ibkrStatus.diagnostics.init?.success || ibkrStatus.diagnostics.initialized?.success}
+                          />
                         </div>
                       </div>
                     )}
@@ -309,89 +348,124 @@ export function Onboarding() {
             </div>
           )}
 
-          {/* Step 3: Risk Preferences */}
+          {/* Step 3: Strategy Configuration */}
           {step === 3 && (
             <div className="space-y-6" data-testid="step-risk-preferences">
               <div className="text-center mb-8">
-                <h2 className="text-2xl font-semibold mb-2">Set Your Risk Preferences</h2>
+                <h2 className="text-2xl font-semibold mb-2">Naked Option Strategy Configuration</h2>
                 <p className="text-silver">
-                  Configure your trading limits and risk parameters
+                  Review your 0DTE naked option selling parameters
                 </p>
               </div>
 
-              <div>
-                <div className="flex items-center justify-between mb-2">
-                  <Label>Aggression Level</Label>
-                  <span className="text-sm tabular-nums">{aggression}%</span>
+              <div className="bg-dark-gray rounded-lg p-6 border border-white/10 space-y-4">
+                <h3 className="font-medium text-lg mb-3">Account & Position Sizing</h3>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-silver text-sm">Net Asset Value (NAV)</Label>
+                    <div className="text-2xl font-mono mt-1">
+                      {strategyConfig?.config?.capital
+                        ? `${(strategyConfig.config.capital).toLocaleString()} HKD`
+                        : '~1,000,000 HKD'}
+                    </div>
+                    <p className="text-xs text-silver mt-1">Paper trading account</p>
+                  </div>
+                  <div>
+                    <Label className="text-silver text-sm">Buying Power</Label>
+                    <div className="text-2xl font-mono mt-1">
+                      {strategyConfig?.config?.buyingPower
+                        ? `${(strategyConfig.config.buyingPower).toLocaleString()} HKD`
+                        : '~6,660,000 HKD'}
+                    </div>
+                    <p className="text-xs text-silver mt-1">NAV × 6.66 margin</p>
+                  </div>
                 </div>
-                <Slider
-                  value={[aggression]}
-                  onValueChange={(val) => setAggression(val[0])}
-                  min={0}
-                  max={100}
-                  step={1}
-                  className="mb-1"
-                  data-testid="slider-aggression"
-                />
-                <div className="flex justify-between text-xs text-silver">
-                  <span>Conservative</span>
-                  <span>Aggressive</span>
+
+                <div className="grid grid-cols-2 gap-4 pt-2">
+                  <div>
+                    <Label className="text-silver text-sm">Max Contracts per Side</Label>
+                    <div className="text-2xl font-mono mt-1">
+                      {strategyConfig?.config?.maxContractsPerSide
+                        ? `${strategyConfig.config.maxContractsPerSide} contracts`
+                        : '~30 contracts'}
+                    </div>
+                    <p className="text-xs text-silver mt-1">PUT or CALL options</p>
+                  </div>
+                  <div>
+                    <Label className="text-silver text-sm">Options Margin Multiplier</Label>
+                    <div className="text-2xl font-mono mt-1">
+                      {strategyConfig?.config?.optionsMarginMultiplier || 2}x
+                    </div>
+                    <p className="text-xs text-silver mt-1">vs shares margin</p>
+                  </div>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <Label htmlFor="leverage-cap">Leverage Cap</Label>
-                  <Input
-                    id="leverage-cap"
-                    type="number"
-                    value={maxLeverage}
-                    onChange={(e) => setMaxLeverage(Number(e.target.value))}
-                    className="input-monochrome mt-1"
-                    data-testid="input-leverage-cap"
-                  />
+              <div className="bg-dark-gray rounded-lg p-6 border border-white/10 space-y-4">
+                <h3 className="font-medium text-lg mb-3">Trading Parameters</h3>
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label className="text-silver text-sm">Max Delta</Label>
+                    <div className="text-xl font-mono mt-1">
+                      {strategyConfig?.config?.maxDelta || 0.30}
+                    </div>
+                    <p className="text-xs text-silver mt-1">Option selection filter</p>
+                  </div>
+                  <div>
+                    <Label className="text-silver text-sm">Days to Expiration</Label>
+                    <div className="text-xl font-mono mt-1">0DTE</div>
+                    <p className="text-xs text-silver mt-1">Same-day expiry</p>
+                  </div>
                 </div>
-                <div>
-                  <Label htmlFor="max-loss">Max Loss/Day %</Label>
-                  <Input
-                    id="max-loss"
-                    type="number"
-                    value={maxDailyLoss}
-                    onChange={(e) => setMaxDailyLoss(Number(e.target.value))}
-                    className="input-monochrome mt-1"
-                    data-testid="input-max-loss"
-                  />
+
+                <div className="grid grid-cols-2 gap-4 pt-2">
+                  <div>
+                    <Label className="text-silver text-sm">Stop Loss</Label>
+                    <div className="text-xl font-mono mt-1">200%</div>
+                    <p className="text-xs text-silver mt-1">of premium collected</p>
+                  </div>
+                  <div>
+                    <Label className="text-silver text-sm">Trading Hours</Label>
+                    <div className="text-xl font-mono mt-1">12:00 - 14:00</div>
+                    <p className="text-xs text-silver mt-1">Hong Kong time</p>
+                  </div>
                 </div>
               </div>
 
-              <div>
-                <Label htmlFor="per-symbol">Per-Symbol Cap ($)</Label>
-                <Input
-                  id="per-symbol"
-                  type="number"
-                  value={maxPerSymbol}
-                  onChange={(e) => setMaxPerSymbol(Number(e.target.value))}
-                  className="input-monochrome mt-1"
-                  data-testid="input-per-symbol-cap"
-                />
-              </div>
-
-              <div className="bg-dark-gray rounded-lg p-4 border border-white/10">
-                <h4 className="text-sm font-medium mb-2">Summary</h4>
-                <div className="text-sm text-silver space-y-1">
-                  <p>Aggression: {aggression}% ({aggression < 33 ? 'Conservative' : aggression < 67 ? 'Moderate' : 'Aggressive'})</p>
-                  <p>Max Leverage: {maxLeverage}x</p>
-                  <p>Daily Loss Limit: {maxDailyLoss}%</p>
-                  <p>Per-Symbol Cap: ${maxPerSymbol.toLocaleString()}</p>
+              <div className="bg-yellow-900/20 rounded-lg p-4 border border-yellow-500/30">
+                <div className="flex items-start gap-3">
+                  <AlertCircle className="w-5 h-5 text-yellow-500 mt-0.5" />
+                  <div>
+                    <h4 className="font-medium text-yellow-400 mb-1">Paper Trading Mode</h4>
+                    <p className="text-sm text-silver">
+                      This strategy is configured for paper trading with IBKR.
+                      Position sizes are calculated based on your actual paper trading NAV.
+                      The strategy will dynamically adjust as your account value changes.
+                    </p>
+                  </div>
                 </div>
               </div>
 
               <Button
-                onClick={handleFinish}
+                onClick={async () => {
+                  // Initialize the strategy when finishing onboarding
+                  try {
+                    const response = await fetch('/api/ibkr/strategy/init', { method: 'POST' });
+                    const data = await response.json();
+                    if (data.success) {
+                      console.log('Strategy initialized:', data.config);
+                    }
+                  } catch (error) {
+                    console.error('Failed to initialize strategy:', error);
+                  }
+                  handleFinish();
+                }}
                 className="btn-primary w-full text-lg py-6"
                 data-testid="button-finish-onboarding"
               >
-                Finish Setup & Go to Dashboard
+                Initialize Strategy & Go to Dashboard
               </Button>
             </div>
           )}

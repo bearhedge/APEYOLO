@@ -15,6 +15,7 @@ import {
 import { z } from "zod";
 import cookieParser from "cookie-parser";
 import authRoutes from "./auth.js";
+import ibkrRoutes from "./ibkrRoutes.js";
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Add cookie parser middleware
@@ -22,6 +23,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Register auth routes
   app.use('/api/auth', authRoutes);
+
+  // Register IBKR strategy routes
+  app.use('/api/ibkr', ibkrRoutes);
 
   const httpServer = createServer(app);
 
@@ -280,18 +284,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Get diagnostics without trying to connect
       const diag = getIbkrDiagnostics();
 
+      // Check all 4 authentication steps
+      const allStepsConnected =
+        diag.oauth.status === 200 &&
+        diag.sso.status === 200 &&
+        diag.validate.status === 200 &&
+        diag.init.status === 200;
+
       return res.json({
         configured: true,
-        connected: diag.oauth.status === 200 && diag.sso.status === 200,
+        connected: allStepsConnected,
         environment: process.env.IBKR_ENV || 'paper',
         accountId: process.env.IBKR_ACCOUNT_ID || 'Not configured',
         clientId: process.env.IBKR_CLIENT_ID?.substring(0, 10) + '***', // Partially masked
         multiUserMode: process.env.ENABLE_MULTI_USER === 'true',
         diagnostics: {
-          oauth: diag.oauth.status === 200 ? 'Connected' : 'Not connected',
-          sso: diag.sso.status === 200 ? 'Active' : 'Not active',
-          validated: diag.validate.status === 200 ? 'Validated' : 'Not validated',
-          initialized: diag.init.status === 200 ? 'Ready' : 'Not ready'
+          oauth: {
+            status: diag.oauth.status,
+            message: diag.oauth.status === 200 ? 'Connected' : diag.oauth.status === 0 ? 'Not attempted' : 'Failed',
+            success: diag.oauth.status === 200
+          },
+          sso: {
+            status: diag.sso.status,
+            message: diag.sso.status === 200 ? 'Active' : diag.sso.status === 0 ? 'Not attempted' : 'Failed',
+            success: diag.sso.status === 200
+          },
+          validate: {
+            status: diag.validate.status,
+            message: diag.validate.status === 200 ? 'Validated' : diag.validate.status === 0 ? 'Not attempted' : 'Failed',
+            success: diag.validate.status === 200
+          },
+          init: {
+            status: diag.init.status,
+            message: diag.init.status === 200 ? 'Ready' : diag.init.status === 0 ? 'Not attempted' : 'Failed',
+            success: diag.init.status === 200
+          }
         }
       });
     } catch (error: any) {

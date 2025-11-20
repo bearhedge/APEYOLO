@@ -92,6 +92,9 @@ class IbkrClient {
   private accessTokenExpiryMs = 0;
   private ssoSessionId: string | null = null;
   private ssoAccessToken: string | null = null;
+  private ssoAccessTokenExpiryMs = 0;  // Track SSO token expiry
+  private lastInitTimeMs = 0;           // Track when init was last called
+  private lastValidateTimeMs = 0;       // Track when validate was last called
   private sessionReady = false;
   private accountSelected = false;
   private last: IbkrDiagnostics = {
@@ -253,30 +256,78 @@ class IbkrClient {
   }
 
   private async createSSOSession(token: string): Promise<void> {
-    if (this.ssoSessionId) return;
+    // Allow re-creation if we don't have a valid access token
+    if (this.ssoSessionId && this.ssoAccessToken) return;
+
     const r = await createSsoSession(this.baseUrl, token);
     this.last.sso = { status: r.status, ts: new Date().toISOString(), requestId: r.reqId };
     if (!r.ok) {
       await storage.createAuditLog({ eventType: "IBKR_SSO_SESSION", details: `FAILED http=${r.status} req=${r.reqId}`, status: "FAILED" });
       throw new Error(`IBKR SSO session failed: ${r.status}`);
     }
+
     // Capture both session id and SSO bearer if present
     const body: any = r.body ?? {};
-    this.ssoSessionId = body?.session_id || "ok";
-    this.ssoAccessToken = body?.access_token || null;
-    await storage.createAuditLog({ eventType: "IBKR_SSO_SESSION", details: `OK http=${r.status} req=${r.reqId}`, status: "SUCCESS" });
+
+    // Debug logging to see what fields are actually in the response
+    console.log('[IBKR][SSO][Response]', {
+      status: r.status,
+      bodyKeys: Object.keys(body),
+      hasAccessToken: !!body?.access_token,
+      hasToken: !!body?.token,
+      hasBearerToken: !!body?.bearer_token,
+      hasSessionToken: !!body?.session_token,
+      hasSessionId: !!body?.session_id,
+      hasSsoToken: !!body?.sso_token
+    });
+
+    this.ssoSessionId = body?.session_id || body?.sessionId || "ok";
+
+    // Try multiple possible field names for the access token
+    this.ssoAccessToken = body?.access_token ||
+                         body?.token ||
+                         body?.bearer_token ||
+                         body?.session_token ||
+                         body?.sso_token ||
+                         null;
+
+    // Log what we actually got
+    console.log('[IBKR][SSO][Token]', {
+      sessionId: this.ssoSessionId,
+      hasToken: !!this.ssoAccessToken,
+      tokenPrefix: this.ssoAccessToken ? this.ssoAccessToken.substring(0, 10) + '...' : 'none'
+    });
+
+    await storage.createAuditLog({ eventType: "IBKR_SSO_SESSION", details: `OK http=${r.status} req=${r.reqId} hasToken=${!!this.ssoAccessToken}`, status: "SUCCESS" });
+
     // Delay 3s after successful SSO per requirement
     await this.sleep(3000);
   }
 
   private async validateSso(): Promise<number> {
-    if (!this.ssoAccessToken) throw new Error("IBKR SSO token missing");
-    const r = await this.http.get('/v1/api/sso/validate', { headers: this.authHeaders() });
+    // If no SSO access token, try using OAuth token or cookies
+    let headers: any = {};
+
+    if (this.ssoAccessToken) {
+      // Use SSO bearer token if available
+      headers = this.authHeaders();
+    } else if (this.accessToken) {
+      // Fallback to OAuth token if SSO token not available
+      console.log('[IBKR][VALIDATE] Using OAuth token as fallback');
+      headers = { 'Authorization': `Bearer ${this.accessToken}` };
+    } else {
+      // Try with just cookies, no Authorization header
+      console.log('[IBKR][VALIDATE] Attempting validation with cookies only');
+    }
+
+    const r = await this.http.get('/v1/api/sso/validate', { headers });
     const text = typeof r.data === 'string' ? r.data : JSON.stringify(r.data || {});
     const snippet = text.slice(0, 200);
     const traceVal = (r.headers as any)['traceid'] || (r.headers as any)['x-traceid'] || (r.headers as any)['x-request-id'] || (r.headers as any)['x-correlation-id'];
     this.last.validate = { status: r.status, ts: new Date().toISOString(), requestId: traceVal };
-    console.log(`[IBKR][VALIDATE] status=${r.status} traceId=${traceVal ?? ''} body=${snippet}`);
+
+    console.log(`[IBKR][VALIDATE] status=${r.status} traceId=${traceVal ?? ''} body=${snippet} authType=${this.ssoAccessToken ? 'SSO' : this.accessToken ? 'OAuth' : 'Cookies'}`);
+
     if (r.status >= 200 && r.status < 300) {
       await storage.createAuditLog({ eventType: "IBKR_SSO_VALIDATE", details: `OK http=${r.status} req=${traceVal ?? ''}`, status: "SUCCESS" });
     } else {
@@ -286,8 +337,17 @@ class IbkrClient {
   }
 
   private async tickle(): Promise<number> {
-    if (!this.ssoAccessToken) throw new Error("IBKR SSO token missing");
-    const r = await this.http.get('/v1/api/tickle', { headers: this.authHeaders() });
+    // Use whatever auth method is available
+    let headers: any = {};
+
+    if (this.ssoAccessToken) {
+      headers = this.authHeaders();
+    } else if (this.accessToken) {
+      headers = { 'Authorization': `Bearer ${this.accessToken}` };
+    }
+    // Otherwise use cookies only
+
+    const r = await this.http.get('/v1/api/tickle', { headers });
     const traceVal = (r.headers as any)['traceid'] || (r.headers as any)['x-traceid'] || (r.headers as any)['x-request-id'] || (r.headers as any)['x-correlation-id'];
     console.log(`[IBKR][TICKLE] status=${r.status} traceId=${traceVal ?? ''}`);
     return r.status;
@@ -295,12 +355,24 @@ class IbkrClient {
 
   private async initBrokerageWithSso(): Promise<void> {
     if (this.sessionReady) return;
-    if (!this.ssoAccessToken) throw new Error("IBKR SSO token missing");
+
     const doInit = async () => {
+      // Use whatever auth method is available
+      let headers: any = { 'Content-Type': 'application/json' };
+
+      if (this.ssoAccessToken) {
+        headers = { ...this.authHeaders(), 'Content-Type': 'application/json' };
+      } else if (this.accessToken) {
+        console.log('[IBKR][INIT] Using OAuth token as fallback');
+        headers = { 'Authorization': `Bearer ${this.accessToken}`, 'Content-Type': 'application/json' };
+      } else {
+        console.log('[IBKR][INIT] Attempting init with cookies only');
+      }
+
       const r = await this.http.post(
         '/v1/api/iserver/auth/ssodh/init',
         { publish: true, compete: true },
-        { headers: { ...this.authHeaders(), 'Content-Type': 'application/json' } }
+        { headers }
       );
       const bodyText = typeof r.data === 'string' ? r.data : JSON.stringify(r.data || {});
       const snippet = bodyText.slice(0, 200);
@@ -330,10 +402,37 @@ class IbkrClient {
     this.sessionReady = true;
   }
 
+  private async keepaliveSession(): Promise<void> {
+    // Only tickle if session is older than 4 minutes
+    if (this.lastInitTimeMs && Date.now() - this.lastInitTimeMs > 240_000) {
+      try {
+        await this.tickle();
+        this.lastInitTimeMs = Date.now();
+        console.log(`[IBKR][keepalive] Session refreshed via tickle`);
+      } catch (err) {
+        // Tickle failed, force re-init on next ensureReady()
+        console.error(`[IBKR][keepalive] Tickle failed:`, err);
+        this.sessionReady = false;
+        this.last.init.status = null;
+      }
+    }
+  }
+
   private async ensureReady(retry = true): Promise<void> {
     try {
-      // Short-circuit if we appear ready
-      if (this.ssoAccessToken && this.last.validate.status === 200 && this.last.init.status === 200 && this.sessionReady) {
+      // Better expiry checking - OAuth tokens expire in 10 minutes, sessions in ~9 minutes
+      const now = Date.now();
+      const tokenValid = this.accessToken && this.accessTokenExpiryMs - 5_000 > now;
+      const ssoValid = this.ssoAccessToken &&
+                       this.lastInitTimeMs &&
+                       (now - this.lastInitTimeMs < 540_000); // 9 minutes
+      const sessionValid = this.sessionReady &&
+                          this.last.validate.status === 200 &&
+                          this.last.init.status === 200;
+
+      if (tokenValid && ssoValid && sessionValid) {
+        // Everything is still fresh, just maintain session
+        await this.keepaliveSession();
         return;
       }
 
@@ -343,6 +442,7 @@ class IbkrClient {
 
       // Validate (idempotent), handle 401/403 once by resetting and retrying flow
       const v = await this.validateSso();
+      this.lastValidateTimeMs = Date.now();
       if ((v === 401 || v === 403) && retry) {
         this.ssoAccessToken = null;
         this.ssoSessionId = null;
@@ -357,6 +457,7 @@ class IbkrClient {
       await this.tickle();
 
       await this.initBrokerageWithSso();
+      this.lastInitTimeMs = Date.now();
       return;
     } catch (err: any) {
       const msg = String(err?.message || err);

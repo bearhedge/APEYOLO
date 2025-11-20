@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { RefreshCw, Bell, Shield, Bot, Settings as SettingsIcon, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
 import { SectionHeader } from '@/components/SectionHeader';
 import { Button } from '@/components/ui/button';
+import { StatusStep } from '@/components/ui/StatusStep';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Slider } from '@/components/ui/slider';
@@ -147,32 +148,32 @@ export function Settings() {
             {/* Connection Status Details */}
             {ibkrStatus?.configured && ibkrStatus.diagnostics && (
               <div className="border-t border-white/10 pt-4">
-                <h4 className="text-sm font-medium mb-3">Connection Status</h4>
-                <div className="grid grid-cols-2 gap-2">
-                  <div className="flex items-center gap-2">
-                    <div className={`w-2 h-2 rounded-full ${
-                      ibkrStatus.diagnostics.oauth === 'Connected' ? 'bg-green-500' : 'bg-red-500'
-                    }`} />
-                    <span className="text-xs">OAuth: {ibkrStatus.diagnostics.oauth}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className={`w-2 h-2 rounded-full ${
-                      ibkrStatus.diagnostics.sso === 'Active' ? 'bg-green-500' : 'bg-red-500'
-                    }`} />
-                    <span className="text-xs">SSO: {ibkrStatus.diagnostics.sso}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className={`w-2 h-2 rounded-full ${
-                      ibkrStatus.diagnostics.validated === 'Validated' ? 'bg-green-500' : 'bg-red-500'
-                    }`} />
-                    <span className="text-xs">Validation: {ibkrStatus.diagnostics.validated}</span>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <div className={`w-2 h-2 rounded-full ${
-                      ibkrStatus.diagnostics.initialized === 'Ready' ? 'bg-green-500' : 'bg-red-500'
-                    }`} />
-                    <span className="text-xs">Initialized: {ibkrStatus.diagnostics.initialized}</span>
-                  </div>
+                <h4 className="text-sm font-medium mb-3">Authentication Pipeline Status</h4>
+                <div className="space-y-2">
+                  <StatusStep
+                    name="OAuth Token"
+                    status={ibkrStatus.diagnostics.oauth?.status || 0}
+                    message={ibkrStatus.diagnostics.oauth?.message || ibkrStatus.diagnostics.oauth || 'Not attempted'}
+                    success={ibkrStatus.diagnostics.oauth?.success}
+                  />
+                  <StatusStep
+                    name="SSO Session"
+                    status={ibkrStatus.diagnostics.sso?.status || 0}
+                    message={ibkrStatus.diagnostics.sso?.message || ibkrStatus.diagnostics.sso || 'Not attempted'}
+                    success={ibkrStatus.diagnostics.sso?.success}
+                  />
+                  <StatusStep
+                    name="Session Validation"
+                    status={ibkrStatus.diagnostics.validate?.status || ibkrStatus.diagnostics.validated?.status || 0}
+                    message={ibkrStatus.diagnostics.validate?.message || ibkrStatus.diagnostics.validated?.message || ibkrStatus.diagnostics.validated || 'Not attempted'}
+                    success={ibkrStatus.diagnostics.validate?.success || ibkrStatus.diagnostics.validated?.success}
+                  />
+                  <StatusStep
+                    name="Brokerage Initialization"
+                    status={ibkrStatus.diagnostics.init?.status || ibkrStatus.diagnostics.initialized?.status || 0}
+                    message={ibkrStatus.diagnostics.init?.message || ibkrStatus.diagnostics.initialized?.message || ibkrStatus.diagnostics.initialized || 'Not attempted'}
+                    success={ibkrStatus.diagnostics.init?.success || ibkrStatus.diagnostics.initialized?.success}
+                  />
                 </div>
               </div>
             )}
