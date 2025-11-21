@@ -265,19 +265,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // IBKR Status endpoint - shows connection status and configuration
   app.get('/api/ibkr/status', async (_req, res) => {
     try {
-      const isConfigured = !!(
-        process.env.IBKR_CLIENT_ID &&
-        process.env.IBKR_CLIENT_KEY_ID &&
-        process.env.IBKR_PRIVATE_KEY &&
-        process.env.IBKR_CREDENTIAL
-      );
+      const requiredVars = [
+        'IBKR_CLIENT_ID',
+        'IBKR_CLIENT_KEY_ID',
+        'IBKR_PRIVATE_KEY',
+        'IBKR_CREDENTIAL',
+      ];
+      const missing = requiredVars.filter((k) => !process.env[k]);
+      const isConfigured = missing.length === 0;
 
       if (!isConfigured) {
         return res.json({
           configured: false,
           connected: false,
           environment: process.env.IBKR_ENV || 'paper',
-          message: 'IBKR credentials not configured in environment variables'
+          message: 'IBKR credentials not configured in environment variables',
+          missing,
         });
       }
 

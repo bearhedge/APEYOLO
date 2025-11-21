@@ -13,11 +13,9 @@ const projectRoot = path.resolve(here, "..");
 const clientRoot = path.join(projectRoot, "client");
 
 export async function setupVite(app: Express, server: Server) {
+  // Dev-only imports
   const { createServer: createViteServer } = await import('vite');
-  const { nanoid } = await import('nanoid'); // Dynamic import for dev only
-  // Use a string variable to prevent ESBuild from bundling this
-  const configPath = '../vite.config.js';
-  const { default: viteConfig } = await import(configPath);
+  const { nanoid } = await import('nanoid');
 
   const serverOptions = {
     middlewareMode: true,
@@ -25,9 +23,10 @@ export async function setupVite(app: Express, server: Server) {
     allowedHosts: true as const,
   };
 
+  // Important: do NOT import vite.config.* here. Let Vite discover it.
+  // This keeps the production bundle free of any vite.config imports.
   const vite = await createViteServer({
-    ...viteConfig,
-    configFile: false,
+    root: projectRoot, // allow Vite to find vite.config.ts at repo root
     server: serverOptions,
     appType: "custom",
   });
@@ -47,4 +46,3 @@ export async function setupVite(app: Express, server: Server) {
     }
   });
 }
-

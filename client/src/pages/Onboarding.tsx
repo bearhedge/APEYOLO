@@ -30,6 +30,12 @@ export function Onboarding() {
     setMaxPerSymbol,
   } = useStore();
 
+  // Log hydration status once per mount
+  useEffect(() => {
+    // eslint-disable-next-line no-console
+    console.log('[Onboarding] Mounted');
+  }, []);
+
   // Fetch IBKR status
   const { data: ibkrStatus, refetch: refetchIbkrStatus } = useQuery({
     queryKey: ['/api/ibkr/status'],
@@ -82,30 +88,36 @@ export function Onboarding() {
     const error = params.get('error');
     const errorDescription = params.get('error_description');
 
-    console.log('[OAuth] Checking callback params:', { stepParam, error, errorDescription });
+    console.log('[OAuth] useEffect start', {
+      href: window.location.href,
+      search: window.location.search,
+      stepParam,
+      error,
+      errorDescription,
+    });
 
     if (error) {
       console.error('[OAuth] Authentication error:', error, errorDescription);
       setOauthError(errorDescription || error || 'Authentication failed. Please try again.');
       setOauthLoading(false);
-      // Clean up URL but stay on step 1
-      window.history.replaceState({}, '', '/onboarding');
+      // Clean up URL but stay on step 1 (use router to avoid history races)
+      setLocation('/onboarding', { replace: true });
     } else if (stepParam === '2') {
       console.log('[OAuth] Successfully authenticated with Google');
-      // User successfully authenticated with Google
+      // Skip onboarding and go straight to Agent
       setGoogleConnected(true);
       setOauthError(null);
       setOauthLoading(false);
-      setStep(2);
-      // Clean up URL
-      window.history.replaceState({}, '', '/onboarding');
+      setLocation('/agent', { replace: true });
     } else if (stepParam === 'loading') {
       // OAuth is in progress
       console.log('[OAuth] Authentication in progress...');
       setOauthLoading(true);
       setOauthError(null);
     }
-  }, [setGoogleConnected, setStep, setOauthError, setOauthLoading]);
+
+    console.log('[OAuth] useEffect end', { stepAfter: step });
+  }, [setGoogleConnected, setStep, setOauthError, setOauthLoading, setLocation]);
 
   const handleGoogleLogin = () => {
     console.log('[OAuth] Starting Google login...');

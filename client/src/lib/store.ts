@@ -40,9 +40,10 @@ interface RiskState {
 
 interface AppState extends AuthState, BrokerState, AgentState, RiskState {}
 
-export const useStore = create<AppState>()(
+export const useStore = create<AppState & { hasHydrated: boolean }>()(
   persist(
-    (set) => ({
+    (set, get) => ({
+      hasHydrated: false,
       googleConnected: false,
       setGoogleConnected: (connected) => set({ googleConnected: connected }),
 
@@ -69,6 +70,16 @@ export const useStore = create<AppState>()(
     }),
     {
       name: 'apex-options-store',
+      onRehydrateStorage: () => (state, error) => {
+        if (error) {
+          // eslint-disable-next-line no-console
+          console.error('[Zustand] Rehydration error', error);
+        }
+        // mark store hydrated so views can avoid race conditions
+        set({ hasHydrated: true });
+        // eslint-disable-next-line no-console
+        console.log('[Zustand] Hydration complete');
+      },
     }
   )
 );

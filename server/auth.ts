@@ -141,8 +141,9 @@ router.get('/google/callback', async (req: Request, res: Response) => {
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
     });
 
-    // Redirect to onboarding step 2
-    res.redirect(`${CLIENT_URL}/onboarding?step=2`);
+    // Redirect directly to the dashboard after successful login
+    // IBKR setup can be completed later in Settings
+    res.redirect(`${CLIENT_URL}/agent`);
   } catch (error) {
     console.error('OAuth callback error:', error);
     res.redirect(`${CLIENT_URL}/onboarding?error=auth_failed`);

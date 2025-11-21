@@ -21,7 +21,7 @@ export function Home() {
             Real-time execution. Built for systematic traders who value precision and control.
           </p>
           <Button
-            onClick={() => setLocation('/onboarding')}
+            onClick={() => { window.location.href = '/api/auth/google'; }}
             className="btn-primary text-lg px-8 py-6 h-auto"
             data-testid="button-get-started"
           >
@@ -123,7 +123,7 @@ export function Home() {
             Join professional traders using APEYOLO for systematic, automated options trading
           </p>
           <Button
-            onClick={() => setLocation('/onboarding')}
+            onClick={() => { window.location.href = '/api/auth/google'; }}
             className="btn-primary text-lg px-8 py-6 h-auto"
             data-testid="button-get-started-footer"
           >

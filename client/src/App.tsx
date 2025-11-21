@@ -17,20 +17,21 @@ import { getAccount, getDiag } from "@/lib/api";
 
 function Navigation() {
   const [location] = useLocation();
+  const isOnboarding = location.startsWith('/onboarding');
 
   const { data: account } = useQuery({
     queryKey: ['/api/account'],
     queryFn: getAccount,
-    enabled: location !== '/' && location !== '/onboarding',
+    enabled: location !== '/' && !isOnboarding,
   });
 
   const { data: diagData } = useQuery({
     queryKey: ['/api/broker/diag'],
     queryFn: getDiag,
-    enabled: location !== '/' && location !== '/onboarding',
+    enabled: location !== '/' && !isOnboarding,
   });
 
-  if (location === "/" || location === "/onboarding") {
+  if (location === "/" || isOnboarding) {
     return null;
   }
 

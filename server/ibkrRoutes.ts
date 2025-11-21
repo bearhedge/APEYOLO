@@ -13,73 +13,82 @@ const router = Router();
 // Initialize strategy instance
 let nakedOptionStrategy: NakedOptionStrategy | null = null;
 
+// Commenting out /status endpoint - this conflicts with the one in routes.ts
+// The correct /api/ibkr/status endpoint is defined in routes.ts which properly
+// checks for JWT-based OAuth credentials (IBKR_CLIENT_ID, IBKR_PRIVATE_KEY, etc.)
+// rather than the client secret approach checked here.
+//
+// /**
+//  * Get IBKR connection status
+//  */
+// router.get('/status', async (req: Request, res: Response) => {
+//   try {
+//     const brokerBundle = getBroker();
+//     const isConnected = brokerBundle.status.connected;
+//     const diagnostics = await getIbkrDiagnostics();
+//
+//     // Get configuration status
+//     const configured = !!(
+//       process.env.IBKR_CLIENT_ID &&
+//       process.env.IBKR_CLIENT_SECRET &&
+//       process.env.IBKR_REDIRECT_URI
+//     );
+//
+//     // Check all 4 authentication steps - only show connected when ALL succeed
+//     const allStepsConnected =
+//       diagnostics.oauth.status === 200 &&
+//       diagnostics.sso.status === 200 &&
+//       diagnostics.validate.status === 200 &&
+//       diagnostics.init.status === 200;
+//
+//     res.json({
+//       configured,
+//       connected: allStepsConnected,  // Only true when ALL 4 steps succeed
+//       environment: process.env.IBKR_ENVIRONMENT || 'paper',
+//       accountId: process.env.IBKR_ACCOUNT_ID || null,
+//       clientId: process.env.IBKR_CLIENT_ID ? process.env.IBKR_CLIENT_ID.substring(0, 12) + '-***' : null,
+//       multiUserMode: process.env.IBKR_MULTI_USER === 'true',
+//       diagnostics: {
+//         oauth: {
+//           status: diagnostics.oauth.status,
+//           message: diagnostics.oauth.message,
+//           success: diagnostics.oauth.status === 200
+//         },
+//         sso: {
+//           status: diagnostics.sso.status,
+//           message: diagnostics.sso.message,
+//           success: diagnostics.sso.status === 200
+//         },
+//         validate: {
+//           status: diagnostics.validate.status,
+//           message: diagnostics.validate.message,
+//           success: diagnostics.validate.status === 200
+//         },
+//         init: {
+//           status: diagnostics.init.status,
+//           message: diagnostics.init.message,
+//           success: diagnostics.init.status === 200
+//         }
+//       }
+//     });
+//   } catch (error) {
+//     console.error('[IBKR][Status] Error:', error);
+//     res.status(500).json({
+//       configured: false,
+//       connected: false,
+//       error: error instanceof Error ? error.message : 'Unknown error'
+//     });
+//   }
+// });
+
+// The /test endpoint has been moved to routes.ts as /api/ibkr/test
+// to avoid duplication and ensure consistent authentication flow.
+// Use the endpoint at /api/ibkr/test instead.
+
 /**
- * Get IBKR connection status
+ * Test IBKR connection (deprecated - use /api/ibkr/test in routes.ts)
  */
-router.get('/status', async (req: Request, res: Response) => {
-  try {
-    const brokerBundle = getBroker();
-    const isConnected = brokerBundle.status.connected;
-    const diagnostics = await getIbkrDiagnostics();
-
-    // Get configuration status
-    const configured = !!(
-      process.env.IBKR_CLIENT_ID &&
-      process.env.IBKR_CLIENT_SECRET &&
-      process.env.IBKR_REDIRECT_URI
-    );
-
-    // Check all 4 authentication steps - only show connected when ALL succeed
-    const allStepsConnected =
-      diagnostics.oauth.status === 200 &&
-      diagnostics.sso.status === 200 &&
-      diagnostics.validate.status === 200 &&
-      diagnostics.init.status === 200;
-
-    res.json({
-      configured,
-      connected: allStepsConnected,  // Only true when ALL 4 steps succeed
-      environment: process.env.IBKR_ENVIRONMENT || 'paper',
-      accountId: process.env.IBKR_ACCOUNT_ID || null,
-      clientId: process.env.IBKR_CLIENT_ID ? process.env.IBKR_CLIENT_ID.substring(0, 12) + '-***' : null,
-      multiUserMode: process.env.IBKR_MULTI_USER === 'true',
-      diagnostics: {
-        oauth: {
-          status: diagnostics.oauth.status,
-          message: diagnostics.oauth.message,
-          success: diagnostics.oauth.status === 200
-        },
-        sso: {
-          status: diagnostics.sso.status,
-          message: diagnostics.sso.message,
-          success: diagnostics.sso.status === 200
-        },
-        validate: {
-          status: diagnostics.validate.status,
-          message: diagnostics.validate.message,
-          success: diagnostics.validate.status === 200
-        },
-        init: {
-          status: diagnostics.init.status,
-          message: diagnostics.init.message,
-          success: diagnostics.init.status === 200
-        }
-      }
-    });
-  } catch (error) {
-    console.error('[IBKR][Status] Error:', error);
-    res.status(500).json({
-      configured: false,
-      connected: false,
-      error: error instanceof Error ? error.message : 'Unknown error'
-    });
-  }
-});
-
-/**
- * Test IBKR connection
- */
-router.post('/test', async (req: Request, res: Response) => {
+router.post('/test-deprecated', async (req: Request, res: Response) => {
   try {
     const diagnostics = await ensureIbkrReady();
 
