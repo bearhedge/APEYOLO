@@ -1,0 +1,84 @@
+/* CSS Variables - Separated to ensure they're always included in production builds */
+
+:root {
+  /* Monochrome Palette */
+  --background: hsl(0, 0%, 0%);
+  --foreground: hsl(0, 0%, 100%);
+
+  /* Card/Surface - Charcoal */
+  --card: hsl(0, 0%, 4.3%);
+  --card-foreground: hsl(0, 0%, 100%);
+  --popover: hsl(0, 0%, 4.3%);
+  --popover-foreground: hsl(0, 0%, 100%);
+
+  /* Primary - White on Black */
+  --primary: hsl(0, 0%, 100%);
+  --primary-foreground: hsl(0, 0%, 0%);
+
+  /* Secondary - Dark Gray */
+  --secondary: hsl(0, 0%, 10.2%);
+  --secondary-foreground: hsl(0, 0%, 100%);
+
+  /* Muted - Mid Gray */
+  --muted: hsl(0, 0%, 16.9%);
+  --muted-foreground: hsl(0, 0%, 65%);
+
+  /* Accent - Hover Gray */
+  --accent: hsl(0, 0%, 10.2%);
+  --accent-foreground: hsl(0, 0%, 100%);
+
+  /* Status Colors */
+  --success: hsl(142, 76%, 36%);
+  --destructive: hsl(0, 84%, 60%);
+  --warning: hsl(38, 92%, 50%);
+  --info: hsl(217, 91%, 60%);
+
+  /* Borders - Hairline White/10 */
+  --border: hsl(0, 0%, 100%, 0.1);
+  --input: hsl(0, 0%, 10.2%);
+  --ring: hsl(0, 0%, 100%);
+
+  /* Charts */
+  --chart-1: hsl(142, 76%, 36%);
+  --chart-2: hsl(0, 84%, 60%);
+  --chart-3: hsl(217, 91%, 60%);
+  --chart-4: hsl(38, 92%, 50%);
+  --chart-5: hsl(280, 75%, 60%);
+
+  /* Sidebar */
+  --sidebar: hsl(0, 0%, 4.3%);
+  --sidebar-foreground: hsl(0, 0%, 100%);
+  --sidebar-primary: hsl(0, 0%, 100%);
+  --sidebar-primary-foreground: hsl(0, 0%, 0%);
+  --sidebar-accent: hsl(0, 0%, 10.2%);
+  --sidebar-accent-foreground: hsl(0, 0%, 100%);
+  --sidebar-border: hsl(0, 0%, 100%, 0.1);
+  --sidebar-ring: hsl(0, 0%, 100%);
+
+  /* Typography - Global Monospace for Technical Feel */
+  --font-mono: 'IBM Plex Mono', 'Consolas', 'Monaco', monospace;
+
+  /* Sharp rectangular design - no rounded corners */
+  --radius: 0px;
+}
+
+.dark {
+  --background: hsl(0, 0%, 0%);
+  --foreground: hsl(0, 0%, 100%);
+  --card: hsl(0, 0%, 4.3%);
+  --card-foreground: hsl(0, 0%, 100%);
+  --popover: hsl(0, 0%, 4.3%);
+  --popover-foreground: hsl(0, 0%, 100%);
+  --primary: hsl(0, 0%, 100%);
+  --primary-foreground: hsl(0, 0%, 0%);
+  --secondary: hsl(0, 0%, 10.2%);
+  --secondary-foreground: hsl(0, 0%, 100%);
+  --muted: hsl(0, 0%, 16.9%);
+  --muted-foreground: hsl(0, 0%, 65%);
+  --accent: hsl(0, 0%, 10.2%);
+  --accent-foreground: hsl(0, 0%, 100%);
+  --destructive: hsl(0, 84%, 60%);
+  --border: hsl(0, 0%, 100%, 0.1);
+  --input: hsl(0, 0%, 10.2%);
+  --ring: hsl(0, 0%, 100%);
+}

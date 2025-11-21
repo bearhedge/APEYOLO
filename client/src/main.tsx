@@ -1,5 +1,6 @@
 import { createRoot } from "react-dom/client";
 import App from "./App";
+import "./variables.css";  // Import CSS variables first to ensure they're available
 import "./index.css";
 
 // Ensure dark mode is applied in production before React mounts
