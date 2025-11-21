@@ -101,7 +101,7 @@ export function Onboarding() {
       setOauthLoading(true);
       setOauthError(null);
     }
-  }, [setGoogleConnected]);
+  }, [setGoogleConnected, setStep, setOauthError, setOauthLoading]);
 
   const handleGoogleLogin = () => {
     console.log('[OAuth] Starting Google login...');

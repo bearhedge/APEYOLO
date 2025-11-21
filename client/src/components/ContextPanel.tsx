@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { CheckCircle, XCircle, TrendingUp, Shield, Clock, AlertTriangle } from 'lucide-react';
 import { getAccount, getDiag } from '@/lib/api';
 import { useStore } from '@/lib/store';
+import { useLocation } from 'wouter';
 
 interface ContextCard {
   title: string;
@@ -10,14 +11,18 @@ interface ContextCard {
 }
 
 export function ContextPanel() {
+  const [location] = useLocation();
+
   const { data: account } = useQuery({
     queryKey: ['/api/account'],
     queryFn: getAccount,
+    enabled: location !== '/' && location !== '/onboarding',
   });
 
   const { data: diagData } = useQuery({
     queryKey: ['/api/broker/diag'],
     queryFn: getDiag,
+    enabled: location !== '/' && location !== '/onboarding',
   });
 
   const { aggression, maxLeverage, maxDailyLoss, maxPerSymbol } = useStore();
