@@ -120,7 +120,8 @@ export function Onboarding() {
   };
 
   const handleFinish = () => {
-    setLocation('/dashboard');
+    // Navigate directly to agent to avoid redirect chain that causes black screen
+    setLocation('/agent');
   };
 
   const isIBKRConnected = ibkrStatus?.connected || false;
