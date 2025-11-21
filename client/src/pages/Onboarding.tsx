@@ -51,6 +51,10 @@ export function Onboarding() {
     },
   });
 
+  // Derived state from ibkrStatus - must be declared before use in useQuery below
+  const isIBKRConnected = ibkrStatus?.connected || false;
+  const isIBKRConfigured = ibkrStatus?.configured || false;
+
   // Fetch strategy configuration
   const { data: strategyConfig, refetch: refetchStrategyConfig } = useQuery({
     queryKey: ['/api/ibkr/strategy/status'],
@@ -123,9 +127,6 @@ export function Onboarding() {
     // Navigate directly to agent to avoid redirect chain that causes black screen
     setLocation('/agent');
   };
-
-  const isIBKRConnected = ibkrStatus?.connected || false;
-  const isIBKRConfigured = ibkrStatus?.configured || false;
 
   return (
     <div className="min-h-screen flex items-center justify-center px-6 py-12">
