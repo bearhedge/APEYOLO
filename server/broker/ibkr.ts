@@ -256,8 +256,25 @@ class IbkrClient {
   }
 
   private async createSSOSession(token: string): Promise<void> {
-    // Allow re-creation if we don't have a valid access token
-    if (this.ssoSessionId && this.ssoAccessToken) return;
+    // Check if we have a valid SSO session that hasn't expired
+    const now = Date.now();
+    const hasValidSession = this.ssoSessionId &&
+                           this.ssoAccessToken &&
+                           this.ssoAccessTokenExpiryMs > now;
+
+    if (hasValidSession) {
+      console.log('[IBKR][SSO] Using existing valid session, expires in',
+                  Math.round((this.ssoAccessTokenExpiryMs - now) / 1000), 'seconds');
+      return;
+    }
+
+    // Clear old session if expired
+    if (this.ssoAccessTokenExpiryMs && this.ssoAccessTokenExpiryMs <= now) {
+      console.log('[IBKR][SSO] Previous session expired, creating new one');
+      this.ssoSessionId = null;
+      this.ssoAccessToken = null;
+      this.ssoAccessTokenExpiryMs = 0;
+    }
 
     // Build the SSO JWT (with optional IP claim)
     const ip = process.env.IBKR_ALLOWED_IP;
@@ -271,13 +288,13 @@ class IbkrClient {
       throw new Error('Missing required env for SSO (credential/clientId/key/kid)');
     }
 
-    const now = Math.floor(Date.now() / 1000);
+    const nowSeconds = Math.floor(Date.now() / 1000);
     const key = await importPKCS8(privateKeyPem, 'RS256');
     const claims: Record<string, any> = {
       credential: username,
       iss: clientId,
-      iat: now,
-      exp: now + 86400,
+      iat: nowSeconds,
+      exp: nowSeconds + 86400,
     };
     if (ip) claims.ip = ip;
     const signed = await new SignJWT(claims)
@@ -305,6 +322,10 @@ class IbkrClient {
     this.ssoSessionId = body?.session_id || body?.sessionId || 'ok';
     this.ssoAccessToken = body?.access_token || body?.token || body?.bearer_token || body?.session_token || body?.sso_token || body?.authToken || body?.auth_token || null;
 
+    // Set SSO token expiry (default to 9 minutes if not provided)
+    const expiresIn = body?.expires_in || body?.expiresIn || 540; // 540 seconds = 9 minutes
+    this.ssoAccessTokenExpiryMs = Date.now() + (expiresIn * 1000);
+
     if (!this.ssoAccessToken) {
       console.log('[IBKR][SSO][Cookie Mode]', 'No bearer token found, using cookies from jar');
     }
@@ -314,6 +335,8 @@ class IbkrClient {
       hasToken: !!this.ssoAccessToken,
       tokenPrefix: this.ssoAccessToken ? this.ssoAccessToken.substring(0, 10) + '...' : 'none',
       authMode: this.ssoAccessToken ? 'bearer' : 'cookies',
+      expiresIn: `${expiresIn}s`,
+      expiresAt: new Date(this.ssoAccessTokenExpiryMs).toISOString(),
     });
 
     await storage.createAuditLog({ eventType: 'IBKR_SSO_SESSION', details: `OK http=${res.status} req=${traceVal ?? ''} hasToken=${!!this.ssoAccessToken}` , status: 'SUCCESS' });
@@ -430,12 +453,43 @@ class IbkrClient {
     // First attempt
     let res = await doInit();
     const bodyStr1 = typeof res.data === 'string' ? res.data : JSON.stringify(res.data || {});
+
+    // Handle 410 Gone - session is completely stale
+    if (res.status === 410) {
+      console.error('[IBKR][INIT] Received 410 Gone - SSO session is stale, clearing cache and forcing refresh');
+      // Clear all cached session data
+      this.accessToken = null;
+      this.accessTokenExpiryMs = 0;
+      this.ssoAccessToken = null;
+      this.ssoAccessTokenExpiryMs = 0;
+      this.ssoSessionId = null;
+      this.sessionReady = false;
+      this.lastInitTimeMs = 0;
+      this.lastValidateTimeMs = 0;
+
+      // Create a specific error for 410 that ensureReady can catch
+      const error = new Error(`SSO session expired (410) - refresh required`);
+      (error as any).statusCode = 410;
+      (error as any).requiresRefresh = true;
+      throw error;
+    }
+
     if (res.status === 500 && /failed to generate sso dh token/i.test(bodyStr1)) {
       // Wait, tickle, and retry once
       await this.sleep(3000);
       await this.tickle();
       res = await doInit();
+
+      // Check for 410 on retry as well
+      if (res.status === 410) {
+        console.error('[IBKR][INIT] Received 410 Gone on retry - SSO session is stale');
+        const error = new Error(`SSO session expired (410) - refresh required`);
+        (error as any).statusCode = 410;
+        (error as any).requiresRefresh = true;
+        throw error;
+      }
     }
+
     if (!(res.status >= 200 && res.status < 300)) {
       throw new Error(`IBKR init failed: ${res.status}`);
     }
@@ -458,19 +512,33 @@ class IbkrClient {
     }
   }
 
-  private async ensureReady(retry = true): Promise<void> {
+  private async ensureReady(retry = true, forceRefresh = false): Promise<void> {
     try {
+      // Force refresh will skip cache checks and reinitialize everything
+      if (forceRefresh) {
+        console.log('[IBKR] Force refresh requested - clearing session cache');
+        this.accessToken = null;
+        this.accessTokenExpiryMs = 0;
+        this.ssoAccessToken = null;
+        this.ssoAccessTokenExpiryMs = 0;
+        this.ssoSessionId = null;
+        this.sessionReady = false;
+        this.lastInitTimeMs = 0;
+        this.lastValidateTimeMs = 0;
+      }
+
       // Better expiry checking - OAuth tokens expire in 10 minutes, sessions in ~9 minutes
       const now = Date.now();
       const tokenValid = this.accessToken && this.accessTokenExpiryMs - 5_000 > now;
       const ssoValid = this.ssoAccessToken &&
+                       this.ssoAccessTokenExpiryMs > now &&
                        this.lastInitTimeMs &&
                        (now - this.lastInitTimeMs < 540_000); // 9 minutes
       const sessionValid = this.sessionReady &&
                           this.last.validate.status === 200 &&
                           this.last.init.status === 200;
 
-      if (tokenValid && ssoValid && sessionValid) {
+      if (tokenValid && ssoValid && sessionValid && !forceRefresh) {
         // Everything is still fresh, just maintain session
         await this.keepaliveSession();
         return;
@@ -505,7 +573,30 @@ class IbkrClient {
       return;
     } catch (err: any) {
       const msg = String(err?.message || err);
+
+      // Handle 410 Gone specifically - requires full refresh
+      if (err?.statusCode === 410 || err?.requiresRefresh || msg.includes("410")) {
+        console.log('[IBKR] Caught 410 error - attempting full refresh');
+        // Clear everything and retry with force refresh
+        this.accessToken = null;
+        this.accessTokenExpiryMs = 0;
+        this.ssoSessionId = null;
+        this.ssoAccessToken = null;
+        this.ssoAccessTokenExpiryMs = 0;
+        this.sessionReady = false;
+        this.lastInitTimeMs = 0;
+        this.lastValidateTimeMs = 0;
+
+        if (retry) {
+          console.log('[IBKR] Retrying with force refresh after 410');
+          await this.sleep(1000); // Brief delay before retry
+          return this.ensureReady(false, true); // Retry with forceRefresh
+        }
+      }
+
+      // Handle 401/403 authentication errors
       if (retry && (msg.includes("401") || msg.includes("403"))) {
+        console.log('[IBKR] Caught 401/403 error - clearing auth and retrying');
         this.accessToken = null;
         this.accessTokenExpiryMs = 0;
         this.ssoSessionId = null;
@@ -513,6 +604,7 @@ class IbkrClient {
         this.sessionReady = false;
         return this.ensureReady(false);
       }
+
       throw err;
     }
   }
@@ -783,6 +875,12 @@ class IbkrClient {
     return this.last;
   }
 
+  // Force refresh the authentication pipeline
+  async forceRefresh(): Promise<void> {
+    console.log('[IBKR] Force refresh initiated');
+    await this.ensureReady(true, true);
+  }
+
   async placeStockOrder(
     symbol: string,
     side: 'BUY' | 'SELL',
@@ -872,7 +970,7 @@ class IbkrClient {
 
     await this.ensureReady();
 
-    const accountId = this.cfg.accountId || 'DU9807013';
+    const accountId = this.accountId || 'DU9807013';
     const cancelUrl = `/v1/api/iserver/account/${accountId}/order/${orderId}`;
 
     try {
