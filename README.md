@@ -180,3 +180,27 @@ Notes
 - Cloud Run listens on the `PORT` env var; the server uses it automatically.
 - Build uses the included Dockerfile; runtime command is `node dist/index.js`.
 - Ensure production env variables are set in your Cloud Run service as needed.
+
+## ✅ Milestone (Nov 22, 2025)
+
+IBKR OAuth 2.0 is fully wired end‑to‑end on Cloud Run (paper trading), and a SPY test order was submitted successfully from production.
+
+- Fixed egress IP via Serverless VPC Access connector + Cloud NAT (Standard tier).
+- `IBKR_ALLOWED_IP` env set to the static egress IP so SSO/Validate match.
+- Backend persists SSO cookies and performs just‑in‑time Validate → Init before actions.
+- Verified from production:
+  - `GET https://apeyolo.com/api/broker/warm` → all 200
+  - `POST https://apeyolo.com/api/ibkr/test` → success: true
+  - `POST https://apeyolo.com/api/broker/paper/order` → ok: true, orderId returned (SPY)
+
+Quick test from a terminal:
+
+```
+curl -s https://apeyolo.com/api/broker/warm | jq .
+curl -s -X POST https://apeyolo.com/api/ibkr/test | jq .
+curl -s -X POST https://apeyolo.com/api/broker/paper/order \
+  -H 'Content-Type: application/json' \
+  -d '{"symbol":"SPY","side":"BUY","quantity":1,"orderType":"MKT","tif":"DAY"}' | jq .
+```
+
+Reliability knobs (Cloud Run): set min instances = 1; add Cloud Scheduler tickle every 2 minutes calling `/api/broker/warm`.
