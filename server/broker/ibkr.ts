@@ -269,7 +269,7 @@ class IbkrClient {
     // Capture both session id and SSO bearer if present
     const body: any = r.body ?? {};
 
-    // Debug logging to see what fields are actually in the response
+    // Enhanced debug logging to capture the full response structure
     console.log('[IBKR][SSO][Response]', {
       status: r.status,
       bodyKeys: Object.keys(body),
@@ -278,24 +278,35 @@ class IbkrClient {
       hasBearerToken: !!body?.bearer_token,
       hasSessionToken: !!body?.session_token,
       hasSessionId: !!body?.session_id,
-      hasSsoToken: !!body?.sso_token
+      hasSsoToken: !!body?.sso_token,
+      // Add logging of the actual body to see what's returned
+      fullBody: JSON.stringify(body).substring(0, 500)
     });
 
     this.ssoSessionId = body?.session_id || body?.sessionId || "ok";
 
     // Try multiple possible field names for the access token
+    // Also check if SSO might be using cookie-based auth instead of bearer tokens
     this.ssoAccessToken = body?.access_token ||
                          body?.token ||
                          body?.bearer_token ||
                          body?.session_token ||
                          body?.sso_token ||
+                         body?.authToken ||
+                         body?.auth_token ||
                          null;
+
+    // If no token found but SSO returned 200, it might be using cookie-based auth
+    if (!this.ssoAccessToken && r.status === 200) {
+      console.log('[IBKR][SSO][Cookie Mode]', 'No bearer token found, SSO likely using cookie-based authentication');
+    }
 
     // Log what we actually got
     console.log('[IBKR][SSO][Token]', {
       sessionId: this.ssoSessionId,
       hasToken: !!this.ssoAccessToken,
-      tokenPrefix: this.ssoAccessToken ? this.ssoAccessToken.substring(0, 10) + '...' : 'none'
+      tokenPrefix: this.ssoAccessToken ? this.ssoAccessToken.substring(0, 10) + '...' : 'none',
+      authMode: this.ssoAccessToken ? 'bearer' : 'cookies'
     });
 
     await storage.createAuditLog({ eventType: "IBKR_SSO_SESSION", details: `OK http=${r.status} req=${r.reqId} hasToken=${!!this.ssoAccessToken}`, status: "SUCCESS" });
@@ -305,33 +316,55 @@ class IbkrClient {
   }
 
   private async validateSso(): Promise<number> {
-    // If no SSO access token, try using OAuth token or cookies
+    // Try different auth strategies
     let headers: any = {};
+    let attempt = 1;
 
+    // First try: Use the SSO access token as Bearer
     if (this.ssoAccessToken) {
-      // Use SSO bearer token if available
-      headers = this.authHeaders();
+      headers = { 'Authorization': `Bearer ${this.ssoAccessToken}` };
+      console.log('[IBKR][VALIDATE] Attempt 1: Using SSO Bearer token');
     } else if (this.accessToken) {
       // Fallback to OAuth token if SSO token not available
-      console.log('[IBKR][VALIDATE] Using OAuth token as fallback');
+      console.log('[IBKR][VALIDATE] Attempt 1: Using OAuth token as fallback');
       headers = { 'Authorization': `Bearer ${this.accessToken}` };
     } else {
       // Try with just cookies, no Authorization header
-      console.log('[IBKR][VALIDATE] Attempting validation with cookies only');
+      console.log('[IBKR][VALIDATE] Attempt 1: Using cookies only');
     }
 
-    const r = await this.http.get('/v1/api/sso/validate', { headers });
-    const text = typeof r.data === 'string' ? r.data : JSON.stringify(r.data || {});
-    const snippet = text.slice(0, 200);
+    let r = await this.http.get('/v1/api/sso/validate', { headers });
+    let text = typeof r.data === 'string' ? r.data : JSON.stringify(r.data || {});
+    let snippet = text.slice(0, 200);
     const traceVal = (r.headers as any)['traceid'] || (r.headers as any)['x-traceid'] || (r.headers as any)['x-request-id'] || (r.headers as any)['x-correlation-id'];
+
+    // If first attempt fails with 401 and we have SSO token, try using OAuth token instead
+    if (r.status === 401 && this.ssoAccessToken && this.accessToken) {
+      console.log('[IBKR][VALIDATE] Attempt 1 failed with 401, trying OAuth token instead of SSO token');
+      headers = { 'Authorization': `Bearer ${this.accessToken}` };
+      r = await this.http.get('/v1/api/sso/validate', { headers });
+      text = typeof r.data === 'string' ? r.data : JSON.stringify(r.data || {});
+      snippet = text.slice(0, 200);
+      attempt = 2;
+    }
+
+    // If still failing, try without any auth header (cookies only)
+    if (r.status === 401 && attempt < 3) {
+      console.log('[IBKR][VALIDATE] Attempt 2 failed with 401, trying cookies only');
+      r = await this.http.get('/v1/api/sso/validate', { headers: {} });
+      text = typeof r.data === 'string' ? r.data : JSON.stringify(r.data || {});
+      snippet = text.slice(0, 200);
+      attempt = 3;
+    }
+
     this.last.validate = { status: r.status, ts: new Date().toISOString(), requestId: traceVal };
 
-    console.log(`[IBKR][VALIDATE] status=${r.status} traceId=${traceVal ?? ''} body=${snippet} authType=${this.ssoAccessToken ? 'SSO' : this.accessToken ? 'OAuth' : 'Cookies'}`);
+    console.log(`[IBKR][VALIDATE] status=${r.status} traceId=${traceVal ?? ''} body=${snippet} attempt=${attempt}`);
 
     if (r.status >= 200 && r.status < 300) {
-      await storage.createAuditLog({ eventType: "IBKR_SSO_VALIDATE", details: `OK http=${r.status} req=${traceVal ?? ''}`, status: "SUCCESS" });
+      await storage.createAuditLog({ eventType: "IBKR_SSO_VALIDATE", details: `OK http=${r.status} req=${traceVal ?? ''} attempt=${attempt}`, status: "SUCCESS" });
     } else {
-      await storage.createAuditLog({ eventType: "IBKR_SSO_VALIDATE", details: `FAILED http=${r.status} req=${traceVal ?? ''} body=${snippet}`, status: "FAILED" });
+      await storage.createAuditLog({ eventType: "IBKR_SSO_VALIDATE", details: `FAILED http=${r.status} req=${traceVal ?? ''} body=${snippet} attempt=${attempt}`, status: "FAILED" });
     }
     return r.status;
   }
