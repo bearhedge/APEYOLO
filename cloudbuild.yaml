@@ -30,6 +30,8 @@ steps:
       - ${_SERVICE}
       - --image=asia-east1-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA
       - --region=${_REGION}
+      - --vpc-connector=run-connector
+      - --vpc-egress=all-traffic
       - --quiet
 images:
   - asia-east1-docker.pkg.dev/$PROJECT_ID/${_REPO}/${_SERVICE}:$COMMIT_SHA

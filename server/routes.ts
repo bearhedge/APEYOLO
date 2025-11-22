@@ -352,10 +352,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
         diag.validate.status === 200 &&
         diag.init.status === 200;
 
+      // If all steps are successful, try to place a test order
+      let testOrderResult = null;
+      if (allConnected) {
+        console.log('[IBKR Test] All auth steps successful, attempting to place test order...');
+        try {
+          const orderResult = await placePaperStockOrder({
+            symbol: 'SPY',
+            side: 'BUY',
+            quantity: 1,
+            orderType: 'MKT',
+            tif: 'DAY',
+            outsideRth: false
+          });
+
+          testOrderResult = {
+            success: !orderResult.status.startsWith('rejected'),
+            orderId: orderResult.id,
+            status: orderResult.status,
+            message: orderResult.id
+              ? `Test order placed! Order ID: ${orderResult.id}. Check your IBKR mobile app to see the order.`
+              : `Order failed: ${orderResult.status}. This may be due to market hours or account restrictions.`
+          };
+
+          console.log('[IBKR Test] Order result:', testOrderResult);
+        } catch (orderErr: any) {
+          console.error('[IBKR Test] Order placement error:', orderErr);
+          testOrderResult = {
+            success: false,
+            status: 'error',
+            message: `Connection OK but order failed: ${orderErr.message || String(orderErr)}`
+          };
+        }
+      }
+
       return res.json({
         success: allConnected,
         message: allConnected
-          ? 'IBKR connection successful! Ready to trade.'
+          ? testOrderResult?.success
+            ? `IBKR connected and test order placed! Order ID: ${testOrderResult.orderId}`
+            : 'IBKR connected but test order failed. See order details below.'
           : 'IBKR connection failed. Check diagnostics for details.',
         steps: {
           oauth: {
@@ -378,7 +414,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
             success: diag.init.status === 200,
             message: diag.init.status === 200 ? 'Initialization complete' : 'Initialization failed'
           }
-        }
+        },
+        ...(testOrderResult ? { testOrder: testOrderResult } : {})
       });
     } catch (error: any) {
       return res.status(500).json({
@@ -404,6 +441,65 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     } catch (err: any) {
       return res.status(500).json({ ok: false, error: err?.message || String(err) });
+    }
+  });
+
+  // IBKR Test Order endpoint - places a test order for 1 SPY share
+  app.post('/api/ibkr/test-order', async (req, res) => {
+    try {
+      if (broker.status.provider !== 'ibkr') {
+        return res.status(400).json({
+          success: false,
+          message: 'IBKR provider not configured'
+        });
+      }
+
+      // Get the IBKR client
+      const ibkrClient = broker.api as any;
+
+      // Ensure we're connected
+      await ensureIbkrReady();
+
+      // Get order details from request body or use defaults
+      const {
+        symbol = 'SPY',
+        side = 'BUY',
+        quantity = 1,
+        orderType = 'MKT'
+      } = req.body;
+
+      // Place the stock order
+      const result = await ibkrClient.placeStockOrder(
+        symbol,
+        side,
+        quantity,
+        { orderType, tif: 'DAY', outsideRth: false }
+      );
+
+      // Log to audit trail
+      await storage.createAuditLog({
+        eventType: 'IBKR_TEST_ORDER',
+        details: `${side} ${quantity} ${symbol} @ ${orderType}`,
+        userId: 'test',
+        status: result.status === 'submitted' ? 'SUCCESS' : 'FAILED'
+      });
+
+      return res.json({
+        success: result.status === 'submitted',
+        message: result.status === 'submitted'
+          ? `Test order placed: ${side} ${quantity} ${symbol}`
+          : `Order failed: ${result.status}`,
+        orderId: result.id,
+        status: result.status,
+        details: result.raw
+      });
+    } catch (error: any) {
+      console.error('[IBKR][TestOrder] Error:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to place test order',
+        error: error.message || String(error)
+      });
     }
   });
 

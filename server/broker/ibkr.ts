@@ -259,57 +259,64 @@ class IbkrClient {
     // Allow re-creation if we don't have a valid access token
     if (this.ssoSessionId && this.ssoAccessToken) return;
 
-    const r = await createSsoSession(this.baseUrl, token);
-    this.last.sso = { status: r.status, ts: new Date().toISOString(), requestId: r.reqId };
-    if (!r.ok) {
-      await storage.createAuditLog({ eventType: "IBKR_SSO_SESSION", details: `FAILED http=${r.status} req=${r.reqId}`, status: "FAILED" });
-      throw new Error(`IBKR SSO session failed: ${r.status}`);
+    // Build the SSO JWT (with optional IP claim)
+    const ip = process.env.IBKR_ALLOWED_IP;
+    const username = process.env.IBKR_CREDENTIAL;
+    const clientId = process.env.IBKR_CLIENT_ID;
+    const kid = process.env.IBKR_CLIENT_KEY_ID;
+    const privateKeyPem = process.env.IBKR_PRIVATE_KEY;
+
+    if (!username || !clientId || !privateKeyPem || !kid) {
+      this.last.sso = { status: 400, ts: new Date().toISOString() };
+      throw new Error('Missing required env for SSO (credential/clientId/key/kid)');
     }
 
-    // Capture both session id and SSO bearer if present
-    const body: any = r.body ?? {};
+    const now = Math.floor(Date.now() / 1000);
+    const key = await importPKCS8(privateKeyPem, 'RS256');
+    const claims: Record<string, any> = {
+      credential: username,
+      iss: clientId,
+      iat: now,
+      exp: now + 86400,
+    };
+    if (ip) claims.ip = ip;
+    const signed = await new SignJWT(claims)
+      .setProtectedHeader({ alg: 'RS256', kid, typ: 'JWT' })
+      .sign(key);
 
-    // Enhanced debug logging to capture the full response structure
-    console.log('[IBKR][SSO][Response]', {
-      status: r.status,
-      bodyKeys: Object.keys(body),
-      hasAccessToken: !!body?.access_token,
-      hasToken: !!body?.token,
-      hasBearerToken: !!body?.bearer_token,
-      hasSessionToken: !!body?.session_token,
-      hasSessionId: !!body?.session_id,
-      hasSsoToken: !!body?.sso_token,
-      // Add logging of the actual body to see what's returned
-      fullBody: JSON.stringify(body).substring(0, 500)
+    // IMPORTANT: use the same axios instance (this.http) with the cookie jar
+    const res = await this.http.post('/gw/api/v1/sso-sessions', signed, {
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/jwt' },
     });
 
-    this.ssoSessionId = body?.session_id || body?.sessionId || "ok";
+    const text = typeof res.data === 'string' ? res.data : JSON.stringify(res.data || {});
+    const snippet = text.slice(0, 200);
+    const traceVal = (res.headers as any)['traceid'] || (res.headers as any)['x-traceid'] || (res.headers as any)['x-request-id'] || (res.headers as any)['x-correlation-id'];
+    console.log(`[IBKR][SSO] status=${res.status} traceId=${traceVal ?? ''} body=${snippet}`);
 
-    // Try multiple possible field names for the access token
-    // Also check if SSO might be using cookie-based auth instead of bearer tokens
-    this.ssoAccessToken = body?.access_token ||
-                         body?.token ||
-                         body?.bearer_token ||
-                         body?.session_token ||
-                         body?.sso_token ||
-                         body?.authToken ||
-                         body?.auth_token ||
-                         null;
-
-    // If no token found but SSO returned 200, it might be using cookie-based auth
-    if (!this.ssoAccessToken && r.status === 200) {
-      console.log('[IBKR][SSO][Cookie Mode]', 'No bearer token found, SSO likely using cookie-based authentication');
+    this.last.sso = { status: res.status, ts: new Date().toISOString(), requestId: traceVal };
+    if (!(res.status >= 200 && res.status < 300)) {
+      await storage.createAuditLog({ eventType: 'IBKR_SSO_SESSION', details: `FAILED http=${res.status} req=${traceVal ?? ''}`, status: 'FAILED' });
+      throw new Error(`IBKR SSO session failed: ${res.status}`);
     }
 
-    // Log what we actually got
+    const body: any = res.data ?? {};
+    // Capture any token fields if present; otherwise rely on cookies in jar
+    this.ssoSessionId = body?.session_id || body?.sessionId || 'ok';
+    this.ssoAccessToken = body?.access_token || body?.token || body?.bearer_token || body?.session_token || body?.sso_token || body?.authToken || body?.auth_token || null;
+
+    if (!this.ssoAccessToken) {
+      console.log('[IBKR][SSO][Cookie Mode]', 'No bearer token found, using cookies from jar');
+    }
+
     console.log('[IBKR][SSO][Token]', {
       sessionId: this.ssoSessionId,
       hasToken: !!this.ssoAccessToken,
       tokenPrefix: this.ssoAccessToken ? this.ssoAccessToken.substring(0, 10) + '...' : 'none',
-      authMode: this.ssoAccessToken ? 'bearer' : 'cookies'
+      authMode: this.ssoAccessToken ? 'bearer' : 'cookies',
     });
 
-    await storage.createAuditLog({ eventType: "IBKR_SSO_SESSION", details: `OK http=${r.status} req=${r.reqId} hasToken=${!!this.ssoAccessToken}`, status: "SUCCESS" });
+    await storage.createAuditLog({ eventType: 'IBKR_SSO_SESSION', details: `OK http=${res.status} req=${traceVal ?? ''} hasToken=${!!this.ssoAccessToken}` , status: 'SUCCESS' });
 
     // Delay 3s after successful SSO per requirement
     await this.sleep(3000);
@@ -490,6 +497,10 @@ class IbkrClient {
       await this.tickle();
 
       await this.initBrokerageWithSso();
+
+      // Establish gateway connection for trading
+      await this.establishGateway();
+
       this.lastInitTimeMs = Date.now();
       return;
     } catch (err: any) {
@@ -588,6 +599,31 @@ class IbkrClient {
     }
   }
 
+  // Establish gateway/bridge connection for trading
+  private async establishGateway(): Promise<void> {
+    console.log('[IBKR][Gateway] Establishing gateway connection...');
+    try {
+      // Call reauthenticate endpoint to establish gateway
+      const reauthUrl = '/v1/api/iserver/reauthenticate';
+      const reauthResp = await this.http.post(reauthUrl, {}, {
+        headers: this.authHeaders()
+      });
+      console.log(`[IBKR][Gateway] Reauthenticate status=${reauthResp.status}`);
+
+      // Call auth/status to check gateway status
+      const statusUrl = '/v1/api/iserver/auth/status';
+      const statusResp = await this.http.post(statusUrl, {}, {
+        headers: this.authHeaders()
+      });
+      console.log(`[IBKR][Gateway] Auth status=${statusResp.status} authenticated=${statusResp.data?.authenticated} connected=${statusResp.data?.connected}`);
+
+      // Small delay to let gateway establish
+      await this.sleep(2000);
+    } catch (err) {
+      console.error('[IBKR][Gateway] Failed to establish gateway:', err);
+    }
+  }
+
   private async resolveConid(symbol: string): Promise<number | null> {
     await this.ensureAccountSelected();
     const url = `/v1/api/iserver/secdef/search`;
@@ -614,7 +650,20 @@ class IbkrClient {
       const resp = await this.http.get(`${url}?symbol=${encodeURIComponent(symbol)}&name=${encodeURIComponent(symbol)}&secType=STK`);
       const bodySnippet = typeof resp.data === 'string' ? resp.data.slice(0, 200) : JSON.stringify(resp.data || {}).slice(0, 200);
       console.log(`[IBKR][resolveConid] attempt1 status=${resp.status} body=${bodySnippet}`);
-      if (resp.status === 200) {
+
+      // If we get "no bridge" error, try to establish gateway
+      if (resp.status === 400 && bodySnippet.includes('no bridge')) {
+        console.log('[IBKR][resolveConid] Got "no bridge" error, establishing gateway...');
+        await this.establishGateway();
+        // Retry after establishing gateway
+        const retryResp = await this.http.get(`${url}?symbol=${encodeURIComponent(symbol)}&name=${encodeURIComponent(symbol)}&secType=STK`);
+        const retrySnippet = typeof retryResp.data === 'string' ? retryResp.data.slice(0, 200) : JSON.stringify(retryResp.data || {}).slice(0, 200);
+        console.log(`[IBKR][resolveConid] retry after gateway status=${retryResp.status} body=${retrySnippet}`);
+        if (retryResp.status === 200) {
+          const c = parse(retryResp.data);
+          if (typeof c === 'number') return c;
+        }
+      } else if (resp.status === 200) {
         const c = parse(resp.data);
         if (typeof c === 'number') return c;
       }
