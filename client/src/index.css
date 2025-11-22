@@ -84,6 +84,11 @@
 }
 .btn-secondary:hover { @apply bg-white/10; }
 
+.btn-danger {
+  @apply inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-silver disabled:pointer-events-none disabled:opacity-50;
+  @apply bg-red-600 text-white shadow-sm hover:bg-red-700;
+}
+
 .btn-destructive {
   @apply bg-transparent text-red-500 px-4 py-2 font-medium transition-colors border border-red-500;
   border-radius: 0;

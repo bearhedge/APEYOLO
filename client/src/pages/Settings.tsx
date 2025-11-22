@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { RefreshCw, Bell, Shield, Bot, Settings as SettingsIcon, CheckCircle, XCircle, AlertCircle } from 'lucide-react';
+import { RefreshCw, Bell, Shield, Bot, Settings as SettingsIcon, CheckCircle, XCircle, AlertCircle, Trash2 } from 'lucide-react';
 import { SectionHeader } from '@/components/SectionHeader';
 import { Button } from '@/components/ui/button';
 import { StatusStep } from '@/components/ui/StatusStep';
@@ -31,6 +31,7 @@ export function Settings() {
   const [circuitBreaker, setCircuitBreaker] = useState(true);
   const [testResult, setTestResult] = useState<any>(null);
   const [orderResult, setOrderResult] = useState<any>(null);
+  const [clearResult, setClearResult] = useState<any>(null);
 
   // Fetch IBKR status
   const { data: ibkrStatus } = useQuery({
@@ -77,6 +78,21 @@ export function Settings() {
       });
       const data = await response.json();
       setOrderResult(data);
+      return data;
+    },
+  });
+
+  // Clear all open orders mutation
+  const clearOrdersMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch('/api/ibkr/clear-orders', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+      });
+      const data = await response.json();
+      setClearResult(data);
       return data;
     },
   });
@@ -224,6 +240,29 @@ export function Settings() {
               </div>
             )}
 
+            {/* Clear Orders Result */}
+            {clearResult && (
+              <div className={`p-3 rounded-lg border ${
+                clearResult.success ? 'bg-green-900/20 border-green-500/30' : 'bg-red-900/20 border-red-500/30'
+              }`}>
+                <p className={`text-sm font-medium mb-2 ${
+                  clearResult.success ? 'text-green-400' : 'text-red-400'
+                }`}>
+                  {clearResult.message || 'Clear Orders Result'}
+                </p>
+                {clearResult.cleared > 0 && (
+                  <p className="text-xs text-silver">Cleared {clearResult.cleared} order(s)</p>
+                )}
+                {clearResult.errors && clearResult.errors.length > 0 && (
+                  <div className="text-xs text-red-400 mt-1">
+                    {clearResult.errors.map((err: any, i: number) => (
+                      <p key={i}>{err}</p>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Actions */}
             <div className="border-t border-white/10 pt-4 space-y-2">
               {!ibkrStatus?.configured && (
@@ -244,14 +283,26 @@ export function Settings() {
               </Button>
 
               {ibkrStatus?.connected && (
-                <Button
-                  onClick={() => testOrderMutation.mutate()}
-                  className="btn-secondary w-full"
-                  disabled={testOrderMutation.isPending}
-                  data-testid="button-test-order"
-                >
-                  {testOrderMutation.isPending ? 'Placing Test Order...' : 'Test Order (Buy 1 SPY)'}
-                </Button>
+                <>
+                  <Button
+                    onClick={() => testOrderMutation.mutate()}
+                    className="btn-secondary w-full"
+                    disabled={testOrderMutation.isPending}
+                    data-testid="button-test-order"
+                  >
+                    {testOrderMutation.isPending ? 'Placing Test Order...' : 'Test Order (Buy 1 SPY)'}
+                  </Button>
+
+                  <Button
+                    onClick={() => clearOrdersMutation.mutate()}
+                    className="btn-danger w-full flex items-center justify-center gap-2"
+                    disabled={clearOrdersMutation.isPending}
+                    data-testid="button-clear-orders"
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    {clearOrdersMutation.isPending ? 'Clearing Orders...' : 'Clear All Open Orders'}
+                  </Button>
+                </>
               )}
 
               {ibkrStatus?.configured && !ibkrStatus?.connected && (

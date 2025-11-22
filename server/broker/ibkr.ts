@@ -866,6 +866,79 @@ class IbkrClient {
       return [];
     }
   }
+
+  async cancelOrder(orderId: string): Promise<{ success: boolean; message?: string }> {
+    console.log(`[IBKR] Canceling order ${orderId}...`);
+
+    await this.ensureReady();
+
+    const accountId = this.cfg.accountId || 'DU9807013';
+    const cancelUrl = `/v1/api/iserver/account/${accountId}/order/${orderId}`;
+
+    try {
+      const resp = await this.http.delete(cancelUrl);
+      console.log(`[IBKR][cancelOrder] DELETE ${cancelUrl} -> ${resp.status}`);
+
+      if (resp.status >= 200 && resp.status < 300) {
+        return { success: true, message: `Order ${orderId} cancelled` };
+      } else {
+        const errorMsg = typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data || {});
+        return { success: false, message: errorMsg };
+      }
+    } catch (err) {
+      console.error(`[IBKR][cancelOrder] Error canceling order ${orderId}:`, err);
+      return { success: false, message: err.message || 'Unknown error' };
+    }
+  }
+
+  async cancelAllOrders(): Promise<{ success: boolean; cleared: number; errors: string[] }> {
+    console.log('[IBKR] Fetching and canceling all open orders...');
+
+    try {
+      await this.ensureReady();
+
+      const openOrders = await this.getOpenOrders();
+      console.log(`[IBKR] Found ${openOrders.length} open orders`);
+
+      if (openOrders.length === 0) {
+        return { success: true, cleared: 0, errors: [] };
+      }
+
+      const errors: string[] = [];
+      let cleared = 0;
+
+      for (const order of openOrders) {
+        const orderId = order.orderId || order.id;
+        if (!orderId) {
+          errors.push('Order missing ID');
+          continue;
+        }
+
+        const result = await this.cancelOrder(orderId);
+        if (result.success) {
+          cleared++;
+        } else {
+          errors.push(`Failed to cancel ${orderId}: ${result.message}`);
+        }
+
+        // Small delay between cancellations to avoid overwhelming the API
+        await this.sleep(500);
+      }
+
+      return {
+        success: errors.length === 0,
+        cleared,
+        errors
+      };
+    } catch (err) {
+      console.error('[IBKR][cancelAllOrders] Error:', err);
+      return {
+        success: false,
+        cleared: 0,
+        errors: [err.message || 'Unknown error']
+      };
+    }
+  }
 }
 
 // Provider factory and diagnostics access
@@ -902,6 +975,11 @@ export async function placePaperStockOrder(params: { symbol: string; side: 'BUY'
 export async function listPaperOpenOrders() {
   if (!activeClient) throw new Error('IBKR client not initialized');
   return activeClient.getOpenOrders();
+}
+
+export async function clearAllPaperOrders() {
+  if (!activeClient) throw new Error('IBKR client not initialized');
+  return activeClient.cancelAllOrders();
 }
 
 // Ensure IBKR client is ready and return latest diagnostics

@@ -481,6 +481,54 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // IBKR Clear All Orders endpoint
+  app.post('/api/ibkr/clear-orders', async (req, res) => {
+    console.log('[IBKR][ClearOrders] Request to clear all open orders');
+
+    try {
+      // Ensure user is authenticated
+      const session = await getSessionFromRequest(req);
+      if (!session) {
+        return res.status(401).json({
+          success: false,
+          message: 'Not authenticated'
+        });
+      }
+
+      // Check IBKR configuration
+      if (broker.status.provider !== 'ibkr') {
+        return res.status(400).json({
+          success: false,
+          message: 'IBKR broker not configured'
+        });
+      }
+
+      // Import the clear orders function
+      const { clearAllPaperOrders } = await import('./broker/ibkr');
+
+      // Clear all open orders
+      const result = await clearAllPaperOrders();
+
+      // Log to audit trail
+      await storage.createAuditLog({
+        eventType: 'IBKR_CLEAR_ORDERS',
+        details: `Cleared ${result.cleared} open order(s)`,
+        userId: session.userId || 'unknown',
+        status: result.success ? 'SUCCESS' : 'PARTIAL'
+      });
+
+      return res.json(result);
+    } catch (error: any) {
+      console.error('[IBKR][ClearOrders] Error:', error);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to clear orders',
+        cleared: 0,
+        errors: [error.message || String(error)]
+      });
+    }
+  });
+
   // IBKR SSO session creation endpoint for frontend
   app.post('/api/broker/sso', async (_req, res) => {
     try {
