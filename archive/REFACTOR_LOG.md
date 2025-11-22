@@ -41,7 +41,14 @@ We are now refactoring the repository to focus on UI design and furthering the p
 
 | Timestamp | Item | Original Path | Size | Reason | Status |
 |-----------|------|---------------|------|--------|--------|
-| | | | | | Pending |
+| 2024-11-22 16:34 | legacy_backup_20251008/ | / | 416K | Old October backup | Archived |
+| 2024-11-22 16:34 | legacy/ | / | 124K | Outdated client/infra code | Archived |
+| 2024-11-22 16:34 | .venv/ | / | 26MB | Unused Python environment | Archived |
+| 2024-11-22 16:34 | NODE_ENV=development | / | 0B | Accidental file | Archived |
+| 2024-11-22 16:34 | rest-express@1.0.0 | / | 0B | Accidental file | Archived |
+| 2024-11-22 16:34 | replit.md | / | 6.7K | Not using Replit | Archived |
+| 2024-11-22 16:35 | .env.bak.20251029183229 | / | 560B | Old env backup | Archived |
+| 2024-11-22 16:35 | .env.ibkr | / | 340B | Deprecated IBKR config | Archived |
 
 ---
 
@@ -51,7 +58,14 @@ We are now refactoring the repository to focus on UI design and furthering the p
 
 | Timestamp | Item | Original Path | Size | Reason | Status |
 |-----------|------|---------------|------|--------|--------|
-| | | | | | Pending |
+| 2024-11-22 16:37 | WIP/ | / | 248K | Work in progress docs/screenshots | Archived |
+| 2024-11-22 16:37 | IBKR/ | / | 1.1MB | IBKR reference materials & Postman collections | Archived |
+| 2024-11-22 16:37 | attached_assets/ | / | 940K | Old screenshots and design files | Archived |
+| 2024-11-22 16:37 | SESSION_CONTEXT.md | / | 5.0K | Session tracking document | Archived |
+| 2024-11-22 16:37 | DEPLOY_TRIGGER.md | / | 173B | Minimal deployment notes | Archived |
+| 2024-11-22 16:37 | IBKR_SETUP.md | / | 5.0K | IBKR setup documentation | Archived |
+| 2024-11-22 16:37 | test-ibkr-flow.js | / | 2.6K | IBKR test file | Archived |
+| 2024-11-22 16:37 | test_ibkr_auth.ts | / | 2.4K | IBKR auth test file | Archived |
 
 ---
 

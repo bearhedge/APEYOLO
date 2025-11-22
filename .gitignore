@@ -7,3 +7,6 @@ vite.config.ts.*
 .env
 .env.*
 !.env.example
+
+# ClaudePoint checkpoint system
+.claudepoint/
