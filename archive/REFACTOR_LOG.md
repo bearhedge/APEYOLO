@@ -49,6 +49,10 @@ We are now refactoring the repository to focus on UI design and furthering the p
 | 2024-11-22 16:34 | replit.md | / | 6.7K | Not using Replit | Archived |
 | 2024-11-22 16:35 | .env.bak.20251029183229 | / | 560B | Old env backup | Archived |
 | 2024-11-22 16:35 | .env.ibkr | / | 340B | Deprecated IBKR config | Archived |
+| 2024-11-22 16:50 | .venv/ | / | 26MB | Python virtual environment (project uses Node.js only) | Archived |
+| 2024-11-22 16:50 | .env.example | / | 537B | Obsolete env template | Archived |
+| 2024-11-22 16:50 | .env.production.example | / | 962B | Obsolete production env template | Archived |
+| 2024-11-22 16:50 | .replit | / | 264B | Not using Replit platform | Archived |
 
 ---
 
@@ -66,16 +70,19 @@ We are now refactoring the repository to focus on UI design and furthering the p
 | 2024-11-22 16:37 | IBKR_SETUP.md | / | 5.0K | IBKR setup documentation | Archived |
 | 2024-11-22 16:37 | test-ibkr-flow.js | / | 2.6K | IBKR test file | Archived |
 | 2024-11-22 16:37 | test_ibkr_auth.ts | / | 2.4K | IBKR auth test file | Archived |
+| 2024-11-22 16:51 | setup-cloud-sql.sh | / | 3.0K | Cloud SQL setup script (not using database) | Archived |
 
 ---
 
 ### Phase 4: Documentation Reorganization
 
-**New documentation structure created:**
+**Documentation files moved to docs/ folder:**
 
-| Timestamp | Action | Details |
-|-----------|--------|---------|
-| | | Pending |
+| Timestamp | File | Original Path | New Path | Details |
+|-----------|------|---------------|----------|---------|
+| 2024-11-22 16:50 | design_guidelines.md | / | docs/ | Design standards documentation |
+| 2024-11-22 16:50 | GOOGLE_OAUTH_SETUP.md | / | docs/ | Google OAuth setup guide |
+| 2024-11-22 16:50 | PRODUCTION_OAUTH_SETUP.md | / | docs/ | Production OAuth setup guide |
 
 ---
 
@@ -85,7 +92,7 @@ We are now refactoring the repository to focus on UI design and furthering the p
 
 | Timestamp | File/Folder | Change Type | Details |
 |-----------|-------------|-------------|---------|
-| | | | Pending |
+| 2024-11-22 16:49 | .claudepoint/ | Moved | Moved from root to .claude/ folder for better organization |
 
 ---
 
