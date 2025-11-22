@@ -663,6 +663,19 @@ class IbkrClient {
           const c = parse(retryResp.data);
           if (typeof c === 'number') return c;
         }
+      }
+      // If we get "not authenticated" error, re-authenticate
+      else if (resp.status === 401 && bodySnippet.includes('not authenticated')) {
+        console.log('[IBKR][resolveConid] Got "not authenticated" error, re-authenticating...');
+        await this.ensureReady();
+        // Retry after re-authentication
+        const retryResp = await this.http.get(`${url}?symbol=${encodeURIComponent(symbol)}&name=${encodeURIComponent(symbol)}&secType=STK`);
+        const retrySnippet = typeof retryResp.data === 'string' ? retryResp.data.slice(0, 200) : JSON.stringify(retryResp.data || {}).slice(0, 200);
+        console.log(`[IBKR][resolveConid] retry after re-auth status=${retryResp.status} body=${retrySnippet}`);
+        if (retryResp.status === 200) {
+          const c = parse(retryResp.data);
+          if (typeof c === 'number') return c;
+        }
       } else if (resp.status === 200) {
         const c = parse(resp.data);
         if (typeof c === 'number') return c;

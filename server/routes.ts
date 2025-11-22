@@ -352,46 +352,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
         diag.validate.status === 200 &&
         diag.init.status === 200;
 
-      // If all steps are successful, try to place a test order
-      let testOrderResult = null;
+      // If all steps are successful, establish the gateway for future orders
       if (allConnected) {
-        console.log('[IBKR Test] All auth steps successful, attempting to place test order...');
+        console.log('[IBKR Test] All auth steps successful, establishing gateway for trading...');
         try {
-          const orderResult = await placePaperStockOrder({
-            symbol: 'SPY',
-            side: 'BUY',
-            quantity: 1,
-            orderType: 'MKT',
-            tif: 'DAY',
-            outsideRth: false
-          });
-
-          testOrderResult = {
-            success: !orderResult.status.startsWith('rejected'),
-            orderId: orderResult.id,
-            status: orderResult.status,
-            message: orderResult.id
-              ? `Test order placed! Order ID: ${orderResult.id}. Check your IBKR mobile app to see the order.`
-              : `Order failed: ${orderResult.status}. This may be due to market hours or account restrictions.`
-          };
-
-          console.log('[IBKR Test] Order result:', testOrderResult);
-        } catch (orderErr: any) {
-          console.error('[IBKR Test] Order placement error:', orderErr);
-          testOrderResult = {
-            success: false,
-            status: 'error',
-            message: `Connection OK but order failed: ${orderErr.message || String(orderErr)}`
-          };
+          // Call the establishGateway to prepare for trading
+          const broker = getBroker();
+          if (broker && 'establishGateway' in broker) {
+            await (broker as any).establishGateway();
+            console.log('[IBKR Test] Gateway established successfully');
+          }
+        } catch (err) {
+          console.error('[IBKR Test] Failed to establish gateway:', err);
         }
       }
 
       return res.json({
         success: allConnected,
         message: allConnected
-          ? testOrderResult?.success
-            ? `IBKR connected and test order placed! Order ID: ${testOrderResult.orderId}`
-            : 'IBKR connected but test order failed. See order details below.'
+          ? 'IBKR connected successfully! You can now place orders using the Test Order button.'
           : 'IBKR connection failed. Check diagnostics for details.',
         steps: {
           oauth: {
@@ -414,8 +393,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             success: diag.init.status === 200,
             message: diag.init.status === 200 ? 'Initialization complete' : 'Initialization failed'
           }
-        },
-        ...(testOrderResult ? { testOrder: testOrderResult } : {})
+        }
       });
     } catch (error: any) {
       return res.status(500).json({
