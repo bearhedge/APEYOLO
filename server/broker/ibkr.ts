@@ -943,43 +943,104 @@ class IbkrClient {
 
   async getOpenOrders(): Promise<any[]> {
     await this.ensureReady();
+
+    // Re-ensure account selection with longer delay (matching working order placement pattern)
     await this.ensureAccountSelected();
+    await this.sleep(1000); // Give IBKR more time to register account selection
 
     const reqId = randomUUID();
     const acct = this.accountId || process.env.IBKR_ACCOUNT_ID || '';
-    const activeRe = /(Submitted|PreSubmitted|PendingSubmit|PendingCancel|Working)/i;
+
+    console.log(`[IBKR][OPEN_ORDERS ${reqId}] Using accountId: ${acct}`);
+    console.log(`[IBKR][OPEN_ORDERS ${reqId}] Account selection state: accountId=${this.accountId}, env=${process.env.IBKR_ACCOUNT_ID}`);
+
+    // Initialize portfolio subaccounts (per IBKR documentation requirement)
+    try {
+      const subacctUrl = `/v1/api/portfolio/subaccounts`;
+      console.log(`[IBKR][OPEN_ORDERS ${reqId}] Initializing portfolio subaccounts: GET ${subacctUrl}`);
+      const subacctResp = await this.http.get(subacctUrl);
+      console.log(`[IBKR][OPEN_ORDERS ${reqId}] Subaccounts response: ${subacctResp.status}, data=${JSON.stringify(subacctResp.data).slice(0, 200)}`);
+    } catch (err) {
+      console.warn(`[IBKR][OPEN_ORDERS ${reqId}] Portfolio subaccounts init failed (non-fatal):`, err.message);
+    }
+
+    // Expanded status regex to catch ALL possible order states
+    const activeRe = /(Submitted|PreSubmitted|PendingSubmit|PendingCancel|Working|Filled|PreSubmitted|ApiPending|ApiCancelled)/i;
 
     // Helper to normalize various CP shapes
     const normalize = (raw: any): any[] => {
+      console.log(`[IBKR][OPEN_ORDERS ${reqId}] Normalizing raw response type: ${typeof raw}, isArray: ${Array.isArray(raw)}`);
       const arr = Array.isArray(raw) ? raw : (raw?.orders || raw?.data || []);
-      return (arr || []).map((o: any) => ({
-        id: String(o.order_id || o.orderId || o.id || o.c_oid || '').trim(),
-        status: String(o.order_status || o.status || ''),
-        symbol: o.ticker || o.symbol,
-        quantity: o.size || o.quantity,
-        side: o.side,
-        raw: o,
-      })).filter((o: any) => o.id && activeRe.test(o.status || ''));
+      console.log(`[IBKR][OPEN_ORDERS ${reqId}] Extracted array length: ${arr.length}`);
+
+      const normalized = (arr || []).map((o: any, idx: number) => {
+        const id = String(o.order_id || o.orderId || o.id || o.c_oid || '').trim();
+        const status = String(o.order_status || o.status || '');
+        const result = {
+          id,
+          status,
+          symbol: o.ticker || o.symbol || o.conid,
+          quantity: o.size || o.quantity || o.totalSize,
+          side: o.side || o.action,
+          orderType: o.orderType || o.order_type,
+          raw: o,
+        };
+        console.log(`[IBKR][OPEN_ORDERS ${reqId}] Order ${idx}: id=${result.id}, status=${result.status}, symbol=${result.symbol}, qty=${result.quantity}, side=${result.side}`);
+        return result;
+      });
+
+      const filtered = normalized.filter((o: any) => {
+        const hasId = !!o.id;
+        const matchesStatus = activeRe.test(o.status || '');
+        console.log(`[IBKR][OPEN_ORDERS ${reqId}] Filter check - id=${o.id}: hasId=${hasId}, matchesStatus=${matchesStatus}, status="${o.status}"`);
+        return hasId && matchesStatus;
+      });
+
+      console.log(`[IBKR][OPEN_ORDERS ${reqId}] Filtered from ${normalized.length} to ${filtered.length} active orders`);
+      return filtered;
     };
 
-    // Try wide endpoint (no filters)
-    const url1 = `/v1/api/iserver/account/orders`;
-    console.log(`[IBKR][OPEN_ORDERS ${reqId}] GET ${url1}`);
-    const r1 = await this.http.get(url1);
-    console.log(`[IBKR][OPEN_ORDERS ${reqId}] -> ${r1.status} body=${(typeof r1.data==='string'?r1.data:r1.data?JSON.stringify(r1.data):'').slice(0,300)}`);
-    let list = r1.status >= 200 && r1.status < 300 ? normalize(r1.data) : [];
-
-    // Fallback to account-qualified endpoint if needed
-    if (!list.length && acct) {
-      const url2 = `/v1/api/iserver/account/${encodeURIComponent(acct)}/orders`;
-      console.log(`[IBKR][OPEN_ORDERS ${reqId}] Fallback GET ${url2}`);
-      const r2 = await this.http.get(url2);
-      console.log(`[IBKR][OPEN_ORDERS ${reqId}] -> ${r2.status} body=${(typeof r2.data==='string'?r2.data:r2.data?JSON.stringify(r2.data):'').slice(0,300)}`);
-      if (r2.status >= 200 && r2.status < 300) list = normalize(r2.data);
+    // PRIMARY: Use account-qualified endpoint (matching the working order placement pattern)
+    if (!acct) {
+      console.error(`[IBKR][OPEN_ORDERS ${reqId}] ERROR: No account ID available!`);
+      return [];
     }
 
-    console.log(`[IBKR][OPEN_ORDERS ${reqId}] normalized_count=${list.length}`);
-    return list;
+    const url1 = `/v1/api/iserver/account/${encodeURIComponent(acct)}/orders`;
+    console.log(`[IBKR][OPEN_ORDERS ${reqId}] PRIMARY: GET ${url1}`);
+    try {
+      const r1 = await this.http.get(url1);
+      console.log(`[IBKR][OPEN_ORDERS ${reqId}] PRIMARY -> ${r1.status}`);
+      console.log(`[IBKR][OPEN_ORDERS ${reqId}] PRIMARY body (first 500 chars): ${(typeof r1.data==='string'?r1.data:JSON.stringify(r1.data)||'').slice(0,500)}`);
+
+      if (r1.status >= 200 && r1.status < 300) {
+        const list = normalize(r1.data);
+        console.log(`[IBKR][OPEN_ORDERS ${reqId}] PRIMARY SUCCESS: Found ${list.length} active orders`);
+        return list;
+      }
+    } catch (err) {
+      console.error(`[IBKR][OPEN_ORDERS ${reqId}] PRIMARY endpoint error:`, err.message);
+    }
+
+    // FALLBACK: Try generic endpoint
+    const url2 = `/v1/api/iserver/account/orders`;
+    console.log(`[IBKR][OPEN_ORDERS ${reqId}] FALLBACK: GET ${url2}`);
+    try {
+      const r2 = await this.http.get(url2);
+      console.log(`[IBKR][OPEN_ORDERS ${reqId}] FALLBACK -> ${r2.status}`);
+      console.log(`[IBKR][OPEN_ORDERS ${reqId}] FALLBACK body (first 500 chars): ${(typeof r2.data==='string'?r2.data:JSON.stringify(r2.data)||'').slice(0,500)}`);
+
+      if (r2.status >= 200 && r2.status < 300) {
+        const list = normalize(r2.data);
+        console.log(`[IBKR][OPEN_ORDERS ${reqId}] FALLBACK SUCCESS: Found ${list.length} active orders`);
+        return list;
+      }
+    } catch (err) {
+      console.error(`[IBKR][OPEN_ORDERS ${reqId}] FALLBACK endpoint error:`, err.message);
+    }
+
+    console.log(`[IBKR][OPEN_ORDERS ${reqId}] FINAL RESULT: No orders found from any endpoint`);
+    return [];
   }
 
   async cancelOrder(orderId: string): Promise<{ success: boolean; message?: string }> {
