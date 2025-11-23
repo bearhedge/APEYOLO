@@ -33,14 +33,21 @@ export function Settings() {
   const [orderResult, setOrderResult] = useState<any>(null);
   const [clearResult, setClearResult] = useState<any>(null);
 
-  // Fetch IBKR status
-  const { data: ibkrStatus } = useQuery({
+  // Fetch IBKR status with adaptive polling
+  const { data: ibkrStatus, refetch: refetchStatus } = useQuery({
     queryKey: ['/api/ibkr/status'],
     queryFn: async () => {
       const response = await fetch('/api/ibkr/status');
       return response.json();
     },
-    refetchInterval: 30000, // Refresh every 30 seconds
+    refetchInterval: (data) => {
+      // Adaptive polling based on connection state
+      if (!data?.configured) return false; // Don't poll if not configured
+      if (data?.configured && !data?.connected) return 3000; // 3s when connecting
+      return 30000; // 30s when stable
+    },
+    refetchOnWindowFocus: true,
+    refetchOnMount: true,
   });
 
   // Test connection mutation
@@ -51,12 +58,20 @@ export function Settings() {
       setTestResult(data);
       return data;
     },
+    onSuccess: () => {
+      // Trigger immediate refetch after test
+      refetchStatus();
+    },
   });
 
   const reconnectMutation = useMutation({
     mutationFn: async () => {
       const response = await fetch('/api/broker/oauth', { method: 'POST' });
       return response.json();
+    },
+    onSuccess: () => {
+      // Trigger immediate refetch after reconnect
+      refetchStatus();
     },
   });
 
@@ -295,7 +310,7 @@ export function Settings() {
 
                   <Button
                     onClick={() => clearOrdersMutation.mutate()}
-                    className="btn-danger w-full flex items-center justify-center gap-2"
+                    className="btn-secondary w-full flex items-center justify-center gap-2"
                     disabled={clearOrdersMutation.isPending}
                     data-testid="button-clear-orders"
                   >

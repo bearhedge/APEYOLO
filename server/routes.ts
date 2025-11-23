@@ -14,8 +14,25 @@ import {
 } from "@shared/schema";
 import { z } from "zod";
 import cookieParser from "cookie-parser";
+import jwt from "jsonwebtoken";
+import crypto from "crypto";
 import authRoutes from "./auth.js";
 import ibkrRoutes from "./ibkrRoutes.js";
+
+// Helper function to get session from request
+async function getSessionFromRequest(req: any) {
+  try {
+    const token = req.cookies?.auth_token;
+    if (!token) return null;
+
+    const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
+    const decoded = jwt.verify(token, JWT_SECRET);
+    return decoded;
+  } catch (error) {
+    console.error('[Auth] Token verification failed:', error);
+    return null;
+  }
+}
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Add cookie parser middleware
