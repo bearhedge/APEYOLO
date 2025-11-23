@@ -27,3 +27,11 @@ Next:
 - Keep session warm (Cloud Scheduler tickle every 2m) and set Cloud Run min instances = 1 for reliability.
 - Optional: add post‑deploy smoke test in Cloud Build to assert `/api/ibkr/test` success.
 
+### Patches (later on 2025-11-22)
+
+- Fix: Detect open orders reliably and clear them
+  - `server/broker/ibkr.ts#getOpenOrders` now ensures ready + account selection, queries both `/v1/api/iserver/account/orders` and `/v1/api/iserver/account/{acct}/orders`, normalizes shapes, and filters active statuses (Submitted, PreSubmitted, PendingSubmit, PendingCancel, Working).
+  - `cancelOrder` uses account-qualified DELETE with proper URL encoding.
+  - Logging shows normalized_count and first bytes of responses for diagnosis.
+- UX: Hybrid auto‑reconnect in Settings
+  - `client/src/pages/Settings.tsx` adds gentle auto warm/reconnect with exponential backoff while disconnected, keeping the manual button.

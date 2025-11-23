@@ -75,6 +75,55 @@ export function Settings() {
     },
   });
 
+  // Warm endpoint (runs full readiness flow server-side)
+  const warmMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch('/api/broker/warm');
+      return response.json();
+    },
+    onSuccess: () => refetchStatus(),
+  });
+
+  // Hybrid auto-reconnect: auto warm/reconnect with gentle backoff; manual button remains
+  const [lastAttemptAt, setLastAttemptAt] = useState<number>(0);
+  const [backoffMs, setBackoffMs] = useState<number>(5000);
+
+  useEffect(() => {
+    const now = Date.now();
+    if (!ibkrStatus?.configured) return;
+    if (ibkrStatus?.connected) {
+      // reset backoff on success
+      if (backoffMs !== 5000) setBackoffMs(5000);
+      return;
+    }
+    // avoid thrash while disconnected
+    if (now - lastAttemptAt < backoffMs) return;
+    setLastAttemptAt(now);
+    // try warm first; if not ok, fall back to reconnect
+    warmMutation.mutate(undefined, {
+      onSuccess: (d: any) => {
+        if (!d?.ok) {
+          reconnectMutation.mutate(undefined, {
+            onSettled: () => {
+              setBackoffMs((ms) => Math.min(60000, ms * 2));
+              refetchStatus();
+            },
+          });
+        } else {
+          refetchStatus();
+        }
+      },
+      onError: () => {
+        reconnectMutation.mutate(undefined, {
+          onSettled: () => {
+            setBackoffMs((ms) => Math.min(60000, ms * 2));
+            refetchStatus();
+          },
+        });
+      },
+    });
+  }, [ibkrStatus?.configured, ibkrStatus?.connected, lastAttemptAt, backoffMs]);
+
   // Test order mutation
   const testOrderMutation = useMutation({
     mutationFn: async () => {

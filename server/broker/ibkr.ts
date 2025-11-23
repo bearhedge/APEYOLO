@@ -945,51 +945,41 @@ class IbkrClient {
     await this.ensureReady();
     await this.ensureAccountSelected();
 
-    // Get all open orders - need to pass filters to include all active order states
-    // IBKR filters: Submitted, PreSubmitted, PendingSubmit, Filled, Cancelled, PendingCancel
-    // We want active orders that can be cancelled
-    const filters = 'Submitted,PreSubmitted,PendingSubmit,PendingCancel,Working';
-    const ordersUrl = `/v1/api/iserver/account/orders?filters=${encodeURIComponent(filters)}`;
-    const reqId3 = randomUUID();
+    const reqId = randomUUID();
+    const acct = this.accountId || process.env.IBKR_ACCOUNT_ID || '';
+    const activeRe = /(Submitted|PreSubmitted|PendingSubmit|PendingCancel|Working)/i;
 
-    console.log(`[IBKR][${reqId3}] Fetching open orders with filters: ${filters}`);
+    // Helper to normalize various CP shapes
+    const normalize = (raw: any): any[] => {
+      const arr = Array.isArray(raw) ? raw : (raw?.orders || raw?.data || []);
+      return (arr || []).map((o: any) => ({
+        id: String(o.order_id || o.orderId || o.id || o.c_oid || '').trim(),
+        status: String(o.order_status || o.status || ''),
+        symbol: o.ticker || o.symbol,
+        quantity: o.size || o.quantity,
+        side: o.side,
+        raw: o,
+      })).filter((o: any) => o.id && activeRe.test(o.status || ''));
+    };
 
-    // CP endpoint - use cookie auth only, no Authorization header
-    const resp3 = await this.http.get(ordersUrl);
-    const http3 = resp3.status;
+    // Try wide endpoint (no filters)
+    const url1 = `/v1/api/iserver/account/orders`;
+    console.log(`[IBKR][OPEN_ORDERS ${reqId}] GET ${url1}`);
+    const r1 = await this.http.get(url1);
+    console.log(`[IBKR][OPEN_ORDERS ${reqId}] -> ${r1.status} body=${(typeof r1.data==='string'?r1.data:r1.data?JSON.stringify(r1.data):'').slice(0,300)}`);
+    let list = r1.status >= 200 && r1.status < 300 ? normalize(r1.data) : [];
 
-    // Log the raw response for debugging
-    console.log(`[IBKR][${reqId3}] GET /v1/api/iserver/account/orders response status: ${http3}`);
-    console.log(`[IBKR][${reqId3}] Response data:`, JSON.stringify(resp3.data).slice(0, 500));
-
-    if (!(resp3.status >= 200 && resp3.status < 300)) {
-      let snippet = "";
-      try { snippet = (typeof resp3.data === 'string' ? resp3.data : JSON.stringify(resp3.data || {})).slice(0,200); } catch {}
-      console.error(`[IBKR][${reqId3}] GET /v1/api/iserver/account/orders -> ${http3} ${snippet}`);
-      return [];
+    // Fallback to account-qualified endpoint if needed
+    if (!list.length && acct) {
+      const url2 = `/v1/api/iserver/account/${encodeURIComponent(acct)}/orders`;
+      console.log(`[IBKR][OPEN_ORDERS ${reqId}] Fallback GET ${url2}`);
+      const r2 = await this.http.get(url2);
+      console.log(`[IBKR][OPEN_ORDERS ${reqId}] -> ${r2.status} body=${(typeof r2.data==='string'?r2.data:r2.data?JSON.stringify(r2.data):'').slice(0,300)}`);
+      if (r2.status >= 200 && r2.status < 300) list = normalize(r2.data);
     }
 
-    try {
-      const data = resp3.data;
-      const list = Array.isArray(data) ? data : (data?.orders || data?.data || []);
-      console.log(`[IBKR][${reqId3}] Found ${list.length} open orders`);
-
-      // Log each order for debugging
-      list.forEach((order: any, i: number) => {
-        console.log(`[IBKR][${reqId3}] Order ${i + 1}:`, {
-          orderId: order.orderId || order.id,
-          status: order.status,
-          symbol: order.ticker || order.symbol,
-          quantity: order.size || order.quantity,
-          side: order.side
-        });
-      });
-
-      return list;
-    } catch (error) {
-      console.error(`[IBKR][${reqId3}] Error parsing orders response:`, error);
-      return [];
-    }
+    console.log(`[IBKR][OPEN_ORDERS ${reqId}] normalized_count=${list.length}`);
+    return list;
   }
 
   async cancelOrder(orderId: string): Promise<{ success: boolean; message?: string }> {
@@ -997,8 +987,8 @@ class IbkrClient {
 
     await this.ensureReady();
 
-    const accountId = this.accountId || 'DU9807013';
-    const cancelUrl = `/v1/api/iserver/account/${accountId}/order/${orderId}`;
+    const accountId = this.accountId || process.env.IBKR_ACCOUNT_ID || '';
+    const cancelUrl = `/v1/api/iserver/account/${encodeURIComponent(accountId)}/order/${encodeURIComponent(orderId)}`;
 
     try {
       const resp = await this.http.delete(cancelUrl);
