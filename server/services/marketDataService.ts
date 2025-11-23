@@ -1,0 +1,387 @@
+/**
+ * Market Data Service
+ * Fetches real-time market data from IBKR for SPY, VIX, and options
+ */
+
+import { getBroker } from "../broker/index.js";
+import { ensureIbkrReady } from "../broker/ibkr.js";
+
+export interface MarketData {
+  symbol: string;
+  price: number;
+  bid: number;
+  ask: number;
+  volume: number;
+  change: number;
+  changePercent: number;
+  timestamp: Date;
+}
+
+export interface OptionChain {
+  underlying: string;
+  underlyingPrice: number;
+  expirationDate: string;
+  calls: OptionContract[];
+  puts: OptionContract[];
+}
+
+export interface OptionContract {
+  symbol: string;
+  strike: number;
+  expiration: string;
+  optionType: 'CALL' | 'PUT';
+  bid: number;
+  ask: number;
+  last: number;
+  volume: number;
+  openInterest: number;
+  delta: number;
+  gamma: number;
+  theta: number;
+  vega: number;
+  impliedVolatility: number;
+}
+
+export interface VIXData {
+  value: number;
+  change: number;
+  changePercent: number;
+  high: number;
+  low: number;
+  timestamp: Date;
+}
+
+// Cache for market data (avoid excessive API calls)
+class MarketDataCache {
+  private cache: Map<string, { data: any; timestamp: number }> = new Map();
+  private ttl: number = 5000; // 5 seconds TTL
+
+  get(key: string): any | null {
+    const cached = this.cache.get(key);
+    if (!cached) return null;
+
+    const age = Date.now() - cached.timestamp;
+    if (age > this.ttl) {
+      this.cache.delete(key);
+      return null;
+    }
+
+    return cached.data;
+  }
+
+  set(key: string, data: any): void {
+    this.cache.set(key, { data, timestamp: Date.now() });
+  }
+
+  clear(): void {
+    this.cache.clear();
+  }
+}
+
+const cache = new MarketDataCache();
+
+/**
+ * Get real-time market data for a symbol
+ */
+export async function getMarketData(symbol: string): Promise<MarketData> {
+  // Check cache first
+  const cacheKey = `market:${symbol}`;
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+
+  const broker = getBroker();
+
+  // Use mock data if not connected to IBKR
+  if (broker.status.provider === 'mock') {
+    const mockData: MarketData = {
+      symbol,
+      price: symbol === 'SPY' ? 450.50 + (Math.random() - 0.5) * 2 :
+             symbol === 'VIX' ? 15.30 + (Math.random() - 0.5) * 0.5 : 100,
+      bid: 0,
+      ask: 0,
+      volume: Math.floor(Math.random() * 1000000),
+      change: (Math.random() - 0.5) * 5,
+      changePercent: (Math.random() - 0.5) * 2,
+      timestamp: new Date()
+    };
+    mockData.bid = mockData.price - 0.01;
+    mockData.ask = mockData.price + 0.01;
+
+    cache.set(cacheKey, mockData);
+    return mockData;
+  }
+
+  // Ensure IBKR is ready
+  await ensureIbkrReady();
+
+  // TODO: Implement actual IBKR market data fetching
+  // For now, return enhanced mock data
+  try {
+    // This would be the actual IBKR API call
+    // const marketData = await broker.api.getMarketData(symbol);
+
+    // Mock response for now
+    const marketData: MarketData = {
+      symbol,
+      price: symbol === 'SPY' ? 450.50 : 15.30,
+      bid: symbol === 'SPY' ? 450.49 : 15.29,
+      ask: symbol === 'SPY' ? 450.51 : 15.31,
+      volume: 52341234,
+      change: 2.45,
+      changePercent: 0.54,
+      timestamp: new Date()
+    };
+
+    cache.set(cacheKey, marketData);
+    return marketData;
+  } catch (error) {
+    console.error(`[MarketData] Error fetching data for ${symbol}:`, error);
+    throw error;
+  }
+}
+
+/**
+ * Get VIX data (volatility index)
+ */
+export async function getVIXData(): Promise<VIXData> {
+  const cacheKey = 'vix:data';
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+
+  const broker = getBroker();
+
+  if (broker.status.provider === 'mock') {
+    const vixData: VIXData = {
+      value: 15.30 + (Math.random() - 0.5) * 0.5,
+      change: (Math.random() - 0.5) * 0.5,
+      changePercent: (Math.random() - 0.5) * 3,
+      high: 16.20,
+      low: 14.80,
+      timestamp: new Date()
+    };
+
+    cache.set(cacheKey, vixData);
+    return vixData;
+  }
+
+  await ensureIbkrReady();
+
+  // TODO: Implement actual VIX data fetching from IBKR
+  const vixData: VIXData = {
+    value: 15.30,
+    change: 0.45,
+    changePercent: 3.02,
+    high: 16.20,
+    low: 14.80,
+    timestamp: new Date()
+  };
+
+  cache.set(cacheKey, vixData);
+  return vixData;
+}
+
+/**
+ * Get option chain for a symbol and expiration
+ */
+export async function getOptionChain(
+  symbol: string,
+  expirationDate: string
+): Promise<OptionChain> {
+  const cacheKey = `options:${symbol}:${expirationDate}`;
+  const cached = cache.get(cacheKey);
+  if (cached) return cached;
+
+  const broker = getBroker();
+  const marketData = await getMarketData(symbol);
+  const underlyingPrice = marketData.price;
+
+  if (broker.status.provider === 'mock') {
+    // Generate mock option chain
+    const strikes = [];
+    const baseStrike = Math.round(underlyingPrice / 5) * 5;
+
+    for (let i = -10; i <= 10; i++) {
+      strikes.push(baseStrike + i * 5);
+    }
+
+    const calls: OptionContract[] = strikes.map(strike => ({
+      symbol: `${symbol}_${expirationDate}_C_${strike}`,
+      strike,
+      expiration: expirationDate,
+      optionType: 'CALL' as const,
+      bid: Math.max(0, underlyingPrice - strike - 0.5 + Math.random()),
+      ask: Math.max(0, underlyingPrice - strike + 0.5 + Math.random()),
+      last: Math.max(0, underlyingPrice - strike + Math.random()),
+      volume: Math.floor(Math.random() * 1000),
+      openInterest: Math.floor(Math.random() * 5000),
+      delta: strike < underlyingPrice ? 0.5 + (underlyingPrice - strike) / 100 : 0.5 - (strike - underlyingPrice) / 100,
+      gamma: 0.01 + Math.random() * 0.02,
+      theta: -(0.05 + Math.random() * 0.1),
+      vega: 0.1 + Math.random() * 0.2,
+      impliedVolatility: 0.15 + Math.random() * 0.1
+    }));
+
+    const puts: OptionContract[] = strikes.map(strike => ({
+      symbol: `${symbol}_${expirationDate}_P_${strike}`,
+      strike,
+      expiration: expirationDate,
+      optionType: 'PUT' as const,
+      bid: Math.max(0, strike - underlyingPrice - 0.5 + Math.random()),
+      ask: Math.max(0, strike - underlyingPrice + 0.5 + Math.random()),
+      last: Math.max(0, strike - underlyingPrice + Math.random()),
+      volume: Math.floor(Math.random() * 1000),
+      openInterest: Math.floor(Math.random() * 5000),
+      delta: strike > underlyingPrice ? -0.5 + (strike - underlyingPrice) / 100 : -0.5 - (underlyingPrice - strike) / 100,
+      gamma: 0.01 + Math.random() * 0.02,
+      theta: -(0.05 + Math.random() * 0.1),
+      vega: 0.1 + Math.random() * 0.2,
+      impliedVolatility: 0.15 + Math.random() * 0.1
+    }));
+
+    const optionChain: OptionChain = {
+      underlying: symbol,
+      underlyingPrice,
+      expirationDate,
+      calls,
+      puts
+    };
+
+    cache.set(cacheKey, optionChain);
+    return optionChain;
+  }
+
+  await ensureIbkrReady();
+
+  // TODO: Implement actual option chain fetching from IBKR
+  // This would use the IBKR API to get real option chain data
+  // For now, return mock data
+
+  const optionChain: OptionChain = {
+    underlying: symbol,
+    underlyingPrice,
+    expirationDate,
+    calls: [],
+    puts: []
+  };
+
+  cache.set(cacheKey, optionChain);
+  return optionChain;
+}
+
+/**
+ * Get 0DTE (zero days to expiration) options
+ */
+export async function get0DTEOptions(symbol: string): Promise<OptionChain> {
+  // Get today's date in YYYYMMDD format
+  const today = new Date();
+  const year = today.getFullYear();
+  const month = String(today.getMonth() + 1).padStart(2, '0');
+  const day = String(today.getDate()).padStart(2, '0');
+  const expirationDate = `${year}${month}${day}`;
+
+  return getOptionChain(symbol, expirationDate);
+}
+
+/**
+ * Find option contracts by delta
+ */
+export async function findOptionsByDelta(
+  symbol: string,
+  targetDelta: number,
+  optionType: 'CALL' | 'PUT',
+  expirationDate?: string
+): Promise<OptionContract[]> {
+  const expiry = expirationDate || new Date().toISOString().split('T')[0].replace(/-/g, '');
+  const chain = await getOptionChain(symbol, expiry);
+
+  const options = optionType === 'CALL' ? chain.calls : chain.puts;
+  const targetAbsDelta = Math.abs(targetDelta);
+
+  // Find options close to target delta
+  const filtered = options.filter(opt => {
+    const absDelta = Math.abs(opt.delta);
+    return absDelta >= targetAbsDelta - 0.05 && absDelta <= targetAbsDelta + 0.05;
+  });
+
+  // Sort by how close to target delta
+  filtered.sort((a, b) => {
+    const aDiff = Math.abs(Math.abs(a.delta) - targetAbsDelta);
+    const bDiff = Math.abs(Math.abs(b.delta) - targetAbsDelta);
+    return aDiff - bDiff;
+  });
+
+  return filtered;
+}
+
+/**
+ * Calculate option greeks and theoretical value
+ */
+export async function calculateOptionGreeks(
+  underlyingPrice: number,
+  strike: number,
+  expirationDays: number,
+  volatility: number,
+  riskFreeRate: number = 0.05,
+  optionType: 'CALL' | 'PUT' = 'CALL'
+): Promise<{
+  delta: number;
+  gamma: number;
+  theta: number;
+  vega: number;
+  theoreticalValue: number;
+}> {
+  // This would typically use Black-Scholes or similar model
+  // For now, return simplified calculations
+
+  const timeToExpiry = expirationDays / 365;
+  const moneyness = underlyingPrice / strike;
+
+  // Simplified delta calculation
+  let delta: number;
+  if (optionType === 'CALL') {
+    if (moneyness > 1.1) delta = 0.9; // Deep ITM
+    else if (moneyness > 1.05) delta = 0.7;
+    else if (moneyness > 0.95) delta = 0.5; // ATM
+    else if (moneyness > 0.9) delta = 0.3;
+    else delta = 0.1; // Deep OTM
+  } else {
+    if (moneyness < 0.9) delta = -0.9; // Deep ITM
+    else if (moneyness < 0.95) delta = -0.7;
+    else if (moneyness < 1.05) delta = -0.5; // ATM
+    else if (moneyness < 1.1) delta = -0.3;
+    else delta = -0.1; // Deep OTM
+  }
+
+  // Simplified other greeks
+  const gamma = 0.02 * Math.exp(-Math.abs(moneyness - 1) * 10);
+  const theta = -0.1 * (1 / Math.max(timeToExpiry, 0.01));
+  const vega = 0.2 * Math.exp(-Math.abs(moneyness - 1) * 5);
+
+  // Simplified theoretical value
+  let theoreticalValue: number;
+  if (optionType === 'CALL') {
+    theoreticalValue = Math.max(0, underlyingPrice - strike) +
+                      volatility * Math.sqrt(timeToExpiry) * 2;
+  } else {
+    theoreticalValue = Math.max(0, strike - underlyingPrice) +
+                      volatility * Math.sqrt(timeToExpiry) * 2;
+  }
+
+  return {
+    delta,
+    gamma,
+    theta,
+    vega,
+    theoreticalValue
+  };
+}
+
+/**
+ * Clear the market data cache
+ */
+export function clearMarketDataCache(): void {
+  cache.clear();
+}
+
+// Export the cache instance for testing
+export { cache as marketDataCache };

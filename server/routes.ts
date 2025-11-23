@@ -18,6 +18,7 @@ import jwt from "jsonwebtoken";
 import crypto from "crypto";
 import authRoutes from "./auth.js";
 import ibkrRoutes from "./ibkrRoutes.js";
+import engineRoutes from "./engineRoutes.js";
 
 // Helper function to get session from request
 async function getSessionFromRequest(req: any) {
@@ -44,25 +45,43 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Register IBKR strategy routes
   app.use('/api/ibkr', ibkrRoutes);
 
+  // Register Engine routes
+  app.use('/api/engine', engineRoutes);
+
   const httpServer = createServer(app);
 
   // WebSocket server for live data
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
   // Select broker provider (mock or ibkr)
   const broker = getBroker();
-  
+
+  // Store WebSocket clients for broadcasting
+  const wsClients = new Set<WebSocket>();
+
   wss.on('connection', (ws) => {
     console.log('Client connected to websocket');
-    
+    wsClients.add(ws);
+
     // Send initial data
     ws.send(JSON.stringify({
       type: 'connected',
       message: 'Connected to Orca Options live data feed'
     }));
 
+    // Send initial engine status
+    ws.send(JSON.stringify({
+      type: 'engine_status',
+      data: {
+        brokerConnected: broker.status.status === 'Connected',
+        brokerProvider: broker.status.provider,
+        timestamp: new Date().toISOString()
+      }
+    }));
+
     // Simulate live data updates
-    const interval = setInterval(() => {
+    const interval = setInterval(async () => {
       if (ws.readyState === WebSocket.OPEN) {
+        // Price updates
         ws.send(JSON.stringify({
           type: 'price_update',
           data: {
@@ -72,14 +91,56 @@ export async function registerRoutes(app: Express): Promise<Server> {
             timestamp: new Date().toISOString()
           }
         }));
+
+        // Engine status updates (if using real data)
+        if (broker.status.provider === 'ibkr') {
+          try {
+            const { getMarketData, getVIXData } = await import('./services/marketDataService.js');
+            const spyData = await getMarketData('SPY');
+            const vixData = await getVIXData();
+
+            ws.send(JSON.stringify({
+              type: 'engine_market_data',
+              data: {
+                spy: {
+                  price: spyData.price,
+                  change: spyData.changePercent
+                },
+                vix: {
+                  value: vixData.value,
+                  change: vixData.changePercent
+                },
+                timestamp: new Date().toISOString()
+              }
+            }));
+          } catch (error) {
+            console.error('[WebSocket] Error fetching market data:', error);
+          }
+        }
       }
     }, 5000);
 
     ws.on('close', () => {
       clearInterval(interval);
+      wsClients.delete(ws);
       console.log('Client disconnected from websocket');
     });
   });
+
+  // Export broadcast function for engine updates
+  (global as any).broadcastEngineUpdate = (data: any) => {
+    const message = JSON.stringify({
+      type: 'engine_update',
+      data,
+      timestamp: new Date().toISOString()
+    });
+
+    wsClients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(message);
+      }
+    });
+  };
 
   // Account info (via provider)
   app.get('/api/account', async (req, res) => {

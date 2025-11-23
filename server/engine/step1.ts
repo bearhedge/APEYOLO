@@ -2,9 +2,11 @@
  * Step 1: Market Regime Check
  * Determines whether market conditions are suitable for trading
  *
- * Current implementation: Simple trading hours check
- * Future enhancements: VIX levels, market trend, volatility regime
+ * Enhanced implementation with real market data integration
+ * Checks: Trading hours, VIX levels, market trend, volatility regime
  */
+
+import { getMarketData, getVIXData } from '../services/marketDataService.js';
 
 export interface MarketRegime {
   shouldTrade: boolean;
@@ -14,6 +16,9 @@ export interface MarketRegime {
   metadata?: {
     currentTime?: string;
     vix?: number;
+    vixChange?: number;
+    spyPrice?: number;
+    spyChange?: number;
     trend?: string;
   };
 }
@@ -70,10 +75,10 @@ function analyzeTrend(): 'BULLISH' | 'BEARISH' | 'NEUTRAL' {
 
 /**
  * Main function: Analyze market regime and determine if we should trade
- * @param mockVix - Optional mock VIX value for testing
+ * @param useRealData - Whether to use real market data (default: true)
  * @returns Market regime analysis with trade decision
  */
-export async function analyzeMarketRegime(mockVix?: number): Promise<MarketRegime> {
+export async function analyzeMarketRegime(useRealData: boolean = true): Promise<MarketRegime> {
   // Step 1: Check trading hours
   if (!isWithinTradingHours()) {
     const now = new Date();
@@ -87,30 +92,80 @@ export async function analyzeMarketRegime(mockVix?: number): Promise<MarketRegim
     };
   }
 
-  // Step 2: Check VIX (if available)
-  const vixLevel = mockVix; // In production, fetch from market data
+  // Step 2: Fetch real market data
+  let vixLevel: number | undefined;
+  let vixChange: number | undefined;
+  let spyPrice: number | undefined;
+  let spyChange: number | undefined;
+
+  if (useRealData) {
+    try {
+      // Fetch VIX data
+      const vixData = await getVIXData();
+      vixLevel = vixData.value;
+      vixChange = vixData.changePercent;
+
+      // Fetch SPY data
+      const spyData = await getMarketData('SPY');
+      spyPrice = spyData.price;
+      spyChange = spyData.changePercent;
+    } catch (error) {
+      console.error('[Step1] Error fetching market data:', error);
+      // Continue with undefined values, don't block trading on data fetch error
+    }
+  }
+
+  // Step 3: Check VIX (if available)
   if (!isVixAcceptable(vixLevel)) {
     return {
       shouldTrade: false,
-      reason: `VIX level ${vixLevel} outside acceptable range (10-35)`,
+      reason: `VIX level ${vixLevel?.toFixed(2)} outside acceptable range (10-35)`,
       metadata: {
-        vix: vixLevel
+        vix: vixLevel,
+        vixChange,
+        spyPrice,
+        spyChange
       }
     };
   }
 
-  // Step 3: Analyze trend (future enhancement)
-  const trend = analyzeTrend();
+  // Step 4: Analyze trend based on SPY movement
+  const trend = spyChange !== undefined
+    ? spyChange > 1 ? 'BULLISH'
+    : spyChange < -1 ? 'BEARISH'
+    : 'NEUTRAL'
+    : analyzeTrend();
+
+  // Calculate confidence based on market conditions
+  let confidence = 0.7; // Base confidence
+
+  // Adjust confidence based on VIX level
+  if (vixLevel) {
+    if (vixLevel >= 15 && vixLevel <= 25) {
+      confidence += 0.1; // Ideal VIX range for selling options
+    }
+    if (vixLevel < 15) {
+      confidence -= 0.1; // Low volatility, lower premiums
+    }
+  }
+
+  // Adjust confidence based on trend clarity
+  if (Math.abs(spyChange || 0) > 2) {
+    confidence -= 0.1; // Strong trend might mean higher risk
+  }
 
   // All checks passed
   return {
     shouldTrade: true,
     reason: 'Market conditions favorable for trading',
     regime: trend,
-    confidence: 0.7, // Baseline confidence, will improve with more indicators
+    confidence: Math.min(Math.max(confidence, 0), 1), // Keep between 0 and 1
     metadata: {
       currentTime: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
       vix: vixLevel,
+      vixChange,
+      spyPrice,
+      spyChange,
       trend: trend
     }
   };
