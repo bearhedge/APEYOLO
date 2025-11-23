@@ -3,8 +3,8 @@
  * Fetches real-time market data from IBKR for SPY, VIX, and options
  */
 
-import { getBroker } from "../broker/index.js";
-import { ensureIbkrReady } from "../broker/ibkr.js";
+import { getBroker, getBrokerWithStatus } from "../broker/index";
+import { ensureIbkrReady } from "../broker/ibkr";
 
 export interface MarketData {
   symbol: string;

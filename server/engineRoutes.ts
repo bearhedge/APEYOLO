@@ -4,9 +4,9 @@
  */
 
 import { Router } from "express";
-import { TradingEngine } from "./engine/index.js";
-import { getBroker } from "./broker/index.js";
-import { ensureIbkrReady } from "./broker/ibkr.js";
+import { TradingEngine } from "./engine/index";
+import { getBroker, getBrokerWithStatus } from "./broker/index";
+import { ensureIbkrReady } from "./broker/ibkr";
 import { z } from "zod";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
@@ -133,12 +133,12 @@ function isWithinTradingWindow(): { allowed: boolean; reason?: string } {
 // GET /api/engine/status - Get current engine status
 router.get('/status', requireAuth, async (req, res) => {
   try {
-    const broker = getBroker();
+    const broker = getBrokerWithStatus();
     const tradingWindow = isWithinTradingWindow();
 
     res.json({
       engineActive: engineInstance !== null,
-      brokerConnected: broker.status.status === 'Connected',
+      brokerConnected: broker.status.connected,
       brokerProvider: broker.status.provider,
       tradingWindowOpen: tradingWindow.allowed,
       tradingWindowReason: tradingWindow.reason,

@@ -1,6 +1,6 @@
 import { storage } from "../storage";
 import type { BrokerEnv, BrokerProvider, BrokerProviderName, BrokerStatus } from "./types";
-import { createIbkrProvider } from "./ibkr";
+import { createIbkrProvider, getIbkrDiagnostics } from "./ibkr";
 import type { InsertTrade } from "@shared/schema";
 
 type BrokerBundle = {
@@ -31,12 +31,37 @@ export function getBroker(): BrokerBundle {
     const baseUrl = process.env.IBKR_BASE_URL;
 
     const api = createIbkrProvider({ env, accountId, baseUrl });
-    const status: BrokerStatus = { provider, env, connected: false };
+
+    // Check actual IBKR connection status dynamically
+    const diagnostics = getIbkrDiagnostics();
+    const isConnected = diagnostics.oauth.status === 200 &&
+                       diagnostics.sso.status === 200 &&
+                       diagnostics.validate.status === 200 &&
+                       diagnostics.init.status === 200;
+
+    const status: BrokerStatus = { provider, env, connected: isConnected };
     return { status, api };
   }
 
   const api = createMockProvider();
   const status: BrokerStatus = { provider: "mock", env: "paper", connected: true };
   return { status, api };
+}
+
+// Helper function to get broker with real-time status check
+export function getBrokerWithStatus(): BrokerBundle {
+  const bundle = getBroker();
+
+  // For IBKR, always check the latest connection status
+  if (bundle.status.provider === "ibkr") {
+    const diagnostics = getIbkrDiagnostics();
+    const isConnected = diagnostics.oauth.status === 200 &&
+                       diagnostics.sso.status === 200 &&
+                       diagnostics.validate.status === 200 &&
+                       diagnostics.init.status === 200;
+    bundle.status.connected = isConnected;
+  }
+
+  return bundle;
 }
 
