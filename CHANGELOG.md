@@ -1,3 +1,15 @@
+## 2025-11-23
+
+### Settings Page Improvements
+- **Fixed**: `getSessionFromRequest` undefined error when clicking "Clear All Open Orders" button
+- **Added**: JWT verification helper function in `routes.ts` to properly extract session from cookies
+- **Implemented**: Auto-refresh for IBKR connection status using adaptive polling:
+  - 3-second intervals when connecting
+  - 30-second intervals when connection is stable
+  - No manual page refresh required
+- **UI**: Changed Clear Orders button styling from red (`btn-danger`) to black/white (`btn-secondary`) for consistency
+- **Enhanced**: Added mutation callbacks for immediate status refresh after user actions
+
 ## 2025-11-22
 
 Milestone: IBKR OAuth 2.0 end-to-end on Cloud Run (paper), orders submit successfully.
