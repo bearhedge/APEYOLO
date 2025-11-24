@@ -131,8 +131,7 @@ function isWithinTradingWindow(): { allowed: boolean; reason?: string } {
 }
 
 // GET /api/engine/status - Get current engine status
-// TEMPORARY: Removed auth for debugging - TODO: Re-add requireAuth
-router.get('/status', async (req, res) => {
+router.get('/status', requireAuth, async (req, res) => {
   try {
     const broker = getBrokerWithStatus();
     const tradingWindow = isWithinTradingWindow();
