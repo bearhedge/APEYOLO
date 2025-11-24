@@ -696,23 +696,40 @@ class IbkrClient {
     console.log('[IBKR][Gateway] Establishing gateway connection...');
     try {
       // Call reauthenticate endpoint to establish gateway
+      // CP API endpoints use cookie authentication, no Authorization header
       const reauthUrl = '/v1/api/iserver/reauthenticate';
-      const reauthResp = await this.http.post(reauthUrl, {}, {
-        headers: this.authHeaders()
-      });
+      const reauthResp = await this.http.post(reauthUrl, {});
       console.log(`[IBKR][Gateway] Reauthenticate status=${reauthResp.status}`);
 
       // Call auth/status to check gateway status
       const statusUrl = '/v1/api/iserver/auth/status';
-      const statusResp = await this.http.post(statusUrl, {}, {
-        headers: this.authHeaders()
-      });
-      console.log(`[IBKR][Gateway] Auth status=${statusResp.status} authenticated=${statusResp.data?.authenticated} connected=${statusResp.data?.connected}`);
+      const statusResp = await this.http.post(statusUrl, {});
+
+      const isAuthenticated = statusResp.data?.authenticated === true;
+      const isConnected = statusResp.data?.connected === true;
+
+      console.log(`[IBKR][Gateway] Auth status=${statusResp.status} authenticated=${isAuthenticated} connected=${isConnected}`);
+
+      if (!isAuthenticated || !isConnected) {
+        console.warn(`[IBKR][Gateway] Gateway not fully established: authenticated=${isAuthenticated}, connected=${isConnected}`);
+        // Try one more time after a delay
+        await this.sleep(3000);
+        const retryResp = await this.http.post(statusUrl, {});
+        const retryAuth = retryResp.data?.authenticated === true;
+        const retryConn = retryResp.data?.connected === true;
+        console.log(`[IBKR][Gateway] Retry auth status: authenticated=${retryAuth} connected=${retryConn}`);
+
+        if (!retryAuth || !retryConn) {
+          throw new Error(`Gateway connection failed: authenticated=${retryAuth}, connected=${retryConn}`);
+        }
+      }
 
       // Small delay to let gateway establish
       await this.sleep(2000);
     } catch (err) {
       console.error('[IBKR][Gateway] Failed to establish gateway:', err);
+      // Re-throw to trigger proper error handling
+      throw err;
     }
   }
 
@@ -851,21 +868,62 @@ class IbkrClient {
     const http = resp.status;
     const raw: any = resp.data;
 
+    // Log full response for debugging
+    console.log(`[IBKR][${reqId}] Order response: status=${http}, data=${JSON.stringify(raw)}`);
+
     if (!(resp.status >= 200 && resp.status < 300)) {
       let snippet = "";
-      try { snippet = typeof raw === 'string' ? raw.slice(0,200) : JSON.stringify(raw).slice(0,200); } catch {}
+      try { snippet = typeof raw === 'string' ? raw.slice(0,500) : JSON.stringify(raw).slice(0,500); } catch {}
       await storage.createAuditLog({ eventType: "IBKR_ORDER_SUBMIT", details: `FAILED http=${http} req=${reqId} body=${snippet}`, status: "FAILED" });
       console.error(`[IBKR][${reqId}] POST /v1/api/iserver/account/{acct}/orders -> ${http} ${snippet}`);
       return { status: `rejected_${http}`, raw };
     }
 
-    // Try to extract an order id
+    // Parse order ID from various possible response formats
     let orderId: string | undefined = undefined;
     try {
-      const arr = Array.isArray(raw) ? raw : raw?.orders || raw?.data || [];
-      const first = Array.isArray(arr) ? arr[0] : undefined;
-      orderId = String(first?.id || first?.orderId || first?.c_oid || "").trim() || undefined;
-    } catch {}
+      // IBKR may return different formats - check all possibilities
+      if (raw?.order_id) {
+        orderId = String(raw.order_id);
+      }
+      else if (Array.isArray(raw)) {
+        const first = raw[0];
+        if (first) {
+          orderId = String(first.order_id || first.orderId || first.id || first.conid || '');
+        }
+      }
+      else if (raw?.orders && Array.isArray(raw.orders)) {
+        const first = raw.orders[0];
+        if (first) {
+          orderId = String(first.order_id || first.orderId || first.id || first.conid || '');
+        }
+      }
+      else if (raw?.data && Array.isArray(raw.data)) {
+        const first = raw.data[0];
+        if (first) {
+          orderId = String(first.order_id || first.orderId || first.id || first.conid || '');
+        }
+      }
+      else if (raw?.reply && Array.isArray(raw.reply)) {
+        const first = raw.reply[0];
+        if (first) {
+          orderId = String(first.order_id || first.orderId || first.id || first.conid || '');
+        }
+      }
+
+      // Clean up the order ID
+      orderId = orderId?.trim();
+      if (orderId === '' || orderId === 'undefined' || orderId === 'null') {
+        orderId = undefined;
+      }
+
+      // If still no order ID but response indicates success, log warning
+      if (!orderId && resp.status >= 200 && resp.status < 300) {
+        console.warn(`[IBKR][${reqId}] Order appears successful but could not extract order ID from response:`, raw);
+      }
+    } catch (err) {
+      console.error(`[IBKR][${reqId}] Error parsing order response:`, err);
+    }
 
     await storage.createAuditLog({ eventType: "IBKR_ORDER_SUBMIT", details: `OK http=${http} req=${reqId} orderId=${orderId ?? 'n/a'}`, status: "SUCCESS" });
     return { id: orderId, status: "submitted", raw };
@@ -923,20 +981,73 @@ class IbkrClient {
     const resp2 = await this.http.post(url2, body, { headers: { 'Content-Type': 'application/json' } });
     const http2 = resp2.status;
     const raw2: any = resp2.data;
+
+    // Log full response for debugging
+    console.log(`[IBKR][${reqId2}] Order response: status=${http2}, data=${JSON.stringify(raw2)}`);
+
     if (!(resp2.status >= 200 && resp2.status < 300)) {
       let snippet = "";
-      try { snippet = typeof raw2 === 'string' ? raw2.slice(0,200) : JSON.stringify(raw2).slice(0,200); } catch {}
+      try { snippet = typeof raw2 === 'string' ? raw2.slice(0,500) : JSON.stringify(raw2).slice(0,500); } catch {}
       await storage.createAuditLog({ eventType: "IBKR_ORDER_SUBMIT", details: `FAILED http=${http2} req=${reqId2} body=${snippet}` , status: "FAILED" });
       console.error(`[IBKR][${reqId2}] POST /v1/api/iserver/account/{acct}/orders -> ${http2} ${snippet}`);
       return { status: `rejected_${http2}`, raw: raw2 };
     }
+
+    // Parse order ID from various possible response formats
     let orderId2: string | undefined = undefined;
     try {
-      const arr = Array.isArray(raw2) ? raw2 : raw2?.orders || raw2?.data || [];
-      const first = Array.isArray(arr) ? arr[0] : undefined;
-      // IBKR returns order_id field
-      orderId2 = String(first?.order_id || first?.id || first?.orderId || first?.c_oid || "").trim() || undefined;
-    } catch {}
+      // IBKR may return different formats:
+      // 1. Array directly: [{order_id: "123", ...}]
+      // 2. Object with array: {orders: [{order_id: "123", ...}]}
+      // 3. Object with data: {data: [{order_id: "123", ...}]}
+      // 4. Single object: {order_id: "123", ...}
+      // 5. Nested reply: {reply: [{order_id: "123", ...}]}
+
+      // First check if raw2 is directly the order object
+      if (raw2?.order_id) {
+        orderId2 = String(raw2.order_id);
+      }
+      // Check if it's an array
+      else if (Array.isArray(raw2)) {
+        const first = raw2[0];
+        if (first) {
+          orderId2 = String(first.order_id || first.orderId || first.id || first.conid || '');
+        }
+      }
+      // Check nested structures
+      else if (raw2?.orders && Array.isArray(raw2.orders)) {
+        const first = raw2.orders[0];
+        if (first) {
+          orderId2 = String(first.order_id || first.orderId || first.id || first.conid || '');
+        }
+      }
+      else if (raw2?.data && Array.isArray(raw2.data)) {
+        const first = raw2.data[0];
+        if (first) {
+          orderId2 = String(first.order_id || first.orderId || first.id || first.conid || '');
+        }
+      }
+      else if (raw2?.reply && Array.isArray(raw2.reply)) {
+        const first = raw2.reply[0];
+        if (first) {
+          orderId2 = String(first.order_id || first.orderId || first.id || first.conid || '');
+        }
+      }
+
+      // Clean up the order ID
+      orderId2 = orderId2?.trim();
+      if (orderId2 === '' || orderId2 === 'undefined' || orderId2 === 'null') {
+        orderId2 = undefined;
+      }
+
+      // If still no order ID but response indicates success, log warning
+      if (!orderId2 && resp2.status >= 200 && resp2.status < 300) {
+        console.warn(`[IBKR][${reqId2}] Order appears successful but could not extract order ID from response:`, raw2);
+      }
+    } catch (err) {
+      console.error(`[IBKR][${reqId2}] Error parsing order response:`, err);
+    }
+
     await storage.createAuditLog({ eventType: "IBKR_ORDER_SUBMIT", details: `OK http=${http2} req=${reqId2} orderId=${orderId2 ?? 'n/a'}` , status: "SUCCESS" });
     return { id: orderId2, status: "submitted", raw: raw2 };
   }

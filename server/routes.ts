@@ -645,7 +645,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Paper stock order test endpoint (to validate OAuth/SSO/init pipeline)
   app.post('/api/broker/paper/order', async (req, res) => {
     if (broker.status.provider !== 'ibkr') {
-      return res.status(400).json({ error: 'Set BROKER_PROVIDER=ibkr for paper order test' });
+      return res.status(400).json({
+        error: 'Set BROKER_PROVIDER=ibkr for paper order test',
+        success: false,
+        message: 'IBKR provider not configured'
+      });
     }
     const schema = z.object({
       symbol: z.string().min(1),
@@ -658,13 +662,79 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }).refine((v) => v.orderType !== 'LMT' || typeof v.limitPrice === 'number', { message: 'limitPrice required for LMT' });
     try {
       const { symbol, side, quantity, orderType, limitPrice, tif, outsideRth } = schema.parse(req.body);
+
+      // Ensure IBKR is ready before placing order
+      await ensureIbkrReady();
+
       const result = await placePaperStockOrder({ symbol, side, quantity, orderType, limitPrice, tif, outsideRth });
-      if ((result.status || '').startsWith('rejected') || !result.id) {
-        return res.status(502).json({ error: 'order_rejected', result });
+
+      // Check if order was rejected or failed
+      if ((result.status || '').startsWith('rejected')) {
+        console.error('[IBKR] Order rejected:', result);
+        return res.status(502).json({
+          success: false,
+          error: 'Order rejected by IBKR',
+          message: `Order rejected: ${result.status}`,
+          details: result.raw,
+          result
+        });
       }
-      return res.json({ ok: true, orderId: result.id, result });
+
+      // Check if we got a valid order ID
+      if (!result.id) {
+        console.warn('[IBKR] Order placed but no ID returned:', result);
+        // Still return success if status is "submitted" but warn about missing ID
+        if (result.status === 'submitted') {
+          return res.json({
+            success: true,
+            warning: 'Order submitted but ID not returned',
+            message: 'Order submitted (ID pending)',
+            orderId: null,
+            result
+          });
+        } else {
+          return res.status(502).json({
+            success: false,
+            error: 'Order failed',
+            message: 'Failed to place order - no order ID received',
+            details: result.raw,
+            result
+          });
+        }
+      }
+
+      // Success with order ID
+      return res.json({
+        success: true,
+        orderId: result.id,
+        message: `Order ${result.id} submitted successfully`,
+        result
+      });
     } catch (err: any) {
-      return res.status(400).json({ error: err?.message || 'invalid_request' });
+      console.error('[IBKR] Order placement error:', err);
+      // Check for specific IBKR errors
+      if (err?.message?.includes('Gateway connection failed')) {
+        return res.status(503).json({
+          success: false,
+          error: 'Gateway not connected',
+          message: 'IBKR gateway connection failed - please reconnect',
+          details: err?.message
+        });
+      }
+      if (err?.message?.includes('not initialized')) {
+        return res.status(503).json({
+          success: false,
+          error: 'IBKR not initialized',
+          message: 'IBKR client not initialized - please check configuration',
+          details: err?.message
+        });
+      }
+      return res.status(400).json({
+        success: false,
+        error: err?.message || 'invalid_request',
+        message: `Order failed: ${err?.message || 'Invalid request'}`,
+        details: err?.stack
+      });
     }
   });
 
