@@ -964,8 +964,8 @@ class IbkrClient {
       console.warn(`[IBKR][OPEN_ORDERS ${reqId}] Portfolio subaccounts init failed (non-fatal):`, err.message);
     }
 
-    // Expanded status regex to catch ALL possible order states
-    const activeRe = /(Submitted|PreSubmitted|PendingSubmit|PendingCancel|Working|Filled|PreSubmitted|ApiPending|ApiCancelled)/i;
+    // Expanded status regex to catch ALL possible order states including partial fills and pending states
+    const activeRe = /(Submitted|PreSubmitted|PendingSubmit|PendingCancel|Working|Filled|PartiallyFilled|ApiPending|ApiCancelled|Open|Active|Pending|New|Accepted)/i;
 
     // Helper to normalize various CP shapes
     const normalize = (raw: any): any[] => {
@@ -1037,6 +1037,23 @@ class IbkrClient {
       }
     } catch (err) {
       console.error(`[IBKR][OPEN_ORDERS ${reqId}] FALLBACK endpoint error:`, err.message);
+    }
+
+    // LAST RESORT: Try live orders endpoint which may show orders not in regular endpoints
+    const url3 = `/v1/api/portfolio/${encodeURIComponent(acct)}/orders`;
+    console.log(`[IBKR][OPEN_ORDERS ${reqId}] LIVE ORDERS: GET ${url3}`);
+    try {
+      const r3 = await this.http.get(url3);
+      console.log(`[IBKR][OPEN_ORDERS ${reqId}] LIVE ORDERS -> ${r3.status}`);
+      console.log(`[IBKR][OPEN_ORDERS ${reqId}] LIVE ORDERS body (first 500 chars): ${(typeof r3.data==='string'?r3.data:JSON.stringify(r3.data)||'').slice(0,500)}`);
+
+      if (r3.status >= 200 && r3.status < 300) {
+        const list = normalize(r3.data);
+        console.log(`[IBKR][OPEN_ORDERS ${reqId}] LIVE ORDERS SUCCESS: Found ${list.length} active orders`);
+        return list;
+      }
+    } catch (err) {
+      console.error(`[IBKR][OPEN_ORDERS ${reqId}] LIVE ORDERS endpoint error:`, err.message);
     }
 
     console.log(`[IBKR][OPEN_ORDERS ${reqId}] FINAL RESULT: No orders found from any endpoint`);

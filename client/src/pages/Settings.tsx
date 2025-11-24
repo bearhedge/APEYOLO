@@ -127,6 +127,8 @@ export function Settings() {
   // Test order mutation
   const testOrderMutation = useMutation({
     mutationFn: async () => {
+      // Use random quantity (1-5) to avoid duplicate order rejection
+      const randomQty = Math.floor(Math.random() * 5) + 1;
       const response = await fetch('/api/broker/paper/order', {
         method: 'POST',
         headers: {
@@ -135,7 +137,7 @@ export function Settings() {
         body: JSON.stringify({
           symbol: 'SPY',
           side: 'BUY',
-          quantity: 1,
+          quantity: randomQty,
           orderType: 'MKT',
           tif: 'DAY',
         }),
@@ -354,7 +356,7 @@ export function Settings() {
                     disabled={testOrderMutation.isPending}
                     data-testid="button-test-order"
                   >
-                    {testOrderMutation.isPending ? 'Placing Test Order...' : 'Test Order (Buy 1 SPY)'}
+                    {testOrderMutation.isPending ? 'Placing Test Order...' : 'Test Order (Buy SPY)'}
                   </Button>
 
                   <Button
