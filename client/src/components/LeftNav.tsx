@@ -1,5 +1,5 @@
 import { Link, useLocation } from 'wouter';
-import { Bot, Briefcase, TrendingUp, List, Settings, DollarSign, Zap } from 'lucide-react';
+import { Bot, Briefcase, TrendingUp, List, Settings, Zap } from 'lucide-react';
 
 const navItems = [
   { path: '/agent', label: 'Agent', icon: Bot },
@@ -7,7 +7,6 @@ const navItems = [
   { path: '/portfolio', label: 'Portfolio', icon: Briefcase },
   { path: '/trades', label: 'Trades', icon: TrendingUp },
   { path: '/jobs', label: 'Jobs', icon: List },
-  { path: '/pnl', label: 'PNL', icon: DollarSign },
   { path: '/settings', label: 'Settings', icon: Settings },
 ];
 

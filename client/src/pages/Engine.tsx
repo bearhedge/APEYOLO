@@ -1,6 +1,7 @@
 import { useState, useCallback } from 'react';
 import { LeftNav } from '@/components/LeftNav';
 import { StatCard } from '@/components/StatCard';
+import { OptionChainViewer } from '@/components/OptionChainViewer';
 import { CheckCircle, XCircle, Clock, Zap, AlertTriangle, Play, RefreshCw } from 'lucide-react';
 import { useEngine } from '@/hooks/useEngine';
 import toast from 'react-hot-toast';
@@ -21,6 +22,7 @@ export function Engine() {
 
   const [executionMode, setExecutionMode] = useState<'manual' | 'auto'>('manual');
   const [isExecuting, setIsExecuting] = useState(false);
+  const [optionChainExpanded, setOptionChainExpanded] = useState(true);
 
   // Handle running the engine decision process
   const handleRunEngine = useCallback(async () => {
@@ -318,6 +320,19 @@ export function Engine() {
               <p className="text-red-400">{decision.reason}</p>
             </div>
           </div>
+        )}
+
+        {/* Option Chain Viewer */}
+        {decision && (
+          <OptionChainViewer
+            underlyingPrice={decision.marketRegime?.metadata?.spyPrice || 450}
+            selectedPutStrike={decision.strikes?.putStrike?.strike}
+            selectedCallStrike={decision.strikes?.callStrike?.strike}
+            optionChain={decision.strikes?.nearbyStrikes}
+            isExpanded={optionChainExpanded}
+            onToggle={() => setOptionChainExpanded(!optionChainExpanded)}
+            expiration="0DTE"
+          />
         )}
 
         {/* Guard Rails Configuration */}

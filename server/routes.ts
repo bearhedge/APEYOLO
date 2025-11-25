@@ -233,6 +233,43 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // PnL endpoint for Trades page - transforms stored trades to PnlRow format
+  app.get('/api/pnl', async (_req, res) => {
+    try {
+      const trades = await storage.getTrades();
+
+      // Transform trades to PnlRow format expected by frontend
+      const pnlRows = trades.map(trade => {
+        const credit = parseFloat(trade.credit) || 0;
+        const qty = trade.quantity || 1;
+        const entryPerContract = credit / (qty * 100); // Per-share entry price
+
+        return {
+          tradeId: trade.id,
+          ts: trade.submittedAt?.toISOString() || new Date().toISOString(),
+          symbol: trade.symbol,
+          strategy: trade.strategy,
+          side: 'SELL' as const, // Engine sells options for premium
+          qty: qty,
+          entry: entryPerContract,
+          exit: trade.status === 'filled' ? entryPerContract : null, // NULL if still open
+          fees: qty * 1.00, // Estimated fees per contract
+          realized: trade.status === 'filled' ? credit : 0,
+          run: trade.status === 'pending' ? 0 : credit, // Running P&L
+          notes: `${trade.strategy} ${parseFloat(trade.sellStrike).toFixed(0)} strike - ${trade.status}`,
+        };
+      });
+
+      // Sort by timestamp descending (newest first)
+      pnlRows.sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
+
+      res.json(pnlRows);
+    } catch (error) {
+      console.error('[API] Failed to fetch PnL:', error);
+      res.status(500).json({ error: 'Failed to fetch P&L data' });
+    }
+  });
+
   // Trade validation and submission
   /** Archived deterministic validation endpoint for agent-driven flow
   app.post('/api/trades/validate', async (req, res) => { ... });

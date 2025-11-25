@@ -44,6 +44,10 @@ export interface TradingDecision {
     expectedPremium: number;
     marginRequired: number;
     reasoning: string;
+    nearbyStrikes?: {
+      puts: Array<{ strike: number; bid: number; ask: number; delta: number; oi?: number }>;
+      calls: Array<{ strike: number; bid: number; ask: number; delta: number; oi?: number }>;
+    };
   };
   positionSize?: {
     contracts: number;

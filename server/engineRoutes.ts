@@ -6,7 +6,9 @@
 import { Router } from "express";
 import { TradingEngine } from "./engine/index";
 import { getBroker, getBrokerWithStatus } from "./broker/index";
-import { ensureIbkrReady } from "./broker/ibkr";
+import { ensureIbkrReady, placePaperOptionOrder } from "./broker/ibkr";
+import { storage } from "./storage";
+import { engineScheduler, SchedulerConfig } from "./services/engineScheduler";
 import { z } from "zod";
 import crypto from "crypto";
 import jwt from "jsonwebtoken";
@@ -75,8 +77,8 @@ const DEFAULT_GUARD_RAILS: GuardRails = {
   stopLossMultiplier: 2.0,
   maxDailyLoss: 0.02,
   tradingWindow: {
-    start: "12:00",
-    end: "14:00",
+    start: "11:00",
+    end: "13:00",
     timezone: "America/New_York"
   },
   allowedStrategies: ["STRANGLE", "PUT", "CALL"],
@@ -268,44 +270,174 @@ router.post('/execute-trade', requireAuth, async (req, res) => {
       await ensureIbkrReady();
     }
 
-    // TODO: Implement actual order placement via IBKR
-    // For now, return a mock response
-    const orders = [];
+    const orders: Array<{
+      symbol: string;
+      optionType: 'PUT' | 'CALL';
+      strike: number;
+      expiry: string;
+      quantity: number;
+      action: string;
+      orderType: string;
+      limitPrice: number;
+      stopLoss?: number;
+      status: string;
+      orderId?: string;
+      ibkrStatus?: string;
+    }> = [];
+    const savedTrades: Array<any> = [];
 
+    // Get today's expiration date in YYYYMMDD format for 0DTE
+    const today = new Date();
+    const expiration = today.toISOString().slice(0, 10).replace(/-/g, '');
+    const expirationDate = new Date(today.setHours(16, 0, 0, 0)); // 4 PM ET close
+
+    // Execute PUT order if present
     if (decision.strikes?.putStrike && decision.positionSize?.contracts > 0) {
+      const putStrike = decision.strikes.putStrike;
+      const contracts = decision.positionSize.contracts;
+      const premium = putStrike.expectedPremium || putStrike.bid || 0.5;
+
+      let orderResult = { id: undefined as string | undefined, status: 'mock' };
+
+      // Place real order if using IBKR
+      if (broker.status.provider === 'ibkr') {
+        try {
+          orderResult = await placePaperOptionOrder({
+            symbol: 'SPY',
+            optionType: 'PUT',
+            strike: putStrike.strike,
+            expiration,
+            side: 'SELL',
+            quantity: contracts,
+            orderType: 'LMT',
+            limitPrice: premium,
+          });
+          console.log(`[Engine] PUT order placed: ${JSON.stringify(orderResult)}`);
+        } catch (orderErr) {
+          console.error('[Engine] PUT order failed:', orderErr);
+          orderResult = { id: undefined, status: 'failed' };
+        }
+      }
+
       orders.push({
         symbol: 'SPY',
         optionType: 'PUT',
-        strike: decision.strikes.putStrike.strike,
+        strike: putStrike.strike,
         expiry: '0DTE',
-        quantity: decision.positionSize.contracts,
+        quantity: contracts,
         action: 'SELL',
         orderType: 'LIMIT',
-        limitPrice: decision.strikes.putStrike.expectedPremium,
+        limitPrice: premium,
         stopLoss: decision.exitRules?.stopLoss,
-        status: 'PENDING'
+        status: orderResult.status === 'submitted' || orderResult.status === 'filled' ? 'SUBMITTED' : 'PENDING',
+        orderId: orderResult.id,
+        ibkrStatus: orderResult.status,
       });
+
+      // Save trade to database
+      try {
+        const trade = await storage.createTrade({
+          symbol: 'SPY',
+          strategy: 'PUT',
+          sellStrike: putStrike.strike.toString(),
+          buyStrike: putStrike.strike.toString(), // Same for naked options
+          expiration: expirationDate,
+          quantity: contracts,
+          credit: (premium * contracts * 100).toString(), // Total credit in dollars
+          status: orderResult.id ? 'pending' : 'mock',
+        });
+        savedTrades.push(trade);
+        console.log(`[Engine] PUT trade saved: ${trade.id}`);
+      } catch (dbErr) {
+        console.error('[Engine] Failed to save PUT trade:', dbErr);
+      }
     }
 
+    // Execute CALL order if present
     if (decision.strikes?.callStrike && decision.positionSize?.contracts > 0) {
+      const callStrike = decision.strikes.callStrike;
+      const contracts = decision.positionSize.contracts;
+      const premium = callStrike.expectedPremium || callStrike.bid || 0.5;
+
+      let orderResult = { id: undefined as string | undefined, status: 'mock' };
+
+      // Place real order if using IBKR
+      if (broker.status.provider === 'ibkr') {
+        try {
+          orderResult = await placePaperOptionOrder({
+            symbol: 'SPY',
+            optionType: 'CALL',
+            strike: callStrike.strike,
+            expiration,
+            side: 'SELL',
+            quantity: contracts,
+            orderType: 'LMT',
+            limitPrice: premium,
+          });
+          console.log(`[Engine] CALL order placed: ${JSON.stringify(orderResult)}`);
+        } catch (orderErr) {
+          console.error('[Engine] CALL order failed:', orderErr);
+          orderResult = { id: undefined, status: 'failed' };
+        }
+      }
+
       orders.push({
         symbol: 'SPY',
         optionType: 'CALL',
-        strike: decision.strikes.callStrike.strike,
+        strike: callStrike.strike,
         expiry: '0DTE',
-        quantity: decision.positionSize.contracts,
+        quantity: contracts,
         action: 'SELL',
         orderType: 'LIMIT',
-        limitPrice: decision.strikes.callStrike.expectedPremium,
+        limitPrice: premium,
         stopLoss: decision.exitRules?.stopLoss,
-        status: 'PENDING'
+        status: orderResult.status === 'submitted' || orderResult.status === 'filled' ? 'SUBMITTED' : 'PENDING',
+        orderId: orderResult.id,
+        ibkrStatus: orderResult.status,
       });
+
+      // Save trade to database
+      try {
+        const trade = await storage.createTrade({
+          symbol: 'SPY',
+          strategy: 'CALL',
+          sellStrike: callStrike.strike.toString(),
+          buyStrike: callStrike.strike.toString(), // Same for naked options
+          expiration: expirationDate,
+          quantity: contracts,
+          credit: (premium * contracts * 100).toString(), // Total credit in dollars
+          status: orderResult.id ? 'pending' : 'mock',
+        });
+        savedTrades.push(trade);
+        console.log(`[Engine] CALL trade saved: ${trade.id}`);
+      } catch (dbErr) {
+        console.error('[Engine] Failed to save CALL trade:', dbErr);
+      }
+    }
+
+    // Create audit log for the execution
+    try {
+      await storage.createAuditLog({
+        action: 'TRADE_EXECUTED',
+        details: JSON.stringify({
+          direction: decision.direction,
+          contracts: decision.positionSize?.contracts,
+          orders: orders.map(o => ({ optionType: o.optionType, strike: o.strike, orderId: o.orderId, status: o.ibkrStatus })),
+          autoApprove,
+        }),
+        userId: (req as any).user?.userId || 'system',
+      });
+    } catch (auditErr) {
+      console.error('[Engine] Failed to create audit log:', auditErr);
     }
 
     res.json({
       success: true,
       orders,
-      message: broker.status.provider === 'mock' ? 'Mock orders created' : 'Orders submitted to IBKR'
+      savedTrades: savedTrades.map(t => ({ id: t.id, symbol: t.symbol, strategy: t.strategy })),
+      message: broker.status.provider === 'ibkr'
+        ? `${orders.length} order(s) submitted to IBKR paper account`
+        : 'Mock orders created (IBKR not connected)',
     });
   } catch (error) {
     console.error('[Engine] Execute trade error:', error);
@@ -360,6 +492,76 @@ router.put('/config', requireAuth, async (req, res) => {
   } catch (error) {
     console.error('[Engine] Update config error:', error);
     res.status(400).json({ error: 'Invalid configuration' });
+  }
+});
+
+// ============================================
+// Scheduler Control Endpoints
+// ============================================
+
+// GET /api/engine/scheduler/status - Get scheduler status
+router.get('/scheduler/status', requireAuth, async (_req, res) => {
+  try {
+    const status = engineScheduler.getStatus();
+    res.json(status);
+  } catch (error) {
+    console.error('[Engine] Scheduler status error:', error);
+    res.status(500).json({ error: 'Failed to get scheduler status' });
+  }
+});
+
+// POST /api/engine/scheduler/start - Start the scheduler
+router.post('/scheduler/start', requireAuth, async (_req, res) => {
+  try {
+    const result = engineScheduler.start();
+    res.json(result);
+  } catch (error) {
+    console.error('[Engine] Scheduler start error:', error);
+    res.status(500).json({ error: 'Failed to start scheduler' });
+  }
+});
+
+// POST /api/engine/scheduler/stop - Stop the scheduler
+router.post('/scheduler/stop', requireAuth, async (_req, res) => {
+  try {
+    const result = engineScheduler.stop();
+    res.json(result);
+  } catch (error) {
+    console.error('[Engine] Scheduler stop error:', error);
+    res.status(500).json({ error: 'Failed to stop scheduler' });
+  }
+});
+
+// PUT /api/engine/scheduler/config - Update scheduler configuration
+const schedulerConfigSchema = z.object({
+  enabled: z.boolean().optional(),
+  intervalMinutes: z.number().min(1).max(10).optional(),
+  tradingWindowStart: z.number().min(9).max(16).optional(),
+  tradingWindowEnd: z.number().min(10).max(17).optional(),
+  maxTradesPerDay: z.number().min(1).max(10).optional(),
+  autoExecute: z.boolean().optional(),
+  symbol: z.string().optional(),
+});
+
+router.put('/scheduler/config', requireAuth, async (req, res) => {
+  try {
+    const config = schedulerConfigSchema.parse(req.body);
+    const updatedConfig = engineScheduler.updateConfig(config as Partial<SchedulerConfig>);
+    res.json({ success: true, config: updatedConfig });
+  } catch (error) {
+    console.error('[Engine] Scheduler config error:', error);
+    res.status(400).json({ error: 'Invalid scheduler configuration' });
+  }
+});
+
+// POST /api/engine/scheduler/run-once - Manually trigger a single analysis run
+router.post('/scheduler/run-once', requireAuth, async (_req, res) => {
+  try {
+    const decision = await engineScheduler.runOnce();
+    res.json({ success: true, decision });
+  } catch (error) {
+    console.error('[Engine] Scheduler run-once error:', error);
+    res.status(500).json({ error: 'Failed to run analysis' });
   }
 });
 

@@ -11,7 +11,6 @@ import { Engine } from "@/pages/Engine";
 import { Portfolio } from "@/pages/Portfolio";
 import { Trades } from "@/pages/Trades";
 import { Jobs } from "@/pages/Jobs";
-import { PNL } from "@/pages/PNL";
 import { Settings } from "@/pages/Settings";
 import { getAccount, getDiag } from "@/lib/api";
 
@@ -93,7 +92,6 @@ function App() {
           <Route path="/portfolio" component={Portfolio} />
           <Route path="/trades" component={Trades} />
           <Route path="/jobs" component={Jobs} />
-          <Route path="/pnl" component={PNL} />
           <Route path="/settings" component={Settings} />
           {/* Redirects for old routes */}
           <Route path="/dashboard">

@@ -25,7 +25,7 @@ export interface MarketRegime {
 
 /**
  * Check if current time is within trading window
- * Trading window: 12:00 PM - 2:00 PM EST
+ * Trading window: 11:00 AM - 1:00 PM ET
  */
 function isWithinTradingHours(): boolean {
   const now = new Date();
@@ -35,9 +35,9 @@ function isWithinTradingHours(): boolean {
   const minute = et.getMinutes();
   const currentMinutes = hour * 60 + minute;
 
-  // 12:00 PM = 720 minutes, 2:00 PM = 840 minutes
-  const windowStart = 12 * 60; // 12:00 PM
-  const windowEnd = 14 * 60;   // 2:00 PM
+  // 11:00 AM = 660 minutes, 1:00 PM = 780 minutes
+  const windowStart = 11 * 60; // 11:00 AM
+  const windowEnd = 13 * 60;   // 1:00 PM
 
   // Check if it's a weekday
   const dayOfWeek = et.getDay();
@@ -85,7 +85,7 @@ export async function analyzeMarketRegime(useRealData: boolean = true): Promise<
     const et = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
     return {
       shouldTrade: false,
-      reason: `Outside trading window. Current time: ${et.toLocaleTimeString('en-US', { timeZone: 'America/New_York' })} ET. Trading window: 12:00 PM - 2:00 PM ET`,
+      reason: `Outside trading window. Current time: ${et.toLocaleTimeString('en-US', { timeZone: 'America/New_York' })} ET. Trading window: 11:00 AM - 1:00 PM ET`,
       metadata: {
         currentTime: et.toLocaleTimeString('en-US', { timeZone: 'America/New_York' })
       }

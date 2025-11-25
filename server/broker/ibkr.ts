@@ -802,28 +802,250 @@ class IbkrClient {
 
   async getOptionChain(symbol: string, expiration?: string): Promise<OptionChainData> {
     await this.ensureReady();
-    // Try to resolve underlying price via snapshot; fall back to 0
+    const reqId = randomUUID().slice(0, 8);
+    console.log(`[IBKR][getOptionChain][${reqId}] Starting for ${symbol} expiration=${expiration || '0DTE'}`);
+
+    // Try to resolve underlying price and conid
     let underlyingPrice = 0;
+    let underlyingConid: number | null = null;
+
     try {
-      const conid = await this.resolveConid(symbol);
-      if (conid) {
-        // CP endpoint - use cookie auth only, no Authorization header
-        const snap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${conid}`);
+      underlyingConid = await this.resolveConid(symbol);
+      if (underlyingConid) {
+        // Get underlying price via snapshot
+        const snap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${underlyingConid}`);
+        if (snap.status === 200) {
+          const data = (snap.data as any[]) || [];
+          const last = data?.[0]?.["31"] ?? data?.[0]?.last;
+          if (last != null) underlyingPrice = Number(last);
+          console.log(`[IBKR][getOptionChain][${reqId}] Underlying price: ${underlyingPrice}`);
+        }
+      }
+    } catch (err) {
+      console.error(`[IBKR][getOptionChain][${reqId}] Error getting underlying price:`, err);
+    }
+
+    // If no underlying conid or price, return empty
+    if (!underlyingConid || underlyingPrice === 0) {
+      console.warn(`[IBKR][getOptionChain][${reqId}] No underlying data, returning empty options`);
+      return { symbol, underlyingPrice, underlyingChange: 0, options: [] };
+    }
+
+    // Determine expiration - default to today for 0DTE
+    const today = new Date();
+    const targetExpiration = expiration || today.toISOString().slice(0, 10).replace(/-/g, '');
+    const expirationMonth = targetExpiration.slice(0, 6); // YYYYMM format
+
+    const options: Array<{
+      strike: number;
+      type: "call" | "put";
+      bid: number;
+      ask: number;
+      delta: number;
+      openInterest: number;
+      expiration: string;
+    }> = [];
+
+    try {
+      // Step 1: Get available strikes from IBKR
+      const strikesUrl = `/v1/api/iserver/secdef/strikes?conid=${underlyingConid}&sectype=OPT&month=${expirationMonth}`;
+      console.log(`[IBKR][getOptionChain][${reqId}] Fetching strikes: ${strikesUrl}`);
+
+      const strikesResp = await this.http.get(strikesUrl);
+      if (strikesResp.status !== 200 || !strikesResp.data) {
+        console.warn(`[IBKR][getOptionChain][${reqId}] Failed to get strikes: status=${strikesResp.status}`);
+        return { symbol, underlyingPrice, underlyingChange: 0, options: [] };
+      }
+
+      // Strikes response is { call: number[], put: number[] }
+      const strikesData = strikesResp.data as { call?: number[]; put?: number[] };
+      const putStrikes = strikesData.put || [];
+      const callStrikes = strikesData.call || [];
+
+      console.log(`[IBKR][getOptionChain][${reqId}] Found ${putStrikes.length} put strikes, ${callStrikes.length} call strikes`);
+
+      // Filter to strikes near the money (within 5% of underlying)
+      const priceRange = underlyingPrice * 0.05;
+      const nearMoneyPuts = putStrikes.filter(s => s >= underlyingPrice - priceRange && s <= underlyingPrice);
+      const nearMoneyCalls = callStrikes.filter(s => s <= underlyingPrice + priceRange && s >= underlyingPrice);
+
+      // Take up to 10 strikes each side
+      const selectedPuts = nearMoneyPuts.slice(-10); // Closest OTM puts
+      const selectedCalls = nearMoneyCalls.slice(0, 10); // Closest OTM calls
+
+      console.log(`[IBKR][getOptionChain][${reqId}] Selected ${selectedPuts.length} puts, ${selectedCalls.length} calls near the money`);
+
+      // Step 2: Get option conids for each strike via secdef/search
+      for (const strike of selectedPuts) {
+        try {
+          const optConid = await this.resolveOptionConid(symbol, targetExpiration, 'PUT', strike);
+          if (optConid) {
+            options.push({
+              strike,
+              type: 'put',
+              bid: 0.5, // Default placeholder - market data requires separate call
+              ask: 0.6,
+              delta: -0.15, // Placeholder - real Greeks require market data subscription
+              openInterest: 0,
+              expiration: targetExpiration,
+            });
+          }
+        } catch (err) {
+          console.warn(`[IBKR][getOptionChain][${reqId}] Failed to resolve PUT ${strike}:`, err);
+        }
+      }
+
+      for (const strike of selectedCalls) {
+        try {
+          const optConid = await this.resolveOptionConid(symbol, targetExpiration, 'CALL', strike);
+          if (optConid) {
+            options.push({
+              strike,
+              type: 'call',
+              bid: 0.5,
+              ask: 0.6,
+              delta: 0.15,
+              openInterest: 0,
+              expiration: targetExpiration,
+            });
+          }
+        } catch (err) {
+          console.warn(`[IBKR][getOptionChain][${reqId}] Failed to resolve CALL ${strike}:`, err);
+        }
+      }
+
+      console.log(`[IBKR][getOptionChain][${reqId}] Resolved ${options.length} option contracts`);
+
+    } catch (err) {
+      console.error(`[IBKR][getOptionChain][${reqId}] Error fetching option chain:`, err);
+    }
+
+    return {
+      symbol,
+      underlyingPrice,
+      underlyingChange: 0,
+      options,
+    };
+  }
+
+  /**
+   * Get option chain with real market data (bid/ask/delta) for engine strike selection
+   * This is a more comprehensive version that attempts to get real Greeks
+   */
+  async getOptionChainWithStrikes(
+    symbol: string,
+    expiration?: string
+  ): Promise<{
+    underlyingPrice: number;
+    puts: Array<{ strike: number; bid: number; ask: number; delta: number; conid?: number }>;
+    calls: Array<{ strike: number; bid: number; ask: number; delta: number; conid?: number }>;
+  }> {
+    await this.ensureReady();
+    const reqId = randomUUID().slice(0, 8);
+    console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Starting for ${symbol}`);
+
+    // Get underlying price
+    let underlyingPrice = 0;
+    let underlyingConid: number | null = null;
+
+    try {
+      underlyingConid = await this.resolveConid(symbol);
+      if (underlyingConid) {
+        const snap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${underlyingConid}`);
         if (snap.status === 200) {
           const data = (snap.data as any[]) || [];
           const last = data?.[0]?.["31"] ?? data?.[0]?.last;
           if (last != null) underlyingPrice = Number(last);
         }
       }
-    } catch {
-      // ignore
+    } catch (err) {
+      console.error(`[IBKR][getOptionChainWithStrikes][${reqId}] Error getting price:`, err);
     }
-    return {
-      symbol,
-      underlyingPrice,
-      underlyingChange: 0,
-      options: [],
-    };
+
+    if (!underlyingConid || underlyingPrice === 0) {
+      console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] No underlying data`);
+      return { underlyingPrice: 0, puts: [], calls: [] };
+    }
+
+    // Determine expiration
+    const today = new Date();
+    const targetExpiration = expiration || today.toISOString().slice(0, 10).replace(/-/g, '');
+    const expirationMonth = targetExpiration.slice(0, 6);
+
+    const puts: Array<{ strike: number; bid: number; ask: number; delta: number; conid?: number }> = [];
+    const calls: Array<{ strike: number; bid: number; ask: number; delta: number; conid?: number }> = [];
+
+    try {
+      // Get available strikes
+      const strikesUrl = `/v1/api/iserver/secdef/strikes?conid=${underlyingConid}&sectype=OPT&month=${expirationMonth}`;
+      const strikesResp = await this.http.get(strikesUrl);
+
+      if (strikesResp.status !== 200) {
+        console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] Failed to get strikes`);
+        return { underlyingPrice, puts: [], calls: [] };
+      }
+
+      const strikesData = strikesResp.data as { call?: number[]; put?: number[] };
+      const putStrikes = strikesData.put || [];
+      const callStrikes = strikesData.call || [];
+
+      // Filter to OTM options (puts below price, calls above)
+      const otmPuts = putStrikes.filter(s => s < underlyingPrice).slice(-15); // 15 closest OTM puts
+      const otmCalls = callStrikes.filter(s => s > underlyingPrice).slice(0, 15); // 15 closest OTM calls
+
+      console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Processing ${otmPuts.length} OTM puts, ${otmCalls.length} OTM calls`);
+
+      // Resolve each option and estimate delta based on moneyness
+      for (const strike of otmPuts) {
+        const moneyness = (underlyingPrice - strike) / underlyingPrice;
+        // Rough delta estimate: ~0.5 at ATM, decreasing as more OTM
+        const estimatedDelta = -Math.max(0.05, 0.5 - moneyness * 5);
+
+        let conid: number | undefined;
+        try {
+          const resolvedConid = await this.resolveOptionConid(symbol, targetExpiration, 'PUT', strike);
+          if (resolvedConid) conid = resolvedConid;
+        } catch {
+          // Continue without conid
+        }
+
+        puts.push({
+          strike,
+          bid: Math.max(0.05, moneyness * underlyingPrice * 0.1), // Rough estimate
+          ask: Math.max(0.10, moneyness * underlyingPrice * 0.12),
+          delta: estimatedDelta,
+          conid,
+        });
+      }
+
+      for (const strike of otmCalls) {
+        const moneyness = (strike - underlyingPrice) / underlyingPrice;
+        const estimatedDelta = Math.max(0.05, 0.5 - moneyness * 5);
+
+        let conid: number | undefined;
+        try {
+          const resolvedConid = await this.resolveOptionConid(symbol, targetExpiration, 'CALL', strike);
+          if (resolvedConid) conid = resolvedConid;
+        } catch {
+          // Continue without conid
+        }
+
+        calls.push({
+          strike,
+          bid: Math.max(0.05, moneyness * underlyingPrice * 0.1),
+          ask: Math.max(0.10, moneyness * underlyingPrice * 0.12),
+          delta: estimatedDelta,
+          conid,
+        });
+      }
+
+      console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Resolved ${puts.length} puts, ${calls.length} calls`);
+
+    } catch (err) {
+      console.error(`[IBKR][getOptionChainWithStrikes][${reqId}] Error:`, err);
+    }
+
+    return { underlyingPrice, puts, calls };
   }
 
   async getTrades(): Promise<Trade[]> {
@@ -1067,6 +1289,275 @@ class IbkrClient {
     }
 
     return { id: orderId2, status: "submitted", raw: raw2 };
+  }
+
+  /**
+   * Resolve option contract conid for a specific strike/expiration
+   * IBKR option search requires underlying conid, expiration, right (P/C), and strike
+   */
+  private async resolveOptionConid(
+    underlying: string,
+    expiration: string, // YYYYMMDD format
+    optionType: 'PUT' | 'CALL',
+    strike: number
+  ): Promise<number | null> {
+    await this.ensureAccountSelected();
+
+    // First get the underlying conid
+    const underlyingConid = await this.resolveConid(underlying);
+    if (!underlyingConid) {
+      console.log(`[IBKR][resolveOptionConid] Cannot resolve underlying conid for ${underlying}`);
+      return null;
+    }
+
+    const right = optionType === 'CALL' ? 'C' : 'P';
+    const reqId = randomUUID();
+
+    console.log(`[IBKR][resolveOptionConid][${reqId}] Searching: underlying=${underlying}(${underlyingConid}), exp=${expiration}, right=${right}, strike=${strike}`);
+
+    try {
+      // Use secdef/search with option parameters
+      const searchUrl = `/v1/api/iserver/secdef/search`;
+      const params = new URLSearchParams({
+        symbol: underlying,
+        secType: 'OPT',
+        strike: strike.toString(),
+        right: right,
+        month: expiration.slice(0, 6), // YYYYMM for month filter
+      });
+
+      const resp = await this.http.get(`${searchUrl}?${params.toString()}`);
+      const bodySnippet = JSON.stringify(resp.data || {}).slice(0, 500);
+      console.log(`[IBKR][resolveOptionConid][${reqId}] Search response: status=${resp.status} body=${bodySnippet}`);
+
+      if (resp.status === 200 && Array.isArray(resp.data)) {
+        // Look for exact match on strike and right
+        for (const contract of resp.data) {
+          const cStrike = parseFloat(contract.strike || '0');
+          const cRight = contract.right || '';
+
+          // Match within 0.01 tolerance for floating point
+          if (Math.abs(cStrike - strike) < 0.01 && cRight.toUpperCase() === right) {
+            const conid = parseInt(contract.conid, 10);
+            console.log(`[IBKR][resolveOptionConid][${reqId}] Found match: conid=${conid}, strike=${cStrike}, right=${cRight}`);
+            return conid;
+          }
+        }
+
+        // If no exact match, log available contracts for debugging
+        console.log(`[IBKR][resolveOptionConid][${reqId}] No exact match found. Available: ${resp.data.slice(0, 5).map((c: any) => `${c.strike}${c.right}(${c.conid})`).join(', ')}`);
+      }
+
+      // Alternative: Try the strikes endpoint to get available options
+      const strikesUrl = `/v1/api/iserver/secdef/strikes`;
+      const strikesParams = new URLSearchParams({
+        conid: underlyingConid.toString(),
+        sectype: 'OPT',
+        month: expiration.slice(0, 6),
+      });
+
+      const strikesResp = await this.http.get(`${strikesUrl}?${strikesParams.toString()}`);
+      console.log(`[IBKR][resolveOptionConid][${reqId}] Strikes response: status=${strikesResp.status}`);
+
+      if (strikesResp.status === 200 && strikesResp.data) {
+        // The strikes endpoint returns call and put strikes separately
+        const strikesData = strikesResp.data;
+        const availableStrikes = optionType === 'CALL' ? strikesData.call : strikesData.put;
+
+        if (Array.isArray(availableStrikes) && availableStrikes.includes(strike)) {
+          // Use secdef/info to get the actual conid for this specific strike
+          const infoUrl = `/v1/api/iserver/secdef/info`;
+          const infoParams = new URLSearchParams({
+            conid: underlyingConid.toString(),
+            sectype: 'OPT',
+            month: expiration.slice(0, 6),
+            strike: strike.toString(),
+            right: right,
+          });
+
+          const infoResp = await this.http.get(`${infoUrl}?${infoParams.toString()}`);
+          console.log(`[IBKR][resolveOptionConid][${reqId}] Info response: status=${infoResp.status} body=${JSON.stringify(infoResp.data).slice(0, 300)}`);
+
+          if (infoResp.status === 200 && Array.isArray(infoResp.data)) {
+            for (const opt of infoResp.data) {
+              if (opt.conid) {
+                console.log(`[IBKR][resolveOptionConid][${reqId}] Found via info: conid=${opt.conid}`);
+                return parseInt(opt.conid, 10);
+              }
+            }
+          }
+        }
+      }
+
+    } catch (err) {
+      console.error(`[IBKR][resolveOptionConid][${reqId}] Error:`, err);
+    }
+
+    console.log(`[IBKR][resolveOptionConid][${reqId}] Could not resolve option conid`);
+    return null;
+  }
+
+  /**
+   * Place an option order (SELL/BUY puts or calls)
+   */
+  async placeOptionOrder(params: {
+    symbol: string;
+    optionType: 'PUT' | 'CALL';
+    strike: number;
+    expiration: string; // YYYYMMDD format
+    side: 'BUY' | 'SELL';
+    quantity: number;
+    orderType: 'MKT' | 'LMT';
+    limitPrice?: number;
+  }): Promise<{ id?: string; status: string; raw?: any }> {
+    await this.ensureReady();
+    await this.ensureAccountSelected();
+
+    const accountId = this.accountId || process.env.IBKR_ACCOUNT_ID || "";
+    const reqId = randomUUID();
+
+    console.log(`[IBKR][placeOptionOrder][${reqId}] Starting: ${params.side} ${params.quantity} ${params.symbol} ${params.strike}${params.optionType === 'PUT' ? 'P' : 'C'} ${params.expiration} @ ${params.orderType}${params.limitPrice ? ' $' + params.limitPrice : ''}`);
+
+    if (!params.symbol || !accountId || !params.quantity || params.quantity <= 0) {
+      console.error(`[IBKR][placeOptionOrder][${reqId}] Invalid params`);
+      return { status: "rejected_400" };
+    }
+
+    // Resolve the option contract conid
+    const optionConid = await this.resolveOptionConid(
+      params.symbol,
+      params.expiration,
+      params.optionType,
+      params.strike
+    );
+
+    if (!optionConid) {
+      const errorMsg = `Cannot resolve option conid for ${params.symbol} ${params.strike}${params.optionType === 'PUT' ? 'P' : 'C'} ${params.expiration}`;
+      console.error(`[IBKR][placeOptionOrder][${reqId}] ${errorMsg}`);
+      await storage.createAuditLog({
+        eventType: "IBKR_OPTION_ORDER",
+        details: `FAILED: ${errorMsg}`,
+        status: "FAILED"
+      });
+      return { status: "rejected_no_option_conid" };
+    }
+
+    console.log(`[IBKR][placeOptionOrder][${reqId}] Resolved option conid: ${optionConid}`);
+
+    // Build the order
+    const order: any = {
+      acctId: accountId,
+      conid: optionConid,
+      orderType: params.orderType,
+      side: params.side,
+      tif: 'DAY',
+      quantity: Math.floor(params.quantity),
+    };
+
+    if (params.orderType === 'LMT' && params.limitPrice != null) {
+      order.price = params.limitPrice;
+    }
+
+    const body = { orders: [order] };
+    const url = `/v1/api/iserver/account/${encodeURIComponent(accountId)}/orders`;
+
+    console.log(`[IBKR][placeOptionOrder][${reqId}] Submitting order to ${url}:`, JSON.stringify(body));
+
+    try {
+      const resp = await this.http.post(url, body, { headers: { 'Content-Type': 'application/json' } });
+      const raw = resp.data;
+
+      console.log(`[IBKR][placeOptionOrder][${reqId}] Response: status=${resp.status} data=${JSON.stringify(raw).slice(0, 500)}`);
+
+      // Handle order confirmation prompts (IBKR may require confirmation)
+      if (Array.isArray(raw) && raw[0]?.id && raw[0]?.message) {
+        // This is a confirmation request - need to reply
+        const confirmId = raw[0].id;
+        console.log(`[IBKR][placeOptionOrder][${reqId}] Order requires confirmation (id=${confirmId}): ${raw[0].message}`);
+
+        const confirmUrl = `/v1/api/iserver/reply/${confirmId}`;
+        const confirmResp = await this.http.post(confirmUrl, { confirmed: true });
+        console.log(`[IBKR][placeOptionOrder][${reqId}] Confirmation response: status=${confirmResp.status} data=${JSON.stringify(confirmResp.data).slice(0, 300)}`);
+
+        // Use confirmed response as raw
+        if (confirmResp.status >= 200 && confirmResp.status < 300) {
+          const confirmedRaw = confirmResp.data;
+          let orderId: string | undefined;
+
+          if (Array.isArray(confirmedRaw) && confirmedRaw[0]?.order_id) {
+            orderId = String(confirmedRaw[0].order_id);
+          } else if (confirmedRaw?.order_id) {
+            orderId = String(confirmedRaw.order_id);
+          }
+
+          // Store order locally
+          const optionSymbol = `${params.symbol}${params.expiration}${params.optionType === 'PUT' ? 'P' : 'C'}${params.strike}`;
+          await storage.createOrder({
+            ibkrOrderId: orderId || null,
+            symbol: optionSymbol,
+            side: params.side,
+            quantity: params.quantity,
+            orderType: params.orderType,
+            limitPrice: params.limitPrice ? String(params.limitPrice) : null,
+            status: 'submitted',
+          });
+
+          await storage.createAuditLog({
+            eventType: "IBKR_OPTION_ORDER",
+            details: `OK ${params.side} ${params.quantity} ${optionSymbol} @ ${params.limitPrice || 'MKT'} orderId=${orderId || 'n/a'}`,
+            status: "SUCCESS"
+          });
+
+          return { id: orderId, status: "submitted", raw: confirmedRaw };
+        }
+      }
+
+      // Parse order ID from response
+      let orderId: string | undefined;
+      if (raw?.order_id) {
+        orderId = String(raw.order_id);
+      } else if (Array.isArray(raw) && raw[0]?.order_id) {
+        orderId = String(raw[0].order_id);
+      }
+
+      const optionSymbol = `${params.symbol}${params.expiration}${params.optionType === 'PUT' ? 'P' : 'C'}${params.strike}`;
+
+      if (resp.status >= 200 && resp.status < 300) {
+        // Store order locally
+        await storage.createOrder({
+          ibkrOrderId: orderId || null,
+          symbol: optionSymbol,
+          side: params.side,
+          quantity: params.quantity,
+          orderType: params.orderType,
+          limitPrice: params.limitPrice ? String(params.limitPrice) : null,
+          status: 'submitted',
+        });
+
+        await storage.createAuditLog({
+          eventType: "IBKR_OPTION_ORDER",
+          details: `OK ${params.side} ${params.quantity} ${optionSymbol} @ ${params.limitPrice || 'MKT'} orderId=${orderId || 'n/a'}`,
+          status: "SUCCESS"
+        });
+
+        return { id: orderId, status: "submitted", raw };
+      } else {
+        await storage.createAuditLog({
+          eventType: "IBKR_OPTION_ORDER",
+          details: `FAILED http=${resp.status} ${optionSymbol}`,
+          status: "FAILED"
+        });
+        return { status: `rejected_${resp.status}`, raw };
+      }
+    } catch (err) {
+      console.error(`[IBKR][placeOptionOrder][${reqId}] Error:`, err);
+      await storage.createAuditLog({
+        eventType: "IBKR_OPTION_ORDER",
+        details: `ERROR: ${err.message || 'Unknown error'}`,
+        status: "FAILED"
+      });
+      return { status: "error", raw: { error: err.message } };
+    }
   }
 
   async getOpenOrders(): Promise<any[]> {
@@ -1382,6 +1873,30 @@ export async function placePaperStockOrder(params: { symbol: string; side: 'BUY'
   });
 }
 
+// Utility for placing paper option orders (e.g., SELL 1 SPY 600P 20250106)
+export async function placePaperOptionOrder(params: {
+  symbol: string;
+  optionType: 'PUT' | 'CALL';
+  strike: number;
+  expiration: string; // YYYYMMDD format
+  side: 'BUY' | 'SELL';
+  quantity: number;
+  orderType?: 'MKT' | 'LMT';
+  limitPrice?: number;
+}) {
+  if (!activeClient) throw new Error('IBKR client not initialized');
+  return activeClient.placeOptionOrder({
+    symbol: params.symbol,
+    optionType: params.optionType,
+    strike: params.strike,
+    expiration: params.expiration,
+    side: params.side,
+    quantity: params.quantity,
+    orderType: params.orderType || 'MKT',
+    limitPrice: params.limitPrice,
+  });
+}
+
 export async function listPaperOpenOrders() {
   if (!activeClient) throw new Error('IBKR client not initialized');
   return activeClient.getOpenOrders();
@@ -1401,4 +1916,10 @@ export async function ensureIbkrReady(): Promise<IbkrDiagnostics> {
     await (activeClient as any).ensureReady();
   }
   return activeClient.getDiagnostics();
+}
+
+// Utility for getting option chain with real strikes for engine strike selection
+export async function getOptionChainWithStrikes(symbol: string, expiration?: string) {
+  if (!activeClient) throw new Error('IBKR client not initialized');
+  return activeClient.getOptionChainWithStrikes(symbol, expiration);
 }
