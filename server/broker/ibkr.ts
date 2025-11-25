@@ -1229,19 +1229,37 @@ class IbkrClient {
         console.log(`[IBKR] Found ${localOrders.length} orders in local storage`);
 
         if (localOrders.length > 0) {
+          // Helper to check if IBKR order ID is valid (numeric string)
+          const isValidIbkrOrderId = (id: string | null): boolean => {
+            if (!id) return false;
+            // IBKR order IDs are numeric, skip UUIDs or other invalid formats
+            return /^\d+$/.test(id);
+          };
+
           // Map local orders to the format expected by the cancel logic
-          openOrders = localOrders
-            .filter(o => o.ibkrOrderId) // Only include orders with IBKR order IDs
-            .map(o => ({
-              id: o.ibkrOrderId,
-              localId: o.id,
-              symbol: o.symbol,
-              side: o.side,
-              quantity: o.quantity,
-              status: o.status,
-              source: 'local',
-            }));
-          console.log(`[IBKR] Using ${openOrders.length} orders from local storage (with valid IBKR IDs)`);
+          const validOrders = localOrders.filter(o => isValidIbkrOrderId(o.ibkrOrderId));
+          const invalidOrders = localOrders.filter(o => !isValidIbkrOrderId(o.ibkrOrderId));
+
+          // Mark invalid orders as cancelled locally (they can't be cancelled at IBKR)
+          for (const invalidOrder of invalidOrders) {
+            console.log(`[IBKR] Order ${invalidOrder.id} has invalid/missing IBKR ID (${invalidOrder.ibkrOrderId}), marking as cancelled locally`);
+            try {
+              await storage.updateOrderStatus(invalidOrder.id, 'cancelled', { cancelledAt: new Date() });
+            } catch (err) {
+              console.warn(`[IBKR] Failed to update invalid order status:`, err);
+            }
+          }
+
+          openOrders = validOrders.map(o => ({
+            id: o.ibkrOrderId,
+            localId: o.id,
+            symbol: o.symbol,
+            side: o.side,
+            quantity: o.quantity,
+            status: o.status,
+            source: 'local',
+          }));
+          console.log(`[IBKR] Using ${openOrders.length} orders from local storage (with valid numeric IBKR IDs), cleaned up ${invalidOrders.length} invalid orders`);
         }
       }
 
