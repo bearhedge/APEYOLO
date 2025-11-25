@@ -15,7 +15,7 @@ export function PNL() {
   const [dateFrom, setDateFrom] = useState('');
   const [dateTo, setDateTo] = useState('');
 
-  const { data, isLoading } = useQuery<PnlRow[]>({
+  const { data, isLoading, error } = useQuery<PnlRow[]>({
     queryKey: ['/api/pnl'],
     queryFn: getPNL,
   });
@@ -115,37 +115,49 @@ export function PNL() {
     }
   }, [filteredData]);
 
+  // Helper to safely format numbers
+  const formatMoney = (val: number | null | undefined): string => {
+    if (val == null || isNaN(val)) return '-';
+    return `$${val.toFixed(2)}`;
+  };
+
   const pnlColumns = [
     { header: 'Trade ID', accessor: 'tradeId' as keyof PnlRow, sortable: true },
-    { header: 'Timestamp', accessor: (row: PnlRow) => new Date(row.ts).toLocaleString(), sortable: true },
+    { header: 'Timestamp', accessor: (row: PnlRow) => row.ts ? new Date(row.ts).toLocaleString() : '-', sortable: true },
     { header: 'Symbol', accessor: 'symbol' as keyof PnlRow, sortable: true },
     { header: 'Strategy', accessor: 'strategy' as keyof PnlRow, sortable: true },
     { header: 'Side', accessor: 'side' as keyof PnlRow, sortable: true },
     { header: 'Qty', accessor: 'qty' as keyof PnlRow, sortable: true, className: 'tabular-nums' },
-    { header: 'Entry', accessor: (row: PnlRow) => `$${row.entry.toFixed(2)}`, className: 'tabular-nums' },
-    { header: 'Exit', accessor: (row: PnlRow) => row.exit ? `$${row.exit.toFixed(2)}` : '-', className: 'tabular-nums' },
-    { header: 'Fees', accessor: (row: PnlRow) => `$${row.fees.toFixed(2)}`, className: 'tabular-nums' },
-    { 
-      header: 'Realized P/L', 
-      accessor: (row: PnlRow) => (
-        <span className={row.realized >= 0 ? 'text-green-500' : 'text-red-500'}>
-          ${row.realized.toFixed(2)}
-        </span>
-      ),
+    { header: 'Entry', accessor: (row: PnlRow) => formatMoney(row.entry), className: 'tabular-nums' },
+    { header: 'Exit', accessor: (row: PnlRow) => formatMoney(row.exit), className: 'tabular-nums' },
+    { header: 'Fees', accessor: (row: PnlRow) => formatMoney(row.fees), className: 'tabular-nums' },
+    {
+      header: 'Realized P/L',
+      accessor: (row: PnlRow) => {
+        if (row.realized == null || isNaN(row.realized)) return '-';
+        return (
+          <span className={row.realized >= 0 ? 'text-green-500' : 'text-red-500'}>
+            ${row.realized.toFixed(2)}
+          </span>
+        );
+      },
       className: 'tabular-nums'
     },
-    { 
-      header: 'Run P/L', 
-      accessor: (row: PnlRow) => (
-        <span className={row.run >= 0 ? 'text-green-500' : 'text-red-500'}>
-          ${row.run.toFixed(2)}
-        </span>
-      ),
+    {
+      header: 'Run P/L',
+      accessor: (row: PnlRow) => {
+        if (row.run == null || isNaN(row.run)) return '-';
+        return (
+          <span className={row.run >= 0 ? 'text-green-500' : 'text-red-500'}>
+            ${row.run.toFixed(2)}
+          </span>
+        );
+      },
       className: 'tabular-nums'
     },
     { header: 'Notes', accessor: (row: PnlRow) => row.notes || '-', className: 'text-sm text-silver' },
-    { 
-      header: 'Row Hash', 
+    {
+      header: 'Row Hash',
       accessor: (row: PnlRow) => (
         <span className="font-mono text-xs">{rowHashes.get(row.tradeId) || '...'}</span>
       ),
@@ -160,6 +172,24 @@ export function PNL() {
         <div className="flex-1 p-6 space-y-6">
           <div className="skeleton h-8 w-48" />
           <div className="skeleton h-96" />
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex h-[calc(100vh-64px)]">
+        <LeftNav />
+        <div className="flex-1 p-6 space-y-6">
+          <SectionHeader
+            title="Track Record"
+            subtitle="Immutable trading history - read-only audit log"
+            testId="header-pnl"
+          />
+          <div className="bg-charcoal rounded-2xl p-6 border border-red-500/50">
+            <p className="text-red-500">Failed to load PNL data: {error.message}</p>
+          </div>
         </div>
       </div>
     );

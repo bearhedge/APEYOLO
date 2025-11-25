@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { RefreshCw, Bell, Shield, Bot, Settings as SettingsIcon, CheckCircle, XCircle, AlertCircle, Trash2 } from 'lucide-react';
 import { SectionHeader } from '@/components/SectionHeader';
+import { LeftNav } from '@/components/LeftNav';
 import { Button } from '@/components/ui/button';
 import { StatusStep } from '@/components/ui/StatusStep';
 import { Input } from '@/components/ui/input';
@@ -176,12 +177,14 @@ export function Settings() {
   };
 
   return (
-    <div className="p-6 space-y-6">
-      <SectionHeader
-        title="Settings"
-        subtitle="Configure broker connection, risk parameters, and automation"
-        testId="header-settings"
-      />
+    <div className="flex h-[calc(100vh-64px)]">
+      <LeftNav />
+      <div className="flex-1 overflow-y-auto p-6 space-y-6">
+        <SectionHeader
+          title="Settings"
+          subtitle="Configure broker connection, risk parameters, and automation"
+          testId="header-settings"
+        />
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Broker Connection */}
@@ -741,6 +744,7 @@ export function Settings() {
         <Button className="btn-primary" data-testid="button-save-settings">
           Save Settings
         </Button>
+      </div>
       </div>
     </div>
   );
