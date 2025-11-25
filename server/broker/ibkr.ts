@@ -1049,6 +1049,23 @@ class IbkrClient {
     }
 
     await storage.createAuditLog({ eventType: "IBKR_ORDER_SUBMIT", details: `OK http=${http2} req=${reqId2} orderId=${orderId2 ?? 'n/a'}` , status: "SUCCESS" });
+
+    // Store order locally for reliable tracking
+    try {
+      await storage.createOrder({
+        ibkrOrderId: orderId2 || null,
+        symbol,
+        side,
+        quantity: Math.floor(quantity),
+        orderType,
+        limitPrice: orderType === 'LMT' ? String(opts?.limitPrice ?? 0) : null,
+        status: 'submitted',
+      });
+      console.log(`[IBKR][${reqId2}] Order stored locally: ibkrOrderId=${orderId2}, symbol=${symbol}, side=${side}, qty=${quantity}`);
+    } catch (storageErr) {
+      console.error(`[IBKR][${reqId2}] Failed to store order locally:`, storageErr);
+    }
+
     return { id: orderId2, status: "submitted", raw: raw2 };
   }
 
@@ -1201,12 +1218,35 @@ class IbkrClient {
     try {
       await this.ensureReady();
 
-      const openOrders = await this.getOpenOrders();
-      console.log(`[IBKR] Found ${openOrders.length} open orders to cancel`);
+      // Try IBKR API first
+      let openOrders = await this.getOpenOrders();
+      console.log(`[IBKR] Found ${openOrders.length} open orders from IBKR API`);
+
+      // If IBKR API returns no orders, check local storage as fallback
+      if (openOrders.length === 0) {
+        console.log('[IBKR] No orders from IBKR API, checking local storage...');
+        const localOrders = await storage.getOpenOrders();
+        console.log(`[IBKR] Found ${localOrders.length} orders in local storage`);
+
+        if (localOrders.length > 0) {
+          // Map local orders to the format expected by the cancel logic
+          openOrders = localOrders
+            .filter(o => o.ibkrOrderId) // Only include orders with IBKR order IDs
+            .map(o => ({
+              id: o.ibkrOrderId,
+              localId: o.id,
+              symbol: o.symbol,
+              side: o.side,
+              quantity: o.quantity,
+              status: o.status,
+              source: 'local',
+            }));
+          console.log(`[IBKR] Using ${openOrders.length} orders from local storage (with valid IBKR IDs)`);
+        }
+      }
 
       if (openOrders.length === 0) {
-        console.log('[IBKR] No open orders found - nothing to cancel');
-        // Return success: false to indicate no orders were cleared (preventing false positive)
+        console.log('[IBKR] No open orders found in API or local storage - nothing to cancel');
         return { success: false, cleared: 0, errors: ['No open orders found'] };
       }
 
@@ -1215,6 +1255,8 @@ class IbkrClient {
 
       for (const order of openOrders) {
         const orderId = order.orderId || order.id;
+        const localId = order.localId;
+
         if (!orderId) {
           console.error('[IBKR] Order missing ID:', order);
           errors.push('Order missing ID');
@@ -1227,10 +1269,45 @@ class IbkrClient {
         if (result.success) {
           cleared++;
           console.log(`[IBKR] Successfully cancelled order ${orderId}`);
+
+          // Update local storage status if we have a local ID
+          if (localId) {
+            try {
+              await storage.updateOrderStatus(localId, 'cancelled', { cancelledAt: new Date() });
+              console.log(`[IBKR] Updated local order ${localId} status to cancelled`);
+            } catch (updateErr) {
+              console.warn(`[IBKR] Failed to update local order status:`, updateErr);
+            }
+          } else {
+            // Try to find and update by IBKR order ID
+            try {
+              const localOrder = await storage.getOrderByIbkrId(orderId);
+              if (localOrder) {
+                await storage.updateOrderStatus(localOrder.id, 'cancelled', { cancelledAt: new Date() });
+                console.log(`[IBKR] Updated local order (found by ibkrOrderId ${orderId}) status to cancelled`);
+              }
+            } catch (updateErr) {
+              console.warn(`[IBKR] Failed to find/update local order by IBKR ID:`, updateErr);
+            }
+          }
         } else {
           const errorMsg = `Failed to cancel ${orderId}: ${result.message}`;
           console.error(`[IBKR] ${errorMsg}`);
           errors.push(errorMsg);
+
+          // If IBKR says order doesn't exist or already cancelled, update local status
+          if (result.message?.includes('not found') || result.message?.includes('cancelled') || result.message?.includes('filled')) {
+            if (localId) {
+              try {
+                await storage.updateOrderStatus(localId, 'cancelled', { cancelledAt: new Date() });
+                console.log(`[IBKR] Order ${orderId} not found/already done at IBKR, marked local as cancelled`);
+                cleared++; // Count as cleared since the order is gone
+                errors.pop(); // Remove the error since we handled it
+              } catch (updateErr) {
+                console.warn(`[IBKR] Failed to update local order status after cancel error:`, updateErr);
+              }
+            }
+          }
         }
 
         // Small delay between cancellations to avoid overwhelming the API

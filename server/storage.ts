@@ -11,6 +11,8 @@ import {
   type InsertAuditLog,
   type IbkrCredentials,
   type InsertIbkrCredentials,
+  type Order,
+  type InsertOrder,
   type OptionChainData,
   type SpreadConfig,
   type TradeValidation,
@@ -68,6 +70,13 @@ export interface IStorage {
   updateIbkrCredentials(id: string, updates: Partial<IbkrCredentials>): Promise<IbkrCredentials>;
   deleteIbkrCredentials(id: string): Promise<void>;
   updateIbkrConnectionStatus(id: string, status: "active" | "inactive" | "error", errorMessage?: string): Promise<void>;
+
+  // Order tracking
+  createOrder(order: InsertOrder): Promise<Order>;
+  getOpenOrders(): Promise<Order[]>;
+  getOrderByIbkrId(ibkrOrderId: string): Promise<Order | undefined>;
+  updateOrderStatus(id: string, status: string, extras?: { filledAt?: Date; cancelledAt?: Date }): Promise<Order>;
+  clearAllLocalOrders(): Promise<number>;
 }
 
 export class MemStorage implements IStorage {
@@ -77,6 +86,7 @@ export class MemStorage implements IStorage {
   private riskRules: Map<string, RiskRules> = new Map();
   private auditLogs: Map<string, AuditLog> = new Map();
   private ibkrCredentials: Map<string, IbkrCredentials> = new Map();
+  private orders: Map<string, Order> = new Map();
 
   constructor() {
     // Initialize with default risk rules
@@ -488,6 +498,64 @@ export class MemStorage implements IStorage {
       userId: existing.userId,
       status: status === "error" ? "error" : "success",
     });
+  }
+
+  // Order tracking implementations
+  async createOrder(insertOrder: InsertOrder): Promise<Order> {
+    const id = randomUUID();
+    const order: Order = {
+      ...insertOrder,
+      id,
+      submittedAt: new Date(),
+      filledAt: null,
+      cancelledAt: null,
+    };
+    this.orders.set(id, order);
+    console.log(`[Storage] Created order: id=${id}, ibkrOrderId=${order.ibkrOrderId}, symbol=${order.symbol}, status=${order.status}`);
+    return order;
+  }
+
+  async getOpenOrders(): Promise<Order[]> {
+    const openStatuses = ['pending', 'submitted'];
+    const openOrders = Array.from(this.orders.values())
+      .filter(o => openStatuses.includes(o.status));
+    console.log(`[Storage] Found ${openOrders.length} open orders (statuses: ${openStatuses.join(', ')})`);
+    return openOrders;
+  }
+
+  async getOrderByIbkrId(ibkrOrderId: string): Promise<Order | undefined> {
+    for (const order of this.orders.values()) {
+      if (order.ibkrOrderId === ibkrOrderId) {
+        return order;
+      }
+    }
+    return undefined;
+  }
+
+  async updateOrderStatus(id: string, status: string, extras?: { filledAt?: Date; cancelledAt?: Date }): Promise<Order> {
+    const order = this.orders.get(id);
+    if (!order) throw new Error(`Order not found: ${id}`);
+
+    const updated: Order = {
+      ...order,
+      status,
+      filledAt: extras?.filledAt || order.filledAt,
+      cancelledAt: extras?.cancelledAt || order.cancelledAt,
+    };
+    this.orders.set(id, updated);
+    console.log(`[Storage] Updated order ${id} status to ${status}`);
+    return updated;
+  }
+
+  async clearAllLocalOrders(): Promise<number> {
+    const openOrders = await this.getOpenOrders();
+    let cleared = 0;
+    for (const order of openOrders) {
+      await this.updateOrderStatus(order.id, 'cancelled', { cancelledAt: new Date() });
+      cleared++;
+    }
+    console.log(`[Storage] Cleared ${cleared} local orders`);
+    return cleared;
   }
 }
 

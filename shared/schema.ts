@@ -61,6 +61,21 @@ export const auditLogs = pgTable("audit_logs", {
   timestamp: timestamp("timestamp").notNull().defaultNow(),
 });
 
+// Orders table for tracking IBKR orders locally
+export const orders = pgTable("orders", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  ibkrOrderId: varchar("ibkr_order_id", { length: 50 }),
+  symbol: text("symbol").notNull(),
+  side: text("side").notNull(), // "BUY" | "SELL"
+  quantity: integer("quantity").notNull(),
+  orderType: text("order_type").notNull(), // "MKT" | "LMT"
+  limitPrice: decimal("limit_price", { precision: 10, scale: 2 }),
+  status: text("status").notNull(), // "pending" | "submitted" | "filled" | "cancelled" | "rejected"
+  submittedAt: timestamp("submitted_at").notNull().defaultNow(),
+  filledAt: timestamp("filled_at"),
+  cancelledAt: timestamp("cancelled_at"),
+});
+
 // IBKR Credentials table for user-specific broker authentication
 export const ibkrCredentials = pgTable("ibkr_credentials", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
@@ -118,6 +133,13 @@ export const insertIbkrCredentialsSchema = createInsertSchema(ibkrCredentials).o
   status: true,
 });
 
+export const insertOrderSchema = createInsertSchema(orders).omit({
+  id: true,
+  submittedAt: true,
+  filledAt: true,
+  cancelledAt: true,
+});
+
 // Types
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
@@ -131,6 +153,8 @@ export type AuditLog = typeof auditLogs.$inferSelect;
 export type InsertAuditLog = z.infer<typeof insertAuditLogSchema>;
 export type IbkrCredentials = typeof ibkrCredentials.$inferSelect;
 export type InsertIbkrCredentials = z.infer<typeof insertIbkrCredentialsSchema>;
+export type Order = typeof orders.$inferSelect;
+export type InsertOrder = z.infer<typeof insertOrderSchema>;
 
 // Option chain types
 export type OptionData = {
