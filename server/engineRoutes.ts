@@ -144,23 +144,14 @@ router.get('/status', requireAuth, async (req, res) => {
     if (ibkrConfigured) {
       brokerProvider = 'ibkr';
 
-      // Try to establish/verify IBKR connection (same as Settings page)
-      try {
-        const diagnostics = await ensureIbkrReady();
-        brokerConnected = diagnostics.oauth.status === 200 &&
-                          diagnostics.sso.status === 200 &&
-                          diagnostics.validate.status === 200 &&
-                          diagnostics.init.status === 200;
-        console.log('[Engine] IBKR connected via ensureIbkrReady:', brokerConnected);
-      } catch (err) {
-        // ensureIbkrReady failed, check cached diagnostics
-        const diagnostics = getIbkrDiagnostics();
-        brokerConnected = diagnostics.oauth.status === 200 &&
-                          diagnostics.sso.status === 200 &&
-                          diagnostics.validate.status === 200 &&
-                          diagnostics.init.status === 200;
-        console.log('[Engine] IBKR status from cache:', brokerConnected, 'error:', (err as Error).message);
-      }
+      // Use cached diagnostics for instant status check (no 15-20s lag)
+      // The actual connection is established via Settings page or trading operations
+      const diagnostics = getIbkrDiagnostics();
+      brokerConnected = diagnostics.oauth.status === 200 &&
+                        diagnostics.sso.status === 200 &&
+                        diagnostics.validate.status === 200 &&
+                        diagnostics.init.status === 200;
+      console.log('[Engine] IBKR status from cached diagnostics:', brokerConnected);
     } else {
       // Mock mode
       brokerConnected = true;
@@ -215,14 +206,8 @@ router.post('/execute', requireAuth, async (req, res) => {
       await ensureIbkrReady();
     }
 
-    // Check trading window
+    // Check trading window - but don't block analysis, just note it
     const tradingWindow = isWithinTradingWindow();
-    if (!tradingWindow.allowed) {
-      return res.status(403).json({
-        error: 'Trading not allowed',
-        reason: tradingWindow.reason
-      });
-    }
 
     // Get account info
     const account = await broker.api.getAccount();
@@ -276,11 +261,19 @@ router.post('/execute', requireAuth, async (req, res) => {
       }
     }
 
-    // Add guard rail violations to response
+    // Add guard rail violations and trading window status to response
+    // executionReady is only true if: decision is ready + guard rails pass + trading window open
+    const canExecuteNow = decision.executionReady &&
+                          guardRailViolations.length === 0 &&
+                          tradingWindow.allowed;
+
     const response = {
       ...decision,
       guardRailViolations,
-      passedGuardRails: guardRailViolations.length === 0
+      passedGuardRails: guardRailViolations.length === 0,
+      tradingWindowOpen: tradingWindow.allowed,
+      tradingWindowReason: tradingWindow.reason,
+      canExecuteNow, // True only if all conditions met (can be used for UI)
     };
 
     res.json(response);
@@ -300,6 +293,16 @@ router.post('/execute-trade', requireAuth, async (req, res) => {
 
     if (!decision || !decision.executionReady) {
       return res.status(400).json({ error: 'Invalid or incomplete trading decision' });
+    }
+
+    // Check trading window - actual execution requires being within window
+    const tradingWindow = isWithinTradingWindow();
+    if (!tradingWindow.allowed) {
+      return res.status(403).json({
+        error: 'Execution not allowed outside trading window',
+        reason: tradingWindow.reason,
+        tradingWindowOpen: false
+      });
     }
 
     // Check guard rails

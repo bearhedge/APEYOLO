@@ -3,7 +3,7 @@ import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { storage } from "./storage";
 import { getBroker } from "./broker";
-import { getIbkrDiagnostics, ensureIbkrReady, placePaperStockOrder, listPaperOpenOrders } from "./broker/ibkr";
+import { getIbkrDiagnostics, ensureIbkrReady, placePaperStockOrder, placePaperOptionOrder, listPaperOpenOrders } from "./broker/ibkr";
 import { TradingEngine } from "./engine/index.ts";
 import { 
   insertTradeSchema, 
@@ -848,18 +848,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error('Engine error:', error);
       res.status(500).json({ error: 'Failed to get engine status' });
-    }
-  });
-
-  app.post('/api/engine/execute', async (req, res) => {
-    try {
-      // This endpoint will execute the trade once we have IBKR working
-      res.json({
-        message: 'Trade execution not yet implemented',
-        status: 'pending_ibkr_integration'
-      });
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to execute trade' });
     }
   });
 

@@ -210,11 +210,11 @@ export function useEngine() {
   const formatSteps = useCallback((decision: TradingDecision | null) => {
     if (!decision || !decision.audit) {
       return [
-        { name: 'Market Regime', status: 'pending', detail: 'Waiting for analysis' },
-        { name: 'Direction', status: 'pending', detail: 'Waiting for analysis' },
-        { name: 'Strikes', status: 'pending', detail: 'Waiting for analysis' },
-        { name: 'Position Size', status: 'pending', detail: 'Waiting for analysis' },
-        { name: 'Exit Rules', status: 'pending', detail: 'Waiting for analysis' },
+        { name: 'Market Regime', status: 'pending', detail: '—' },
+        { name: 'Direction', status: 'pending', detail: '—' },
+        { name: 'Strikes', status: 'pending', detail: '—' },
+        { name: 'Position Size', status: 'pending', detail: '—' },
+        { name: 'Exit Rules', status: 'pending', detail: '—' },
       ];
     }
 
@@ -288,7 +288,7 @@ export function useEngine() {
       steps.push({
         name: stepName,
         status: 'pending',
-        detail: 'Not reached'
+        detail: '—'
       });
     }
 

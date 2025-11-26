@@ -116,10 +116,11 @@ export function Engine() {
   // Format steps for display
   const steps = formatSteps(decision);
 
-  // Determine engine readiness
-  // Requires both trading window open AND broker connected
-  // Broker connection is established on page load via auto-connect
-  const engineReady = status?.tradingWindowOpen && status?.brokerConnected;
+  // Determine engine readiness for running analysis
+  // Only requires broker connection - analysis can run anytime
+  // Execution still requires trading window to be open
+  const canRunAnalysis = status?.brokerConnected;
+  const canExecuteTrade = status?.tradingWindowOpen && status?.brokerConnected;
 
   return (
     <div className="flex h-[calc(100vh-64px)]">
@@ -165,8 +166,8 @@ export function Engine() {
         <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
           <StatCard
             label="Engine Status"
-            value={engineReady ? 'READY' : status?.tradingWindowOpen === false ? 'CLOSED' : 'WAITING'}
-            icon={engineReady ? <CheckCircle className="w-5 h-5 text-green-500" /> : <Clock className="w-5 h-5" />}
+            value={canRunAnalysis ? 'READY' : 'WAITING'}
+            icon={canRunAnalysis ? <CheckCircle className="w-5 h-5 text-green-500" /> : <Clock className="w-5 h-5" />}
             testId="engine-status"
           />
           <StatCard
@@ -203,7 +204,7 @@ export function Engine() {
             <h3 className="text-lg font-semibold">Decision Process</h3>
             <button
               onClick={handleRunEngine}
-              disabled={!engineReady || isExecuting || loading}
+              disabled={!canRunAnalysis || isExecuting || loading}
               className="flex items-center gap-2 px-4 py-2 bg-white text-black rounded-lg font-medium hover:bg-gray-100 disabled:opacity-50 disabled:cursor-not-allowed transition"
             >
               {isExecuting ? (
@@ -228,7 +229,7 @@ export function Engine() {
               status={steps[0]?.status as 'pending' | 'passed' | 'failed' || 'pending'}
               summary={decision?.marketRegime?.metadata?.vix
                 ? `VIX ${decision.marketRegime.metadata.vix.toFixed(1)} ${decision.marketRegime.shouldTrade ? '✓ Safe' : '⚠ Caution'}`
-                : 'Waiting for analysis'}
+                : '—'}
             >
               <MarketRegimeContent
                 vix={decision?.marketRegime?.metadata?.vix}
@@ -245,7 +246,7 @@ export function Engine() {
               status={steps[1]?.status as 'pending' | 'passed' | 'failed' || 'pending'}
               summary={decision?.direction
                 ? `SELL ${decision.direction.direction}`
-                : 'Waiting for analysis'}
+                : '—'}
             >
               <DirectionContent
                 direction={decision?.direction?.direction}
@@ -262,7 +263,7 @@ export function Engine() {
               status={steps[2]?.status as 'pending' | 'passed' | 'failed' || 'pending'}
               summary={decision?.strikes?.putStrike || decision?.strikes?.callStrike
                 ? `${decision.strikes.putStrike ? `${decision.strikes.putStrike.strike}P` : ''}${decision.strikes.putStrike && decision.strikes.callStrike ? ' / ' : ''}${decision.strikes.callStrike ? `${decision.strikes.callStrike.strike}C` : ''}`
-                : 'Waiting for analysis'}
+                : '—'}
             >
               <StrikeSelectionContent
                 underlyingPrice={decision?.marketRegime?.metadata?.spyPrice}
@@ -281,7 +282,7 @@ export function Engine() {
               status={steps[3]?.status as 'pending' | 'passed' | 'failed' || 'pending'}
               summary={decision?.positionSize
                 ? `${decision.positionSize.contracts} contracts`
-                : 'Waiting for analysis'}
+                : '—'}
             >
               <PositionSizeContent
                 buyingPower={decision?.positionSize?.marginRequired ? decision.positionSize.marginRequired * 5 : undefined}
@@ -301,7 +302,7 @@ export function Engine() {
               status={steps[4]?.status as 'pending' | 'passed' | 'failed' || 'pending'}
               summary={decision?.exitRules
                 ? `Stop @ $${decision.exitRules.stopLoss} (${stopMultiplier}x)`
-                : 'Waiting for analysis'}
+                : '—'}
             >
               <ExitRulesContent
                 entryPremium={decision?.strikes?.expectedPremium ? decision.strikes.expectedPremium / 100 : undefined}
@@ -382,15 +383,29 @@ export function Engine() {
               </div>
             )}
 
+            {/* Trading Window Warning */}
+            {(decision as any).tradingWindowOpen === false && (
+              <div className="mt-4 p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
+                <p className="text-sm text-yellow-400">
+                  {(decision as any).tradingWindowReason || 'Trading window is closed. Execution disabled.'}
+                </p>
+              </div>
+            )}
+
             {/* Execute Buttons */}
             {executionMode === 'manual' && (
               <div className="mt-6 flex gap-3">
                 <button
                   onClick={handleExecuteTrade}
-                  disabled={!decision.executionReady || isExecuting || (decision.guardRailViolations && decision.guardRailViolations.length > 0)}
+                  disabled={
+                    !decision.executionReady ||
+                    isExecuting ||
+                    (decision.guardRailViolations && decision.guardRailViolations.length > 0) ||
+                    (decision as any).tradingWindowOpen === false
+                  }
                   className="px-6 py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition"
                 >
-                  Execute Trade
+                  {(decision as any).tradingWindowOpen === false ? 'Execute (Window Closed)' : 'Execute Trade'}
                 </button>
                 <button
                   onClick={() => toast.info('Trade skipped')}
@@ -404,8 +419,10 @@ export function Engine() {
             {executionMode === 'auto' && (
               <div className="mt-6 p-3 bg-blue-500/10 border border-blue-500/20 rounded-lg">
                 <p className="text-sm text-blue-400">
-                  Auto-execution is {decision.passedGuardRails ? 'enabled' : 'blocked by guard rails'}.
-                  {decision.passedGuardRails && ' Trade will execute automatically when conditions are met.'}
+                  Auto-execution is {(decision as any).canExecuteNow ? 'enabled' : 'blocked'}.
+                  {!(decision as any).canExecuteNow && (decision as any).tradingWindowOpen === false && ' (Trading window closed)'}
+                  {!(decision as any).canExecuteNow && !decision.passedGuardRails && ' (Guard rails violated)'}
+                  {(decision as any).canExecuteNow && ' Trade will execute automatically when conditions are met.'}
                 </p>
               </div>
             )}
