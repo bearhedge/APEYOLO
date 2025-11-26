@@ -3,7 +3,7 @@ import { getPositions } from '@/lib/api';
 import { DataTable } from '@/components/DataTable';
 import { LeftNav } from '@/components/LeftNav';
 import { StatCard } from '@/components/StatCard';
-import { DollarSign, TrendingUp, Shield, Activity, ArrowUpDown, Wallet, Banknote, BarChart3, AlertTriangle, Scale, Gauge } from 'lucide-react';
+import { DollarSign, TrendingUp, Shield, Activity, ArrowUpDown, Wallet, Banknote, BarChart3, Scale, Gauge } from 'lucide-react';
 import type { Position } from '@shared/types';
 
 interface AccountInfo {
@@ -107,40 +107,44 @@ export function Portfolio() {
         </div>
 
         {/* Account Summary Cards - Row 2: Margin & Risk */}
-        <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <StatCard
             label="Position Value"
-            value={accountLoading ? 'Loading...' : `$${(account?.grossPositionValue ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            value={accountLoading ? 'Loading...' : `$${Number(account?.grossPositionValue ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
             icon={<BarChart3 className="w-5 h-5 text-indigo-500" />}
             testId="position-value"
           />
           <StatCard
             label="Initial Margin"
-            value={accountLoading ? 'Loading...' : `$${(account?.marginUsed ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            value={accountLoading ? 'Loading...' : `$${Number(account?.marginUsed ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
             icon={<Shield className="w-5 h-5 text-yellow-500" />}
             testId="margin-used"
           />
           <StatCard
             label="Maint. Margin"
-            value={accountLoading ? 'Loading...' : `$${(account?.maintenanceMargin ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            value={accountLoading ? 'Loading...' : `$${Number(account?.maintenanceMargin ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
             icon={<Shield className="w-5 h-5 text-orange-500" />}
             testId="maint-margin"
           />
           <StatCard
             label="Cushion"
-            value={accountLoading ? 'Loading...' : `${(account?.cushion ?? 0).toFixed(1)}%`}
-            icon={<Gauge className={`w-5 h-5 ${(account?.cushion ?? 100) > 50 ? 'text-green-500' : (account?.cushion ?? 100) > 20 ? 'text-yellow-500' : 'text-red-500'}`} />}
+            value={accountLoading ? 'Loading...' : `${Number(account?.cushion ?? 0).toFixed(1)}%`}
+            icon={<Gauge className={`w-5 h-5 ${Number(account?.cushion ?? 100) > 50 ? 'text-green-500' : Number(account?.cushion ?? 100) > 20 ? 'text-yellow-500' : 'text-red-500'}`} />}
             testId="cushion"
           />
           <StatCard
             label="Leverage"
-            value={accountLoading ? 'Loading...' : `${(account?.leverage ?? 0).toFixed(2)}x`}
-            icon={<Scale className={`w-5 h-5 ${(account?.leverage ?? 0) < 2 ? 'text-green-500' : (account?.leverage ?? 0) < 4 ? 'text-yellow-500' : 'text-red-500'}`} />}
+            value={accountLoading ? 'Loading...' : `${Number(account?.leverage ?? 0).toFixed(2)}x`}
+            icon={<Scale className={`w-5 h-5 ${Number(account?.leverage ?? 0) < 2 ? 'text-green-500' : Number(account?.leverage ?? 0) < 4 ? 'text-yellow-500' : 'text-red-500'}`} />}
             testId="leverage"
           />
+        </div>
+
+        {/* Account Summary Cards - Row 3: Greeks */}
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <StatCard
             label="Net Delta"
-            value={accountLoading ? 'Loading...' : (account?.netDelta ?? 0).toFixed(2)}
+            value={accountLoading ? 'Loading...' : Number(account?.netDelta ?? 0).toFixed(2)}
             icon={<Activity className="w-5 h-5 text-purple-500" />}
             testId="net-delta"
           />
