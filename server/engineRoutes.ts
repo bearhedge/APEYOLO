@@ -6,7 +6,7 @@
 import { Router } from "express";
 import { TradingEngine } from "./engine/index";
 import { getBroker, getBrokerWithStatus } from "./broker/index";
-import { ensureIbkrReady, placePaperOptionOrder } from "./broker/ibkr";
+import { ensureIbkrReady, placePaperOptionOrder, getIbkrDiagnostics } from "./broker/ibkr";
 import { storage } from "./storage";
 import { engineScheduler, SchedulerConfig } from "./services/engineScheduler";
 import { z } from "zod";
@@ -135,13 +135,37 @@ function isWithinTradingWindow(): { allowed: boolean; reason?: string } {
 // GET /api/engine/status - Get current engine status
 router.get('/status', requireAuth, async (req, res) => {
   try {
-    // Use getBrokerWithStatus() which checks real-time IBKR status via getIbkrDiagnostics()
-    // This matches the Settings page behavior and doesn't throw on null activeClient
-    const broker = getBrokerWithStatus();
-    const brokerConnected = broker.status.connected;
-    const brokerProvider = broker.status.provider;
+    let brokerConnected = false;
+    let brokerProvider = 'mock';
 
-    console.log('[Engine] Broker status:', brokerProvider, 'connected:', brokerConnected);
+    // Check if IBKR is configured
+    const ibkrConfigured = !!(process.env.IBKR_CLIENT_ID && process.env.IBKR_PRIVATE_KEY);
+
+    if (ibkrConfigured) {
+      brokerProvider = 'ibkr';
+
+      // Try to establish/verify IBKR connection (same as Settings page)
+      try {
+        const diagnostics = await ensureIbkrReady();
+        brokerConnected = diagnostics.oauth.status === 200 &&
+                          diagnostics.sso.status === 200 &&
+                          diagnostics.validate.status === 200 &&
+                          diagnostics.init.status === 200;
+        console.log('[Engine] IBKR connected via ensureIbkrReady:', brokerConnected);
+      } catch (err) {
+        // ensureIbkrReady failed, check cached diagnostics
+        const diagnostics = getIbkrDiagnostics();
+        brokerConnected = diagnostics.oauth.status === 200 &&
+                          diagnostics.sso.status === 200 &&
+                          diagnostics.validate.status === 200 &&
+                          diagnostics.init.status === 200;
+        console.log('[Engine] IBKR status from cache:', brokerConnected, 'error:', (err as Error).message);
+      }
+    } else {
+      // Mock mode
+      brokerConnected = true;
+      brokerProvider = 'mock';
+    }
 
     const tradingWindow = isWithinTradingWindow();
 
