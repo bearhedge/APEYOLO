@@ -22,19 +22,29 @@ function Navigation() {
     queryKey: ['/api/account'],
     queryFn: getAccount,
     enabled: location !== '/' && !isOnboarding,
+    refetchInterval: 30000, // Refresh every 30s for live NAV
   });
 
   const { data: diagData } = useQuery({
     queryKey: ['/api/broker/diag'],
     queryFn: getDiag,
     enabled: location !== '/' && !isOnboarding,
+    refetchInterval: 10000, // Refresh every 10s for connection status
   });
 
   if (location === "/" || isOnboarding) {
     return null;
   }
 
-  const isIBKRConnected = diagData?.oauth === 200 && diagData?.sso === 200;
+  // Check all 4 IBKR connection phases (matches Engine status logic)
+  const last = diagData?.last;
+  const isIBKRConnected = last?.oauth?.status === 200 &&
+                          last?.sso?.status === 200 &&
+                          last?.validate?.status === 200 &&
+                          last?.init?.status === 200;
+
+  // NAV from IBKR account - use portfolioValue (netLiquidation)
+  const nav = account?.portfolioValue || account?.netLiquidation || 0;
 
   return (
     <nav className="sticky top-0 z-10 bg-black border-b border-white/10">
@@ -46,29 +56,23 @@ function Navigation() {
               <span className="text-[10px] text-silver tracking-wider -mt-1">THE SAFEST WAY TO YOLO.</span>
             </Link>
           </div>
-          
+
           <div className="flex items-center gap-6">
-            {/* IBKR Status */}
+            {/* IBKR Status - green when connected, red when disconnected */}
             <div className="flex items-center gap-2" data-testid="ibkr-status">
               {isIBKRConnected ? (
-                <CheckCircle className="w-4 h-4 text-white" />
+                <CheckCircle className="w-4 h-4 text-green-500" />
               ) : (
-                <XCircle className="w-4 h-4 text-silver" />
+                <XCircle className="w-4 h-4 text-red-500" />
               )}
-              <span className="text-sm text-silver">IBKR</span>
+              <span className={`text-sm ${isIBKRConnected ? 'text-green-500' : 'text-red-500'}`}>IBKR</span>
             </div>
 
-            {/* DeFi Bridge */}
-            <div className="flex items-center gap-2" data-testid="defi-bridge">
-              <div className="w-2 h-2 rounded-full bg-silver" />
-              <span className="text-sm text-silver">Bridge</span>
-            </div>
-
-            {/* NAV */}
+            {/* NAV from IBKR */}
             <div className="flex items-center gap-2" data-testid="nav-display">
               <span className="text-sm text-silver">NAV</span>
               <span className="text-sm font-medium tabular-nums">
-                ${account?.nav?.toLocaleString() || '0'}
+                ${nav > 0 ? nav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '--'}
               </span>
             </div>
           </div>

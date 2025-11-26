@@ -359,11 +359,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
     res.json(broker.status);
   });
 
-  // Broker diagnostics (read-only)
-  app.get('/api/broker/diag', (_req, res) => {
-    const last = broker.status.provider === 'ibkr'
-      ? getIbkrDiagnostics()
-      : { oauth: { status: null, ts: '' }, sso: { status: null, ts: '' }, validate: { status: null, ts: '' }, init: { status: null, ts: '' } };
+  // Broker diagnostics - tries to establish connection for accurate status
+  app.get('/api/broker/diag', async (_req, res) => {
+    let last = { oauth: { status: null, ts: '' }, sso: { status: null, ts: '' }, validate: { status: null, ts: '' }, init: { status: null, ts: '' } };
+
+    if (broker.status.provider === 'ibkr') {
+      // Try to establish/verify connection first (same as Engine status)
+      try {
+        last = await ensureIbkrReady();
+      } catch (err) {
+        // Fall back to cached diagnostics
+        last = getIbkrDiagnostics();
+      }
+    }
+
     res.json({ provider: broker.status.provider, env: broker.status.env, last });
   });
 
