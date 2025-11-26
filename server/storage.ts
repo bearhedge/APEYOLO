@@ -58,6 +58,14 @@ export interface IStorage {
     netDelta: number;
     dayPnL: number;
     marginUsed: number;
+    // Enhanced fields for Portfolio Row 2
+    totalCash: number;
+    settledCash: number;
+    grossPositionValue: number;
+    maintenanceMargin: number;
+    cushion: number;
+    leverage: number;
+    excessLiquidity: number;
   }>;
   
   // Validation
@@ -313,13 +321,29 @@ export class MemStorage implements IStorage {
     const netDelta = positions.reduce((sum, p) => sum + parseFloat(p.delta.toString()), -0.23);
     const marginUsed = positions.reduce((sum, p) => sum + parseFloat(p.marginRequired.toString()), 34250.00);
 
+    // Calculate derived values for mock data
+    const totalCash = 75000.00;
+    const grossPositionValue = marginUsed * 1.5;
+    const maintenanceMargin = marginUsed * 0.75;
+    const excessLiquidity = portfolioValue - maintenanceMargin;
+    const cushion = maintenanceMargin > 0 ? (excessLiquidity / maintenanceMargin) * 100 : 100;
+    const leverage = portfolioValue > 0 ? grossPositionValue / portfolioValue : 0;
+
     return {
       accountNumber: "DU123456",
       buyingPower: 45230.50,
       portfolioValue,
       netDelta,
       dayPnL: 1234.56,
-      marginUsed
+      marginUsed,
+      // Enhanced fields for Portfolio Row 2
+      totalCash,
+      settledCash: totalCash * 0.8,
+      grossPositionValue,
+      maintenanceMargin,
+      cushion,
+      leverage,
+      excessLiquidity
     };
   }
 
