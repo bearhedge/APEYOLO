@@ -244,4 +244,12 @@ export type AccountInfo = {
   netDelta: number;
   dayPnL: number;
   marginUsed: number;
+  // New enhanced fields
+  totalCash: number;
+  settledCash: number;
+  grossPositionValue: number;
+  maintenanceMargin: number;
+  cushion: number;       // % buffer before margin call (excessLiquidity / maintenanceMargin)
+  leverage: number;      // grossPositionValue / netLiquidation
+  excessLiquidity: number;
 };

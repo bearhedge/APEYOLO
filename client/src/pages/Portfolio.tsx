@@ -3,7 +3,7 @@ import { getPositions } from '@/lib/api';
 import { DataTable } from '@/components/DataTable';
 import { LeftNav } from '@/components/LeftNav';
 import { StatCard } from '@/components/StatCard';
-import { DollarSign, TrendingUp, Shield, Activity } from 'lucide-react';
+import { DollarSign, TrendingUp, Shield, Activity, ArrowUpDown, Wallet, Banknote, BarChart3, AlertTriangle, Scale, Gauge } from 'lucide-react';
 import type { Position } from '@shared/types';
 
 interface AccountInfo {
@@ -13,6 +13,14 @@ interface AccountInfo {
   netDelta: number;
   dayPnL: number;
   marginUsed: number;
+  // Enhanced fields
+  totalCash: number;
+  settledCash: number;
+  grossPositionValue: number;
+  maintenanceMargin: number;
+  cushion: number;
+  leverage: number;
+  excessLiquidity: number;
 }
 
 export function Portfolio() {
@@ -64,25 +72,71 @@ export function Portfolio() {
           </p>
         </div>
 
-        {/* Account Summary Cards */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
-          <StatCard
-            label="Buying Power"
-            value={accountLoading ? 'Loading...' : `$${(account?.buyingPower ?? 0).toLocaleString()}`}
-            icon={<DollarSign className="w-5 h-5 text-green-500" />}
-            testId="buying-power"
-          />
+        {/* Account Summary Cards - Row 1: Core Values */}
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <StatCard
             label="Portfolio Value"
-            value={accountLoading ? 'Loading...' : `$${(account?.portfolioValue ?? 0).toLocaleString()}`}
+            value={accountLoading ? 'Loading...' : `$${(account?.portfolioValue ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
             icon={<TrendingUp className="w-5 h-5 text-blue-500" />}
             testId="portfolio-value"
           />
           <StatCard
-            label="Margin Used"
-            value={accountLoading ? 'Loading...' : `$${(account?.marginUsed ?? 0).toLocaleString()}`}
+            label="Buying Power"
+            value={accountLoading ? 'Loading...' : `$${(account?.buyingPower ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            icon={<DollarSign className="w-5 h-5 text-green-500" />}
+            testId="buying-power"
+          />
+          <StatCard
+            label="Total Cash"
+            value={accountLoading ? 'Loading...' : `$${(account?.totalCash ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            icon={<Wallet className="w-5 h-5 text-emerald-500" />}
+            testId="total-cash"
+          />
+          <StatCard
+            label="Settled Cash"
+            value={accountLoading ? 'Loading...' : `$${(account?.settledCash ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            icon={<Banknote className="w-5 h-5 text-teal-500" />}
+            testId="settled-cash"
+          />
+          <StatCard
+            label="Day P&L"
+            value={accountLoading ? 'Loading...' : `${(account?.dayPnL ?? 0) >= 0 ? '+' : ''}$${(account?.dayPnL ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            icon={<ArrowUpDown className={`w-5 h-5 ${(account?.dayPnL ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}`} />}
+            testId="day-pnl"
+          />
+        </div>
+
+        {/* Account Summary Cards - Row 2: Margin & Risk */}
+        <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
+          <StatCard
+            label="Position Value"
+            value={accountLoading ? 'Loading...' : `$${(account?.grossPositionValue ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            icon={<BarChart3 className="w-5 h-5 text-indigo-500" />}
+            testId="position-value"
+          />
+          <StatCard
+            label="Initial Margin"
+            value={accountLoading ? 'Loading...' : `$${(account?.marginUsed ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
             icon={<Shield className="w-5 h-5 text-yellow-500" />}
             testId="margin-used"
+          />
+          <StatCard
+            label="Maint. Margin"
+            value={accountLoading ? 'Loading...' : `$${(account?.maintenanceMargin ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            icon={<Shield className="w-5 h-5 text-orange-500" />}
+            testId="maint-margin"
+          />
+          <StatCard
+            label="Cushion"
+            value={accountLoading ? 'Loading...' : `${(account?.cushion ?? 0).toFixed(1)}%`}
+            icon={<Gauge className={`w-5 h-5 ${(account?.cushion ?? 100) > 50 ? 'text-green-500' : (account?.cushion ?? 100) > 20 ? 'text-yellow-500' : 'text-red-500'}`} />}
+            testId="cushion"
+          />
+          <StatCard
+            label="Leverage"
+            value={accountLoading ? 'Loading...' : `${(account?.leverage ?? 0).toFixed(2)}x`}
+            icon={<Scale className={`w-5 h-5 ${(account?.leverage ?? 0) < 2 ? 'text-green-500' : (account?.leverage ?? 0) < 4 ? 'text-yellow-500' : 'text-red-500'}`} />}
+            testId="leverage"
           />
           <StatCard
             label="Net Delta"

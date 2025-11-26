@@ -623,24 +623,62 @@ class IbkrClient {
     try {
       // CP endpoint - use cookie auth only, no Authorization header
       const resp = await this.http.get(`/v1/api/portfolio/${encodeURIComponent(accountId)}/summary`);
-      const bodySnippet = typeof resp.data === 'string' ? resp.data.slice(0, 200) : JSON.stringify(resp.data || {}).slice(0, 200);
-      console.log(`[IBKR][getAccount] status=${resp.status} body=${bodySnippet}`);
       if (resp.status !== 200) throw new Error(`status ${resp.status}`);
       const data = resp.data as any;
-      // IBKR returns nested objects with 'amount' field
+
+      // IBKR returns nested objects with 'amount' field for numeric values
       const getValue = (field: any): number => {
         if (typeof field === 'number') return field;
         if (field?.amount !== undefined) return Number(field.amount);
-        if (field?.value !== undefined) return Number(field.value);
+        if (field?.value !== undefined && typeof field.value === 'number') return Number(field.value);
         return 0;
       };
+
+      // Log available fields for debugging
+      const availableFields = Object.keys(data || {}).join(', ');
+      console.log(`[IBKR][getAccount] status=${resp.status} fields=${availableFields}`);
+
+      // Extract key values with logging
+      const netliq = getValue(data?.netliquidation);
+      const buyingPwr = getValue(data?.buyingpower);
+      const availFunds = getValue(data?.availablefunds);
+      const excessLiq = getValue(data?.excessliquidity);
+      const unrealPnl = getValue(data?.unrealizedpnl);
+      const realPnl = getValue(data?.realizedpnl);
+      const initMargin = getValue(data?.initmarginreq || data?.initialmargin);
+
+      // New enhanced fields
+      const totalCash = getValue(data?.totalcashvalue);
+      const settledCash = getValue(data?.settledcash || data?.['settledcashbydate']);
+      const grossPosValue = getValue(data?.grosspositionvalue);
+      const maintMargin = getValue(data?.maintmarginreq || data?.maintenancemargin);
+      const cushionRaw = getValue(data?.cushion);
+
+      // Calculate leverage: grossPositionValue / netLiquidation
+      const leverage = netliq > 0 ? grossPosValue / netliq : 0;
+      // Cushion is already a percentage from IBKR (e.g., 0.99 = 99%)
+      const cushion = cushionRaw * 100;
+
+      console.log(`[IBKR][getAccount] netliq=${netliq} buyingPwr=${buyingPwr} availFunds=${availFunds} excessLiq=${excessLiq} unrealPnl=${unrealPnl} realPnl=${realPnl} initMargin=${initMargin} totalCash=${totalCash} settledCash=${settledCash} grossPos=${grossPosValue} maintMargin=${maintMargin} cushion=${cushion}% leverage=${leverage.toFixed(2)}x`);
+
       const info: AccountInfo = {
         accountNumber: accountId || "",
-        buyingPower: getValue(data?.availablefunds || data?.AvailableFunds),
-        portfolioValue: getValue(data?.equitywithloanvalue || data?.EquityWithLoanValue || data?.netLiquidation),
-        netDelta: getValue(data?.netdelta || data?.NetDelta),
-        dayPnL: getValue(data?.daytradesremaining || data?.DayTradesRemaining),
-        marginUsed: getValue(data?.initialmargin || data?.InitialMargin),
+        // Use buyingpower if available, fallback to excessliquidity or availablefunds
+        buyingPower: buyingPwr || excessLiq || availFunds,
+        // Use netliquidation for accurate portfolio value
+        portfolioValue: netliq || getValue(data?.equitywithloanvalue),
+        netDelta: getValue(data?.netdelta),
+        // Combine unrealized + realized for day P&L
+        dayPnL: unrealPnl + realPnl,
+        marginUsed: initMargin,
+        // New enhanced fields
+        totalCash: totalCash || availFunds,
+        settledCash: settledCash || totalCash || availFunds,
+        grossPositionValue: grossPosValue,
+        maintenanceMargin: maintMargin,
+        cushion: cushion,
+        leverage: leverage,
+        excessLiquidity: excessLiq,
       };
       return info;
     } catch {
@@ -652,6 +690,13 @@ class IbkrClient {
         netDelta: 0,
         dayPnL: 0,
         marginUsed: 0,
+        totalCash: 0,
+        settledCash: 0,
+        grossPositionValue: 0,
+        maintenanceMargin: 0,
+        cushion: 0,
+        leverage: 0,
+        excessLiquidity: 0,
       };
     }
   }
