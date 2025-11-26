@@ -23,7 +23,9 @@ function createMockProvider(): BrokerProvider {
 }
 
 export function getBroker(): BrokerBundle {
-  const provider = (process.env.BROKER_PROVIDER as BrokerProviderName) || "mock";
+  // Auto-detect IBKR if credentials are configured (same logic as Settings page)
+  const ibkrConfigured = !!(process.env.IBKR_CLIENT_ID && process.env.IBKR_PRIVATE_KEY);
+  const provider: BrokerProviderName = ibkrConfigured ? "ibkr" : ((process.env.BROKER_PROVIDER as BrokerProviderName) || "mock");
   const env = (process.env.IBKR_ENV as BrokerEnv) || "paper";
 
   if (provider === "ibkr") {

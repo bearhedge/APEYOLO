@@ -99,14 +99,21 @@ export function useEngine() {
   }, []);
 
   // Execute trading decision process
-  const executeDecision = useCallback(async () => {
+  const executeDecision = useCallback(async (options?: {
+    riskTier?: 'conservative' | 'balanced' | 'aggressive';
+    stopMultiplier?: 2 | 3 | 4;
+  }) => {
     setLoading(true);
     setError(null);
     try {
       const response = await fetch('/api/engine/execute', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        credentials: 'include'
+        credentials: 'include',
+        body: JSON.stringify({
+          riskTier: options?.riskTier || 'balanced',
+          stopMultiplier: options?.stopMultiplier || 3
+        })
       });
 
       if (!response.ok) {
@@ -219,8 +226,8 @@ export function useEngine() {
       steps.push({
         name: 'Market Regime',
         status: marketStep.passed ? 'passed' : 'failed',
-        detail: marketStep.output?.metadata?.vix
-          ? `VIX: ${marketStep.output.metadata.vix.toFixed(2)}, SPY: $${marketStep.output.metadata.spyPrice?.toFixed(2) || 'N/A'}`
+        detail: marketStep.output?.metadata?.vix != null
+          ? `VIX: ${marketStep.output.metadata.vix?.toFixed(2) || 'N/A'}, SPY: $${marketStep.output.metadata.spyPrice?.toFixed(2) || 'N/A'}`
           : marketStep.reason || 'No data'
       });
     }
@@ -232,7 +239,7 @@ export function useEngine() {
         name: 'Direction',
         status: directionStep.passed ? 'passed' : 'failed',
         detail: directionStep.output?.direction
-          ? `${directionStep.output.direction} (${(directionStep.output.confidence * 100).toFixed(0)}% confidence)`
+          ? `${directionStep.output.direction} (${((directionStep.output.confidence ?? 0) * 100).toFixed(0)}% confidence)`
           : 'No decision'
       });
     }
@@ -242,10 +249,10 @@ export function useEngine() {
     if (strikesStep && decision.strikes) {
       const details = [];
       if (decision.strikes.putStrike) {
-        details.push(`${decision.strikes.putStrike.strike}P (δ ${decision.strikes.putStrike.delta.toFixed(2)})`);
+        details.push(`${decision.strikes.putStrike.strike}P (δ ${decision.strikes.putStrike.delta?.toFixed(2) || 'N/A'})`);
       }
       if (decision.strikes.callStrike) {
-        details.push(`${decision.strikes.callStrike.strike}C (δ ${decision.strikes.callStrike.delta.toFixed(2)})`);
+        details.push(`${decision.strikes.callStrike.strike}C (δ ${decision.strikes.callStrike.delta?.toFixed(2) || 'N/A'})`);
       }
       steps.push({
         name: 'Strikes',
@@ -260,7 +267,7 @@ export function useEngine() {
       steps.push({
         name: 'Position Size',
         status: positionStep.passed ? 'passed' : 'failed',
-        detail: `${decision.positionSize.contracts} contracts ($${decision.positionSize.totalRisk.toFixed(0)} risk)`
+        detail: `${decision.positionSize.contracts} contracts ($${decision.positionSize.totalRisk?.toFixed(0) || '0'} risk)`
       });
     }
 

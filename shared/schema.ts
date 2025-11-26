@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, decimal, integer, timestamp, boolean, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, decimal, integer, timestamp, boolean, jsonb, bigint, index } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -94,6 +94,26 @@ export const ibkrCredentials = pgTable("ibkr_credentials", {
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
 
+// Market data table for OHLC time-series (VIX, SPY, etc.)
+// Structured for AI model consumption and historical analysis
+export const marketData = pgTable("market_data", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  symbol: text("symbol").notNull(), // VIX, SPY, etc.
+  timestamp: timestamp("timestamp").notNull(),
+  open: decimal("open", { precision: 12, scale: 4 }).notNull(),
+  high: decimal("high", { precision: 12, scale: 4 }).notNull(),
+  low: decimal("low", { precision: 12, scale: 4 }).notNull(),
+  close: decimal("close", { precision: 12, scale: 4 }).notNull(),
+  volume: bigint("volume", { mode: "number" }),
+  interval: text("interval").notNull(), // 1m, 5m, 15m, 1h, 1d
+  source: text("source").notNull().default("yahoo"), // yahoo, ibkr
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  // Composite indexes for efficient AI queries
+  index("market_data_symbol_timestamp_idx").on(table.symbol, table.timestamp),
+  index("market_data_symbol_interval_timestamp_idx").on(table.symbol, table.interval, table.timestamp),
+]);
+
 // Insert schemas
 export const insertPositionSchema = createInsertSchema(positions).omit({
   id: true,
@@ -140,6 +160,11 @@ export const insertOrderSchema = createInsertSchema(orders).omit({
   cancelledAt: true,
 });
 
+export const insertMarketDataSchema = createInsertSchema(marketData).omit({
+  id: true,
+  createdAt: true,
+});
+
 // Types
 export type InsertUser = z.infer<typeof insertUserSchema>;
 export type User = typeof users.$inferSelect;
@@ -155,6 +180,8 @@ export type IbkrCredentials = typeof ibkrCredentials.$inferSelect;
 export type InsertIbkrCredentials = z.infer<typeof insertIbkrCredentialsSchema>;
 export type Order = typeof orders.$inferSelect;
 export type InsertOrder = z.infer<typeof insertOrderSchema>;
+export type MarketData = typeof marketData.$inferSelect;
+export type InsertMarketData = z.infer<typeof insertMarketDataSchema>;
 
 // Option chain types
 export type OptionData = {

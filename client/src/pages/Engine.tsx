@@ -1,7 +1,17 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { LeftNav } from '@/components/LeftNav';
 import { StatCard } from '@/components/StatCard';
 import { OptionChainViewer } from '@/components/OptionChainViewer';
+import {
+  StepCard,
+  MarketRegimeContent,
+  DirectionContent,
+  StrikeSelectionContent,
+  PositionSizeContent,
+  ExitRulesContent,
+  RiskTier,
+  StopMultiplier
+} from '@/components/StepCard';
 import { CheckCircle, XCircle, Clock, Zap, AlertTriangle, Play, RefreshCw } from 'lucide-react';
 import { useEngine } from '@/hooks/useEngine';
 import toast from 'react-hot-toast';
@@ -23,13 +33,32 @@ export function Engine() {
   const [executionMode, setExecutionMode] = useState<'manual' | 'auto'>('manual');
   const [isExecuting, setIsExecuting] = useState(false);
   const [optionChainExpanded, setOptionChainExpanded] = useState(true);
+  const [riskTier, setRiskTier] = useState<RiskTier>('balanced');
+  const [stopMultiplier, setStopMultiplier] = useState<StopMultiplier>(3);
+
+  // Auto-connect to IBKR when page loads (same as Settings page)
+  useEffect(() => {
+    const connectBroker = async () => {
+      try {
+        await fetch('/api/ibkr/test', {
+          method: 'POST',
+          credentials: 'include'
+        });
+        // Refresh status after connection attempt
+        fetchStatus();
+      } catch (err) {
+        console.error('[Engine] Auto-connect error:', err);
+      }
+    };
+    connectBroker();
+  }, [fetchStatus]);
 
   // Handle running the engine decision process
   const handleRunEngine = useCallback(async () => {
     try {
       setIsExecuting(true);
       toast.loading('Running engine analysis...', { id: 'engine-execute' });
-      const newDecision = await executeDecision();
+      const newDecision = await executeDecision({ riskTier, stopMultiplier });
 
       if (newDecision.canTrade) {
         toast.success('Engine analysis complete - Trade opportunity found!', { id: 'engine-execute' });
@@ -49,7 +78,7 @@ export function Engine() {
     } finally {
       setIsExecuting(false);
     }
-  }, [executeDecision, executeTrade, executionMode]);
+  }, [executeDecision, executeTrade, executionMode, riskTier, stopMultiplier]);
 
   // Handle manual trade execution
   const handleExecuteTrade = useCallback(async () => {
@@ -88,7 +117,9 @@ export function Engine() {
   const steps = formatSteps(decision);
 
   // Determine engine readiness
-  const engineReady = status?.engineActive && status?.brokerConnected && status?.tradingWindowOpen;
+  // Requires both trading window open AND broker connected
+  // Broker connection is established on page load via auto-connect
+  const engineReady = status?.tradingWindowOpen && status?.brokerConnected;
 
   return (
     <div className="flex h-[calc(100vh-64px)]">
@@ -189,29 +220,98 @@ export function Engine() {
             </button>
           </div>
 
-          <div className="space-y-4">
-            {steps.map((step, index) => (
-              <div key={index} className="flex items-center justify-between py-3 border-b border-white/5 last:border-0">
-                <div className="flex items-center space-x-4">
-                  <span className="text-silver text-sm font-mono">
-                    {String(index + 1).padStart(2, '0')}
-                  </span>
-                  <div>
-                    <p className="font-medium">{step.name}</p>
-                    <p className="text-sm text-silver">{step.detail}</p>
-                  </div>
-                </div>
-                <div>
-                  {step.status === 'passed' ? (
-                    <CheckCircle className="w-5 h-5 text-green-500" />
-                  ) : step.status === 'failed' ? (
-                    <XCircle className="w-5 h-5 text-red-500" />
-                  ) : (
-                    <Clock className="w-5 h-5 text-silver" />
-                  )}
-                </div>
-              </div>
-            ))}
+          <div className="space-y-2">
+            {/* Step 1: Market Regime */}
+            <StepCard
+              stepNumber={1}
+              title="Market Regime"
+              status={steps[0]?.status as 'pending' | 'passed' | 'failed' || 'pending'}
+              summary={decision?.marketRegime?.metadata?.vix
+                ? `VIX ${decision.marketRegime.metadata.vix.toFixed(1)} ${decision.marketRegime.shouldTrade ? '✓ Safe' : '⚠ Caution'}`
+                : 'Waiting for analysis'}
+            >
+              <MarketRegimeContent
+                vix={decision?.marketRegime?.metadata?.vix}
+                spyPrice={decision?.marketRegime?.metadata?.spyPrice}
+                spyChange={decision?.marketRegime?.metadata?.spyChange}
+                trend={decision?.marketRegime?.metadata?.trend}
+              />
+            </StepCard>
+
+            {/* Step 2: Direction */}
+            <StepCard
+              stepNumber={2}
+              title="Direction"
+              status={steps[1]?.status as 'pending' | 'passed' | 'failed' || 'pending'}
+              summary={decision?.direction
+                ? `SELL ${decision.direction.direction}`
+                : 'Waiting for analysis'}
+            >
+              <DirectionContent
+                direction={decision?.direction?.direction}
+                confidence={decision?.direction?.confidence}
+                spyPrice={decision?.marketRegime?.metadata?.spyPrice}
+                reasoning={decision?.direction?.reasoning}
+              />
+            </StepCard>
+
+            {/* Step 3: Strike Selection */}
+            <StepCard
+              stepNumber={3}
+              title="Strikes"
+              status={steps[2]?.status as 'pending' | 'passed' | 'failed' || 'pending'}
+              summary={decision?.strikes?.putStrike || decision?.strikes?.callStrike
+                ? `${decision.strikes.putStrike ? `${decision.strikes.putStrike.strike}P` : ''}${decision.strikes.putStrike && decision.strikes.callStrike ? ' / ' : ''}${decision.strikes.callStrike ? `${decision.strikes.callStrike.strike}C` : ''}`
+                : 'Waiting for analysis'}
+            >
+              <StrikeSelectionContent
+                underlyingPrice={decision?.marketRegime?.metadata?.spyPrice}
+                selectedPutStrike={decision?.strikes?.putStrike?.strike}
+                selectedCallStrike={decision?.strikes?.callStrike?.strike}
+                putStrikes={decision?.strikes?.nearbyStrikes?.puts}
+                callStrikes={decision?.strikes?.nearbyStrikes?.calls}
+                expectedPremium={decision?.strikes?.expectedPremium}
+              />
+            </StepCard>
+
+            {/* Step 4: Position Size (CONFIGURABLE) */}
+            <StepCard
+              stepNumber={4}
+              title="Size"
+              status={steps[3]?.status as 'pending' | 'passed' | 'failed' || 'pending'}
+              summary={decision?.positionSize
+                ? `${decision.positionSize.contracts} contracts`
+                : 'Waiting for analysis'}
+            >
+              <PositionSizeContent
+                buyingPower={decision?.positionSize?.marginRequired ? decision.positionSize.marginRequired * 5 : undefined}
+                marginPerContract={decision?.positionSize?.marginRequired ? Math.round(decision.positionSize.marginRequired / (decision.positionSize.contracts || 1)) : undefined}
+                maxContracts={35}
+                currentContracts={decision?.positionSize?.contracts}
+                premium={decision?.strikes?.expectedPremium ? decision.strikes.expectedPremium / 100 : undefined}
+                riskTier={riskTier}
+                onRiskTierChange={setRiskTier}
+              />
+            </StepCard>
+
+            {/* Step 5: Exit Rules (CONFIGURABLE) */}
+            <StepCard
+              stepNumber={5}
+              title="Exit"
+              status={steps[4]?.status as 'pending' | 'passed' | 'failed' || 'pending'}
+              summary={decision?.exitRules
+                ? `Stop @ $${decision.exitRules.stopLoss} (${stopMultiplier}x)`
+                : 'Waiting for analysis'}
+            >
+              <ExitRulesContent
+                entryPremium={decision?.strikes?.expectedPremium ? decision.strikes.expectedPremium / 100 : undefined}
+                stopLoss={decision?.exitRules?.stopLoss}
+                maxLossPerTrade={decision?.positionSize?.totalRisk}
+                stopMultiplier={stopMultiplier}
+                onStopMultiplierChange={setStopMultiplier}
+                timeStop="3:30 PM"
+              />
+            </StepCard>
           </div>
         </div>
 
@@ -269,7 +369,7 @@ export function Engine() {
                 </div>
                 <div>
                   <p className="text-xs text-silver mb-1">Total Risk</p>
-                  <p className="font-medium">${decision.positionSize.totalRisk.toFixed(0)}</p>
+                  <p className="font-medium">${decision.positionSize.totalRisk?.toFixed(0) || '0'}</p>
                 </div>
                 <div>
                   <p className="text-xs text-silver mb-1">Stop Loss</p>

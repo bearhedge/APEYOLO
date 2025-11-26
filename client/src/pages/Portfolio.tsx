@@ -2,12 +2,33 @@ import { useQuery } from '@tanstack/react-query';
 import { getPositions } from '@/lib/api';
 import { DataTable } from '@/components/DataTable';
 import { LeftNav } from '@/components/LeftNav';
+import { StatCard } from '@/components/StatCard';
+import { DollarSign, TrendingUp, Shield, Activity } from 'lucide-react';
 import type { Position } from '@shared/types';
+
+interface AccountInfo {
+  accountNumber: string;
+  buyingPower: number;
+  portfolioValue: number;
+  netDelta: number;
+  dayPnL: number;
+  marginUsed: number;
+}
 
 export function Portfolio() {
   const { data: positions } = useQuery<Position[]>({
     queryKey: ['/api/positions'],
     queryFn: getPositions,
+  });
+
+  const { data: account, isLoading: accountLoading } = useQuery<AccountInfo>({
+    queryKey: ['/api/account'],
+    queryFn: async () => {
+      const res = await fetch('/api/account', { credentials: 'include' });
+      if (!res.ok) throw new Error('Failed to fetch account');
+      return res.json();
+    },
+    refetchInterval: 30000, // Refresh every 30s
   });
 
   const columns = [
@@ -38,7 +59,37 @@ export function Portfolio() {
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
         <div className="mb-6">
           <h1 className="text-3xl font-bold tracking-wide">Portfolio</h1>
-          <p className="text-silver text-sm mt-1">All open positions and exposure</p>
+          <p className="text-silver text-sm mt-1">
+            {account?.accountNumber ? `Account: ${account.accountNumber}` : 'Account overview and positions'}
+          </p>
+        </div>
+
+        {/* Account Summary Cards */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-6">
+          <StatCard
+            label="Buying Power"
+            value={accountLoading ? 'Loading...' : `$${(account?.buyingPower ?? 0).toLocaleString()}`}
+            icon={<DollarSign className="w-5 h-5 text-green-500" />}
+            testId="buying-power"
+          />
+          <StatCard
+            label="Portfolio Value"
+            value={accountLoading ? 'Loading...' : `$${(account?.portfolioValue ?? 0).toLocaleString()}`}
+            icon={<TrendingUp className="w-5 h-5 text-blue-500" />}
+            testId="portfolio-value"
+          />
+          <StatCard
+            label="Margin Used"
+            value={accountLoading ? 'Loading...' : `$${(account?.marginUsed ?? 0).toLocaleString()}`}
+            icon={<Shield className="w-5 h-5 text-yellow-500" />}
+            testId="margin-used"
+          />
+          <StatCard
+            label="Net Delta"
+            value={accountLoading ? 'Loading...' : (account?.netDelta ?? 0).toFixed(2)}
+            icon={<Activity className="w-5 h-5 text-purple-500" />}
+            testId="net-delta"
+          />
         </div>
 
         <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">

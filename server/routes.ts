@@ -19,6 +19,7 @@ import crypto from "crypto";
 import authRoutes from "./auth.js";
 import ibkrRoutes from "./ibkrRoutes.js";
 import engineRoutes from "./engineRoutes.js";
+import marketRoutes from "./marketRoutes.js";
 
 // Helper function to get session from request
 async function getSessionFromRequest(req: any) {
@@ -47,6 +48,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Register Engine routes
   app.use('/api/engine', engineRoutes);
+
+  // Register Market data routes
+  app.use('/api/market', marketRoutes);
 
   const httpServer = createServer(app);
 

@@ -135,13 +135,20 @@ function isWithinTradingWindow(): { allowed: boolean; reason?: string } {
 // GET /api/engine/status - Get current engine status
 router.get('/status', requireAuth, async (req, res) => {
   try {
+    // Use getBrokerWithStatus() which checks real-time IBKR status via getIbkrDiagnostics()
+    // This matches the Settings page behavior and doesn't throw on null activeClient
     const broker = getBrokerWithStatus();
+    const brokerConnected = broker.status.connected;
+    const brokerProvider = broker.status.provider;
+
+    console.log('[Engine] Broker status:', brokerProvider, 'connected:', brokerConnected);
+
     const tradingWindow = isWithinTradingWindow();
 
     res.json({
       engineActive: engineInstance !== null,
-      brokerConnected: broker.status.connected,
-      brokerProvider: broker.status.provider,
+      brokerConnected,
+      brokerProvider,
       tradingWindowOpen: tradingWindow.allowed,
       tradingWindowReason: tradingWindow.reason,
       guardRails: currentGuardRails,
@@ -161,6 +168,22 @@ router.get('/status', requireAuth, async (req, res) => {
 // POST /api/engine/execute - Run the 5-step decision process
 router.post('/execute', requireAuth, async (req, res) => {
   try {
+    // Accept configurable parameters from UI
+    const { riskTier, stopMultiplier } = req.body || {};
+
+    // Map riskTier to riskProfile
+    const riskProfileMap: Record<string, 'CONSERVATIVE' | 'BALANCED' | 'AGGRESSIVE'> = {
+      'conservative': 'CONSERVATIVE',
+      'balanced': 'BALANCED',
+      'aggressive': 'AGGRESSIVE'
+    };
+    const riskProfile = riskProfileMap[riskTier] || 'BALANCED';
+
+    // Update stopLossMultiplier if provided (2, 3, or 4)
+    if (stopMultiplier && [2, 3, 4].includes(stopMultiplier)) {
+      currentGuardRails.stopLossMultiplier = stopMultiplier;
+    }
+
     const broker = getBroker();
 
     // Ensure IBKR is ready if using it
@@ -191,9 +214,9 @@ router.post('/execute', requireAuth, async (req, res) => {
     }
 
     // Create or get engine instance
-    if (!engineInstance) {
+    if (!engineInstance || engineInstance['config'].riskProfile !== riskProfile) {
       engineInstance = new TradingEngine({
-        riskProfile: 'BALANCED',
+        riskProfile,
         underlyingSymbol: 'SPY',
         underlyingPrice: spyPrice,
         mockMode: broker.status.provider === 'mock'
