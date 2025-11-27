@@ -9,36 +9,14 @@ import { getBroker, getBrokerWithStatus } from "./broker/index";
 import { ensureIbkrReady, placePaperOptionOrder, getIbkrDiagnostics } from "./broker/ibkr";
 import { storage } from "./storage";
 import { engineScheduler, SchedulerConfig } from "./services/engineScheduler";
+import { requireAuth } from "./auth";
 import { z } from "zod";
-import crypto from "crypto";
-import jwt from "jsonwebtoken";
+import { adaptTradingDecision } from "./engine/adapter";
+import { db } from "./db";
+import { paperTrades } from "../shared/schema";
+import type { EngineAnalyzeResponse, TradeProposal, RiskProfile } from "../shared/types/engine";
 
 const router = Router();
-
-// Helper function to get session from request
-async function getSessionFromRequest(req: any) {
-  try {
-    const token = req.cookies?.auth_token;
-    if (!token) return null;
-
-    const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
-    const decoded = jwt.verify(token, JWT_SECRET);
-    return decoded;
-  } catch (error) {
-    console.error('[Auth] Token verification failed:', error);
-    return null;
-  }
-}
-
-// Auth middleware
-async function requireAuth(req: any, res: any, next: any) {
-  const session = await getSessionFromRequest(req);
-  if (!session) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-  req.user = session;
-  next();
-}
 
 // Guard Rails Configuration
 export interface GuardRails {
@@ -122,7 +100,20 @@ function isWithinTradingWindow(): { allowed: boolean; reason?: string } {
   const startMinutes = startHour * 60 + startMinute;
   const endMinutes = endHour * 60 + endMinute;
 
-  if (currentMinutes < startMinutes || currentMinutes > endMinutes) {
+  // Check if it's a weekday (Mon-Fri)
+  const dayOfWeek = new Date(now.toLocaleString("en-US", { timeZone: currentGuardRails.tradingWindow.timezone })).getDay();
+  const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
+
+  console.log(`[TradingWindow] nyTime=${nyTime}, current=${currentMinutes}, start=${startMinutes}, end=${endMinutes}, dayOfWeek=${dayOfWeek}, isWeekday=${isWeekday}`);
+
+  if (!isWeekday) {
+    return {
+      allowed: false,
+      reason: `Trading only allowed on weekdays (Mon-Fri)`
+    };
+  }
+
+  if (currentMinutes < startMinutes || currentMinutes >= endMinutes) {
     return {
       allowed: false,
       reason: `Trading only allowed between ${currentGuardRails.tradingWindow.start} and ${currentGuardRails.tradingWindow.end} ${currentGuardRails.tradingWindow.timezone}`
@@ -132,53 +123,6 @@ function isWithinTradingWindow(): { allowed: boolean; reason?: string } {
   return { allowed: true };
 }
 
-// GET /api/engine/status - Get current engine status
-router.get('/status', requireAuth, async (req, res) => {
-  try {
-    let brokerConnected = false;
-    let brokerProvider = 'mock';
-
-    // Check if IBKR is configured
-    const ibkrConfigured = !!(process.env.IBKR_CLIENT_ID && process.env.IBKR_PRIVATE_KEY);
-
-    if (ibkrConfigured) {
-      brokerProvider = 'ibkr';
-
-      // Use cached diagnostics for instant status check (no 15-20s lag)
-      // The actual connection is established via Settings page or trading operations
-      const diagnostics = getIbkrDiagnostics();
-      brokerConnected = diagnostics.oauth.status === 200 &&
-                        diagnostics.sso.status === 200 &&
-                        diagnostics.validate.status === 200 &&
-                        diagnostics.init.status === 200;
-      console.log('[Engine] IBKR status from cached diagnostics:', brokerConnected);
-    } else {
-      // Mock mode
-      brokerConnected = true;
-      brokerProvider = 'mock';
-    }
-
-    const tradingWindow = isWithinTradingWindow();
-
-    res.json({
-      engineActive: engineInstance !== null,
-      brokerConnected,
-      brokerProvider,
-      tradingWindowOpen: tradingWindow.allowed,
-      tradingWindowReason: tradingWindow.reason,
-      guardRails: currentGuardRails,
-      currentTime: new Date().toISOString(),
-      nyTime: new Intl.DateTimeFormat('en-US', {
-        timeZone: 'America/New_York',
-        dateStyle: 'short',
-        timeStyle: 'medium'
-      }).format(new Date())
-    });
-  } catch (error) {
-    console.error('[Engine] Status error:', error);
-    res.status(500).json({ error: 'Failed to get engine status' });
-  }
-});
 
 // POST /api/engine/execute - Run the 5-step decision process
 router.post('/execute', requireAuth, async (req, res) => {
@@ -280,6 +224,236 @@ router.post('/execute', requireAuth, async (req, res) => {
   } catch (error) {
     console.error('[Engine] Execute error:', error);
     res.status(500).json({ error: 'Failed to execute trading decision' });
+  }
+});
+
+// GET /api/engine/analyze - Run analysis and return standardized response
+// This is the NEW endpoint that returns the EngineAnalyzeResponse format
+router.get('/analyze', requireAuth, async (req, res) => {
+  try {
+    const { riskTier = 'balanced', stopMultiplier = '3' } = req.query;
+
+    // Map riskTier to riskProfile
+    const riskProfileMap: Record<string, RiskProfile> = {
+      'conservative': 'CONSERVATIVE',
+      'balanced': 'BALANCED',
+      'aggressive': 'AGGRESSIVE'
+    };
+    const riskProfile = riskProfileMap[riskTier as string] || 'BALANCED';
+    const stopMult = parseInt(stopMultiplier as string, 10) || 3;
+
+    const broker = getBroker();
+
+    // Ensure IBKR is ready if using it
+    if (broker.status.provider === 'ibkr') {
+      try {
+        await ensureIbkrReady();
+      } catch (err) {
+        console.log('[Engine/analyze] IBKR ensureIbkrReady error:', err instanceof Error ? err.message : err);
+      }
+    }
+
+    // Check trading window
+    const tradingWindow = isWithinTradingWindow();
+
+    // Get account info
+    const account = await broker.api.getAccount();
+
+    // Get current SPY price for the engine
+    let spyPrice = 450;
+    try {
+      const { getMarketData } = await import('./services/marketDataService.js');
+      const spyData = await getMarketData('SPY');
+      spyPrice = spyData.price;
+    } catch (error) {
+      console.error('[Engine/analyze] Error fetching SPY price:', error);
+    }
+
+    // Create or get engine instance
+    if (!engineInstance || engineInstance['config'].riskProfile !== riskProfile) {
+      engineInstance = new TradingEngine({
+        riskProfile,
+        underlyingSymbol: 'SPY',
+        underlyingPrice: spyPrice,
+        mockMode: broker.status.provider === 'mock'
+      });
+    } else {
+      engineInstance['config'].underlyingPrice = spyPrice;
+    }
+
+    // Execute the 5-step decision process
+    const decision = await engineInstance.executeTradingDecision({
+      buyingPower: account.buyingPower,
+      cashBalance: account.totalCash,
+      totalValue: account.netLiquidation,
+      openPositions: 0
+    });
+
+    // Apply guard rails validation
+    const guardRailViolations: string[] = [];
+
+    if (decision.positionSize && decision.positionSize.contracts > currentGuardRails.maxContractsPerTrade) {
+      guardRailViolations.push(`Position size (${decision.positionSize.contracts}) exceeds max contracts per trade (${currentGuardRails.maxContractsPerTrade})`);
+    }
+
+    if (decision.strikes) {
+      if (decision.strikes.putStrike && Math.abs(decision.strikes.putStrike.delta) > currentGuardRails.maxDelta) {
+        guardRailViolations.push(`Put delta (${Math.abs(decision.strikes.putStrike.delta)}) exceeds max delta (${currentGuardRails.maxDelta})`);
+      }
+      if (decision.strikes.callStrike && Math.abs(decision.strikes.callStrike.delta) > currentGuardRails.maxDelta) {
+        guardRailViolations.push(`Call delta (${Math.abs(decision.strikes.callStrike.delta)}) exceeds max delta (${currentGuardRails.maxDelta})`);
+      }
+    }
+
+    // Transform to standardized response using adapter
+    const response: EngineAnalyzeResponse = adaptTradingDecision(
+      decision,
+      {
+        buyingPower: account.buyingPower,
+        cashBalance: account.totalCash,
+        totalValue: account.netLiquidation
+      },
+      {
+        riskProfile,
+        stopMultiplier: stopMult,
+        guardRailViolations,
+        tradingWindowOpen: tradingWindow.allowed
+      }
+    );
+
+    res.json(response);
+  } catch (error) {
+    console.error('[Engine/analyze] Error:', error);
+    res.status(500).json({ error: 'Failed to run analysis' });
+  }
+});
+
+// POST /api/engine/execute-paper - Execute paper trade and record to database
+router.post('/execute-paper', requireAuth, async (req, res) => {
+  try {
+    const { tradeProposal } = req.body as { tradeProposal: TradeProposal };
+
+    if (!tradeProposal || !tradeProposal.proposalId) {
+      return res.status(400).json({ error: 'Invalid trade proposal' });
+    }
+
+    // Check trading window
+    const tradingWindow = isWithinTradingWindow();
+    if (!tradingWindow.allowed) {
+      return res.status(403).json({
+        error: 'Execution not allowed outside trading window',
+        reason: tradingWindow.reason,
+        tradingWindowOpen: false
+      });
+    }
+
+    const broker = getBroker();
+    const ibkrOrderIds: string[] = [];
+
+    // Place orders with IBKR if connected
+    if (broker.status.provider === 'ibkr') {
+      try {
+        await ensureIbkrReady();
+
+        const today = new Date();
+        const expiration = today.toISOString().slice(0, 10).replace(/-/g, '');
+
+        for (const leg of tradeProposal.legs) {
+          const orderResult = await placePaperOptionOrder({
+            symbol: tradeProposal.symbol,
+            optionType: leg.optionType,
+            strike: leg.strike,
+            expiration,
+            side: 'SELL',
+            quantity: tradeProposal.contracts,
+            orderType: 'LMT',
+            limitPrice: leg.premium,
+          });
+
+          if (orderResult.id) {
+            ibkrOrderIds.push(orderResult.id);
+          }
+
+          console.log(`[Engine/execute-paper] ${leg.optionType} order placed:`, orderResult);
+        }
+      } catch (orderErr) {
+        console.error('[Engine/execute-paper] IBKR order error:', orderErr);
+      }
+    }
+
+    // Insert paper trade record into database
+    const expirationDate = new Date();
+    expirationDate.setHours(16, 0, 0, 0);
+
+    const leg1 = tradeProposal.legs[0];
+    const leg2 = tradeProposal.legs[1];
+
+    const [paperTrade] = await db.insert(paperTrades).values({
+      proposalId: tradeProposal.proposalId,
+      symbol: tradeProposal.symbol,
+      strategy: tradeProposal.strategy,
+      bias: tradeProposal.bias,
+      expiration: expirationDate,
+      expirationLabel: tradeProposal.expiration,
+      contracts: tradeProposal.contracts,
+
+      leg1Type: leg1.optionType,
+      leg1Strike: leg1.strike.toString(),
+      leg1Delta: leg1.delta.toString(),
+      leg1Premium: leg1.premium.toString(),
+
+      leg2Type: leg2?.optionType ?? null,
+      leg2Strike: leg2?.strike?.toString() ?? null,
+      leg2Delta: leg2?.delta?.toString() ?? null,
+      leg2Premium: leg2?.premium?.toString() ?? null,
+
+      entryPremiumTotal: tradeProposal.entryPremiumTotal.toString(),
+      marginRequired: tradeProposal.marginRequired.toString(),
+      maxLoss: tradeProposal.maxLoss.toString(),
+
+      stopLossPrice: tradeProposal.stopLossPrice.toString(),
+      stopLossMultiplier: tradeProposal.context.riskProfile === 'CONSERVATIVE' ? '2' : '3',
+      timeStopEt: tradeProposal.timeStop,
+
+      entryVix: tradeProposal.context.vix?.toString() ?? null,
+      entryVixRegime: tradeProposal.context.vixRegime ?? null,
+      entrySpyPrice: tradeProposal.context.spyPrice?.toString() ?? null,
+      riskProfile: tradeProposal.context.riskProfile,
+
+      status: 'open',
+      ibkrOrderIds: ibkrOrderIds.length > 0 ? ibkrOrderIds : null,
+      userId: (req as any).user?.userId ?? null,
+      fullProposal: tradeProposal,
+    }).returning();
+
+    // Create audit log
+    try {
+      await storage.createAuditLog({
+        action: 'PAPER_TRADE_EXECUTED',
+        details: JSON.stringify({
+          tradeId: paperTrade.id,
+          proposalId: tradeProposal.proposalId,
+          strategy: tradeProposal.strategy,
+          contracts: tradeProposal.contracts,
+          ibkrOrderIds,
+        }),
+        userId: (req as any).user?.userId || 'system',
+      });
+    } catch (auditErr) {
+      console.error('[Engine/execute-paper] Failed to create audit log:', auditErr);
+    }
+
+    res.json({
+      success: true,
+      tradeId: paperTrade.id,
+      message: broker.status.provider === 'ibkr' && ibkrOrderIds.length > 0
+        ? `Paper trade recorded with ${ibkrOrderIds.length} IBKR order(s)`
+        : 'Paper trade recorded (simulation mode)',
+      ibkrOrderIds: ibkrOrderIds.length > 0 ? ibkrOrderIds : undefined,
+    });
+  } catch (error) {
+    console.error('[Engine/execute-paper] Error:', error);
+    res.status(500).json({ error: 'Failed to execute paper trade' });
   }
 });
 

@@ -5,6 +5,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { getDiag } from '@/lib/api';
+import type {
+  EngineAnalyzeResponse,
+  TradeProposal,
+  AnalyzeOptions,
+  ExecutePaperTradeResponse,
+} from '@shared/types/engine';
 
 export interface EngineStatus {
   engineActive: boolean;
@@ -39,6 +45,14 @@ export interface TradingDecision {
     direction: 'PUT' | 'CALL' | 'STRANGLE';
     confidence: number;
     reasoning: string;
+    signals?: {
+      trend?: 'UP' | 'DOWN' | 'SIDEWAYS';
+      momentum?: number;
+      strength?: number;
+      spyPrice?: number;
+      maFast?: number;
+      maSlow?: number;
+    };
   };
   strikes?: {
     putStrike?: any;
@@ -80,6 +94,7 @@ export interface EngineConfig {
 export function useEngine() {
   const [status, setStatus] = useState<EngineStatus | null>(null);
   const [decision, setDecision] = useState<TradingDecision | null>(null);
+  const [analysis, setAnalysis] = useState<EngineAnalyzeResponse | null>(null);
   const [config, setConfig] = useState<EngineConfig | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -100,51 +115,65 @@ export function useEngine() {
                           last?.validate?.status === 200 &&
                           last?.init?.status === 200;
 
-  // Fetch engine-specific status (not IBKR connection - that's from React Query above)
-  const fetchEngineStatus = useCallback(async () => {
-    try {
-      const engineRes = await fetch('/api/engine/status', { credentials: 'include' });
+  // Calculate trading window locally (11:00 AM - 1:00 PM ET, Mon-Fri)
+  const getTradingWindow = useCallback(() => {
+    const now = new Date();
+    const nyTime = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false
+    }).format(now);
 
-      // Parse engine status (may fail if not authenticated)
-      let engineData: any = {
-        engineActive: false,
-        brokerConnected,
-        brokerProvider: brokerConnected ? 'ibkr' : 'none',
-        tradingWindowOpen: false,
-        guardRails: {},
-        currentTime: new Date().toISOString(),
-        nyTime: new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })
-      };
+    const [hour, minute] = nyTime.split(':').map(Number);
+    const currentMinutes = hour * 60 + minute;
+    const startMinutes = 11 * 60; // 11:00 AM
+    const endMinutes = 13 * 60;   // 1:00 PM
 
-      if (engineRes.ok) {
-        const data = await engineRes.json();
-        engineData = {
-          ...data,
-          brokerConnected, // Override with IBKR status from React Query
-          brokerProvider: brokerConnected ? 'ibkr' : data.brokerProvider
-        };
-      }
+    // Check weekday (get day in NY timezone)
+    const nyDate = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+    const dayOfWeek = nyDate.getDay();
+    const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
 
-      setStatus(engineData);
-      setError(null);
-    } catch (err) {
-      console.error('[Engine] Status error:', err);
-      setError('Failed to fetch engine status');
-    }
-  }, [brokerConnected]);
+    const isOpen = isWeekday && currentMinutes >= startMinutes && currentMinutes < endMinutes;
 
-  // Keep status updated when brokerConnected changes from React Query
+    return {
+      isOpen,
+      reason: isOpen
+        ? 'Trading window is open'
+        : isWeekday
+          ? 'Trading only allowed between 11:00 AM and 1:00 PM ET'
+          : 'Trading only allowed on weekdays (Mon-Fri)'
+    };
+  }, []);
+
+  // Build status from local calculation + broker connection
+  const updateStatus = useCallback(() => {
+    const tradingWindow = getTradingWindow();
+    const now = new Date();
+
+    setStatus({
+      engineActive: true,
+      brokerConnected,
+      brokerProvider: brokerConnected ? 'ibkr' : 'none',
+      tradingWindowOpen: tradingWindow.isOpen,
+      tradingWindowReason: tradingWindow.reason,
+      guardRails: {},
+      currentTime: now.toISOString(),
+      nyTime: now.toLocaleString('en-US', { timeZone: 'America/New_York' })
+    });
+  }, [brokerConnected, getTradingWindow]);
+
+  // Keep status updated when brokerConnected changes
   useEffect(() => {
-    if (status) {
-      setStatus(prev => prev ? { ...prev, brokerConnected, brokerProvider: brokerConnected ? 'ibkr' : prev.brokerProvider } : prev);
-    }
-  }, [brokerConnected]);
+    updateStatus();
+  }, [updateStatus]);
 
-  // Legacy fetchStatus for backward compatibility - now just triggers React Query refetch + engine status
+  // Legacy fetchStatus for backward compatibility
   const fetchStatus = useCallback(async () => {
     queryClient.invalidateQueries({ queryKey: ['/api/broker/diag'] });
-    await fetchEngineStatus();
-  }, [queryClient, fetchEngineStatus]);
+    updateStatus();
+  }, [queryClient, updateStatus]);
 
   // Execute trading decision process
   const executeDecision = useCallback(async (options?: {
@@ -175,6 +204,66 @@ export function useEngine() {
     } catch (err: any) {
       console.error('[Engine] Execute error:', err);
       setError(err.message || 'Failed to execute decision');
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // NEW: Run analysis using the standardized endpoint (returns EngineAnalyzeResponse)
+  const analyzeEngine = useCallback(async (options?: AnalyzeOptions): Promise<EngineAnalyzeResponse> => {
+    setLoading(true);
+    setError(null);
+    try {
+      const params = new URLSearchParams({
+        riskTier: options?.riskTier || 'balanced',
+        stopMultiplier: String(options?.stopMultiplier || 3),
+      });
+
+      const response = await fetch(`/api/engine/analyze?${params}`, {
+        credentials: 'include',
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to run analysis');
+      }
+
+      const data: EngineAnalyzeResponse = await response.json();
+      setAnalysis(data);
+      return data;
+    } catch (err: any) {
+      console.error('[Engine] Analyze error:', err);
+      setError(err.message || 'Failed to run analysis');
+      throw err;
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  // NEW: Execute paper trade
+  const executePaperTrade = useCallback(async (
+    tradeProposal: TradeProposal
+  ): Promise<ExecutePaperTradeResponse> => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch('/api/engine/execute-paper', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ tradeProposal }),
+      });
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to execute paper trade');
+      }
+
+      return await response.json();
+    } catch (err: any) {
+      console.error('[Engine] Execute paper trade error:', err);
+      setError(err.message || 'Failed to execute paper trade');
       throw err;
     } finally {
       setLoading(false);
@@ -343,26 +432,33 @@ export function useEngine() {
     return steps;
   }, []);
 
-  // Initial fetch for engine-specific status (IBKR status is handled by React Query above)
+  // Initialize status and poll trading window
   useEffect(() => {
-    fetchEngineStatus();
+    updateStatus();
     fetchConfig();
-    // Poll engine status (IBKR status polling is handled by React Query's refetchInterval)
-    const interval = setInterval(fetchEngineStatus, 10000);
+    // Poll trading window every 10s to update when window opens/closes
+    const interval = setInterval(updateStatus, 10000);
     return () => clearInterval(interval);
-  }, [fetchEngineStatus, fetchConfig]);
+  }, [updateStatus, fetchConfig]);
 
   return {
     status,
+    brokerConnected,  // Direct from React Query - no state indirection
     decision,
+    analysis,         // NEW: Standardized EngineAnalyzeResponse
     config,
     loading,
     error,
     fetchStatus,
     executeDecision,
+    analyzeEngine,    // NEW: Run analysis with standardized response
+    executePaperTrade,// NEW: Execute paper trade
     executeTrade,
     fetchConfig,
     updateConfig,
     formatSteps
   };
 }
+
+// Re-export types for convenience
+export type { EngineAnalyzeResponse, TradeProposal, AnalyzeOptions } from '@shared/types/engine';

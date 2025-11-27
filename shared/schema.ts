@@ -183,6 +183,75 @@ export type InsertOrder = z.infer<typeof insertOrderSchema>;
 export type MarketData = typeof marketData.$inferSelect;
 export type InsertMarketData = z.infer<typeof insertMarketDataSchema>;
 
+// Paper trades table for tracking paper trade proposals
+export const paperTrades = pgTable("paper_trades", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  proposalId: varchar("proposal_id", { length: 50 }).notNull(),
+
+  // Trade details
+  symbol: text("symbol").notNull(),
+  strategy: text("strategy").notNull(),  // PUT | CALL | STRANGLE
+  bias: text("bias").notNull(),           // BULL | BEAR | NEUTRAL
+  expiration: timestamp("expiration").notNull(),
+  expirationLabel: text("expiration_label").notNull(),
+
+  // Position
+  contracts: integer("contracts").notNull(),
+
+  // Leg 1 (always present)
+  leg1Type: text("leg1_type").notNull(),
+  leg1Strike: decimal("leg1_strike", { precision: 10, scale: 2 }).notNull(),
+  leg1Delta: decimal("leg1_delta", { precision: 10, scale: 4 }).notNull(),
+  leg1Premium: decimal("leg1_premium", { precision: 10, scale: 4 }).notNull(),
+
+  // Leg 2 (nullable, for strangles)
+  leg2Type: text("leg2_type"),
+  leg2Strike: decimal("leg2_strike", { precision: 10, scale: 2 }),
+  leg2Delta: decimal("leg2_delta", { precision: 10, scale: 4 }),
+  leg2Premium: decimal("leg2_premium", { precision: 10, scale: 4 }),
+
+  // Economics
+  entryPremiumTotal: decimal("entry_premium_total", { precision: 10, scale: 2 }).notNull(),
+  marginRequired: decimal("margin_required", { precision: 10, scale: 2 }).notNull(),
+  maxLoss: decimal("max_loss", { precision: 10, scale: 2 }).notNull(),
+
+  // Exit rules
+  stopLossPrice: decimal("stop_loss_price", { precision: 10, scale: 4 }).notNull(),
+  stopLossMultiplier: decimal("stop_loss_multiplier", { precision: 4, scale: 1 }).notNull(),
+  timeStopEt: text("time_stop_et").notNull(),
+
+  // Market context at entry
+  entryVix: decimal("entry_vix", { precision: 10, scale: 2 }),
+  entryVixRegime: text("entry_vix_regime"),
+  entrySpyPrice: decimal("entry_spy_price", { precision: 10, scale: 2 }),
+  riskProfile: text("risk_profile").notNull(),
+
+  // Status tracking
+  status: text("status").notNull().default("open"),  // open | closed | expired
+  exitPrice: decimal("exit_price", { precision: 10, scale: 4 }),
+  exitReason: text("exit_reason"),
+  realizedPnl: decimal("realized_pnl", { precision: 10, scale: 2 }),
+
+  // IBKR integration
+  ibkrOrderIds: jsonb("ibkr_order_ids"),  // Array of order IDs from IBKR
+
+  // Audit
+  userId: varchar("user_id").references(() => users.id),
+  fullProposal: jsonb("full_proposal"),   // Complete TradeProposal JSON for audit
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  closedAt: timestamp("closed_at"),
+});
+
+export const insertPaperTradeSchema = createInsertSchema(paperTrades).omit({
+  id: true,
+  createdAt: true,
+  closedAt: true,
+});
+
+export type PaperTrade = typeof paperTrades.$inferSelect;
+export type InsertPaperTrade = z.infer<typeof insertPaperTradeSchema>;
+
 // Option chain types
 export type OptionData = {
   strike: number;

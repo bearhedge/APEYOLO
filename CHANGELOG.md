@@ -1,3 +1,26 @@
+## 2025-11-28
+
+### Engine Page & Trading Window Overhaul
+- **Removed**: `/api/engine/status` endpoint entirely - was causing 401 errors due to auth middleware
+- **Moved**: Trading window calculation to client-side in `useEngine.ts`
+  - Trading window: 11:00 AM - 1:00 PM ET, Mon-Fri
+  - Uses `Intl.DateTimeFormat` for accurate NY timezone conversion
+  - No longer depends on server endpoint
+- **Added**: `SymbolChart` component for individual symbol price charts
+- **Enhanced**: `StepCard` component with improved layout and data display
+- **Added**: `server/engine/adapter.ts` - Engine analysis adapter for IBKR integration
+- **Added**: `shared/types/engine.ts` - Type definitions for engine analysis flow
+- **Updated**: Market data service with real VIX/SPY data integration
+- **Improved**: Engine page layout and step visualization
+
+### Docker & Deployment
+- **Added**: `.dockerignore` file for optimized builds
+- **Updated**: Dockerfile with improved caching and build steps
+
+### Infrastructure Notes
+- Cloud Run service remains in `asia-east1`
+- Artifact Registry in `us-central1` (storage location, not runtime)
+
 ## 2025-11-23
 
 ### Settings Page Improvements

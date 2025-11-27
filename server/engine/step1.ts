@@ -12,11 +12,13 @@ export interface MarketRegime {
   shouldTrade: boolean;
   reason: string;
   regime?: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
+  volatilityRegime?: VolatilityRegime;
   confidence?: number;
   metadata?: {
     currentTime?: string;
     vix?: number;
     vixChange?: number;
+    volatilityRegime?: VolatilityRegime;
     spyPrice?: number;
     spyChange?: number;
     trend?: string;
@@ -46,19 +48,36 @@ function isWithinTradingHours(): boolean {
   return isWeekday && currentMinutes >= windowStart && currentMinutes < windowEnd;
 }
 
+// VIX Threshold Constants (FIXED per trading strategy)
+const VIX_LOW_THRESHOLD = 17;      // Below 17 = LOW volatility
+const VIX_HIGH_THRESHOLD = 20;     // Above 20 = HIGH volatility
+const VIX_EXTREME_THRESHOLD = 35;  // Above 35 = EXTREME (no trading)
+
+export type VolatilityRegime = 'LOW' | 'NORMAL' | 'HIGH' | 'EXTREME';
+
 /**
- * Future: Check VIX levels for market volatility regime
+ * Classify VIX into volatility regime
  * @param vixLevel - Current VIX level
- * @returns Whether VIX is in acceptable range
+ * @returns Volatility regime classification
+ */
+export function getVolatilityRegime(vixLevel: number): VolatilityRegime {
+  if (vixLevel >= VIX_EXTREME_THRESHOLD) return 'EXTREME';
+  if (vixLevel > VIX_HIGH_THRESHOLD) return 'HIGH';
+  if (vixLevel < VIX_LOW_THRESHOLD) return 'LOW';
+  return 'NORMAL'; // 17-20
+}
+
+/**
+ * Check VIX levels for market volatility regime
+ * @param vixLevel - Current VIX level
+ * @returns Whether VIX is in acceptable range for trading
  */
 function isVixAcceptable(vixLevel?: number): boolean {
   if (!vixLevel) return true; // If no VIX data, don't block trading
 
-  // VIX thresholds (can be configured)
-  const MIN_VIX = 10;  // Too low volatility, premiums might be too cheap
-  const MAX_VIX = 35;  // Too high volatility, too risky
-
-  return vixLevel >= MIN_VIX && vixLevel <= MAX_VIX;
+  // Block trading only in EXTREME volatility (VIX > 35)
+  const regime = getVolatilityRegime(vixLevel);
+  return regime !== 'EXTREME';
 }
 
 /**
@@ -116,13 +135,17 @@ export async function analyzeMarketRegime(useRealData: boolean = true): Promise<
   }
 
   // Step 3: Check VIX (if available)
+  const volRegime = vixLevel ? getVolatilityRegime(vixLevel) : undefined;
+
   if (!isVixAcceptable(vixLevel)) {
     return {
       shouldTrade: false,
-      reason: `VIX level ${vixLevel?.toFixed(2)} outside acceptable range (10-35)`,
+      reason: `VIX level ${vixLevel?.toFixed(2)} is EXTREME (>35). Too risky to trade.`,
+      volatilityRegime: volRegime,
       metadata: {
         vix: vixLevel,
         vixChange,
+        volatilityRegime: volRegime,
         spyPrice,
         spyChange
       }
@@ -157,13 +180,15 @@ export async function analyzeMarketRegime(useRealData: boolean = true): Promise<
   // All checks passed
   return {
     shouldTrade: true,
-    reason: 'Market conditions favorable for trading',
+    reason: `Market conditions favorable. VIX: ${volRegime || 'N/A'} (${vixLevel?.toFixed(2) || 'N/A'})`,
     regime: trend,
+    volatilityRegime: volRegime,
     confidence: Math.min(Math.max(confidence, 0), 1), // Keep between 0 and 1
     metadata: {
       currentTime: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
       vix: vixLevel,
       vixChange,
+      volatilityRegime: volRegime,
       spyPrice,
       spyChange,
       trend: trend

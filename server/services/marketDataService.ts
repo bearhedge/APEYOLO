@@ -5,6 +5,7 @@
 
 import { getBroker, getBrokerWithStatus } from "../broker/index";
 import { ensureIbkrReady } from "../broker/ibkr";
+import { fetchVIXData as fetchYahooVIX, fetchHistoricalData } from "./yahooFinanceService";
 
 export interface MarketData {
   symbol: string;
@@ -141,43 +142,45 @@ export async function getMarketData(symbol: string): Promise<MarketData> {
 }
 
 /**
- * Get VIX data (volatility index)
+ * Get VIX data (volatility index) - Uses Yahoo Finance for real data
  */
 export async function getVIXData(): Promise<VIXData> {
   const cacheKey = 'vix:data';
   const cached = cache.get(cacheKey);
   if (cached) return cached;
 
-  const broker = getBroker();
+  try {
+    // Fetch real VIX data from Yahoo Finance
+    const yahooVix = await fetchYahooVIX();
 
-  if (broker.status.provider === 'mock') {
     const vixData: VIXData = {
-      value: 15.30 + (Math.random() - 0.5) * 0.5,
-      change: (Math.random() - 0.5) * 0.5,
-      changePercent: (Math.random() - 0.5) * 3,
-      high: 16.20,
-      low: 14.80,
+      value: yahooVix.current,
+      change: yahooVix.change,
+      changePercent: yahooVix.changePercent,
+      high: yahooVix.high,
+      low: yahooVix.low,
+      timestamp: yahooVix.lastUpdate
+    };
+
+    console.log(`[MarketData] Real VIX fetched: ${vixData.value.toFixed(2)} (${vixData.changePercent > 0 ? '+' : ''}${vixData.changePercent.toFixed(2)}%)`);
+    cache.set(cacheKey, vixData);
+    return vixData;
+  } catch (error) {
+    console.error('[MarketData] Error fetching VIX from Yahoo Finance, using fallback:', error);
+
+    // Fallback to mock data if Yahoo Finance fails
+    const vixData: VIXData = {
+      value: 17.50,
+      change: 0,
+      changePercent: 0,
+      high: 18.00,
+      low: 17.00,
       timestamp: new Date()
     };
 
     cache.set(cacheKey, vixData);
     return vixData;
   }
-
-  await ensureIbkrReady();
-
-  // TODO: Implement actual VIX data fetching from IBKR
-  const vixData: VIXData = {
-    value: 15.30,
-    change: 0.45,
-    changePercent: 3.02,
-    high: 16.20,
-    low: 14.80,
-    timestamp: new Date()
-  };
-
-  cache.set(cacheKey, vixData);
-  return vixData;
 }
 
 /**

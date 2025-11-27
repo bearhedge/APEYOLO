@@ -3,7 +3,7 @@ import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Route, Link, useLocation, Redirect } from "wouter";
-import { CheckCircle, XCircle } from "lucide-react";
+import { CheckCircle, XCircle, LogOut } from "lucide-react";
 import { Home } from "@/pages/Home";
 import { Onboarding } from "@/pages/Onboarding";
 import { Agent } from "@/pages/Agent";
@@ -31,6 +31,16 @@ function Navigation() {
     enabled: location !== '/' && !isOnboarding,
     refetchInterval: 10000, // Refresh every 10s for connection status
   });
+
+  // Logout handler - clears auth cookie and redirects to home
+  const handleLogout = async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST', credentials: 'include' });
+    } catch (e) {
+      console.error('Logout error:', e);
+    }
+    window.location.href = '/';
+  };
 
   if (location === "/" || isOnboarding) {
     return null;
@@ -75,6 +85,16 @@ function Navigation() {
                 ${nav > 0 ? nav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '--'}
               </span>
             </div>
+
+            {/* Logout button */}
+            <button
+              onClick={handleLogout}
+              className="flex items-center gap-1.5 text-sm text-silver hover:text-white transition-colors"
+              title="Logout"
+            >
+              <LogOut className="w-4 h-4" />
+              <span>Logout</span>
+            </button>
           </div>
         </div>
       </div>

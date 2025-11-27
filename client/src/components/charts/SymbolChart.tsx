@@ -1,7 +1,7 @@
 /**
- * VIX Chart Component
+ * Symbol Chart Component
  *
- * Clean, minimal VIX visualization with:
+ * Generic chart for any symbol (SPY, QQQ, etc.) with:
  * - Candlestick or line chart
  * - Timeframe selector
  * - OHLC display bar
@@ -11,21 +11,19 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { createChartProvider, ChartProvider, TimeRange, ChartType, OHLCData } from './ChartProvider';
 
-interface VIXData {
-  current: number;
+interface QuoteData {
+  price: number;
+  change: number;
+  changePercent: number;
   open: number;
   high: number;
   low: number;
   close: number;
-  change: number;
-  changePercent: number;
-  trend: 'up' | 'down' | 'flat';
-  level: 'low' | 'normal' | 'elevated' | 'high';
-  marketState: string;
-  lastUpdate: string;
+  volume?: number;
+  marketState?: string;
 }
 
-interface VIXHistoryResponse {
+interface HistoryResponse {
   symbol: string;
   range: TimeRange;
   count: number;
@@ -39,54 +37,58 @@ interface VIXHistoryResponse {
   }>;
 }
 
-interface VIXChartProps {
+interface SymbolChartProps {
+  symbol: string;
   height?: number;
   defaultTimeframe?: TimeRange;
   chartType?: ChartType;
   showTimeframeSelector?: boolean;
   showOHLC?: boolean;
+  showHeader?: boolean;
   className?: string;
 }
 
 const timeframeOptions: TimeRange[] = ['1D', '5D', '1M', '3M', '6M', '1Y', 'MAX'];
 
-export function VIXChart({
-  height = 200,
+export function SymbolChart({
+  symbol,
+  height = 150,
   defaultTimeframe = '5D',
   chartType = 'candlestick',
   showTimeframeSelector = true,
   showOHLC = true,
+  showHeader = true,
   className = '',
-}: VIXChartProps) {
+}: SymbolChartProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const chartProviderRef = useRef<ChartProvider | null>(null);
 
   const [timeframe, setTimeframe] = useState<TimeRange>(defaultTimeframe);
-  const [vixData, setVixData] = useState<VIXData | null>(null);
+  const [quoteData, setQuoteData] = useState<QuoteData | null>(null);
   const [historyData, setHistoryData] = useState<OHLCData[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch current VIX data
-  const fetchVIXData = useCallback(async () => {
+  // Fetch current quote
+  const fetchQuote = useCallback(async () => {
     try {
-      const response = await fetch('/api/market/vix');
-      if (!response.ok) throw new Error('Failed to fetch VIX data');
+      const response = await fetch(`/api/market/quote/${symbol}`);
+      if (!response.ok) throw new Error(`Failed to fetch ${symbol} quote`);
       const data = await response.json();
-      setVixData(data);
+      setQuoteData(data);
     } catch (err: any) {
-      console.error('[VIXChart] Error fetching VIX data:', err);
+      console.error(`[SymbolChart] Error fetching ${symbol} quote:`, err);
     }
-  }, []);
+  }, [symbol]);
 
   // Fetch historical data for chart
   const fetchHistoryData = useCallback(async (range: TimeRange) => {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`/api/market/vix/history?range=${range}`);
-      if (!response.ok) throw new Error('Failed to fetch VIX history');
-      const data: VIXHistoryResponse = await response.json();
+      const response = await fetch(`/api/market/history/${symbol}?range=${range}`);
+      if (!response.ok) throw new Error(`Failed to fetch ${symbol} history`);
+      const data: HistoryResponse = await response.json();
 
       const ohlcData: OHLCData[] = data.data.map(d => ({
         timestamp: new Date(d.timestamp),
@@ -99,12 +101,12 @@ export function VIXChart({
 
       setHistoryData(ohlcData);
     } catch (err: any) {
-      console.error('[VIXChart] Error fetching history:', err);
+      console.error(`[SymbolChart] Error fetching ${symbol} history:`, err);
       setError(err.message || 'Failed to load chart data');
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [symbol]);
 
   // Initialize and update chart
   useEffect(() => {
@@ -140,63 +142,55 @@ export function VIXChart({
 
   // Fetch data on mount and timeframe change
   useEffect(() => {
-    fetchVIXData();
+    fetchQuote();
     fetchHistoryData(timeframe);
-  }, [timeframe, fetchVIXData, fetchHistoryData]);
+  }, [timeframe, fetchQuote, fetchHistoryData]);
 
   // Handle timeframe change
   const handleTimeframeChange = (newTimeframe: TimeRange) => {
     setTimeframe(newTimeframe);
   };
 
-  // Determine change color
-  const changeColor = vixData?.change && vixData.change >= 0 ? 'text-red-400' : 'text-green-400';
-  const changeIcon = vixData?.change && vixData.change >= 0 ? '▲' : '▼';
-
-  // Determine VIX level color
-  const getLevelColor = (level?: string) => {
-    switch (level) {
-      case 'low': return 'text-green-400';
-      case 'normal': return 'text-green-400';
-      case 'elevated': return 'text-yellow-400';
-      case 'high': return 'text-red-400';
-      default: return 'text-neutral-400';
-    }
-  };
+  // Determine change color (green up, red down for stocks)
+  const changeColor = quoteData?.change && quoteData.change >= 0 ? 'text-green-400' : 'text-red-400';
+  const changeIcon = quoteData?.change && quoteData.change >= 0 ? '▲' : '▼';
 
   return (
     <div className={`bg-neutral-900 rounded-lg ${className}`}>
       {/* Header: Current value + Timeframe selector */}
-      <div className="flex items-center justify-between px-3 py-2 border-b border-neutral-800">
-        <div className="flex items-baseline gap-2">
-          <span className="text-2xl font-semibold text-white">
-            {vixData?.current?.toFixed(2) ?? '--'}
-          </span>
-          {vixData && (
-            <span className={`text-sm ${changeColor}`}>
-              {changeIcon} {Math.abs(vixData.change).toFixed(2)} ({Math.abs(vixData.changePercent).toFixed(2)}%)
+      {showHeader && (
+        <div className="flex items-center justify-between px-3 py-2 border-b border-neutral-800">
+          <div className="flex items-baseline gap-2">
+            <span className="text-sm font-medium text-neutral-400">{symbol}</span>
+            <span className="text-lg font-semibold text-white">
+              ${quoteData?.price?.toFixed(2) ?? '--'}
             </span>
+            {quoteData && (
+              <span className={`text-xs ${changeColor}`}>
+                {changeIcon} {Math.abs(quoteData.change).toFixed(2)} ({Math.abs(quoteData.changePercent).toFixed(2)}%)
+              </span>
+            )}
+          </div>
+
+          {showTimeframeSelector && (
+            <div className="flex gap-1">
+              {timeframeOptions.map((tf) => (
+                <button
+                  key={tf}
+                  onClick={() => handleTimeframeChange(tf)}
+                  className={`px-2 py-1 text-xs rounded transition-colors ${
+                    timeframe === tf
+                      ? 'bg-neutral-700 text-white'
+                      : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'
+                  }`}
+                >
+                  {tf}
+                </button>
+              ))}
+            </div>
           )}
         </div>
-
-        {showTimeframeSelector && (
-          <div className="flex gap-1">
-            {timeframeOptions.map((tf) => (
-              <button
-                key={tf}
-                onClick={() => handleTimeframeChange(tf)}
-                className={`px-2 py-1 text-xs rounded transition-colors ${
-                  timeframe === tf
-                    ? 'bg-neutral-700 text-white'
-                    : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'
-                }`}
-              >
-                {tf}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
+      )}
 
       {/* Chart area */}
       <div className="relative" style={{ height: height + 'px' }}>
@@ -214,34 +208,29 @@ export function VIXChart({
       </div>
 
       {/* OHLC Bar */}
-      {showOHLC && vixData && (
+      {showOHLC && quoteData && (
         <div className="flex items-center justify-between px-3 py-2 border-t border-neutral-800 text-xs">
           <div className="flex gap-4">
             <span className="text-neutral-400">
-              O: <span className="text-neutral-200">{vixData.open?.toFixed(2)}</span>
+              O: <span className="text-neutral-200">{quoteData.open?.toFixed(2)}</span>
             </span>
             <span className="text-neutral-400">
-              H: <span className="text-neutral-200">{vixData.high?.toFixed(2)}</span>
+              H: <span className="text-neutral-200">{quoteData.high?.toFixed(2)}</span>
             </span>
             <span className="text-neutral-400">
-              L: <span className="text-neutral-200">{vixData.low?.toFixed(2)}</span>
+              L: <span className="text-neutral-200">{quoteData.low?.toFixed(2)}</span>
             </span>
             <span className="text-neutral-400">
-              C: <span className="text-neutral-200">{vixData.close?.toFixed(2)}</span>
+              C: <span className="text-neutral-200">{quoteData.close?.toFixed(2)}</span>
             </span>
           </div>
-          <div className="flex items-center gap-2">
-            <span className={getLevelColor(vixData.level)}>
-              {vixData.level?.toUpperCase()}
-            </span>
-            <span className="text-neutral-500">
-              {vixData.marketState}
-            </span>
-          </div>
+          {quoteData.marketState && (
+            <span className="text-neutral-500">{quoteData.marketState}</span>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-export default VIXChart;
+export default SymbolChart;

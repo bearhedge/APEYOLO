@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronRight, CheckCircle, XCircle, Clock, TrendingUp, TrendingDown, Minus } from 'lucide-react';
-import { VIXChart } from './charts';
+import { VIXChart, SymbolChart } from './charts';
 
 export type StepStatus = 'pending' | 'passed' | 'failed';
 export type RiskTier = 'conservative' | 'balanced' | 'aggressive';
@@ -85,9 +85,20 @@ export function MarketRegimeContent({
   spyChange,
   showChart = true
 }: MarketRegimeContentProps) {
-  const vixStatus = vix ? (vix < vixThreshold ? 'SAFE TO TRADE' : vix < 25 ? 'CAUTION' : 'HIGH RISK') : 'N/A';
-  const vixColor = vix ? (vix < vixThreshold ? 'text-green-500' : vix < 25 ? 'text-yellow-500' : 'text-red-500') : 'text-silver';
-  const statusBgColor = vix ? (vix < vixThreshold ? 'bg-green-500/10' : vix < 25 ? 'bg-yellow-500/10' : 'bg-red-500/10') : 'bg-white/5';
+  // VIX zones: Safe (<20), Caution (20-25), High Risk (>25)
+  const vixZone = vix ? (vix < vixThreshold ? 'safe' : vix < 25 ? 'caution' : 'high') : null;
+  const vixStatus = vixZone === 'safe' ? 'SAFE TO TRADE' : vixZone === 'caution' ? 'ELEVATED RISK' : vixZone === 'high' ? 'HIGH VOLATILITY' : '—';
+
+  const zoneColors = {
+    safe: { text: 'text-green-400', bg: 'bg-green-500/20', border: 'border-green-500/30', dot: 'bg-green-500' },
+    caution: { text: 'text-yellow-400', bg: 'bg-yellow-500/20', border: 'border-yellow-500/30', dot: 'bg-yellow-500' },
+    high: { text: 'text-red-400', bg: 'bg-red-500/20', border: 'border-red-500/30', dot: 'bg-red-500' },
+  };
+
+  const colors = vixZone ? zoneColors[vixZone] : { text: 'text-neutral-400', bg: 'bg-neutral-800', border: 'border-neutral-700', dot: 'bg-neutral-500' };
+
+  // Calculate VIX position on scale (0-40 range for visualization)
+  const vixPosition = vix ? Math.min(100, (vix / 40) * 100) : 0;
 
   return (
     <div className="space-y-4">
@@ -96,24 +107,63 @@ export function MarketRegimeContent({
         <VIXChart
           height={180}
           defaultTimeframe="5D"
-          chartType="line"
+          chartType="candlestick"
           showTimeframeSelector={true}
           showOHLC={true}
         />
       )}
 
-      {/* Status and SPY Context */}
-      <div className="flex items-center justify-between p-3 rounded-lg bg-white/5">
-        <div className={`flex items-center gap-2 ${vixColor}`}>
-          <div className={`w-2 h-2 rounded-full ${vix && vix < vixThreshold ? 'bg-green-500' : vix && vix < 25 ? 'bg-yellow-500' : 'bg-red-500'}`} />
-          <span className="font-medium">{vixStatus}</span>
-          <span className="text-neutral-400 text-sm">(threshold: {vixThreshold})</span>
+      {/* VIX Level Indicator Bar */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between text-xs text-neutral-400">
+          <span>VIX Level</span>
+          <span>Threshold: {vixThreshold}</span>
         </div>
-        <div className="text-sm text-neutral-400">
-          SPY: ${spyPrice?.toFixed(2) || '--'}
-          <span className={`ml-2 ${(spyChange || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-            {spyChange ? `${spyChange >= 0 ? '+' : ''}${spyChange.toFixed(2)}%` : ''}
-          </span>
+        <div className="relative h-2 rounded-full bg-gradient-to-r from-green-500/30 via-yellow-500/30 to-red-500/30 overflow-hidden">
+          {/* Zone markers */}
+          <div className="absolute left-[50%] top-0 bottom-0 w-px bg-neutral-600" style={{ left: `${(vixThreshold / 40) * 100}%` }} />
+          <div className="absolute left-[62.5%] top-0 bottom-0 w-px bg-neutral-600" style={{ left: `${(25 / 40) * 100}%` }} />
+          {/* VIX Position marker */}
+          {vix && (
+            <div
+              className={`absolute top-1/2 -translate-y-1/2 w-3 h-3 rounded-full ${colors.dot} shadow-lg transition-all duration-500`}
+              style={{ left: `calc(${vixPosition}% - 6px)` }}
+            />
+          )}
+        </div>
+        <div className="flex justify-between text-[10px] text-neutral-500">
+          <span>0</span>
+          <span>10</span>
+          <span className="text-yellow-500/70">20</span>
+          <span className="text-red-500/70">30</span>
+          <span>40+</span>
+        </div>
+      </div>
+
+      {/* Trading Status Card */}
+      <div className={`p-4 rounded-lg ${colors.bg} border ${colors.border}`}>
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <div className={`w-3 h-3 rounded-full ${colors.dot} animate-pulse`} />
+            <div>
+              <p className={`font-semibold ${colors.text}`}>{vixStatus}</p>
+              <p className="text-xs text-neutral-400">
+                {vixZone === 'safe' && 'Market conditions favorable for premium selling'}
+                {vixZone === 'caution' && 'Reduce position size, tighten stops'}
+                {vixZone === 'high' && 'Consider staying flat or reducing exposure'}
+                {!vixZone && 'Awaiting market data'}
+              </p>
+            </div>
+          </div>
+          <div className="text-right">
+            <p className="text-sm text-neutral-400">SPY</p>
+            <p className="font-mono font-medium">
+              ${spyPrice?.toFixed(2) || '--'}
+              <span className={`ml-2 text-sm ${(spyChange || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                {spyChange ? `${spyChange >= 0 ? '+' : ''}${spyChange.toFixed(2)}%` : ''}
+              </span>
+            </p>
+          </div>
         </div>
       </div>
     </div>
@@ -125,57 +175,92 @@ interface DirectionContentProps {
   direction?: 'PUT' | 'CALL' | 'STRANGLE';
   confidence?: number;
   spyPrice?: number;
-  maPrice?: number;
-  maPeriod?: number;
+  maFast?: number;      // 5-period MA
+  maSlow?: number;      // 15-period MA
+  trend?: 'UP' | 'DOWN' | 'SIDEWAYS';
   reasoning?: string;
+  symbol?: string;
+  showChart?: boolean;
 }
 
-export function DirectionContent({ direction, confidence, spyPrice, maPrice, maPeriod = 20, reasoning }: DirectionContentProps) {
-  const percentFromMA = spyPrice && maPrice ? ((spyPrice - maPrice) / maPrice) * 100 : null;
+export function DirectionContent({ direction, confidence, spyPrice, maFast, maSlow, trend, reasoning, symbol = 'SPY', showChart = true }: DirectionContentProps) {
+  // Calculate position vs slow MA (main reference)
+  const percentFromMA = spyPrice && maSlow ? ((spyPrice - maSlow) / maSlow) * 100 : null;
 
   const DirectionIcon = direction === 'PUT' ? TrendingDown : direction === 'CALL' ? TrendingUp : Minus;
   const directionColor = direction === 'PUT' ? 'text-red-500' : direction === 'CALL' ? 'text-green-500' : 'text-yellow-500';
 
+  // Trend badge styling
+  const trendBadge = trend === 'UP' ? 'bg-green-500/20 text-green-400' :
+                     trend === 'DOWN' ? 'bg-red-500/20 text-red-400' :
+                     'bg-yellow-500/20 text-yellow-400';
+
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-4 text-sm">
-        <div>
-          <p className="text-silver mb-1">SPY Price</p>
-          <p className="font-mono text-lg">${spyPrice?.toFixed(2) || '--'}</p>
-        </div>
-        <div>
-          <p className="text-silver mb-1">{maPeriod}-day MA</p>
-          <p className="font-mono text-lg">${maPrice?.toFixed(2) || '--'}</p>
-        </div>
-        <div>
-          <p className="text-silver mb-1">Position vs MA</p>
-          <p className={`font-mono text-lg ${(percentFromMA || 0) >= 0 ? 'text-green-500' : 'text-red-500'}`}>
-            {percentFromMA !== null ? `${percentFromMA >= 0 ? '+' : ''}${percentFromMA.toFixed(2)}%` : '--'}
-          </p>
-        </div>
-        <div>
-          <p className="text-silver mb-1">Confidence</p>
-          <p className="font-mono text-lg">{confidence ? `${(confidence * 100).toFixed(0)}%` : '--'}</p>
-        </div>
-      </div>
+      {/* SPY Chart with candlesticks */}
+      {showChart && (
+        <SymbolChart
+          symbol={symbol}
+          height={300}
+          defaultTimeframe="5D"
+          chartType="candlestick"
+          showTimeframeSelector={true}
+          showOHLC={true}
+          showHeader={true}
+        />
+      )}
 
+      {/* Direction recommendation */}
       {direction && (
         <div className={`flex items-center gap-3 p-3 rounded-lg bg-white/5 ${directionColor}`}>
           <DirectionIcon className="w-5 h-5" />
-          <div>
-            <p className="font-medium">Recommendation: SELL {direction}</p>
-            <p className="text-sm opacity-80">{reasoning || 'Based on price vs MA'}</p>
+          <div className="flex-1">
+            <div className="flex items-center gap-2">
+              <p className="font-medium">Recommendation: SELL {direction}</p>
+              {trend && (
+                <span className={`text-xs px-2 py-0.5 rounded ${trendBadge}`}>
+                  {trend === 'UP' ? 'BULLISH' : trend === 'DOWN' ? 'BEARISH' : 'NEUTRAL'}
+                </span>
+              )}
+            </div>
+            <p className="text-sm opacity-80">{reasoning || 'Based on MA crossover'}</p>
           </div>
         </div>
       )}
 
-      {/* MA Period Display (Read-only) */}
-      <div className="space-y-2">
-        <p className="text-xs text-silver">MA Period (Fixed)</p>
-        <div className="flex items-center gap-2 text-sm">
-          <span className="px-3 py-1 rounded bg-white/10 text-silver">{maPeriod}-day</span>
+      {/* Price & MA info - show both MAs */}
+      <div className="grid grid-cols-4 gap-4 text-sm">
+        <div>
+          <p className="text-silver mb-1">SPY Price</p>
+          <p className="font-mono">${spyPrice?.toFixed(2) || '--'}</p>
+        </div>
+        <div>
+          <p className="text-silver mb-1">MA5 (Fast)</p>
+          <p className="font-mono">${maFast?.toFixed(2) || '--'}</p>
+        </div>
+        <div>
+          <p className="text-silver mb-1">MA15 (Slow)</p>
+          <p className="font-mono">${maSlow?.toFixed(2) || '--'}</p>
+        </div>
+        <div>
+          <p className="text-silver mb-1">Confidence</p>
+          <p className="font-mono">{confidence ? `${(confidence * 100).toFixed(0)}%` : '--'}</p>
         </div>
       </div>
+
+      {/* MA Crossover Visualization */}
+      {spyPrice && maFast && maSlow && (
+        <div className="p-3 rounded-lg bg-white/5 text-xs">
+          <div className="flex items-center justify-between">
+            <span className="text-silver">MA Alignment:</span>
+            <span className={spyPrice > maFast && maFast > maSlow ? 'text-green-400' :
+                           spyPrice < maFast && maFast < maSlow ? 'text-red-400' :
+                           'text-yellow-400'}>
+              SPY {spyPrice > maFast ? '>' : '<'} MA5 {maFast > maSlow ? '>' : '<'} MA15
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

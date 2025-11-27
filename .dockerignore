@@ -1,0 +1,30 @@
+# Ignore env files - Cloud Run provides env vars via secrets
+.env
+.env.*
+*.env
+
+# Node modules - will be installed fresh
+node_modules
+
+# Build artifacts
+dist
+
+# Git
+.git
+.gitignore
+
+# IDE
+.vscode
+.idea
+
+# Logs
+*.log
+npm-debug.log*
+
+# Archives and backups
+archive/
+*.tar.gz
+*.zip
+
+# Claude config
+.claude/
