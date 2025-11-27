@@ -252,20 +252,79 @@ export async function getOptionChain(
 
   await ensureIbkrReady();
 
-  // TODO: Implement actual option chain fetching from IBKR
-  // This would use the IBKR API to get real option chain data
-  // For now, return mock data
+  try {
+    // Fetch real option chain data from IBKR
+    const ibkrData = await broker.api.getOptionChain(symbol, expirationDate);
+    console.log(`[MarketData] IBKR option chain for ${symbol}: ${ibkrData.options?.length || 0} contracts`);
 
-  const optionChain: OptionChain = {
-    underlying: symbol,
-    underlyingPrice,
-    expirationDate,
-    calls: [],
-    puts: []
-  };
+    // Use IBKR underlying price if available, otherwise use our fetched price
+    const actualUnderlyingPrice = ibkrData.underlyingPrice || underlyingPrice;
 
-  cache.set(cacheKey, optionChain);
-  return optionChain;
+    // Split options into calls and puts arrays
+    const calls: OptionContract[] = (ibkrData.options || [])
+      .filter(opt => opt.type === 'call')
+      .map(opt => ({
+        symbol: `${symbol}_${expirationDate}_C_${opt.strike}`,
+        strike: opt.strike,
+        expiration: opt.expiration || expirationDate,
+        optionType: 'CALL' as const,
+        bid: opt.bid,
+        ask: opt.ask,
+        last: (opt.bid + opt.ask) / 2, // Approximate last from mid
+        volume: 0, // Not provided by IBKR basic chain
+        openInterest: opt.openInterest || 0,
+        delta: opt.delta,
+        gamma: 0, // Requires market data subscription for real Greeks
+        theta: 0,
+        vega: 0,
+        impliedVolatility: 0
+      }));
+
+    const puts: OptionContract[] = (ibkrData.options || [])
+      .filter(opt => opt.type === 'put')
+      .map(opt => ({
+        symbol: `${symbol}_${expirationDate}_P_${opt.strike}`,
+        strike: opt.strike,
+        expiration: opt.expiration || expirationDate,
+        optionType: 'PUT' as const,
+        bid: opt.bid,
+        ask: opt.ask,
+        last: (opt.bid + opt.ask) / 2,
+        volume: 0,
+        openInterest: opt.openInterest || 0,
+        delta: opt.delta,
+        gamma: 0,
+        theta: 0,
+        vega: 0,
+        impliedVolatility: 0
+      }));
+
+    console.log(`[MarketData] Parsed ${calls.length} calls, ${puts.length} puts from IBKR`);
+
+    const optionChain: OptionChain = {
+      underlying: symbol,
+      underlyingPrice: actualUnderlyingPrice,
+      expirationDate,
+      calls,
+      puts
+    };
+
+    cache.set(cacheKey, optionChain);
+    return optionChain;
+
+  } catch (error) {
+    console.error(`[MarketData] Error fetching IBKR option chain for ${symbol}:`, error);
+    // Return empty chain on error rather than crashing
+    const optionChain: OptionChain = {
+      underlying: symbol,
+      underlyingPrice,
+      expirationDate,
+      calls: [],
+      puts: []
+    };
+    cache.set(cacheKey, optionChain);
+    return optionChain;
+  }
 }
 
 /**
