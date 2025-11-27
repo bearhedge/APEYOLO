@@ -453,34 +453,46 @@ export function Engine() {
         )}
 
         {/* Guard Rails Configuration */}
-        {status?.guardRails && (
+        {status?.guardRails && Object.keys(status.guardRails).length > 0 && (
           <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
             <h3 className="text-lg font-semibold mb-4">Guard Rails</h3>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
-              <div>
-                <p className="text-silver mb-1">Delta Range</p>
-                <p className="font-mono">{status.guardRails.minDelta} - {status.guardRails.maxDelta}</p>
-              </div>
-              <div>
-                <p className="text-silver mb-1">Max Contracts</p>
-                <p className="font-mono">{status.guardRails.maxContractsPerTrade}</p>
-              </div>
-              <div>
-                <p className="text-silver mb-1">Stop Loss</p>
-                <p className="font-mono">{status.guardRails.stopLossMultiplier}x premium</p>
-              </div>
-              <div>
-                <p className="text-silver mb-1">Max Daily Loss</p>
-                <p className="font-mono">{(status.guardRails.maxDailyLoss * 100).toFixed(0)}%</p>
-              </div>
-              <div>
-                <p className="text-silver mb-1">Trading Window</p>
-                <p className="font-mono">{status.guardRails.tradingWindow.start} - {status.guardRails.tradingWindow.end}</p>
-              </div>
-              <div>
-                <p className="text-silver mb-1">Strategies</p>
-                <p className="font-mono">{status.guardRails.allowedStrategies.join(', ')}</p>
-              </div>
+              {status.guardRails.minDelta !== undefined && (
+                <div>
+                  <p className="text-silver mb-1">Delta Range</p>
+                  <p className="font-mono">{status.guardRails.minDelta} - {status.guardRails.maxDelta}</p>
+                </div>
+              )}
+              {status.guardRails.maxContractsPerTrade !== undefined && (
+                <div>
+                  <p className="text-silver mb-1">Max Contracts</p>
+                  <p className="font-mono">{status.guardRails.maxContractsPerTrade}</p>
+                </div>
+              )}
+              {status.guardRails.stopLossMultiplier !== undefined && (
+                <div>
+                  <p className="text-silver mb-1">Stop Loss</p>
+                  <p className="font-mono">{status.guardRails.stopLossMultiplier}x premium</p>
+                </div>
+              )}
+              {status.guardRails.maxDailyLoss !== undefined && (
+                <div>
+                  <p className="text-silver mb-1">Max Daily Loss</p>
+                  <p className="font-mono">{(status.guardRails.maxDailyLoss * 100).toFixed(0)}%</p>
+                </div>
+              )}
+              {status.guardRails.tradingWindow?.start && (
+                <div>
+                  <p className="text-silver mb-1">Trading Window</p>
+                  <p className="font-mono">{status.guardRails.tradingWindow.start} - {status.guardRails.tradingWindow.end}</p>
+                </div>
+              )}
+              {status.guardRails.allowedStrategies?.length > 0 && (
+                <div>
+                  <p className="text-silver mb-1">Strategies</p>
+                  <p className="font-mono">{status.guardRails.allowedStrategies.join(', ')}</p>
+                </div>
+              )}
             </div>
           </div>
         )}
