@@ -171,10 +171,10 @@ export function Engine() {
             testId="engine-status"
           />
           <StatCard
-            label="Broker"
+            label="IBKR"
             value={status?.brokerConnected ? 'Connected' : 'Disconnected'}
             icon={status?.brokerConnected ? <Zap className="w-5 h-5 text-green-500" /> : <XCircle className="w-5 h-5 text-red-500" />}
-            testId="broker-status"
+            testId="ibkr-status"
           />
           <StatCard
             label="Trading Window"

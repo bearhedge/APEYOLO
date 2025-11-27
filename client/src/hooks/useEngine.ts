@@ -82,15 +82,55 @@ export function useEngine() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Fetch engine status
+  // Fetch engine status AND IBKR status (same endpoint as Settings page)
   const fetchStatus = useCallback(async () => {
     try {
-      const response = await fetch('/api/engine/status', {
-        credentials: 'include'
-      });
-      if (!response.ok) throw new Error('Failed to fetch engine status');
-      const data = await response.json();
-      setStatus(data);
+      // Fetch both engine status and IBKR status in parallel
+      // Use /api/ibkr/status (same as Settings page) for broker connection
+      const [engineRes, ibkrRes] = await Promise.all([
+        fetch('/api/engine/status', { credentials: 'include' }),
+        fetch('/api/ibkr/status', { credentials: 'include' })
+      ]);
+
+      // Parse IBKR status first (works without auth, same as Settings page)
+      let brokerConnected = false;
+      let ibkrConfigured = false;
+      if (ibkrRes.ok) {
+        const ibkrData = await ibkrRes.json();
+        ibkrConfigured = ibkrData?.configured ?? false;
+        // Use same logic as Settings page - check 4-phase auth pipeline
+        if (ibkrData?.connected) {
+          brokerConnected = true;
+        } else if (ibkrData?.diagnostics) {
+          const diag = ibkrData.diagnostics;
+          brokerConnected = diag?.oauth?.status === 200 &&
+                           diag?.sso?.status === 200 &&
+                           (diag?.validate?.status === 200 || diag?.validated?.status === 200) &&
+                           (diag?.init?.status === 200 || diag?.initialized?.status === 200);
+        }
+      }
+
+      // Parse engine status (may fail if not authenticated)
+      let engineData: any = {
+        engineActive: false,
+        brokerConnected,
+        brokerProvider: brokerConnected ? 'ibkr' : 'none',
+        tradingWindowOpen: false,
+        guardRails: {},
+        currentTime: new Date().toISOString(),
+        nyTime: new Date().toLocaleString('en-US', { timeZone: 'America/New_York' })
+      };
+
+      if (engineRes.ok) {
+        const data = await engineRes.json();
+        engineData = {
+          ...data,
+          brokerConnected, // Override with IBKR status (same as Settings page)
+          brokerProvider: brokerConnected ? 'ibkr' : data.brokerProvider
+        };
+      }
+
+      setStatus(engineData);
       setError(null);
     } catch (err) {
       console.error('[Engine] Status error:', err);

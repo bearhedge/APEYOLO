@@ -316,34 +316,25 @@ export class MemStorage implements IStorage {
   }
 
   async getAccountInfo() {
-    const positions = await this.getPositions();
-    const portfolioValue = positions.reduce((sum, p) => sum + parseFloat(p.currentValue.toString()), 127450.30);
-    const netDelta = positions.reduce((sum, p) => sum + parseFloat(p.delta.toString()), -0.23);
-    const marginUsed = positions.reduce((sum, p) => sum + parseFloat(p.marginRequired.toString()), 34250.00);
-
-    // Calculate derived values for mock data
-    const totalCash = 75000.00;
-    const grossPositionValue = marginUsed * 1.5;
-    const maintenanceMargin = marginUsed * 0.75;
-    const excessLiquidity = portfolioValue - maintenanceMargin;
-    const cushion = maintenanceMargin > 0 ? (excessLiquidity / maintenanceMargin) * 100 : 100;
-    const leverage = portfolioValue > 0 ? grossPositionValue / portfolioValue : 0;
-
+    // IMPORTANT: Return null values instead of mock/hardcoded data
+    // When IBKR is configured, this mock provider should NOT be used
+    // If these values appear in the UI, it indicates a configuration issue
+    // The user should see "-" in the UI when values are null (meaning "unavailable")
     return {
-      accountNumber: "DU123456",
-      buyingPower: 45230.50,
-      portfolioValue,
-      netDelta,
-      dayPnL: 1234.56,
-      marginUsed,
+      accountNumber: null as unknown as string,
+      buyingPower: null as unknown as number,
+      portfolioValue: null as unknown as number,
+      netDelta: null as unknown as number,
+      dayPnL: null as unknown as number,
+      marginUsed: null as unknown as number,
       // Enhanced fields for Portfolio Row 2
-      totalCash,
-      settledCash: totalCash * 0.8,
-      grossPositionValue,
-      maintenanceMargin,
-      cushion,
-      leverage,
-      excessLiquidity
+      totalCash: null as unknown as number,
+      settledCash: null as unknown as number,
+      grossPositionValue: null as unknown as number,
+      maintenanceMargin: null as unknown as number,
+      cushion: null as unknown as number,
+      leverage: null as unknown as number,
+      excessLiquidity: null as unknown as number
     };
   }
 

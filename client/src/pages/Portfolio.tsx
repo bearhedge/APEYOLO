@@ -23,6 +23,34 @@ interface AccountInfo {
   excessLiquidity: number;
 }
 
+// Helper to format currency values, showing "-" for null/undefined
+const formatCurrency = (value: number | null | undefined, includeSign = false): string => {
+  if (value === null || value === undefined) return '-';
+  const formatted = `$${Math.abs(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  if (includeSign) {
+    return value >= 0 ? `+${formatted}` : `-${formatted.substring(1)}`;
+  }
+  return formatted;
+};
+
+// Helper to format percentage values, showing "-" for null/undefined
+const formatPercent = (value: number | null | undefined): string => {
+  if (value === null || value === undefined) return '-';
+  return `${value.toFixed(1)}%`;
+};
+
+// Helper to format multiplier values, showing "-" for null/undefined
+const formatMultiplier = (value: number | null | undefined): string => {
+  if (value === null || value === undefined) return '-';
+  return `${value.toFixed(2)}x`;
+};
+
+// Helper to format delta values, showing "-" for null/undefined
+const formatDelta = (value: number | null | undefined): string => {
+  if (value === null || value === undefined) return '-';
+  return value.toFixed(2);
+};
+
 export function Portfolio() {
   const { data: positions } = useQuery<Position[]>({
     queryKey: ['/api/positions'],
@@ -68,7 +96,7 @@ export function Portfolio() {
         <div className="mb-6">
           <h1 className="text-3xl font-bold tracking-wide">Portfolio</h1>
           <p className="text-silver text-sm mt-1">
-            {account?.accountNumber ? `Account: ${account.accountNumber}` : 'Account overview and positions'}
+            {account?.accountNumber ? `Account: ${account.accountNumber}` : 'Loading account data...'}
           </p>
         </div>
 
@@ -76,31 +104,31 @@ export function Portfolio() {
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <StatCard
             label="Portfolio Value"
-            value={accountLoading ? 'Loading...' : `$${(account?.portfolioValue ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            value={accountLoading ? 'Loading...' : formatCurrency(account?.portfolioValue)}
             icon={<TrendingUp className="w-5 h-5 text-blue-500" />}
             testId="portfolio-value"
           />
           <StatCard
             label="Buying Power"
-            value={accountLoading ? 'Loading...' : `$${(account?.buyingPower ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            value={accountLoading ? 'Loading...' : formatCurrency(account?.buyingPower)}
             icon={<DollarSign className="w-5 h-5 text-green-500" />}
             testId="buying-power"
           />
           <StatCard
             label="Total Cash"
-            value={accountLoading ? 'Loading...' : `$${(account?.totalCash ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            value={accountLoading ? 'Loading...' : formatCurrency(account?.totalCash)}
             icon={<Wallet className="w-5 h-5 text-emerald-500" />}
             testId="total-cash"
           />
           <StatCard
             label="Settled Cash"
-            value={accountLoading ? 'Loading...' : `$${(account?.settledCash ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            value={accountLoading ? 'Loading...' : formatCurrency(account?.settledCash)}
             icon={<Banknote className="w-5 h-5 text-teal-500" />}
             testId="settled-cash"
           />
           <StatCard
             label="Day P&L"
-            value={accountLoading ? 'Loading...' : `${(account?.dayPnL ?? 0) >= 0 ? '+' : ''}$${(account?.dayPnL ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            value={accountLoading ? 'Loading...' : formatCurrency(account?.dayPnL, true)}
             icon={<ArrowUpDown className={`w-5 h-5 ${(account?.dayPnL ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}`} />}
             testId="day-pnl"
           />
@@ -110,32 +138,32 @@ export function Portfolio() {
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <StatCard
             label="Position Value"
-            value={accountLoading ? 'Loading...' : `$${Number(account?.grossPositionValue ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            value={accountLoading ? 'Loading...' : formatCurrency(account?.grossPositionValue)}
             icon={<BarChart3 className="w-5 h-5 text-indigo-500" />}
             testId="position-value"
           />
           <StatCard
             label="Initial Margin"
-            value={accountLoading ? 'Loading...' : `$${Number(account?.marginUsed ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            value={accountLoading ? 'Loading...' : formatCurrency(account?.marginUsed)}
             icon={<Shield className="w-5 h-5 text-yellow-500" />}
             testId="margin-used"
           />
           <StatCard
             label="Maint. Margin"
-            value={accountLoading ? 'Loading...' : `$${Number(account?.maintenanceMargin ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            value={accountLoading ? 'Loading...' : formatCurrency(account?.maintenanceMargin)}
             icon={<Shield className="w-5 h-5 text-orange-500" />}
             testId="maint-margin"
           />
           <StatCard
             label="Cushion"
-            value={accountLoading ? 'Loading...' : `${Number(account?.cushion ?? 0).toFixed(1)}%`}
-            icon={<Gauge className={`w-5 h-5 ${Number(account?.cushion ?? 100) > 50 ? 'text-green-500' : Number(account?.cushion ?? 100) > 20 ? 'text-yellow-500' : 'text-red-500'}`} />}
+            value={accountLoading ? 'Loading...' : formatPercent(account?.cushion)}
+            icon={<Gauge className={`w-5 h-5 ${(account?.cushion ?? 100) > 50 ? 'text-green-500' : (account?.cushion ?? 100) > 20 ? 'text-yellow-500' : 'text-red-500'}`} />}
             testId="cushion"
           />
           <StatCard
             label="Leverage"
-            value={accountLoading ? 'Loading...' : `${Number(account?.leverage ?? 0).toFixed(2)}x`}
-            icon={<Scale className={`w-5 h-5 ${Number(account?.leverage ?? 0) < 2 ? 'text-green-500' : Number(account?.leverage ?? 0) < 4 ? 'text-yellow-500' : 'text-red-500'}`} />}
+            value={accountLoading ? 'Loading...' : formatMultiplier(account?.leverage)}
+            icon={<Scale className={`w-5 h-5 ${(account?.leverage ?? 0) < 2 ? 'text-green-500' : (account?.leverage ?? 0) < 4 ? 'text-yellow-500' : 'text-red-500'}`} />}
             testId="leverage"
           />
         </div>
@@ -144,7 +172,7 @@ export function Portfolio() {
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <StatCard
             label="Net Delta"
-            value={accountLoading ? 'Loading...' : Number(account?.netDelta ?? 0).toFixed(2)}
+            value={accountLoading ? 'Loading...' : formatDelta(account?.netDelta)}
             icon={<Activity className="w-5 h-5 text-purple-500" />}
             testId="net-delta"
           />

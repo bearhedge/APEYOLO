@@ -88,6 +88,7 @@ export function Settings() {
   // Hybrid auto-reconnect: auto warm/reconnect with gentle backoff; manual button remains
   const [lastAttemptAt, setLastAttemptAt] = useState<number>(0);
   const [backoffMs, setBackoffMs] = useState<number>(5000);
+  const [isAutoConnecting, setIsAutoConnecting] = useState<boolean>(false);
 
   useEffect(() => {
     const now = Date.now();
@@ -95,11 +96,13 @@ export function Settings() {
     if (ibkrStatus?.connected) {
       // reset backoff on success
       if (backoffMs !== 5000) setBackoffMs(5000);
+      setIsAutoConnecting(false);
       return;
     }
     // avoid thrash while disconnected
     if (now - lastAttemptAt < backoffMs) return;
     setLastAttemptAt(now);
+    setIsAutoConnecting(true);
     // try warm first; if not ok, fall back to reconnect
     warmMutation.mutate(undefined, {
       onSuccess: (d: any) => {
@@ -107,10 +110,12 @@ export function Settings() {
           reconnectMutation.mutate(undefined, {
             onSettled: () => {
               setBackoffMs((ms) => Math.min(60000, ms * 2));
+              setIsAutoConnecting(false);
               refetchStatus();
             },
           });
         } else {
+          setIsAutoConnecting(false);
           refetchStatus();
         }
       },
@@ -118,6 +123,7 @@ export function Settings() {
         reconnectMutation.mutate(undefined, {
           onSettled: () => {
             setBackoffMs((ms) => Math.min(60000, ms * 2));
+            setIsAutoConnecting(false);
             refetchStatus();
           },
         });
@@ -167,12 +173,18 @@ export function Settings() {
   const getConnectionIcon = () => {
     if (!ibkrStatus?.configured) return <AlertCircle className="w-5 h-5 text-yellow-500" />;
     if (ibkrStatus?.connected) return <CheckCircle className="w-5 h-5 text-green-500" />;
+    if (isAutoConnecting || warmMutation.isPending || reconnectMutation.isPending) {
+      return <RefreshCw className="w-5 h-5 text-blue-500 animate-spin" />;
+    }
     return <XCircle className="w-5 h-5 text-red-500" />;
   };
 
   const getConnectionStatus = () => {
     if (!ibkrStatus?.configured) return 'Not Configured';
     if (ibkrStatus?.connected) return 'Connected';
+    if (isAutoConnecting || warmMutation.isPending || reconnectMutation.isPending) {
+      return 'Connecting...';
+    }
     return 'Disconnected';
   };
 
@@ -198,6 +210,7 @@ export function Settings() {
               {getConnectionIcon()}
               <span className={`text-sm font-medium ${
                 ibkrStatus?.connected ? 'text-green-500' :
+                (isAutoConnecting || warmMutation.isPending || reconnectMutation.isPending) ? 'text-blue-500' :
                 ibkrStatus?.configured ? 'text-red-500' : 'text-yellow-500'
               }`}>
                 {getConnectionStatus()}
