@@ -17,6 +17,26 @@
 - **Added**: `.dockerignore` file for optimized builds
 - **Updated**: Dockerfile with improved caching and build steps
 
+### Dev/Deploy Workflow Cleanup
+- **Added**: `server/config.ts` - Centralized configuration layer
+  - Environment-aware (development/staging/production)
+  - Auto-detects Google OAuth redirect URIs per environment
+  - Unified cookie and JWT settings
+- **Added**: Concurrent dev scripts
+  - `npm run dev` - Runs server and client in parallel
+  - `npm run dev:server` - Server only with hot reload
+  - `npm run dev:client` - Vite dev server with API proxy
+- **Added**: Deploy scripts
+  - `npm run deploy:staging` - Deploy to apeyolo-staging
+  - `npm run deploy:prod` - Deploy to production apeyolo
+  - `scripts/deploy.sh` - Unified deployment script
+- **Added**: Environment example files
+  - `.env.development.example`
+  - `.env.staging.example`
+  - `.env.production.example`
+- **Updated**: `vite.config.ts` with API proxy for local dev
+- **Updated**: `server/auth.ts` to use centralized config
+
 ### Infrastructure Notes
 - Cloud Run service remains in `asia-east1`
 - Artifact Registry in `us-central1` (storage location, not runtime)
