@@ -3,6 +3,8 @@
  */
 
 import { useState, useEffect, useCallback } from 'react';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { getDiag } from '@/lib/api';
 
 export interface EngineStatus {
   engineActive: boolean;
@@ -81,34 +83,27 @@ export function useEngine() {
   const [config, setConfig] = useState<EngineConfig | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
 
-  // Fetch engine status AND IBKR status (same endpoint as Settings page)
-  const fetchStatus = useCallback(async () => {
+  // Use React Query for IBKR status - shares cache with NAV header for instant sync
+  // When Settings refetches this query, Engine updates immediately too
+  const { data: diagData } = useQuery({
+    queryKey: ['/api/broker/diag'],
+    queryFn: getDiag,
+    refetchInterval: 10000, // Poll every 10s (same as NAV header)
+  });
+
+  // Derive broker connection status from shared React Query cache (same logic as NAV header)
+  const last = diagData?.last;
+  const brokerConnected = last?.oauth?.status === 200 &&
+                          last?.sso?.status === 200 &&
+                          last?.validate?.status === 200 &&
+                          last?.init?.status === 200;
+
+  // Fetch engine-specific status (not IBKR connection - that's from React Query above)
+  const fetchEngineStatus = useCallback(async () => {
     try {
-      // Fetch both engine status and IBKR status in parallel
-      // Use /api/ibkr/status (same as Settings page) for broker connection
-      const [engineRes, ibkrRes] = await Promise.all([
-        fetch('/api/engine/status', { credentials: 'include' }),
-        fetch('/api/ibkr/status', { credentials: 'include' })
-      ]);
-
-      // Parse IBKR status first (works without auth, same as Settings page)
-      let brokerConnected = false;
-      let ibkrConfigured = false;
-      if (ibkrRes.ok) {
-        const ibkrData = await ibkrRes.json();
-        ibkrConfigured = ibkrData?.configured ?? false;
-        // Use same logic as Settings page - check 4-phase auth pipeline
-        if (ibkrData?.connected) {
-          brokerConnected = true;
-        } else if (ibkrData?.diagnostics) {
-          const diag = ibkrData.diagnostics;
-          brokerConnected = diag?.oauth?.status === 200 &&
-                           diag?.sso?.status === 200 &&
-                           (diag?.validate?.status === 200 || diag?.validated?.status === 200) &&
-                           (diag?.init?.status === 200 || diag?.initialized?.status === 200);
-        }
-      }
+      const engineRes = await fetch('/api/engine/status', { credentials: 'include' });
 
       // Parse engine status (may fail if not authenticated)
       let engineData: any = {
@@ -125,7 +120,7 @@ export function useEngine() {
         const data = await engineRes.json();
         engineData = {
           ...data,
-          brokerConnected, // Override with IBKR status (same as Settings page)
+          brokerConnected, // Override with IBKR status from React Query
           brokerProvider: brokerConnected ? 'ibkr' : data.brokerProvider
         };
       }
@@ -136,7 +131,20 @@ export function useEngine() {
       console.error('[Engine] Status error:', err);
       setError('Failed to fetch engine status');
     }
-  }, []);
+  }, [brokerConnected]);
+
+  // Keep status updated when brokerConnected changes from React Query
+  useEffect(() => {
+    if (status) {
+      setStatus(prev => prev ? { ...prev, brokerConnected, brokerProvider: brokerConnected ? 'ibkr' : prev.brokerProvider } : prev);
+    }
+  }, [brokerConnected]);
+
+  // Legacy fetchStatus for backward compatibility - now just triggers React Query refetch + engine status
+  const fetchStatus = useCallback(async () => {
+    queryClient.invalidateQueries({ queryKey: ['/api/broker/diag'] });
+    await fetchEngineStatus();
+  }, [queryClient, fetchEngineStatus]);
 
   // Execute trading decision process
   const executeDecision = useCallback(async (options?: {
@@ -335,14 +343,14 @@ export function useEngine() {
     return steps;
   }, []);
 
-  // Initial fetch
+  // Initial fetch for engine-specific status (IBKR status is handled by React Query above)
   useEffect(() => {
-    fetchStatus();
+    fetchEngineStatus();
     fetchConfig();
-    // Set up polling interval
-    const interval = setInterval(fetchStatus, 30000); // Update every 30 seconds
+    // Poll engine status (IBKR status polling is handled by React Query's refetchInterval)
+    const interval = setInterval(fetchEngineStatus, 10000);
     return () => clearInterval(interval);
-  }, [fetchStatus, fetchConfig]);
+  }, [fetchEngineStatus, fetchConfig]);
 
   return {
     status,
