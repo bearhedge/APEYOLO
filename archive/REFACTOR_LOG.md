@@ -116,6 +116,22 @@ cp -r archive/archive_2/[folder_name] ./
 cp archive/archive_1/[file_name] ./
 ```
 
+---
+
+### Phase 6: Dev Workflow Cleanup (2025-11-28)
+
+**Files archived - Redundant env examples:**
+
+| Timestamp | Item | Original Path | Size | Reason | Status |
+|-----------|------|---------------|------|--------|--------|
+| 2025-11-28 17:45 | .env.development.example | / | 829B | Redundant - actual .env has better docs | Archived |
+| 2025-11-28 17:45 | .env.staging.example | / | 621B | Redundant - staging uses Cloud Run env vars | Archived |
+| 2025-11-28 17:45 | .env.production.example | / | 622B | Redundant - prod uses Secret Manager | Archived |
+
+**Reason**: The actual `.env` file already contains comprehensive documentation with comments. These example files just duplicated that with placeholder values. Cloud Run staging/prod use environment variables set via gcloud, not .env files.
+
+---
+
 ## Notes
 
 - All archived files are tracked in git history
