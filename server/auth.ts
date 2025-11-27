@@ -9,12 +9,23 @@ import crypto from 'crypto';
 
 const router = Router();
 
-// Configuration
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID || '';
-const GOOGLE_CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET || '';
-const GOOGLE_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI || 'http://localhost:5000/api/auth/google/callback';
-const JWT_SECRET = process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex');
-const CLIENT_URL = process.env.CLIENT_URL || 'http://localhost:3000';
+// Configuration - Production URLs hardcoded, env vars for local dev override
+const PROD_REDIRECT_URI = 'https://apeyolo.com/api/auth/google/callback';
+const PROD_CLIENT_URL = 'https://apeyolo.com';
+
+function getGoogleClientId() { return process.env.GOOGLE_CLIENT_ID || ''; }
+function getGoogleClientSecret() { return process.env.GOOGLE_CLIENT_SECRET || ''; }
+function getGoogleRedirectUri() {
+  // In production (Cloud Run), use production URL
+  // In dev, allow env var override
+  if (process.env.NODE_ENV === 'production') return PROD_REDIRECT_URI;
+  return process.env.GOOGLE_REDIRECT_URI || 'http://localhost:5000/api/auth/google/callback';
+}
+function getJwtSecret() { return process.env.JWT_SECRET || crypto.randomBytes(32).toString('hex'); }
+function getClientUrl() {
+  if (process.env.NODE_ENV === 'production') return PROD_CLIENT_URL;
+  return process.env.CLIENT_URL || 'http://localhost:3000';
+}
 
 // Google OAuth URLs
 const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
@@ -26,7 +37,7 @@ const GOOGLE_USER_INFO_URL = 'https://www.googleapis.com/oauth2/v3/userinfo';
  * Redirects user to Google consent screen
  */
 router.get('/google', (req: Request, res: Response) => {
-  if (!GOOGLE_CLIENT_ID) {
+  if (!getGoogleClientId()) {
     return res.status(500).json({ error: 'Google OAuth not configured' });
   }
 
@@ -41,8 +52,8 @@ router.get('/google', (req: Request, res: Response) => {
   });
 
   const params = new URLSearchParams({
-    client_id: GOOGLE_CLIENT_ID,
-    redirect_uri: GOOGLE_REDIRECT_URI,
+    client_id: getGoogleClientId(),
+    redirect_uri: getGoogleRedirectUri(),
     response_type: 'code',
     scope: 'openid email profile',
     state: state,
@@ -64,14 +75,14 @@ router.get('/google/callback', async (req: Request, res: Response) => {
 
     // Verify state for CSRF protection
     if (!state || state !== storedState) {
-      return res.redirect(`${CLIENT_URL}/onboarding?error=invalid_state`);
+      return res.redirect(`${getClientUrl()}/onboarding?error=invalid_state`);
     }
 
     // Clear state cookie
     res.clearCookie('oauth_state');
 
     if (!code) {
-      return res.redirect(`${CLIENT_URL}/onboarding?error=no_code`);
+      return res.redirect(`${getClientUrl()}/onboarding?error=no_code`);
     }
 
     // Exchange code for tokens
@@ -80,9 +91,9 @@ router.get('/google/callback', async (req: Request, res: Response) => {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         code: code as string,
-        client_id: GOOGLE_CLIENT_ID,
-        client_secret: GOOGLE_CLIENT_SECRET,
-        redirect_uri: GOOGLE_REDIRECT_URI,
+        client_id: getGoogleClientId(),
+        client_secret: getGoogleClientSecret(),
+        redirect_uri: getGoogleRedirectUri(),
         grant_type: 'authorization_code'
       })
     });
@@ -90,7 +101,7 @@ router.get('/google/callback', async (req: Request, res: Response) => {
     if (!tokenResponse.ok) {
       const error = await tokenResponse.text();
       console.error('Token exchange failed:', error);
-      return res.redirect(`${CLIENT_URL}/onboarding?error=token_exchange_failed`);
+      return res.redirect(`${getClientUrl()}/onboarding?error=token_exchange_failed`);
     }
 
     const tokens = await tokenResponse.json();
@@ -102,7 +113,7 @@ router.get('/google/callback', async (req: Request, res: Response) => {
 
     if (!userResponse.ok) {
       console.error('Failed to get user info');
-      return res.redirect(`${CLIENT_URL}/onboarding?error=user_info_failed`);
+      return res.redirect(`${getClientUrl()}/onboarding?error=user_info_failed`);
     }
 
     const googleUser = await userResponse.json();
@@ -129,7 +140,7 @@ router.get('/google/callback', async (req: Request, res: Response) => {
         name: googleUser.name,
         picture: googleUser.picture
       },
-      JWT_SECRET,
+      getJwtSecret(),
       { expiresIn: '7d' }
     );
 
@@ -143,10 +154,10 @@ router.get('/google/callback', async (req: Request, res: Response) => {
 
     // Redirect directly to the dashboard after successful login
     // IBKR setup can be completed later in Settings
-    res.redirect(`${CLIENT_URL}/agent`);
+    res.redirect(`${getClientUrl()}/agent`);
   } catch (error) {
     console.error('OAuth callback error:', error);
-    res.redirect(`${CLIENT_URL}/onboarding?error=auth_failed`);
+    res.redirect(`${getClientUrl()}/onboarding?error=auth_failed`);
   }
 });
 
@@ -161,7 +172,7 @@ router.get('/user', async (req: Request, res: Response) => {
       return res.status(401).json({ error: 'Not authenticated' });
     }
 
-    const decoded = jwt.verify(token, JWT_SECRET) as any;
+    const decoded = jwt.verify(token, getJwtSecret()) as any;
 
     // TODO: Get user data from database when PostgreSQL is set up
     // For now, returning the data from the JWT token
@@ -189,12 +200,17 @@ router.post('/logout', (req: Request, res: Response) => {
  * Check OAuth configuration status
  */
 router.get('/status', (req: Request, res: Response) => {
-  const isConfigured = !!(GOOGLE_CLIENT_ID && GOOGLE_CLIENT_SECRET);
+  const isConfigured = !!(getGoogleClientId() && getGoogleClientSecret());
+  // Debug: log the actual env var value
+  console.log('[AUTH/status] GOOGLE_REDIRECT_URI env:', process.env.GOOGLE_REDIRECT_URI);
+  console.log('[AUTH/status] NODE_ENV:', process.env.NODE_ENV);
   res.json({
     configured: isConfigured,
-    hasClientId: !!GOOGLE_CLIENT_ID,
-    hasClientSecret: !!GOOGLE_CLIENT_SECRET,
-    redirectUri: GOOGLE_REDIRECT_URI,
+    hasClientId: !!getGoogleClientId(),
+    hasClientSecret: !!getGoogleClientSecret(),
+    redirectUri: getGoogleRedirectUri(),
+    rawEnvRedirectUri: process.env.GOOGLE_REDIRECT_URI || 'NOT_SET',
+    nodeEnv: process.env.NODE_ENV || 'NOT_SET',
     message: isConfigured
       ? 'Google OAuth is configured and ready'
       : 'Google OAuth credentials are missing. Please check GOOGLE_OAUTH_SETUP.md'
@@ -212,7 +228,7 @@ export function requireAuth(req: Request, res: Response, next: Function) {
   }
 
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
+    const decoded = jwt.verify(token, getJwtSecret());
     (req as any).user = decoded;
     next();
   } catch (error) {
