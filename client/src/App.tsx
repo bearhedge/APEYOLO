@@ -22,7 +22,7 @@ function Navigation() {
     queryKey: ['/api/account'],
     queryFn: getAccount,
     enabled: location !== '/' && !isOnboarding,
-    refetchInterval: 30000, // Refresh every 30s for live NAV
+    refetchInterval: 10000, // Refresh every 10s for live NAV (matches IBKR status polling)
   });
 
   const { data: diagData } = useQuery({

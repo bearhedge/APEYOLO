@@ -16,7 +16,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { useQuery, useMutation } from '@tanstack/react-query';
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { BrokerStatus, RiskCfg } from '@shared/types';
 
 export function Settings() {
@@ -33,6 +33,9 @@ export function Settings() {
   const [testResult, setTestResult] = useState<any>(null);
   const [orderResult, setOrderResult] = useState<any>(null);
   const [clearResult, setClearResult] = useState<any>(null);
+
+  // Get queryClient to invalidate NAV header caches when connection status changes
+  const queryClient = useQueryClient();
 
   // Fetch IBKR status with adaptive polling
   const { data: ibkrStatus, refetch: refetchStatus } = useQuery({
@@ -51,6 +54,14 @@ export function Settings() {
     refetchOnMount: true,
   });
 
+  // Helper to refresh all IBKR-related caches for instant UI sync across all components
+  const refreshAllIbkrStatus = () => {
+    refetchStatus();
+    // Force immediate refetch (not just invalidate) for instant NAV header update
+    queryClient.refetchQueries({ queryKey: ['/api/broker/diag'] });
+    queryClient.refetchQueries({ queryKey: ['/api/account'] });
+  };
+
   // Test connection mutation
   const testConnectionMutation = useMutation({
     mutationFn: async () => {
@@ -60,8 +71,8 @@ export function Settings() {
       return data;
     },
     onSuccess: () => {
-      // Trigger immediate refetch after test
-      refetchStatus();
+      // Trigger immediate refetch after test - updates all components
+      refreshAllIbkrStatus();
     },
   });
 
@@ -71,8 +82,8 @@ export function Settings() {
       return response.json();
     },
     onSuccess: () => {
-      // Trigger immediate refetch after reconnect
-      refetchStatus();
+      // Trigger immediate refetch after reconnect - updates all components
+      refreshAllIbkrStatus();
     },
   });
 
@@ -82,7 +93,7 @@ export function Settings() {
       const response = await fetch('/api/broker/warm');
       return response.json();
     },
-    onSuccess: () => refetchStatus(),
+    onSuccess: () => refreshAllIbkrStatus(),
   });
 
   // Hybrid auto-reconnect: auto warm/reconnect with gentle backoff; manual button remains
@@ -111,12 +122,12 @@ export function Settings() {
             onSettled: () => {
               setBackoffMs((ms) => Math.min(60000, ms * 2));
               setIsAutoConnecting(false);
-              refetchStatus();
+              refreshAllIbkrStatus();
             },
           });
         } else {
           setIsAutoConnecting(false);
-          refetchStatus();
+          refreshAllIbkrStatus();
         }
       },
       onError: () => {
@@ -124,7 +135,7 @@ export function Settings() {
           onSettled: () => {
             setBackoffMs((ms) => Math.min(60000, ms * 2));
             setIsAutoConnecting(false);
-            refetchStatus();
+            refreshAllIbkrStatus();
           },
         });
       },
