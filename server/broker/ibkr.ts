@@ -464,6 +464,7 @@ class IbkrClient {
       this.ssoAccessTokenExpiryMs = 0;
       this.ssoSessionId = null;
       this.sessionReady = false;
+      this.accountSelected = false; // Must reset account selection when session resets
       this.lastInitTimeMs = 0;
       this.lastValidateTimeMs = 0;
 
@@ -507,6 +508,7 @@ class IbkrClient {
         // Tickle failed, force re-init on next ensureReady()
         console.error(`[IBKR][keepalive] Tickle failed:`, err);
         this.sessionReady = false;
+        this.accountSelected = false; // Must reset account selection when session resets
         this.last.init.status = null;
       }
     }
@@ -523,6 +525,7 @@ class IbkrClient {
         this.ssoAccessTokenExpiryMs = 0;
         this.ssoSessionId = null;
         this.sessionReady = false;
+        this.accountSelected = false; // Must reset account selection when session resets
         this.lastInitTimeMs = 0;
         this.lastValidateTimeMs = 0;
       }
@@ -584,6 +587,7 @@ class IbkrClient {
         this.ssoAccessToken = null;
         this.ssoAccessTokenExpiryMs = 0;
         this.sessionReady = false;
+        this.accountSelected = false; // Must reset account selection when session resets
         this.lastInitTimeMs = 0;
         this.lastValidateTimeMs = 0;
 
@@ -602,6 +606,7 @@ class IbkrClient {
         this.ssoSessionId = null;
         this.ssoAccessToken = null;
         this.sessionReady = false;
+        this.accountSelected = false; // Must reset account selection when session resets
         return this.ensureReady(false);
       }
 
@@ -681,7 +686,9 @@ class IbkrClient {
         excessLiquidity: excessLiq,
       };
       return info;
-    } catch {
+    } catch (err) {
+      // Log the actual error so we can diagnose NAV display issues
+      console.error(`[IBKR][getAccount] ERROR: ${err instanceof Error ? err.message : String(err)}`);
       // Fallback to zeros if IBKR request fails
       return {
         accountNumber: accountId || "",
