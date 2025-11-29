@@ -15,14 +15,6 @@ export interface BrokerProvider {
   getOptionChain(symbol: string, expiration?: string): Promise<OptionChainData>;
   getTrades(): Promise<Trade[]>;
   placeOrder(trade: InsertTrade): Promise<{ id?: string; status: string; raw?: any }>;
-  getMarketData(symbol: string): Promise<{
-    price: number;
-    bid: number;
-    ask: number;
-    volume: number;
-    change: number;
-    changePercent: number;
-  }>;
 }
 
 export type BrokerStatus = {
