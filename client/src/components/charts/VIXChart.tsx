@@ -48,7 +48,8 @@ interface VIXChartProps {
   className?: string;
 }
 
-const timeframeOptions: TimeRange[] = ['1D', '5D', '1M', '3M', '6M', '1Y', 'MAX'];
+// Granular minute timeframes (1m, 5m, 15m, 30m) + standard day/week/month ranges
+const timeframeOptions: TimeRange[] = ['1m', '5m', '15m', '30m', '1D', '5D', '1M', '3M', '6M', '1Y', 'MAX'];
 
 export function VIXChart({
   height = 200,

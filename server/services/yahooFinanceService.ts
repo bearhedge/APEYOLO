@@ -45,10 +45,15 @@ export interface VIXContext {
   lastUpdate: Date;
 }
 
-export type TimeRange = '1D' | '5D' | '1M' | '3M' | '6M' | '1Y' | 'MAX';
+// Granular timeframes (1m, 5m, 15m, 30m) + standard daily ranges
+export type TimeRange = '1m' | '5m' | '15m' | '30m' | '1D' | '5D' | '1M' | '3M' | '6M' | '1Y' | 'MAX';
 
 // Map TimeRange to Yahoo Finance interval and period
-const rangeConfig: Record<TimeRange, { interval: '1m' | '5m' | '15m' | '1h' | '1d'; period1: string | Date }> = {
+const rangeConfig: Record<TimeRange, { interval: '1m' | '5m' | '15m' | '30m' | '1h' | '1d'; period1: string | Date }> = {
+  '1m': { interval: '1m', period1: getDateOffset(1/24) },   // 1 hour lookback
+  '5m': { interval: '5m', period1: getDateOffset(1) },       // 1 day lookback
+  '15m': { interval: '15m', period1: getDateOffset(3) },     // 3 days lookback
+  '30m': { interval: '30m', period1: getDateOffset(7) },     // 1 week lookback
   '1D': { interval: '5m', period1: getDateOffset(1) },
   '5D': { interval: '15m', period1: getDateOffset(5) },
   '1M': { interval: '1h', period1: getDateOffset(30) },
@@ -57,6 +62,42 @@ const rangeConfig: Record<TimeRange, { interval: '1m' | '5m' | '15m' | '1h' | '1
   '1Y': { interval: '1d', period1: getDateOffset(365) },
   'MAX': { interval: '1d', period1: '2010-01-01' }
 };
+
+// Price bounds for sanity checking OHLC data (filter outliers/artifacts)
+const PRICE_BOUNDS: Record<string, { min: number; max: number }> = {
+  'SPY': { min: 300, max: 700 },
+  '^VIX': { min: 5, max: 100 },
+  '^GSPC': { min: 3000, max: 7000 },
+};
+
+/**
+ * Validate OHLC data for sanity
+ * Filters out:
+ * - Invalid OHLC relationships (high < low, etc.)
+ * - Price values outside reasonable bounds
+ * - Yahoo Finance artifacts (splits, corporate actions showing as spikes)
+ */
+function validateOHLCData(data: OHLCData[], symbol: string): OHLCData[] {
+  const bounds = PRICE_BOUNDS[symbol] || { min: 0, max: Infinity };
+
+  return data.filter(d => {
+    // OHLC relationship validation
+    if (d.high < d.low) return false;
+    if (d.high < d.open || d.high < d.close) return false;
+    if (d.low > d.open || d.low > d.close) return false;
+
+    // Bounds check - filter extreme outliers
+    if (d.close < bounds.min || d.close > bounds.max) return false;
+    if (d.high < bounds.min || d.high > bounds.max) return false;
+    if (d.low < bounds.min || d.low > bounds.max) return false;
+    if (d.open < bounds.min || d.open > bounds.max) return false;
+
+    // Volume sanity check (negative or extremely high values are likely errors)
+    if (d.volume < 0 || d.volume > 1e12) return false;
+
+    return true;
+  });
+}
 
 function getDateOffset(days: number): Date {
   const date = new Date();
@@ -141,7 +182,8 @@ export async function fetchHistoricalData(symbol: string, range: TimeRange): Pro
       return [];
     }
 
-    const data: OHLCData[] = result.quotes
+    // Parse raw quotes
+    const rawData: OHLCData[] = result.quotes
       .filter(q => q.open != null && q.high != null && q.low != null && q.close != null)
       .map(q => ({
         timestamp: new Date(q.date),
@@ -151,6 +193,13 @@ export async function fetchHistoricalData(symbol: string, range: TimeRange): Pro
         close: q.close!,
         volume: q.volume ?? 0
       }));
+
+    // Apply OHLC validation to filter out artifacts and outliers
+    const data = validateOHLCData(rawData, symbol);
+
+    if (data.length < rawData.length) {
+      console.log(`[YahooFinance] Filtered ${rawData.length - data.length} invalid data points for ${symbol}`);
+    }
 
     setCache(cacheKey, data);
     return data;

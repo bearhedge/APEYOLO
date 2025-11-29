@@ -47,7 +47,8 @@ export function useBrokerStatus(options: UseBrokerStatusOptions = {}) {
   const { enabled = true, onStatusChange } = options;
 
   const query = useQuery<BrokerStatus>({
-    queryKey: ['broker-status'],
+    // Use same query key as Settings.tsx for unified cache
+    queryKey: ['/api/ibkr/status'],
     queryFn: fetchBrokerStatus,
     enabled,
     // Adaptive polling: 10s when connecting/unstable, 30s when stable

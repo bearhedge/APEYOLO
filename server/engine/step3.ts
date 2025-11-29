@@ -312,6 +312,23 @@ export async function selectStrikes(
         delta: s.delta,
         oi: s.openInterest
       })).sort((a, b) => a.strike - b.strike);
+    } else {
+      // Use mock data for nearby put strikes when IBKR unavailable
+      const mockPutChain = getMockOptionChain(actualUnderlyingPrice, 'PUT');
+      const selectedStrike = selection.putStrike?.strike;
+      const sortedMockPuts = [...mockPutChain].sort((a, b) => {
+        if (selectedStrike) {
+          return Math.abs(a.strike - selectedStrike) - Math.abs(b.strike - selectedStrike);
+        }
+        return Math.abs(a.strike - actualUnderlyingPrice) - Math.abs(b.strike - actualUnderlyingPrice);
+      });
+      nearbyStrikes.puts = sortedMockPuts.slice(0, 7).map(s => ({
+        strike: s.strike,
+        bid: s.bid,
+        ask: s.ask,
+        delta: s.delta,
+        oi: s.openInterest
+      })).sort((a, b) => a.strike - b.strike);
     }
   }
 
@@ -327,6 +344,23 @@ export async function selectStrikes(
         return Math.abs(a.strike - actualUnderlyingPrice) - Math.abs(b.strike - actualUnderlyingPrice);
       });
       nearbyStrikes.calls = sortedCalls.slice(0, 7).map(s => ({
+        strike: s.strike,
+        bid: s.bid,
+        ask: s.ask,
+        delta: s.delta,
+        oi: s.openInterest
+      })).sort((a, b) => a.strike - b.strike);
+    } else {
+      // Use mock data for nearby call strikes when IBKR unavailable
+      const mockCallChain = getMockOptionChain(actualUnderlyingPrice, 'CALL');
+      const selectedStrike = selection.callStrike?.strike;
+      const sortedMockCalls = [...mockCallChain].sort((a, b) => {
+        if (selectedStrike) {
+          return Math.abs(a.strike - selectedStrike) - Math.abs(b.strike - selectedStrike);
+        }
+        return Math.abs(a.strike - actualUnderlyingPrice) - Math.abs(b.strike - actualUnderlyingPrice);
+      });
+      nearbyStrikes.calls = sortedMockCalls.slice(0, 7).map(s => ({
         strike: s.strike,
         bid: s.bid,
         ask: s.ask,

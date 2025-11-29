@@ -425,18 +425,6 @@ export function Settings() {
 
               {ibkrStatus?.configured && !ibkrStatus?.connected && (
                 <div className="space-y-2">
-                  {/* Auto-reconnect status indicator */}
-                  {isAutoConnecting && (
-                    <div className="p-3 bg-blue-900/20 border border-blue-500/30 rounded-lg flex items-center gap-3">
-                      <RefreshCw className="w-4 h-4 text-blue-400 animate-spin" />
-                      <div className="flex-1">
-                        <p className="text-sm text-blue-400 font-medium">Auto-reconnecting...</p>
-                        <p className="text-xs text-blue-400/70">
-                          Attempt {retryCount} • Next retry in {Math.round(backoffMs / 1000)}s
-                        </p>
-                      </div>
-                    </div>
-                  )}
                   <Button
                     onClick={() => {
                       setRetryCount(0);
