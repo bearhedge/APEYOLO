@@ -96,51 +96,76 @@ export function Settings() {
     onSuccess: () => refreshAllIbkrStatus(),
   });
 
-  // Hybrid auto-reconnect: auto warm/reconnect with gentle backoff; manual button remains
-  const [lastAttemptAt, setLastAttemptAt] = useState<number>(0);
-  const [backoffMs, setBackoffMs] = useState<number>(5000);
+  // Aggressive auto-reconnect: continuously retry with backoff until connected
+  const [backoffMs, setBackoffMs] = useState<number>(3000);
   const [isAutoConnecting, setIsAutoConnecting] = useState<boolean>(false);
+  const [retryCount, setRetryCount] = useState<number>(0);
 
+  // Auto-reconnect effect with interval-based retry
   useEffect(() => {
-    const now = Date.now();
-    if (!ibkrStatus?.configured) return;
-    if (ibkrStatus?.connected) {
-      // reset backoff on success
-      if (backoffMs !== 5000) setBackoffMs(5000);
-      setIsAutoConnecting(false);
+    // Skip if not configured or already connected
+    if (!ibkrStatus?.configured || ibkrStatus?.connected) {
+      if (ibkrStatus?.connected && retryCount > 0) {
+        // Reset on successful connection
+        setBackoffMs(3000);
+        setRetryCount(0);
+        setIsAutoConnecting(false);
+      }
       return;
     }
-    // avoid thrash while disconnected
-    if (now - lastAttemptAt < backoffMs) return;
-    setLastAttemptAt(now);
-    setIsAutoConnecting(true);
-    // try warm first; if not ok, fall back to reconnect
-    warmMutation.mutate(undefined, {
-      onSuccess: (d: any) => {
-        if (!d?.ok) {
+
+    // Skip if already attempting
+    if (isAutoConnecting || warmMutation.isPending || reconnectMutation.isPending) {
+      return;
+    }
+
+    // Set up interval for auto-reconnect attempts
+    const attemptReconnect = () => {
+      setIsAutoConnecting(true);
+      setRetryCount((c) => c + 1);
+
+      // Try warm first; if not ok, fall back to reconnect
+      warmMutation.mutate(undefined, {
+        onSuccess: (d: any) => {
+          if (!d?.ok) {
+            reconnectMutation.mutate(undefined, {
+              onSettled: () => {
+                // Increase backoff on failure, max 30s
+                setBackoffMs((ms) => Math.min(30000, ms * 1.5));
+                setIsAutoConnecting(false);
+                refreshAllIbkrStatus();
+              },
+            });
+          } else {
+            // Success - reset backoff
+            setBackoffMs(3000);
+            setRetryCount(0);
+            setIsAutoConnecting(false);
+            refreshAllIbkrStatus();
+          }
+        },
+        onError: () => {
           reconnectMutation.mutate(undefined, {
             onSettled: () => {
-              setBackoffMs((ms) => Math.min(60000, ms * 2));
+              setBackoffMs((ms) => Math.min(30000, ms * 1.5));
               setIsAutoConnecting(false);
               refreshAllIbkrStatus();
             },
           });
-        } else {
-          setIsAutoConnecting(false);
-          refreshAllIbkrStatus();
-        }
-      },
-      onError: () => {
-        reconnectMutation.mutate(undefined, {
-          onSettled: () => {
-            setBackoffMs((ms) => Math.min(60000, ms * 2));
-            setIsAutoConnecting(false);
-            refreshAllIbkrStatus();
-          },
-        });
-      },
-    });
-  }, [ibkrStatus?.configured, ibkrStatus?.connected, lastAttemptAt, backoffMs]);
+        },
+      });
+    };
+
+    // Immediate attempt on first detection of disconnected state
+    if (retryCount === 0) {
+      attemptReconnect();
+      return;
+    }
+
+    // Set up interval for subsequent attempts
+    const intervalId = setInterval(attemptReconnect, backoffMs);
+    return () => clearInterval(intervalId);
+  }, [ibkrStatus?.configured, ibkrStatus?.connected, isAutoConnecting, backoffMs, retryCount, warmMutation.isPending, reconnectMutation.isPending]);
 
   // Test order mutation
   const testOrderMutation = useMutation({
@@ -399,15 +424,33 @@ export function Settings() {
               )}
 
               {ibkrStatus?.configured && !ibkrStatus?.connected && (
-                <Button
-                  onClick={() => reconnectMutation.mutate()}
-                  className="btn-secondary w-full"
-                  disabled={reconnectMutation.isPending}
-                  data-testid="button-reconnect"
-                >
-                  <RefreshCw className="w-4 h-4 mr-2" />
-                  {reconnectMutation.isPending ? 'Reconnecting...' : 'Reconnect'}
-                </Button>
+                <div className="space-y-2">
+                  {/* Auto-reconnect status indicator */}
+                  {isAutoConnecting && (
+                    <div className="p-3 bg-blue-900/20 border border-blue-500/30 rounded-lg flex items-center gap-3">
+                      <RefreshCw className="w-4 h-4 text-blue-400 animate-spin" />
+                      <div className="flex-1">
+                        <p className="text-sm text-blue-400 font-medium">Auto-reconnecting...</p>
+                        <p className="text-xs text-blue-400/70">
+                          Attempt {retryCount} • Next retry in {Math.round(backoffMs / 1000)}s
+                        </p>
+                      </div>
+                    </div>
+                  )}
+                  <Button
+                    onClick={() => {
+                      setRetryCount(0);
+                      setBackoffMs(3000);
+                      reconnectMutation.mutate();
+                    }}
+                    className="btn-secondary w-full"
+                    disabled={reconnectMutation.isPending || warmMutation.isPending}
+                    data-testid="button-reconnect"
+                  >
+                    <RefreshCw className={`w-4 h-4 mr-2 ${(reconnectMutation.isPending || warmMutation.isPending) ? 'animate-spin' : ''}`} />
+                    {reconnectMutation.isPending || warmMutation.isPending ? 'Reconnecting...' : 'Force Reconnect'}
+                  </Button>
+                </div>
               )}
             </div>
           </div>

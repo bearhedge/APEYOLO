@@ -13,7 +13,10 @@ import {
   StopMultiplier
 } from '@/components/StepCard';
 import { CheckCircle, XCircle, Clock, Zap, AlertTriangle, Play, RefreshCw } from 'lucide-react';
-import { useEngine, EngineAnalyzeResponse, TradeProposal } from '@/hooks/useEngine';
+import { useEngine } from '@/hooks/useEngine';
+import { useBrokerStatus } from '@/hooks/useBrokerStatus';
+import EngineLog from '@/components/EngineLog';
+import { SPYChart } from '@/components/charts/SPYChart';
 import toast from 'react-hot-toast';
 
 export function Engine() {
@@ -30,10 +33,18 @@ export function Engine() {
     updateConfig,
   } = useEngine();
 
+  // Unified broker status hook - same source as Settings page
+  const { connected: brokerConnectedHook, isConnecting } = useBrokerStatus();
+
+  // Use hook value if available, otherwise fall back to useEngine value
+  const brokerConnectedFinal = brokerConnectedHook ?? brokerConnected;
+
+  const [executionMode, setExecutionMode] = useState<'manual' | 'auto'>('manual');
   const [isExecuting, setIsExecuting] = useState(false);
   const [optionChainExpanded, setOptionChainExpanded] = useState(true);
   const [riskTier, setRiskTier] = useState<RiskTier>('balanced');
   const [stopMultiplier, setStopMultiplier] = useState<StopMultiplier>(3);
+  const [engineLogs, setEngineLogs] = useState<any[]>([]);
 
   // Auto-connect to IBKR when page loads (same as Settings page)
   useEffect(() => {
@@ -56,21 +67,37 @@ export function Engine() {
   const handleRunEngine = useCallback(async () => {
     try {
       setIsExecuting(true);
+      setEngineLogs([]); // Clear previous logs
       toast.loading('Running engine analysis...', { id: 'engine-execute' });
       const result = await analyzeEngine({ riskTier, stopMultiplier });
 
+      // Store audit logs from the result if available
+      if (result.audit) {
+        setEngineLogs(result.audit.map((entry: any) => ({
+          ...entry,
+          timestamp: entry.timestamp || new Date().toISOString()
+        })));
+      }
+
       if (result.canTrade) {
         toast.success('Engine analysis complete - Trade opportunity found!', { id: 'engine-execute' });
+
+        // If in auto mode and guard rails passed, execute automatically
+        if (executionMode === 'auto' && result.passedGuardRails) {
+          toast.loading('Auto-executing trade...', { id: 'auto-execute' });
+          await executePaperTrade(result.tradeProposal);
+          toast.success('Trade executed automatically!', { id: 'auto-execute' });
+        }
       } else {
         toast.error(`Cannot trade: ${result.reason}`, { id: 'engine-execute' });
       }
     } catch (err) {
       console.error('[Engine] Run error:', err);
-      toast.error('Failed to run engine analysis', { id: 'engine-execute' });
+      toast.error('Failed to run engine', { id: 'engine-execute' });
     } finally {
       setIsExecuting(false);
     }
-  }, [analyzeEngine, riskTier, stopMultiplier]);
+  }, [analyzeEngine, riskTier, stopMultiplier, executionMode, executePaperTrade]);
 
   // Handle paper trade execution
   const handleExecuteTrade = useCallback(async () => {
@@ -106,10 +133,11 @@ export function Engine() {
   };
 
   // Determine engine readiness for running analysis
+  // Use unified broker status hook for consistency
   // Only requires broker connection - analysis can run anytime
   // Execution still requires trading window to be open
-  const canRunAnalysis = brokerConnected;
-  const canExecuteTrade = status?.tradingWindowOpen && brokerConnected;
+  const canRunAnalysis = brokerConnectedFinal;
+  const canExecuteTrade = status?.tradingWindowOpen && brokerConnectedFinal;
 
   return (
     <div className="flex h-[calc(100vh-64px)]">
@@ -121,7 +149,7 @@ export function Engine() {
             <div>
               <h1 className="text-3xl font-bold tracking-wide">Engine</h1>
               <p className="text-silver text-sm mt-1">
-                {brokerConnected ? 'IBKR Paper Trading' : 'Mock Trading'} - Automated 0DTE Options
+                {brokerConnectedFinal ? 'IBKR Paper Trading' : 'Mock Trading'} - Automated 0DTE Options
               </p>
             </div>
 
@@ -137,10 +165,10 @@ export function Engine() {
             testId="engine-status"
           />
           <StatCard
-            label="IBKR"
-            value={brokerConnected ? 'Connected' : 'Disconnected'}
-            icon={brokerConnected ? <Zap className="w-5 h-5 text-green-500" /> : <XCircle className="w-5 h-5 text-red-500" />}
-            testId="ibkr-status"
+            label="Broker"
+            value={isConnecting ? 'Connecting...' : (brokerConnectedFinal ? 'Connected' : 'Disconnected')}
+            icon={brokerConnectedFinal ? <Zap className="w-5 h-5 text-green-500" /> : isConnecting ? <RefreshCw className="w-5 h-5 animate-spin" /> : <XCircle className="w-5 h-5 text-red-500" />}
+            testId="broker-status"
           />
           <StatCard
             label="Trading Window"
@@ -181,7 +209,7 @@ export function Engine() {
               ) : (
                 <>
                   <Play className="w-4 h-4" />
-                  Run Analysis
+                  Run Engine
                 </>
               )}
             </button>
@@ -222,6 +250,16 @@ export function Engine() {
                 trend={analysis?.q2Direction?.signals?.trend}
                 reasoning={analysis?.q2Direction?.comment}
               />
+              {/* Large SPY Chart for Direction Analysis */}
+              <div className="mt-4">
+                <SPYChart
+                  height={400}
+                  defaultTimeframe="1D"
+                  chartType="candlestick"
+                  showTimeframeSelector={true}
+                  showOHLC={true}
+                />
+              </div>
             </StepCard>
 
             {/* Step 3: Strike Selection */}
@@ -478,6 +516,16 @@ export function Engine() {
             </div>
           </div>
         )}
+
+        {/* Engine Log - Terminal-like execution viewer */}
+        <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
+          <h3 className="text-lg font-semibold mb-4">Engine Log</h3>
+          <EngineLog
+            logs={engineLogs}
+            isRunning={isExecuting}
+            className="max-h-96"
+          />
+        </div>
       </div>
     </div>
   );
