@@ -1,5 +1,36 @@
 ## 2025-11-29
 
+### UI Restructuring (NEW)
+- **Added**: New Data page (`/data`)
+  - Ticker search functionality
+  - Live stock chart with sparkline visualization
+  - Full option chain viewer with PUT/CALL tables
+  - WebSocket streaming integration for real-time updates
+  - Shows data source indicator (WebSocket Cache vs HTTP Snapshot)
+- **Merged**: Portfolio + Trades pages
+  - Portfolio now has tabs: [Positions] [History]
+  - Trades content moved to History tab
+  - `/trades` route redirects to `/portfolio`
+- **Refactored**: Engine Step 2 (Direction)
+  - Replaced full SPY chart with compact MiniPriceWidget
+  - Shows current price, change %, and mini sparkline
+  - Link to Data page for full chart
+  - VIX chart remains in Step 1 (special case for market regime)
+- **Updated**: Navigation
+  - Replaced Trades with Data in LeftNav
+  - New icon (BarChart2) for Data page
+
+### Files Modified
+- `client/src/pages/Data.tsx` - NEW market data exploration page
+- `client/src/components/MiniPriceWidget.tsx` - NEW compact price widget
+- `client/src/pages/Portfolio.tsx` - Added tabs, merged Trades content
+- `client/src/pages/Engine.tsx` - Use MiniPriceWidget in Step 2
+- `client/src/components/StepCard.tsx` - Added useMiniWidget prop to DirectionContent
+- `client/src/components/LeftNav.tsx` - Updated nav items
+- `client/src/App.tsx` - Added Data route, /trades redirect
+
+---
+
 ### Option Chain Streamer - WebSocket Cache Layer (NEW)
 - **Added**: WebSocket cache layer for engine strike selection
   - Engine Step 3 now reads from cache first (instant, no HTTP latency)

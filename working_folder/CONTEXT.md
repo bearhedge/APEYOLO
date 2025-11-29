@@ -4,7 +4,43 @@
 
 ---
 
-## CURRENT STATUS (2025-11-29 Late Evening)
+## CURRENT STATUS (2025-11-30)
+
+### ✅ UI Restructuring Complete
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| **Data Page** | ✅ Deployed | `/data` - Option chain viewer + stock chart |
+| **Portfolio Merge** | ✅ Deployed | Tabs: [Positions] [History] |
+| **Engine Refactor** | ✅ Deployed | Step 2 uses MiniPriceWidget |
+| **Navigation** | ✅ Deployed | Data replaced Trades in nav |
+
+### Page Structure (After Restructuring)
+
+```
+PAGES:
+├── Dashboard (/)
+├── Portfolio (/portfolio)
+│   ├── Tab: Positions (open positions table)
+│   └── Tab: History (execution log - was Trades)
+├── Data (/data)  ← NEW
+│   ├── Ticker search
+│   ├── Stock chart with sparkline
+│   └── Option chain (PUT/CALL tables)
+├── Engine (/engine)
+│   ├── Step 1: VIX (full chart stays)
+│   ├── Step 2: Direction (mini widget)
+│   ├── Step 3: Strikes (option chain)
+│   ├── Step 4: Sizing
+│   └── Step 5: Exit
+├── Agent (/agent)
+├── Jobs (/jobs)
+└── Settings (/settings)
+```
+
+---
+
+## PREVIOUS STATUS (2025-11-29 Late Evening)
 
 ### ✅ WebSocket Cache Layer Implemented
 
