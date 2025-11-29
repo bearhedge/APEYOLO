@@ -390,6 +390,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Test IBKR market data endpoint (no auth required - for debugging)
+  app.get('/api/broker/test-market/:symbol', async (req, res) => {
+    try {
+      const symbol = req.params.symbol?.toUpperCase() || 'SPY';
+      if (broker.status.provider !== 'ibkr') {
+        return res.status(400).json({ ok: false, error: 'IBKR not configured' });
+      }
+      console.log(`[TEST] Calling IBKR getMarketData for ${symbol}...`);
+      const data = await broker.api.getMarketData(symbol);
+      console.log(`[TEST] Got ${symbol} price: $${data.price}`);
+      return res.json({ ok: true, source: 'ibkr', data });
+    } catch (err: any) {
+      console.error(`[TEST] Error getting market data:`, err.message);
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // IBKR Status endpoint - shows connection status and configuration
   app.get('/api/ibkr/status', async (_req, res) => {
     try {

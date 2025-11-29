@@ -804,11 +804,38 @@ class IbkrClient {
   private async resolveConid(symbol: string): Promise<number | null> {
     await this.ensureAccountSelected();
     const url = `/v1/api/iserver/secdef/search`;
+
+    // Prefer US exchanges over foreign exchanges (ASX returns first but we want US SPY)
+    const preferredExchanges = ['ARCA', 'NYSE', 'NASDAQ', 'SMART', 'AMEX'];
+    const excludedExchanges = ['ASX', 'LSE', 'TSE', 'HKEX', 'SGX'];
+
     const parse = (data: any): number | null => {
       if (!data) return null;
       if (Array.isArray(data)) {
+        // First pass: look for US exchange results
+        for (const exchange of preferredExchanges) {
+          for (const it of data) {
+            const header = it?.companyHeader || '';
+            if (it?.conid && header.includes(exchange)) {
+              console.log(`[IBKR][resolveConid] Found US conid=${it.conid} exchange=${exchange}`);
+              return parseInt(it.conid, 10);
+            }
+          }
+        }
+        // Second pass: skip excluded foreign exchanges
         for (const it of data) {
-          // IBKR returns conid as string, not number
+          const header = it?.companyHeader || '';
+          const isExcluded = excludedExchanges.some(ex => header.includes(ex));
+          if (it?.conid && !isExcluded) {
+            console.log(`[IBKR][resolveConid] Using conid=${it.conid} (not foreign)`);
+            return parseInt(it.conid, 10);
+          }
+          if (it?.contract?.conid && !isExcluded) {
+            return parseInt(it.contract.conid, 10);
+          }
+        }
+        // Fallback: first result if nothing else matched
+        for (const it of data) {
           if (it?.conid) return parseInt(it.conid, 10);
           if (it?.contract?.conid) return parseInt(it.contract.conid, 10);
         }
@@ -2073,6 +2100,7 @@ export function createIbkrProvider(config: IbkrConfig): BrokerProvider {
     getOptionChain: (symbol: string, expiration?: string) => client.getOptionChain(symbol, expiration),
     getTrades: () => client.getTrades(),
     placeOrder: (trade: InsertTrade) => client.placeOrder(trade),
+    getMarketData: (symbol: string) => client.getMarketData(symbol),
   };
 }
 
