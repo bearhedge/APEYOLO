@@ -1,3 +1,102 @@
+## 2025-11-29
+
+### Option Chain Streamer - WebSocket Cache Layer (NEW)
+- **Added**: WebSocket cache layer for engine strike selection
+  - Engine Step 3 now reads from cache first (instant, no HTTP latency)
+  - Falls back to HTTP snapshot if cache is stale (>5s) or unavailable
+  - Maintains live option chain in memory, updated via WebSocket
+- **Added**: Auto-start at market open (9:30 AM ET)
+  - Server automatically schedules streaming on startup
+  - Streaming starts when market opens on trading days
+  - Cache ready before 11:00 AM ET trading window
+- **Added**: New module `server/broker/optionChainStreamer.ts`
+  - `OptionChainStreamer` class with cache management
+  - Subscribes to all option conids within 2σ strike range
+  - Periodic refresh every 5 minutes as backup
+- **Added**: New API endpoints for Option Chain Streamer:
+  - `POST /api/broker/stream/start` - Start streaming for symbol
+  - `POST /api/broker/stream/stop` - Stop streaming
+  - `GET /api/broker/stream/status` - Get streamer status
+  - `GET /api/broker/stream/chain/:symbol` - Get cached option chain
+  - `POST /api/broker/stream/schedule` - Schedule auto-start at market open
+- **Modified**: `server/engine/step3.ts` - Now tries WebSocket cache before HTTP
+
+### Files Modified
+- `server/broker/optionChainStreamer.ts` - NEW cache layer module
+- `server/engine/step3.ts` - Integrated cache-first data fetching
+- `server/routes.ts` - Added streamer endpoints and auto-schedule at startup
+
+---
+
+### IBKR WebSocket Streaming (NEW)
+- **Added**: Real-time WebSocket streaming from IBKR API
+  - Connects directly to `wss://api.ibkr.com/v1/api/ws` for continuous market data
+  - Replaces polling (snapshot every 5s) with instant push updates
+  - Automatic heartbeat (every 25s) to keep connection alive
+  - Reconnection with exponential backoff on disconnect
+- **Added**: New API endpoints for WebSocket control:
+  - `POST /api/broker/ws/start` - Start WebSocket connection
+  - `POST /api/broker/ws/stop` - Stop WebSocket connection
+  - `POST /api/broker/ws/subscribe` - Subscribe to a symbol
+  - `POST /api/broker/ws/subscribe-options` - Subscribe to option conids
+  - `DELETE /api/broker/ws/subscribe/:symbol` - Unsubscribe from symbol
+  - `GET /api/broker/ws/status` - Get connection status and subscriptions
+- **Added**: New module `server/broker/ibkrWebSocket.ts`
+  - `IbkrWebSocketManager` class with connection management
+  - Broadcasts IBKR updates to browser clients via existing `/ws` endpoint
+  - Field parsing for price, Greeks, IV, and open interest
+- **Added**: `getCookieString()` method to IbkrClient for WebSocket auth
+- **Added**: `resolveSymbolConid()` export for external conid lookups
+
+### Files Modified
+- `server/broker/ibkrWebSocket.ts` - NEW WebSocket streaming module
+- `server/broker/ibkr.ts` - Added getCookieString(), made resolveConid public
+- `server/routes.ts` - Added WebSocket streaming endpoints
+
+---
+
+### IBKR Option Chain Enhancement
+- **Added**: VIX-based σ strike range filtering
+  - Fetches real-time VIX from IBKR
+  - Calculates expected move: `spot × (VIX/100) × √(days/252)`
+  - Filters strikes to 2σ range around ATM (more relevant for 0DTE)
+- **Added**: Real Greeks from IBKR (delta, gamma, theta, vega)
+  - Fetches fields 7308/7309/7310/7633 from snapshot API
+  - Falls back to moneyness-based estimates if unavailable
+- **Added**: Real IV and Open Interest from IBKR
+  - Fetches fields 7283 (IV) and 7311 (OI) from snapshot API
+- **Added**: Debug endpoint `/api/broker/test-options/:symbol`
+  - Returns full option chain with Greeks, OI, IV
+  - Shows VIX, expected move, and strike range calculation
+
+### Files Modified
+- `server/broker/ibkr.ts` - Enhanced `getOptionChainWithStrikes()` with VIX, Greeks, OI, IV
+- `server/routes.ts` - Added `/api/broker/test-options/:symbol` endpoint
+- `server/engine/step3.ts` - Updated Strike interface and fetch logic for new fields
+
+### Verification
+- Test URL: `https://apeyolo.com/api/broker/test-options/SPY`
+- Returns 0 data on weekends (expected - IBKR only returns data during market hours)
+
+---
+
+### IBKR Market Data Fix (Earlier)
+- **Fixed**: `TypeError: broker.api.getMarketData is not a function`
+  - Root cause: `createIbkrProvider()` was missing `getMarketData` in the returned object
+  - Added `getMarketData: (symbol) => client.getMarketData(symbol)` to provider export
+- **Fixed**: SPY resolving to wrong contract ID (ASX instead of US)
+  - `resolveConid()` now prefers US exchanges (ARCA, NYSE, NASDAQ) over foreign (ASX, LSE)
+  - SPY now resolves to conid `756733` (US) instead of `237937002` (ASX)
+- **Added**: Debug endpoint `/api/broker/test-market/:symbol` for IBKR market data testing
+- **Added**: Verbose logging for IBKR snapshot API responses
+
+### Verification
+- Test URL: `https://apeyolo.com/api/broker/test-market/SPY`
+- Logs confirm: `Found US conid=756733 exchange=ARCA`
+- Price shows 0 on weekends (expected - IBKR only returns real-time data during market hours)
+
+---
+
 ## 2025-11-28
 
 ### Engine Page & Trading Window Overhaul

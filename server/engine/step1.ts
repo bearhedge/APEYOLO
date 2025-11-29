@@ -10,6 +10,8 @@ import { getMarketData, getVIXData } from '../services/marketDataService.js';
 
 export interface MarketRegime {
   shouldTrade: boolean;
+  withinTradingWindow: boolean;  // Separate flag for trading hours
+  canExecute: boolean;           // Combined: shouldTrade && withinTradingWindow
   reason: string;
   regime?: 'BULLISH' | 'BEARISH' | 'NEUTRAL';
   volatilityRegime?: VolatilityRegime;
@@ -98,18 +100,11 @@ function analyzeTrend(): 'BULLISH' | 'BEARISH' | 'NEUTRAL' {
  * @returns Market regime analysis with trade decision
  */
 export async function analyzeMarketRegime(useRealData: boolean = true): Promise<MarketRegime> {
-  // Step 1: Check trading hours
-  if (!isWithinTradingHours()) {
-    const now = new Date();
-    const et = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
-    return {
-      shouldTrade: false,
-      reason: `Outside trading window. Current time: ${et.toLocaleTimeString('en-US', { timeZone: 'America/New_York' })} ET. Trading window: 11:00 AM - 1:00 PM ET`,
-      metadata: {
-        currentTime: et.toLocaleTimeString('en-US', { timeZone: 'America/New_York' })
-      }
-    };
-  }
+  // Step 1: Check trading hours (but DON'T return early - continue for analysis)
+  const withinTradingWindow = isWithinTradingHours();
+  const now = new Date();
+  const et = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
+  const currentTimeStr = et.toLocaleTimeString('en-US', { timeZone: 'America/New_York' });
 
   // Step 2: Fetch real market data
   let vixLevel: number | undefined;
@@ -134,23 +129,9 @@ export async function analyzeMarketRegime(useRealData: boolean = true): Promise<
     }
   }
 
-  // Step 3: Check VIX (if available)
+  // Step 3: Check VIX (if available) - determine if market conditions allow trading
   const volRegime = vixLevel ? getVolatilityRegime(vixLevel) : undefined;
-
-  if (!isVixAcceptable(vixLevel)) {
-    return {
-      shouldTrade: false,
-      reason: `VIX level ${vixLevel?.toFixed(2)} is EXTREME (>35). Too risky to trade.`,
-      volatilityRegime: volRegime,
-      metadata: {
-        vix: vixLevel,
-        vixChange,
-        volatilityRegime: volRegime,
-        spyPrice,
-        spyChange
-      }
-    };
-  }
+  const vixAcceptable = isVixAcceptable(vixLevel);
 
   // Step 4: Analyze trend based on SPY movement
   const trend = spyChange !== undefined
@@ -177,15 +158,30 @@ export async function analyzeMarketRegime(useRealData: boolean = true): Promise<
     confidence -= 0.1; // Strong trend might mean higher risk
   }
 
-  // All checks passed
+  // Determine trading status
+  const shouldTrade = vixAcceptable;  // Based on market conditions only (VIX)
+  const canExecute = shouldTrade && withinTradingWindow;  // Combined check
+
+  // Build reason message
+  let reason: string;
+  if (!vixAcceptable) {
+    reason = `VIX level ${vixLevel?.toFixed(2)} is EXTREME (>35). Analysis complete but too risky to trade.`;
+  } else if (!withinTradingWindow) {
+    reason = `Analysis complete. Outside trading window (${currentTimeStr} ET). Ready to execute when market opens.`;
+  } else {
+    reason = `Market conditions favorable. VIX: ${volRegime || 'N/A'} (${vixLevel?.toFixed(2) || 'N/A'})`;
+  }
+
   return {
-    shouldTrade: true,
-    reason: `Market conditions favorable. VIX: ${volRegime || 'N/A'} (${vixLevel?.toFixed(2) || 'N/A'})`,
+    shouldTrade,
+    withinTradingWindow,
+    canExecute,
+    reason,
     regime: trend,
     volatilityRegime: volRegime,
-    confidence: Math.min(Math.max(confidence, 0), 1), // Keep between 0 and 1
+    confidence: Math.min(Math.max(confidence, 0), 1),
     metadata: {
-      currentTime: new Date().toLocaleTimeString('en-US', { timeZone: 'America/New_York' }),
+      currentTime: currentTimeStr,
       vix: vixLevel,
       vixChange,
       volatilityRegime: volRegime,

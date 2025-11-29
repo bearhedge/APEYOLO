@@ -22,6 +22,8 @@ import { defineExitRules, ExitRules } from './step5.ts';
 export interface TradingDecision {
   timestamp: Date;
   canTrade: boolean;
+  withinTradingWindow: boolean;  // Whether we're in trading hours
+  analysisComplete: boolean;     // Whether all 5 steps completed
   reason?: string;
   marketRegime?: MarketRegime;
   direction?: DirectionDecision;
@@ -102,21 +104,24 @@ export class TradingEngine {
     // Step 1: Market Regime Check
     console.log('\n📊 Step 1: Market Regime Check');
     const marketRegime = await analyzeMarketRegime();
-    this.addAudit(1, 'Market Regime Check', {}, marketRegime, marketRegime.shouldTrade, marketRegime.reason);
-    console.log(`  Result: ${marketRegime.shouldTrade ? '✅ CAN TRADE' : '❌ NO TRADE'}`);
+    const withinTradingWindow = marketRegime.withinTradingWindow;
+    const canExecute = marketRegime.canExecute;
+
+    // Determine step 1 result for audit (pass if VIX is acceptable, regardless of trading window)
+    const step1Passed = marketRegime.shouldTrade;
+    this.addAudit(1, 'Market Regime Check', {}, marketRegime, step1Passed, marketRegime.reason);
+
+    if (canExecute) {
+      console.log(`  Result: ✅ CAN TRADE`);
+    } else if (marketRegime.shouldTrade && !withinTradingWindow) {
+      console.log(`  Result: ⚠️ ANALYSIS MODE (outside trading window)`);
+    } else {
+      console.log(`  Result: ❌ NO TRADE (VIX too high)`);
+    }
     console.log(`  Reason: ${marketRegime.reason}`);
 
-    // Early exit if market conditions unfavorable
-    if (!marketRegime.shouldTrade) {
-      return {
-        timestamp: new Date(),
-        canTrade: false,
-        reason: marketRegime.reason,
-        marketRegime,
-        executionReady: false,
-        audit: this.audit
-      };
-    }
+    // ALWAYS continue to Steps 2-5 for analysis (no early exit!)
+    // Only EXTREME VIX (shouldTrade=false) should stop, but we still show the data
 
     // Step 2: Direction Selection
     console.log('\n🎯 Step 2: Direction Selection');
@@ -128,7 +133,8 @@ export class TradingEngine {
 
     // Step 3: Strike Selection
     console.log('\n🎲 Step 3: Strike Selection');
-    const underlyingPrice = this.config.underlyingPrice || 450; // Mock price, will get from IBKR later
+    // Use REAL SPY price from Step 1 metadata (fetched from IBKR), fallback to config or default
+    const underlyingPrice = marketRegime.metadata?.spyPrice || this.config.underlyingPrice || 450;
     const strikes = await selectStrikes(direction.direction, underlyingPrice);
     this.addAudit(3, 'Strike Selection', { direction: direction.direction, underlyingPrice }, strikes, true, strikes.reasoning);
 
@@ -150,19 +156,10 @@ export class TradingEngine {
     console.log(`  Margin Required: $${positionSize.totalMarginRequired.toLocaleString()}`);
     console.log(`  Buying Power Remaining: $${positionSize.buyingPowerRemaining.toLocaleString()}`);
 
-    // Check if we can actually trade
-    if (positionSize.contracts === 0) {
-      return {
-        timestamp: new Date(),
-        canTrade: false,
-        reason: 'Insufficient buying power for position',
-        marketRegime,
-        direction,
-        strikes,
-        positionSize,
-        executionReady: false,
-        audit: this.audit
-      };
+    // Check if we can actually trade (but don't return early - continue to Step 5)
+    const hasSufficientFunds = positionSize.contracts > 0;
+    if (!hasSufficientFunds) {
+      console.log('  ⚠️ Insufficient buying power - analysis will continue');
     }
 
     // Step 5: Exit Rules
@@ -174,20 +171,39 @@ export class TradingEngine {
     console.log(`  Take Profit: ${exitRules.takeProfitPrice || 'None (let expire)'}`);
     console.log(`  Max Hold Time: ${exitRules.maxHoldingTime} hours`);
 
-    // Final decision
+    // Final decision - need all conditions: VIX OK, trading window, sufficient funds
+    const fullyReady = canExecute && hasSufficientFunds;
+
     console.log('\n' + '='.repeat(60));
-    console.log('✅ TRADING DECISION COMPLETE - READY TO EXECUTE');
+    if (fullyReady) {
+      console.log('✅ TRADING DECISION COMPLETE - READY TO EXECUTE');
+    } else if (!hasSufficientFunds) {
+      console.log('⚠️ ANALYSIS COMPLETE - INSUFFICIENT FUNDS');
+    } else if (marketRegime.shouldTrade && !withinTradingWindow) {
+      console.log('⚠️ ANALYSIS COMPLETE - WAITING FOR TRADING WINDOW');
+    } else {
+      console.log('❌ ANALYSIS COMPLETE - MARKET CONDITIONS UNFAVORABLE');
+    }
     console.log('='.repeat(60));
+
+    // Build final reason
+    let finalReason = marketRegime.reason;
+    if (!hasSufficientFunds) {
+      finalReason = 'Insufficient buying power for position';
+    }
 
     return {
       timestamp: new Date(),
-      canTrade: true,
+      canTrade: fullyReady,
+      withinTradingWindow,
+      analysisComplete: true,
+      reason: finalReason,
       marketRegime,
       direction,
       strikes,
       positionSize,
       exitRules,
-      executionReady: true,
+      executionReady: fullyReady,
       audit: this.audit
     };
   }

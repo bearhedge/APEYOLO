@@ -3,7 +3,9 @@ import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { storage } from "./storage";
 import { getBroker } from "./broker";
-import { getIbkrDiagnostics, ensureIbkrReady, placePaperStockOrder, placePaperOptionOrder, listPaperOpenOrders } from "./broker/ibkr";
+import { getIbkrDiagnostics, ensureIbkrReady, placePaperStockOrder, placePaperOptionOrder, listPaperOpenOrders, getIbkrCookieString, resolveSymbolConid } from "./broker/ibkr";
+import { IbkrWebSocketManager, initIbkrWebSocket, getIbkrWebSocketManager, destroyIbkrWebSocket, type MarketDataUpdate } from "./broker/ibkrWebSocket";
+import { getOptionChainStreamer, initOptionChainStreamer } from "./broker/optionChainStreamer";
 import { TradingEngine } from "./engine/index.ts";
 import { 
   insertTradeSchema, 
@@ -406,6 +408,366 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return res.status(500).json({ ok: false, error: err.message });
     }
   });
+
+  // Test IBKR option chain endpoint (no auth required - for debugging)
+  app.get('/api/broker/test-options/:symbol', async (req, res) => {
+    try {
+      const symbol = req.params.symbol?.toUpperCase() || 'SPY';
+      const expiration = req.query.expiration as string | undefined;
+
+      if (broker.status.provider !== 'ibkr') {
+        return res.status(400).json({ ok: false, error: 'IBKR not configured' });
+      }
+
+      console.log(`[TEST] Calling IBKR getOptionChainWithStrikes for ${symbol}...`);
+      const { getOptionChainWithStrikes } = await import('./broker/ibkr');
+      const data = await getOptionChainWithStrikes(symbol, expiration);
+
+      console.log(`[TEST] Got ${symbol} option chain: ${data.puts.length} puts, ${data.calls.length} calls, underlying: $${data.underlyingPrice}, VIX: ${data.vix}`);
+
+      return res.json({
+        ok: true,
+        source: 'ibkr',
+        underlyingPrice: data.underlyingPrice,
+        vix: data.vix,
+        expectedMove: data.expectedMove,
+        strikeRange: {
+          low: data.strikeRangeLow,
+          high: data.strikeRangeHigh,
+          description: `2σ range based on VIX=${data.vix}`
+        },
+        expiration: expiration || 'next trading day',
+        puts: data.puts,
+        calls: data.calls,
+        summary: {
+          putCount: data.puts.length,
+          callCount: data.calls.length,
+          putStrikeRange: data.puts.length > 0 ? `$${data.puts[0].strike} - $${data.puts[data.puts.length - 1].strike}` : 'N/A',
+          callStrikeRange: data.calls.length > 0 ? `$${data.calls[0].strike} - $${data.calls[data.calls.length - 1].strike}` : 'N/A',
+          hasGreeks: data.puts.some(p => p.delta !== undefined && p.gamma !== undefined),
+          hasOpenInterest: data.puts.some(p => p.openInterest !== undefined),
+          hasIV: data.puts.some(p => p.iv !== undefined),
+        }
+      });
+    } catch (err: any) {
+      console.error(`[TEST] Error getting option chain:`, err.message);
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // ============================================
+  // IBKR WebSocket Streaming Endpoints
+  // ============================================
+
+  // Start IBKR WebSocket streaming connection
+  app.post('/api/broker/ws/start', async (_req, res) => {
+    try {
+      if (broker.status.provider !== 'ibkr') {
+        return res.status(400).json({ ok: false, error: 'IBKR not configured' });
+      }
+
+      // Ensure IBKR is ready first
+      await ensureIbkrReady();
+
+      // Get cookie string for WebSocket authentication
+      const cookieString = await getIbkrCookieString();
+      if (!cookieString) {
+        return res.status(500).json({ ok: false, error: 'Failed to get IBKR cookies' });
+      }
+
+      // Initialize WebSocket manager
+      const wsManager = initIbkrWebSocket(cookieString);
+
+      // Set up callback to broadcast updates to client WebSockets
+      wsManager.onUpdate((update: MarketDataUpdate) => {
+        const message = JSON.stringify({
+          type: 'ibkr_market_data',
+          data: update,
+          timestamp: new Date().toISOString()
+        });
+
+        wsClients.forEach(client => {
+          if (client.readyState === WebSocket.OPEN) {
+            client.send(message);
+          }
+        });
+      });
+
+      // Connect to IBKR WebSocket
+      await wsManager.connect();
+
+      console.log('[IbkrWS] WebSocket streaming started');
+      return res.json({ ok: true, message: 'IBKR WebSocket streaming started' });
+    } catch (err: any) {
+      console.error('[IbkrWS] Error starting WebSocket:', err.message);
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // Stop IBKR WebSocket streaming
+  app.post('/api/broker/ws/stop', async (_req, res) => {
+    try {
+      destroyIbkrWebSocket();
+      console.log('[IbkrWS] WebSocket streaming stopped');
+      return res.json({ ok: true, message: 'IBKR WebSocket streaming stopped' });
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // Subscribe to a symbol for streaming
+  app.post('/api/broker/ws/subscribe', async (req, res) => {
+    try {
+      const { symbol, type = 'stock' } = req.body;
+      if (!symbol) {
+        return res.status(400).json({ ok: false, error: 'Symbol required' });
+      }
+
+      const wsManager = getIbkrWebSocketManager();
+      if (!wsManager || !wsManager.connected) {
+        return res.status(400).json({ ok: false, error: 'WebSocket not connected. Call POST /api/broker/ws/start first' });
+      }
+
+      // Resolve symbol to conid
+      const conid = await resolveSymbolConid(symbol.toUpperCase());
+      if (!conid) {
+        return res.status(404).json({ ok: false, error: `Could not resolve conid for symbol: ${symbol}` });
+      }
+
+      // Subscribe
+      wsManager.subscribe(conid, { symbol: symbol.toUpperCase(), type: type as 'stock' | 'option' });
+
+      console.log(`[IbkrWS] Subscribed to ${symbol} (conid: ${conid})`);
+      return res.json({ ok: true, symbol: symbol.toUpperCase(), conid, message: 'Subscribed to streaming' });
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // Subscribe to multiple option conids for a symbol
+  app.post('/api/broker/ws/subscribe-options', async (req, res) => {
+    try {
+      const { symbol, conids } = req.body;
+      if (!symbol || !conids || !Array.isArray(conids)) {
+        return res.status(400).json({ ok: false, error: 'Symbol and conids array required' });
+      }
+
+      const wsManager = getIbkrWebSocketManager();
+      if (!wsManager || !wsManager.connected) {
+        return res.status(400).json({ ok: false, error: 'WebSocket not connected. Call POST /api/broker/ws/start first' });
+      }
+
+      // Subscribe to each option conid
+      for (const conid of conids) {
+        wsManager.subscribe(conid, { symbol: symbol.toUpperCase(), type: 'option' });
+      }
+
+      console.log(`[IbkrWS] Subscribed to ${conids.length} option contracts for ${symbol}`);
+      return res.json({ ok: true, symbol: symbol.toUpperCase(), subscribedCount: conids.length, message: 'Subscribed to option streaming' });
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // Unsubscribe from a symbol
+  app.delete('/api/broker/ws/subscribe/:symbol', async (req, res) => {
+    try {
+      const symbol = req.params.symbol?.toUpperCase();
+      if (!symbol) {
+        return res.status(400).json({ ok: false, error: 'Symbol required' });
+      }
+
+      const wsManager = getIbkrWebSocketManager();
+      if (!wsManager) {
+        return res.status(400).json({ ok: false, error: 'WebSocket not initialized' });
+      }
+
+      // Resolve symbol to conid
+      const conid = await resolveSymbolConid(symbol);
+      if (conid) {
+        wsManager.unsubscribe(conid);
+        console.log(`[IbkrWS] Unsubscribed from ${symbol} (conid: ${conid})`);
+      }
+
+      return res.json({ ok: true, symbol, message: 'Unsubscribed from streaming' });
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // Get WebSocket status
+  app.get('/api/broker/ws/status', async (_req, res) => {
+    try {
+      const wsManager = getIbkrWebSocketManager();
+      if (!wsManager) {
+        return res.json({
+          ok: true,
+          initialized: false,
+          connected: false,
+          subscriptions: [],
+          message: 'WebSocket manager not initialized'
+        });
+      }
+
+      const subscriptions: Array<{ conid: number; symbol?: string; type: string }> = [];
+      wsManager.getSubscriptions().forEach((sub, conid) => {
+        subscriptions.push({ conid, symbol: sub.symbol, type: sub.type });
+      });
+
+      return res.json({
+        ok: true,
+        initialized: true,
+        connected: wsManager.connected,
+        subscriptions,
+        subscriptionCount: subscriptions.length
+      });
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // ============================================
+  // End of IBKR WebSocket Streaming Endpoints
+  // ============================================
+
+  // ============================================
+  // Option Chain Streamer Endpoints (for Engine)
+  // ============================================
+
+  // Start option chain streaming for a symbol (for engine strike selection)
+  app.post('/api/broker/stream/start', async (req, res) => {
+    try {
+      const { symbol = 'SPY' } = req.body || {};
+      console.log(`[API] Starting option chain streaming for ${symbol}`);
+
+      const streamer = getOptionChainStreamer();
+      await streamer.startStreaming(symbol);
+
+      const status = streamer.getStatus();
+      return res.json({
+        ok: true,
+        message: `Option chain streaming started for ${symbol}`,
+        status
+      });
+    } catch (err: any) {
+      console.error('[API] Failed to start option chain streaming:', err);
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // Stop option chain streaming for a symbol
+  app.post('/api/broker/stream/stop', async (req, res) => {
+    try {
+      const { symbol } = req.body || {};
+
+      const streamer = getOptionChainStreamer();
+
+      if (symbol) {
+        streamer.stopStreaming(symbol);
+        return res.json({
+          ok: true,
+          message: `Option chain streaming stopped for ${symbol}`,
+          status: streamer.getStatus()
+        });
+      } else {
+        streamer.stopAll();
+        return res.json({
+          ok: true,
+          message: 'All option chain streaming stopped',
+          status: streamer.getStatus()
+        });
+      }
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // Get option chain streamer status
+  app.get('/api/broker/stream/status', async (_req, res) => {
+    try {
+      const streamer = getOptionChainStreamer();
+      const status = streamer.getStatus();
+
+      return res.json({
+        ok: true,
+        ...status
+      });
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // Get cached option chain (what the engine sees)
+  app.get('/api/broker/stream/chain/:symbol', async (req, res) => {
+    try {
+      const { symbol } = req.params;
+      const streamer = getOptionChainStreamer();
+      const chain = streamer.getOptionChain(symbol);
+
+      if (!chain) {
+        return res.json({
+          ok: true,
+          cached: false,
+          message: `No cached option chain for ${symbol}. Start streaming first or cache is stale.`
+        });
+      }
+
+      return res.json({
+        ok: true,
+        cached: true,
+        chain: {
+          symbol: chain.symbol,
+          underlyingPrice: chain.underlyingPrice,
+          vix: chain.vix,
+          expectedMove: chain.expectedMove,
+          strikeRange: `$${chain.strikeRangeLow} - $${chain.strikeRangeHigh}`,
+          dataSource: chain.dataSource,
+          lastUpdate: chain.lastUpdate,
+          putsCount: chain.puts.length,
+          callsCount: chain.calls.length,
+          puts: chain.puts.map(p => ({
+            strike: p.strike,
+            bid: p.bid,
+            ask: p.ask,
+            delta: p.delta,
+            lastUpdate: p.lastUpdate
+          })),
+          calls: chain.calls.map(c => ({
+            strike: c.strike,
+            bid: c.bid,
+            ask: c.ask,
+            delta: c.delta,
+            lastUpdate: c.lastUpdate
+          }))
+        }
+      });
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // Schedule auto-start at market open
+  app.post('/api/broker/stream/schedule', async (req, res) => {
+    try {
+      const { symbol = 'SPY' } = req.body || {};
+      console.log(`[API] Scheduling option chain streaming for ${symbol} at market open`);
+
+      const streamer = getOptionChainStreamer();
+      streamer.scheduleMarketOpenStart(symbol);
+
+      return res.json({
+        ok: true,
+        message: `Option chain streaming scheduled for ${symbol} at next market open (9:30 AM ET)`,
+        status: streamer.getStatus()
+      });
+    } catch (err: any) {
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
+  // ============================================
+  // End of Option Chain Streamer Endpoints
+  // ============================================
 
   // IBKR Status endpoint - shows connection status and configuration
   app.get('/api/ibkr/status', async (_req, res) => {
@@ -877,6 +1239,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.status(500).json({ error: 'Failed to fetch audit logs' });
     }
   });
+
+  // ============================================
+  // Auto-schedule Option Chain Streaming at Market Open
+  // ============================================
+  // Initialize the option chain streamer and schedule it to auto-start
+  // at 9:30 AM ET on trading days. This ensures the engine has fresh
+  // option data when the trading window opens at 11:00 AM ET.
+  try {
+    console.log('[Server] Scheduling option chain streamer for market open (9:30 AM ET)');
+    initOptionChainStreamer({ autoSchedule: true, symbol: 'SPY' });
+  } catch (err) {
+    console.error('[Server] Failed to initialize option chain streamer:', err);
+  }
 
   return httpServer;
 }

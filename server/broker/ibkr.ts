@@ -801,7 +801,7 @@ class IbkrClient {
     }
   }
 
-  private async resolveConid(symbol: string): Promise<number | null> {
+  async resolveConid(symbol: string): Promise<number | null> {
     await this.ensureAccountSelected();
     const url = `/v1/api/iserver/secdef/search`;
 
@@ -1035,16 +1035,21 @@ class IbkrClient {
   }
 
   /**
-   * Get option chain with REAL market data from IBKR (bid/ask/last) for engine strike selection
-   * Fetches actual bid/ask from IBKR snapshot API - no estimates
+   * Get option chain with REAL market data from IBKR (bid/ask/last/Greeks/OI/IV) for engine strike selection
+   * Uses VIX-based σ to determine optimal strike range for 0DTE trading
+   * Fetches actual bid/ask/Greeks from IBKR snapshot API - no estimates
    */
   async getOptionChainWithStrikes(
     symbol: string,
     expiration?: string
   ): Promise<{
     underlyingPrice: number;
-    puts: Array<{ strike: number; bid: number; ask: number; delta: number; conid?: number; last?: number }>;
-    calls: Array<{ strike: number; bid: number; ask: number; delta: number; conid?: number; last?: number }>;
+    vix: number;
+    expectedMove: number;
+    strikeRangeLow: number;
+    strikeRangeHigh: number;
+    puts: Array<{ strike: number; bid: number; ask: number; delta: number; gamma?: number; theta?: number; vega?: number; iv?: number; openInterest?: number; conid?: number; last?: number }>;
+    calls: Array<{ strike: number; bid: number; ask: number; delta: number; gamma?: number; theta?: number; vega?: number; iv?: number; openInterest?: number; conid?: number; last?: number }>;
   }> {
     await this.ensureReady();
     const reqId = randomUUID().slice(0, 8);
@@ -1081,9 +1086,37 @@ class IbkrClient {
       console.error(`[IBKR][getOptionChainWithStrikes][${reqId}] Error getting price:`, err);
     }
 
+    // Get VIX for σ-based strike range calculation
+    let vix = 15; // Default VIX if we can't fetch
+    try {
+      const vixConid = await this.resolveConid('VIX');
+      if (vixConid) {
+        const vixSnap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${vixConid}`);
+        if (vixSnap.status === 200) {
+          const vixData = (vixSnap.data as any[]) || [];
+          const vixPrice = vixData?.[0]?.["31"] ?? vixData?.[0]?.["84"] ?? vixData?.[0]?.last;
+          if (vixPrice != null && Number(vixPrice) > 0) {
+            vix = Number(vixPrice);
+          }
+        }
+      }
+      console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] VIX: ${vix}`);
+    } catch (err) {
+      console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] Could not fetch VIX, using default ${vix}`);
+    }
+
+    // Calculate expected move using VIX
+    // For 0DTE: expected_move = spot * (VIX / 100) / sqrt(252)
+    // For N days: expected_move = spot * (VIX / 100) * sqrt(N / 252)
+    const daysToExpiry = 1; // 0DTE = 1 day
+    const expectedMove = underlyingPrice * (vix / 100) * Math.sqrt(daysToExpiry / 252);
+    const strikeRangeLow = Math.floor(underlyingPrice - expectedMove * 2); // 2σ range
+    const strikeRangeHigh = Math.ceil(underlyingPrice + expectedMove * 2);
+    console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Expected move: $${expectedMove.toFixed(2)}, Strike range: $${strikeRangeLow} - $${strikeRangeHigh}`);
+
     if (!underlyingConid) {
       console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] No underlying conid`);
-      return { underlyingPrice: 0, puts: [], calls: [] };
+      return { underlyingPrice: 0, vix, expectedMove: 0, strikeRangeLow: 0, strikeRangeHigh: 0, puts: [], calls: [] };
     }
 
     // Log warning but continue even if price is 0 - we can still try to get option data
@@ -1097,8 +1130,8 @@ class IbkrClient {
     const expirationMonth = targetExpiration.slice(0, 6);
     console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Target expiration: ${targetExpiration}`);
 
-    const puts: Array<{ strike: number; bid: number; ask: number; delta: number; conid?: number; last?: number }> = [];
-    const calls: Array<{ strike: number; bid: number; ask: number; delta: number; conid?: number; last?: number }> = [];
+    const puts: Array<{ strike: number; bid: number; ask: number; delta: number; gamma?: number; theta?: number; vega?: number; iv?: number; openInterest?: number; conid?: number; last?: number }> = [];
+    const calls: Array<{ strike: number; bid: number; ask: number; delta: number; gamma?: number; theta?: number; vega?: number; iv?: number; openInterest?: number; conid?: number; last?: number }> = [];
 
     try {
       // Get available strikes
@@ -1107,7 +1140,7 @@ class IbkrClient {
 
       if (strikesResp.status !== 200) {
         console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] Failed to get strikes`);
-        return { underlyingPrice, puts: [], calls: [] };
+        return { underlyingPrice, vix, expectedMove, strikeRangeLow, strikeRangeHigh, puts: [], calls: [] };
       }
 
       const strikesData = strikesResp.data as { call?: number[]; put?: number[] };
@@ -1122,11 +1155,16 @@ class IbkrClient {
         console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Estimated underlying from strikes: ${underlyingPrice}`);
       }
 
-      // Filter to OTM options (puts below price, calls above)
-      const otmPuts = putStrikes.filter(s => s < underlyingPrice).slice(-15); // 15 closest OTM puts
-      const otmCalls = callStrikes.filter(s => s > underlyingPrice).slice(0, 15); // 15 closest OTM calls
+      // Filter to OTM options using VIX-based σ range (within 2σ expected move)
+      // This focuses on strikes most relevant for 0DTE trading
+      const otmPuts = putStrikes
+        .filter(s => s < underlyingPrice && s >= strikeRangeLow)
+        .slice(-20); // Up to 20 closest OTM puts within range
+      const otmCalls = callStrikes
+        .filter(s => s > underlyingPrice && s <= strikeRangeHigh)
+        .slice(0, 20); // Up to 20 closest OTM calls within range
 
-      console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Processing ${otmPuts.length} OTM puts, ${otmCalls.length} OTM calls`);
+      console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Processing ${otmPuts.length} OTM puts, ${otmCalls.length} OTM calls (within 2σ range)`);
 
       // Phase 1: Resolve all option conids
       const putConidMap = new Map<number, number>(); // strike -> conid
@@ -1150,29 +1188,45 @@ class IbkrClient {
         }
       }
 
-      // Phase 2: Batch fetch market data for all option conids
+      // Phase 2: Batch fetch market data for all option conids (including Greeks, OI, IV)
       const allConids = [...Array.from(putConidMap.values()), ...Array.from(callConidMap.values())];
-      const marketDataMap = new Map<number, { bid: number; ask: number; last: number }>();
+      const marketDataMap = new Map<number, {
+        bid: number; ask: number; last: number;
+        delta?: number; gamma?: number; theta?: number; vega?: number;
+        iv?: number; openInterest?: number;
+      }>();
 
       if (allConids.length > 0) {
-        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Fetching market data for ${allConids.length} options...`);
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Fetching market data + Greeks for ${allConids.length} options...`);
 
         // Batch in groups of 20 to avoid API limits
+        // Request additional fields: 7308=delta, 7309=gamma, 7310=theta, 7633=vega, 7283=IV, 7311=OI
+        const fields = '31,84,86,7308,7309,7310,7633,7283,7311';
+
         for (let i = 0; i < allConids.length; i += 20) {
           const batch = allConids.slice(i, i + 20);
           const conidStr = batch.join(',');
 
           try {
-            const snap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${conidStr}`);
+            const snap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${conidStr}&fields=${fields}`);
             if (snap.status === 200 && Array.isArray(snap.data)) {
               for (const item of snap.data) {
                 const conid = item.conid || item.conidEx;
                 if (conid) {
-                  // Field 84 = bid, 86 = ask, 31 = last price
+                  // Field codes:
+                  // 31 = last price, 84 = bid, 86 = ask
+                  // 7308 = delta, 7309 = gamma, 7310 = theta, 7633 = vega
+                  // 7283 = implied volatility, 7311 = open interest
                   marketDataMap.set(conid, {
                     bid: Number(item["84"]) || Number(item.bid) || 0,
                     ask: Number(item["86"]) || Number(item.ask) || 0,
                     last: Number(item["31"]) || Number(item.last) || 0,
+                    delta: item["7308"] != null ? Number(item["7308"]) : undefined,
+                    gamma: item["7309"] != null ? Number(item["7309"]) : undefined,
+                    theta: item["7310"] != null ? Number(item["7310"]) : undefined,
+                    vega: item["7633"] != null ? Number(item["7633"]) : undefined,
+                    iv: item["7283"] != null ? Number(item["7283"]) : undefined,
+                    openInterest: item["7311"] != null ? Number(item["7311"]) : undefined,
                   });
                 }
               }
@@ -1190,12 +1244,12 @@ class IbkrClient {
         console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Got market data for ${marketDataMap.size} options`);
       }
 
-      // Phase 3: Build puts array with REAL data
+      // Phase 3: Build puts array with REAL data (including Greeks, OI, IV)
       for (const strike of otmPuts) {
         const conid = putConidMap.get(strike);
         const marketData = conid ? marketDataMap.get(conid) : undefined;
         const moneyness = (underlyingPrice - strike) / underlyingPrice;
-        // Estimate delta based on moneyness (only used if we can't get real Greeks)
+        // Use real delta from IBKR if available, otherwise estimate from moneyness
         const estimatedDelta = -Math.max(0.05, 0.5 - moneyness * 5);
 
         puts.push({
@@ -1203,16 +1257,22 @@ class IbkrClient {
           bid: marketData?.bid || 0,
           ask: marketData?.ask || 0,
           last: marketData?.last,
-          delta: estimatedDelta,
+          delta: marketData?.delta ?? estimatedDelta,
+          gamma: marketData?.gamma,
+          theta: marketData?.theta,
+          vega: marketData?.vega,
+          iv: marketData?.iv,
+          openInterest: marketData?.openInterest,
           conid,
         });
       }
 
-      // Phase 3: Build calls array with REAL data
+      // Phase 3: Build calls array with REAL data (including Greeks, OI, IV)
       for (const strike of otmCalls) {
         const conid = callConidMap.get(strike);
         const marketData = conid ? marketDataMap.get(conid) : undefined;
         const moneyness = (strike - underlyingPrice) / underlyingPrice;
+        // Use real delta from IBKR if available, otherwise estimate from moneyness
         const estimatedDelta = Math.max(0.05, 0.5 - moneyness * 5);
 
         calls.push({
@@ -1220,18 +1280,23 @@ class IbkrClient {
           bid: marketData?.bid || 0,
           ask: marketData?.ask || 0,
           last: marketData?.last,
-          delta: estimatedDelta,
+          delta: marketData?.delta ?? estimatedDelta,
+          gamma: marketData?.gamma,
+          theta: marketData?.theta,
+          vega: marketData?.vega,
+          iv: marketData?.iv,
+          openInterest: marketData?.openInterest,
           conid,
         });
       }
 
-      console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Resolved ${puts.length} puts, ${calls.length} calls with REAL market data`);
+      console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Resolved ${puts.length} puts, ${calls.length} calls with REAL market data + Greeks`);
 
     } catch (err) {
       console.error(`[IBKR][getOptionChainWithStrikes][${reqId}] Error:`, err);
     }
 
-    return { underlyingPrice, puts, calls };
+    return { underlyingPrice, vix, expectedMove, strikeRangeLow, strikeRangeHigh, puts, calls };
   }
 
   /**
@@ -1258,6 +1323,7 @@ class IbkrClient {
       }
 
       const snap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${conid}`);
+      console.log(`[IBKR][getMarketData][${reqId}] IBKR snapshot response: status=${snap.status} raw=${JSON.stringify(snap.data).slice(0, 500)}`);
       if (snap.status !== 200 || !Array.isArray(snap.data) || snap.data.length === 0) {
         throw new Error(`Snapshot request failed for ${symbol}`);
       }
@@ -1394,6 +1460,16 @@ class IbkrClient {
 
   getDiagnostics(): IbkrDiagnostics {
     return this.last;
+  }
+
+  /**
+   * Get the cookie string for WebSocket connection
+   * Returns cookies in the format: "cookie1=value1; cookie2=value2"
+   */
+  async getCookieString(): Promise<string> {
+    const url = 'https://api.ibkr.com';
+    const cookies = await this.jar.getCookies(url);
+    return cookies.map(c => `${c.key}=${c.value}`).join('; ');
   }
 
   // Force refresh the authentication pipeline
@@ -2164,4 +2240,16 @@ export async function ensureIbkrReady(): Promise<IbkrDiagnostics> {
 export async function getOptionChainWithStrikes(symbol: string, expiration?: string) {
   if (!activeClient) throw new Error('IBKR client not initialized');
   return activeClient.getOptionChainWithStrikes(symbol, expiration);
+}
+
+// Get cookie string for WebSocket connection
+export async function getIbkrCookieString(): Promise<string> {
+  if (!activeClient) throw new Error('IBKR client not initialized');
+  return activeClient.getCookieString();
+}
+
+// Resolve a symbol to its conid (useful for WebSocket subscriptions)
+export async function resolveSymbolConid(symbol: string): Promise<number | null> {
+  if (!activeClient) throw new Error('IBKR client not initialized');
+  return activeClient.resolveConid(symbol);
 }

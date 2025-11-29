@@ -7,6 +7,7 @@
 
 import { TradeDirection } from './step2';
 import { getOptionChainWithStrikes } from '../broker/ibkr';
+import { getOptionChainStreamer, CachedOptionChain } from '../broker/optionChainStreamer';
 
 export interface Strike {
   strike: number;
@@ -14,6 +15,9 @@ export interface Strike {
   delta: number;
   bid: number;
   ask: number;
+  gamma?: number;
+  theta?: number;
+  vega?: number;
   openInterest?: number;
   impliedVolatility?: number;
 }
@@ -171,7 +175,47 @@ function calculateMarginRequirement(putStrike?: Strike, callStrike?: Strike): nu
 }
 
 /**
+ * Convert cached option chain to Strike format
+ */
+function convertCachedToStrikes(
+  cached: CachedOptionChain,
+  direction: 'PUT' | 'CALL'
+): { strikes: Strike[]; underlyingPrice: number; vix?: number; expectedMove?: number } {
+  const today = new Date();
+  const expiration = new Date(today);
+  expiration.setHours(16, 0, 0, 0); // 4 PM ET close
+
+  const sourceStrikes = direction === 'PUT' ? cached.puts : cached.calls;
+
+  const strikes: Strike[] = sourceStrikes.map(opt => ({
+    strike: opt.strike,
+    expiration,
+    delta: Math.abs(opt.delta ?? 0), // Use absolute delta for comparison
+    bid: opt.bid,
+    ask: opt.ask,
+    gamma: opt.gamma,
+    theta: opt.theta,
+    vega: opt.vega,
+    openInterest: opt.openInterest ?? 0,
+    impliedVolatility: opt.iv ?? 0.20,
+  }));
+
+  return {
+    strikes,
+    underlyingPrice: cached.underlyingPrice,
+    vix: cached.vix,
+    expectedMove: cached.expectedMove,
+  };
+}
+
+/**
  * Fetch real option chain from IBKR and convert to Strike format
+ * Now includes real Greeks (delta, gamma, theta, vega), IV, and open interest from IBKR
+ *
+ * Data source priority:
+ * 1. WebSocket cache (instant, real-time) - if streaming is active
+ * 2. HTTP snapshot (200-500ms) - fallback when cache is stale or unavailable
+ *
  * @param symbol - Underlying symbol (e.g., 'SPY')
  * @param direction - PUT, CALL, or STRANGLE
  * @returns Array of strikes from real IBKR data
@@ -179,8 +223,22 @@ function calculateMarginRequirement(putStrike?: Strike, callStrike?: Strike): nu
 async function fetchRealOptionChain(
   symbol: string,
   direction: 'PUT' | 'CALL'
-): Promise<{ strikes: Strike[]; underlyingPrice: number } | null> {
+): Promise<{ strikes: Strike[]; underlyingPrice: number; vix?: number; expectedMove?: number } | null> {
   try {
+    // Priority 1: Try WebSocket cache first (instant, real-time)
+    const streamer = getOptionChainStreamer();
+    const cachedChain = streamer.getOptionChain(symbol);
+
+    if (cachedChain && cachedChain.underlyingPrice > 0) {
+      const result = convertCachedToStrikes(cachedChain, direction);
+      if (result.strikes.length > 0) {
+        console.log(`[Step3] Using WebSocket cache for ${direction} strikes (${result.strikes.length} options, underlying: $${result.underlyingPrice})`);
+        return result;
+      }
+    }
+
+    // Priority 2: Fall back to HTTP snapshot
+    console.log(`[Step3] WebSocket cache unavailable, falling back to HTTP snapshot for ${symbol}`);
     const chainData = await getOptionChainWithStrikes(symbol);
 
     if (!chainData || chainData.underlyingPrice === 0) {
@@ -200,12 +258,15 @@ async function fetchRealOptionChain(
       delta: Math.abs(opt.delta), // Use absolute delta for comparison
       bid: opt.bid,
       ask: opt.ask,
-      openInterest: 0,
-      impliedVolatility: 0.20, // Default IV estimate
+      gamma: opt.gamma,
+      theta: opt.theta,
+      vega: opt.vega,
+      openInterest: opt.openInterest ?? 0,
+      impliedVolatility: opt.iv ?? 0.20, // Use real IV from IBKR or default
     }));
 
-    console.log(`[Step3] Fetched ${strikes.length} ${direction} strikes from IBKR, underlying price: $${chainData.underlyingPrice}`);
-    return { strikes, underlyingPrice: chainData.underlyingPrice };
+    console.log(`[Step3] Fetched ${strikes.length} ${direction} strikes from HTTP (VIX: ${chainData.vix}, expected move: $${chainData.expectedMove?.toFixed(2)}), underlying: $${chainData.underlyingPrice}`);
+    return { strikes, underlyingPrice: chainData.underlyingPrice, vix: chainData.vix, expectedMove: chainData.expectedMove };
   } catch (err) {
     console.error('[Step3] Error fetching real option chain:', err);
     return null;
