@@ -115,30 +115,12 @@ export async function getMarketData(symbol: string): Promise<MarketData> {
   // Ensure IBKR is ready
   await ensureIbkrReady();
 
-  // TODO: Implement actual IBKR market data fetching
-  // For now, return enhanced mock data
-  try {
-    // This would be the actual IBKR API call
-    // const marketData = await broker.api.getMarketData(symbol);
+  // Call actual IBKR market data API
+  const marketData = await broker.api.getMarketData(symbol);
+  console.log(`[MarketData] IBKR ${symbol}: $${marketData.price.toFixed(2)}`);
 
-    // Mock response for now
-    const marketData: MarketData = {
-      symbol,
-      price: symbol === 'SPY' ? 450.50 : 15.30,
-      bid: symbol === 'SPY' ? 450.49 : 15.29,
-      ask: symbol === 'SPY' ? 450.51 : 15.31,
-      volume: 52341234,
-      change: 2.45,
-      changePercent: 0.54,
-      timestamp: new Date()
-    };
-
-    cache.set(cacheKey, marketData);
-    return marketData;
-  } catch (error) {
-    console.error(`[MarketData] Error fetching data for ${symbol}:`, error);
-    throw error;
-  }
+  cache.set(cacheKey, marketData);
+  return marketData;
 }
 
 /**
