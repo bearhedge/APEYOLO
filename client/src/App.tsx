@@ -47,9 +47,9 @@ function Navigation() {
   }
 
   // Check IBKR connection phases (oauth, sso, init must all be 200)
-  const isIBKRConnected = diagData?.oauth === 200 &&
-                          diagData?.sso === 200 &&
-                          diagData?.init === 200;
+  const isIBKRConnected = diagData?.last?.oauth?.status === 200 &&
+                          diagData?.last?.sso?.status === 200 &&
+                          diagData?.last?.init?.status === 200;
 
   // NAV from IBKR account - use portfolioValue (netLiquidation)
   const nav = account?.portfolioValue || account?.netLiquidation || 0;
