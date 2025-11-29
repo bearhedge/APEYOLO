@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { LeftNav } from '@/components/LeftNav';
-import { MiniChart } from '@/components/MiniChart';
+import { CandlestickChart, CandlestickChartRef } from '@/components/CandlestickChart';
 import { useWebSocket } from '@/hooks/use-websocket';
 import { Search, RefreshCw, TrendingUp, TrendingDown, Activity, ChevronDown, Calendar, Wifi, WifiOff } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -90,6 +90,9 @@ export function Data() {
   const [liveOptionChain, setLiveOptionChain] = useState<CachedChain | null>(null);
   const [liveUnderlyingPrice, setLiveUnderlyingPrice] = useState<number | null>(null);
   const [wsUpdateCount, setWsUpdateCount] = useState(0);
+
+  // Ref for candlestick chart to push live price updates
+  const chartRef = useRef<CandlestickChartRef>(null);
 
   // ========================================
   // useQuery hooks MUST come before useEffects that depend on them
@@ -210,6 +213,12 @@ export function Data() {
 
       setLiveUnderlyingPrice(msg.price);
       setWsUpdateCount(c => c + 1);
+
+      // Push price update to candlestick chart for live candle updates
+      if (chartRef.current) {
+        const timestamp = Math.floor(new Date(msg.timestamp).getTime() / 1000);
+        chartRef.current.updateWithTick(msg.price, timestamp);
+      }
     }
   }, [lastMessage, activeTicker]);
 
@@ -275,19 +284,6 @@ export function Data() {
     }
   }, [refetchChain]);
 
-  // Generate mock sparkline data based on price
-  const generateSparklineData = (basePrice: number): number[] => {
-    const points = [];
-    let price = basePrice * 0.998;
-    for (let i = 0; i < 20; i++) {
-      price = price + (Math.random() - 0.5) * (basePrice * 0.002);
-      points.push(price);
-    }
-    points.push(basePrice);
-    return points;
-  };
-
-  const sparklineData = marketData?.price ? generateSparklineData(marketData.price) : [];
   const isPriceUp = (marketData?.change || 0) >= 0;
 
   // Use live WebSocket data when available, fallback to HTTP
@@ -387,18 +383,17 @@ export function Data() {
             </div>
           </div>
 
-          {/* Sparkline Chart */}
-          {sparklineData.length > 0 && (
-            <div className="h-32 flex items-center justify-center">
-              <MiniChart
-                data={sparklineData}
-                width={800}
-                height={120}
-                color={isPriceUp ? '#10B981' : '#EF4444'}
-                testId="stock-chart"
-              />
-            </div>
-          )}
+          {/* Candlestick Chart with MA overlays */}
+          <div className="mt-4">
+            <CandlestickChart
+              ref={chartRef}
+              symbol={activeTicker}
+              height={350}
+              showMAs={true}
+              showVolume={true}
+              className="rounded-lg overflow-hidden"
+            />
+          </div>
 
           {/* Market Stats */}
           {marketData && (
