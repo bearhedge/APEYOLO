@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { ChevronDown, ChevronRight, CheckCircle, XCircle, Clock, TrendingUp, TrendingDown, Minus } from 'lucide-react';
 import { VIXChart, SymbolChart } from './charts';
+import { MiniPriceWidget } from './MiniPriceWidget';
 
 export type StepStatus = 'pending' | 'passed' | 'failed';
 export type RiskTier = 'conservative' | 'balanced' | 'aggressive';
@@ -181,9 +182,10 @@ interface DirectionContentProps {
   reasoning?: string;
   symbol?: string;
   showChart?: boolean;
+  useMiniWidget?: boolean;  // NEW: Use compact widget instead of full chart
 }
 
-export function DirectionContent({ direction, confidence, spyPrice, maFast, maSlow, trend, reasoning, symbol = 'SPY', showChart = true }: DirectionContentProps) {
+export function DirectionContent({ direction, confidence, spyPrice, maFast, maSlow, trend, reasoning, symbol = 'SPY', showChart = true, useMiniWidget = false }: DirectionContentProps) {
   // Calculate position vs slow MA (main reference)
   const percentFromMA = spyPrice && maSlow ? ((spyPrice - maSlow) / maSlow) * 100 : null;
 
@@ -197,8 +199,8 @@ export function DirectionContent({ direction, confidence, spyPrice, maFast, maSl
 
   return (
     <div className="space-y-4">
-      {/* SPY Chart with candlesticks */}
-      {showChart && (
+      {/* SPY Chart or Mini Widget */}
+      {showChart && !useMiniWidget && (
         <SymbolChart
           symbol={symbol}
           height={300}
@@ -208,6 +210,11 @@ export function DirectionContent({ direction, confidence, spyPrice, maFast, maSl
           showOHLC={true}
           showHeader={true}
         />
+      )}
+
+      {/* Mini Price Widget (compact alternative) */}
+      {useMiniWidget && (
+        <MiniPriceWidget symbol={symbol} showLink={true} testId={`mini-price-${symbol}`} />
       )}
 
       {/* Direction recommendation */}

@@ -1,11 +1,11 @@
 import { Link, useLocation } from 'wouter';
-import { Bot, Briefcase, TrendingUp, List, Settings, Zap } from 'lucide-react';
+import { Bot, Briefcase, BarChart2, List, Settings, Zap } from 'lucide-react';
 
 const navItems = [
   { path: '/agent', label: 'Agent', icon: Bot },
   { path: '/engine', label: 'Engine', icon: Zap },
   { path: '/portfolio', label: 'Portfolio', icon: Briefcase },
-  { path: '/trades', label: 'Trades', icon: TrendingUp },
+  { path: '/data', label: 'Data', icon: BarChart2 },
   { path: '/jobs', label: 'Jobs', icon: List },
   { path: '/settings', label: 'Settings', icon: Settings },
 ];

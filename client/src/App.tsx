@@ -9,7 +9,7 @@ import { Onboarding } from "@/pages/Onboarding";
 import { Agent } from "@/pages/Agent";
 import { Engine } from "@/pages/Engine";
 import { Portfolio } from "@/pages/Portfolio";
-import { Trades } from "@/pages/Trades";
+import { Data } from "@/pages/Data";
 import { Jobs } from "@/pages/Jobs";
 import { Settings } from "@/pages/Settings";
 import { getAccount, getDiag } from "@/lib/api";
@@ -112,7 +112,7 @@ function App() {
           <Route path="/agent" component={Agent} />
           <Route path="/engine" component={Engine} />
           <Route path="/portfolio" component={Portfolio} />
-          <Route path="/trades" component={Trades} />
+          <Route path="/data" component={Data} />
           <Route path="/jobs" component={Jobs} />
           <Route path="/settings" component={Settings} />
           {/* Redirects for old routes */}
@@ -121,6 +121,9 @@ function App() {
           </Route>
           <Route path="/sessions">
             <Redirect to="/agent" />
+          </Route>
+          <Route path="/trades">
+            <Redirect to="/portfolio" />
           </Route>
         </div>
       </TooltipProvider>

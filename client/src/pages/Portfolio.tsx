@@ -1,10 +1,11 @@
 import { useQuery } from '@tanstack/react-query';
-import { getPositions } from '@/lib/api';
+import { getPositions, getPNL } from '@/lib/api';
 import { DataTable } from '@/components/DataTable';
 import { LeftNav } from '@/components/LeftNav';
 import { StatCard } from '@/components/StatCard';
+import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 import { DollarSign, TrendingUp, Shield, Activity, ArrowUpDown, Wallet, Banknote, BarChart3, Scale, Gauge } from 'lucide-react';
-import type { Position } from '@shared/types';
+import type { Position, PnlRow } from '@shared/types';
 
 interface AccountInfo {
   accountNumber: string;
@@ -57,6 +58,11 @@ export function Portfolio() {
     queryFn: getPositions,
   });
 
+  const { data: trades } = useQuery<PnlRow[]>({
+    queryKey: ['/api/pnl'],
+    queryFn: getPNL,
+  });
+
   const { data: account, isLoading: accountLoading } = useQuery<AccountInfo>({
     queryKey: ['/api/account'],
     queryFn: async () => {
@@ -67,6 +73,7 @@ export function Portfolio() {
     refetchInterval: 30000, // Refresh every 30s
   });
 
+  // Positions table columns
   const columns = [
     { header: 'Symbol', accessor: 'symbol' as keyof Position, sortable: true },
     { header: 'Strategy', accessor: (row: Position) => row.side === 'SELL' ? 'Credit Spread' : 'Long', className: 'text-silver' },
@@ -87,6 +94,30 @@ export function Portfolio() {
     },
     { header: 'Delta', accessor: (row: Position) => row.delta?.toFixed(2) || '-', className: 'tabular-nums text-silver' },
     { header: 'Margin', accessor: (row: Position) => `$${row.margin?.toLocaleString() || '0'}`, className: 'tabular-nums text-silver' },
+  ];
+
+  // Trades/History table columns
+  const tradesColumns = [
+    { header: 'Trade ID', accessor: 'tradeId' as keyof PnlRow, sortable: true, className: 'font-mono text-sm' },
+    { header: 'Time', accessor: (row: PnlRow) => new Date(row.ts).toLocaleString(), sortable: true, className: 'text-silver text-sm' },
+    { header: 'Symbol', accessor: 'symbol' as keyof PnlRow, sortable: true },
+    { header: 'Strategy', accessor: 'strategy' as keyof PnlRow, className: 'text-silver' },
+    { header: 'Qty', accessor: 'qty' as keyof PnlRow, className: 'tabular-nums' },
+    { header: 'Entry', accessor: (row: PnlRow) => `$${row.entry.toFixed(2)}`, className: 'tabular-nums' },
+    { header: 'Exit', accessor: (row: PnlRow) => row.exit ? `$${row.exit.toFixed(2)}` : '-', className: 'tabular-nums text-silver' },
+    {
+      header: 'Realized',
+      accessor: (row: PnlRow) => {
+        const isProfit = row.realized >= 0;
+        return (
+          <span className={isProfit ? 'font-medium' : 'font-medium'}>
+            {isProfit ? '+' : ''}${row.realized.toFixed(2)}
+          </span>
+        );
+      },
+      className: 'tabular-nums'
+    },
+    { header: 'Notes', accessor: (row: PnlRow) => row.notes || '-', className: 'text-silver text-sm' },
   ];
 
   return (
@@ -178,20 +209,54 @@ export function Portfolio() {
           />
         </div>
 
-        <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
-          <h3 className="text-lg font-semibold mb-4">Open Positions</h3>
-          {positions && positions.length > 0 ? (
-            <DataTable
-              data={positions}
-              columns={columns}
-              testId="table-portfolio-positions"
-            />
-          ) : (
-            <div className="text-center py-12">
-              <p className="text-silver">No open positions</p>
+        {/* Tabbed Content: Positions & History */}
+        <Tabs defaultValue="positions" className="w-full">
+          <TabsList className="bg-charcoal border border-white/10 mb-4">
+            <TabsTrigger value="positions" className="data-[state=active]:bg-white data-[state=active]:text-black">
+              Positions ({positions?.length || 0})
+            </TabsTrigger>
+            <TabsTrigger value="history" className="data-[state=active]:bg-white data-[state=active]:text-black">
+              History ({trades?.length || 0})
+            </TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="positions">
+            <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
+              <h3 className="text-lg font-semibold mb-4">Open Positions</h3>
+              {positions && positions.length > 0 ? (
+                <DataTable
+                  data={positions}
+                  columns={columns}
+                  testId="table-portfolio-positions"
+                />
+              ) : (
+                <div className="text-center py-12">
+                  <p className="text-silver">No open positions</p>
+                </div>
+              )}
             </div>
-          )}
-        </div>
+          </TabsContent>
+
+          <TabsContent value="history">
+            <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="text-lg font-semibold">Execution Log</h3>
+                <span className="text-sm text-silver tabular-nums">{trades?.length || 0} trades</span>
+              </div>
+              {trades && trades.length > 0 ? (
+                <DataTable
+                  data={trades}
+                  columns={tradesColumns}
+                  testId="table-trades"
+                />
+              ) : (
+                <div className="text-center py-12">
+                  <p className="text-silver">No trades yet</p>
+                </div>
+              )}
+            </div>
+          </TabsContent>
+        </Tabs>
       </div>
     </div>
   );

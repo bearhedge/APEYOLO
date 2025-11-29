@@ -306,6 +306,7 @@ export function Engine() {
                 maSlow={analysis?.q2Direction?.signals?.maSlow}
                 trend={analysis?.q2Direction?.signals?.trend}
                 reasoning={analysis?.q2Direction?.comment}
+                useMiniWidget={true}
               />
             </StepCard>
 
