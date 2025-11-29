@@ -2,21 +2,37 @@
  * Step 5: Exit Rules
  * Defines when to exit positions
  *
+ * Enhanced implementation with:
+ * - Configurable stop loss multiplier (default 2x)
+ * - Time-based exit rules for assignment avoidance
+ * - Transparent reasoning chain
+ * - Position monitoring with real-time P&L
+ *
  * Rules:
- * - Stop loss: 200% of premium received
+ * - Stop loss: Configurable (default 200% of premium received)
  * - Take profit: None (let options expire worthless)
- * - Time-based: Close if too close to expiration with risk
+ * - Time-based: Close if ITM within 2 hours of expiration
  */
 
 import { StrikeSelection } from './step3';
 import { PositionSize } from './step4';
+import {
+  createReasoning,
+  StepReasoning,
+  formatNumber,
+  formatCurrency,
+  formatPercent,
+} from './reasoningLogger';
 
 export interface ExitRules {
   stopLossPrice: number;      // Price at which to exit with loss
   stopLossAmount: number;     // Dollar amount of loss that triggers exit
   takeProfitPrice: number | null;  // Price for take profit (null = let expire)
   maxHoldingTime: number;     // Maximum time to hold (in hours)
-  reasoning: string;
+  stopLossMultiplier: number; // Multiplier used for stop loss
+  reason: string;             // Short reason for display
+  // NEW: Transparent reasoning chain
+  reasoning?: StepReasoning;
 }
 
 export interface PositionMonitor {
@@ -28,31 +44,54 @@ export interface PositionMonitor {
 }
 
 /**
- * Stop loss multiplier
+ * Stop loss multiplier options
  * 200% means if we collected $50 premium, we exit at $100 loss (option worth $150)
  */
-const STOP_LOSS_MULTIPLIER = 2.0; // 200% of premium
+const DEFAULT_STOP_LOSS_MULTIPLIER = 2.0; // 200% of premium
+
+// Available stop loss multiplier options for UI
+export const STOP_LOSS_OPTIONS = [
+  { value: 2.0, label: '2x', description: 'Conservative - exit at 200% loss' },
+  { value: 3.0, label: '3x', description: 'Moderate - exit at 300% loss' },
+  { value: 4.0, label: '4x', description: 'Aggressive - exit at 400% loss' },
+];
+
+// Time-based exit thresholds
+const TIME_EXIT_CRITICAL_HOURS = 2;  // Close ITM positions within 2 hours of expiry
+const TIME_EXIT_FINAL_HOURS = 1;     // Close any positions with value within 1 hour
+const TIME_EXIT_MIN_VALUE = 0.05;    // Minimum value to trigger final hour close
 
 /**
  * Calculate stop loss levels based on premium received
- * @param premiumReceived - Premium collected per contract
+ * @param premiumReceived - Premium collected per contract (per-share price)
  * @param contracts - Number of contracts
+ * @param multiplier - Stop loss multiplier (default 2.0 = 200%)
  * @returns Stop loss price and amount
  */
-function calculateStopLoss(premiumReceived: number, contracts: number): {
+function calculateStopLoss(
+  premiumReceived: number,
+  contracts: number,
+  multiplier: number = DEFAULT_STOP_LOSS_MULTIPLIER
+): {
   price: number;
   amount: number;
+  maxLossPerContract: number;
 } {
   // Per contract calculation
-  const stopLossPrice = premiumReceived * (1 + STOP_LOSS_MULTIPLIER);
+  // If we received $0.50 premium and multiplier is 2x, stop at $1.50 (3x entry)
+  const stopLossPrice = premiumReceived * (1 + multiplier);
+
+  // Maximum loss per contract
+  const maxLossPerContract = premiumReceived * multiplier * 100; // In dollars
 
   // Total position calculation
   const totalPremium = premiumReceived * contracts * 100; // Convert to dollars
-  const stopLossAmount = totalPremium * STOP_LOSS_MULTIPLIER; // Loss amount that triggers exit
+  const stopLossAmount = totalPremium * multiplier; // Total loss amount that triggers exit
 
   return {
     price: stopLossPrice,
-    amount: stopLossAmount
+    amount: stopLossAmount,
+    maxLossPerContract,
   };
 }
 
@@ -85,34 +124,139 @@ function shouldCloseByTime(
 
 /**
  * Main function: Define exit rules for a position
+ *
+ * This function builds a transparent reasoning chain showing:
+ * 1. Premium calculation
+ * 2. Stop loss multiplier selection
+ * 3. Stop loss price and amount calculation
+ * 4. Time-based exit rules
+ *
  * @param strikeSelection - Selected strikes from Step 3
  * @param positionSize - Position size from Step 4
- * @returns Exit rules for the position
+ * @param stopLossMultiplier - Stop loss multiplier (default 2.0 = 200%)
+ * @returns Exit rules for the position with reasoning chain
  */
 export async function defineExitRules(
   strikeSelection: StrikeSelection,
-  positionSize: PositionSize
+  positionSize: PositionSize,
+  stopLossMultiplier: number = DEFAULT_STOP_LOSS_MULTIPLIER
 ): Promise<ExitRules> {
-  // Calculate premium per contract (average if strangle)
+  // Initialize reasoning builder
+  const reasoning = createReasoning(5, 'Exit Rules');
+
+  // Step 5.1: Log inputs
   const premiumPerContract = strikeSelection.expectedPremium / 100; // Convert to per-share price
+  const isStrangle = strikeSelection.putStrike && strikeSelection.callStrike;
 
-  // Calculate stop loss levels
-  const stopLoss = calculateStopLoss(premiumPerContract, positionSize.contracts);
+  reasoning.addInput('expectedPremium', strikeSelection.expectedPremium);
+  reasoning.addInput('premiumPerShare', premiumPerContract);
+  reasoning.addInput('contracts', positionSize.contracts);
+  reasoning.addInput('stopLossMultiplier', stopLossMultiplier);
+  reasoning.addInput('isStrangle', isStrangle);
 
-  // Build reasoning
-  let reasoning = `Stop loss set at ${STOP_LOSS_MULTIPLIER * 100}% of premium. `;
-  reasoning += `Premium collected: $${strikeSelection.expectedPremium} per contract. `;
-  reasoning += `Stop loss triggers if option price reaches $${stopLoss.price.toFixed(2)} `;
-  reasoning += `(total loss of $${stopLoss.amount.toFixed(2)}). `;
-  reasoning += `No take profit - options ideally expire worthless. `;
-  reasoning += `Will close if ITM near expiration to avoid assignment.`;
+  reasoning.addLogicStep(
+    `Premium received: ${formatCurrency(strikeSelection.expectedPremium)} total (${formatCurrency(premiumPerContract)} per share)`,
+    `Position: ${positionSize.contracts} contracts`
+  );
+
+  // Step 5.2: Determine stop loss multiplier
+  const multiplierLabel = STOP_LOSS_OPTIONS.find(o => o.value === stopLossMultiplier)?.label || `${stopLossMultiplier}x`;
+  const multiplierDesc = STOP_LOSS_OPTIONS.find(o => o.value === stopLossMultiplier)?.description || `Exit at ${stopLossMultiplier * 100}% loss`;
+
+  reasoning.addLogicStep(
+    `Stop loss multiplier: ${multiplierLabel}`,
+    multiplierDesc
+  );
+
+  reasoning.addComputation(
+    'Stop Loss Multiplier Selection',
+    `multiplier = ${stopLossMultiplier}`,
+    {
+      multiplier: stopLossMultiplier,
+      multiplierPercent: formatPercent(stopLossMultiplier),
+      description: multiplierDesc,
+    },
+    `${stopLossMultiplier}x`,
+    `Exit when loss reaches ${formatPercent(stopLossMultiplier)} of premium collected`
+  );
+
+  // Step 5.3: Calculate stop loss levels
+  const stopLoss = calculateStopLoss(premiumPerContract, positionSize.contracts, stopLossMultiplier);
+
+  reasoning.addComputation(
+    'Stop Loss Price Calculation',
+    'stopLossPrice = premiumPerShare × (1 + multiplier)',
+    {
+      premiumPerShare: formatCurrency(premiumPerContract),
+      multiplier: stopLossMultiplier,
+      entryPrice: formatCurrency(premiumPerContract),
+    },
+    stopLoss.price,
+    `Exit if option price reaches ${formatCurrency(stopLoss.price)} per share`
+  );
+
+  reasoning.addComputation(
+    'Max Loss Amount Calculation',
+    'maxLoss = premium × multiplier × contracts × 100',
+    {
+      premiumPerShare: formatCurrency(premiumPerContract),
+      multiplier: stopLossMultiplier,
+      contracts: positionSize.contracts,
+      maxLossPerContract: formatCurrency(stopLoss.maxLossPerContract),
+    },
+    stopLoss.amount,
+    `Maximum loss before exit: ${formatCurrency(stopLoss.amount)}`
+  );
+
+  // Step 5.4: Time-based exit rules
+  reasoning.addLogicStep(
+    `Time-based exit rules for 0DTE options`,
+    `Close ITM positions within ${TIME_EXIT_CRITICAL_HOURS} hours of expiry to avoid assignment`
+  );
+
+  reasoning.addComputation(
+    'Time-Based Exit Thresholds',
+    'ITM close = timeToExpiry < criticalHours AND price > entry',
+    {
+      criticalHours: TIME_EXIT_CRITICAL_HOURS,
+      finalHours: TIME_EXIT_FINAL_HOURS,
+      minValueForClose: formatCurrency(TIME_EXIT_MIN_VALUE),
+    },
+    true,
+    `Close if ITM within ${TIME_EXIT_CRITICAL_HOURS}h or any value within ${TIME_EXIT_FINAL_HOURS}h of expiry`
+  );
+
+  // Step 5.5: Take profit strategy
+  reasoning.addLogicStep(
+    'Take profit strategy: Let options expire worthless',
+    'Maximum profit achieved when options have zero value at expiration'
+  );
+
+  // Calculate confidence
+  let confidence = 0.85; // Base confidence for exit rules
+  if (stopLossMultiplier >= 2.0 && stopLossMultiplier <= 3.0) confidence += 0.10; // Reasonable multiplier
+  if (positionSize.contracts > 0) confidence += 0.05;
+  confidence = Math.min(confidence, 1);
+
+  // Build short reason
+  const reason = `Stop: ${formatCurrency(stopLoss.price)}/share (${multiplierLabel}) | Max loss: ${formatCurrency(stopLoss.amount)} | Expire worthless`;
+
+  // Build final reasoning
+  const finalReasoning = reasoning.build(
+    `EXIT RULES SET: Stop at ${formatCurrency(stopLoss.price)}/share (${multiplierLabel}). Max loss: ${formatCurrency(stopLoss.amount)}. Let expire for max profit.`,
+    '✅',
+    confidence * 100,
+    true
+  );
 
   return {
     stopLossPrice: Number(stopLoss.price.toFixed(2)),
     stopLossAmount: Number(stopLoss.amount.toFixed(2)),
     takeProfitPrice: null, // Let expire
     maxHoldingTime: 24, // Maximum 24 hours for 0DTE
-    reasoning
+    stopLossMultiplier,
+    reason,
+    reasoning: finalReasoning,
   };
 }
 
@@ -168,25 +312,27 @@ export function monitorPosition(
 
 /**
  * Test function to validate Step 5 logic
+ * Note: This uses mock data for testing - production uses real IBKR data
  */
 export async function testStep5(): Promise<void> {
   console.log('Testing Step 5: Exit Rules\n');
 
-  // Mock data
+  // Mock data for testing only - production uses real IBKR data
   const mockStrikeSelection: StrikeSelection = {
-    putStrike: { strike: 445, expiration: new Date(), delta: 0.18, bid: 0.50, ask: 0.55 },
-    expectedPremium: 52.50,
-    marginRequired: 8010,
-    reasoning: 'Test position'
+    putStrike: { strike: 670, expiration: new Date(), delta: 0.15, bid: 0.80, ask: 0.85 },
+    expectedPremium: 82.50,
+    marginRequired: 8040,
+    reason: 'Test position'
   };
 
   const mockPositionSize: PositionSize = {
     contracts: 3,
-    marginPerContract: 8010,
-    totalMarginRequired: 24030,
-    buyingPowerUsed: 24030,
-    buyingPowerRemaining: 641970,
-    reasoning: 'Test sizing'
+    marginPerContract: 8040,
+    totalMarginRequired: 24120,
+    buyingPowerUsed: 24120,
+    buyingPowerRemaining: 641880,
+    reason: 'Test sizing',
+    riskProfile: 'BALANCED',
   };
 
   // Define exit rules

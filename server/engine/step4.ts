@@ -2,13 +2,26 @@
  * Step 4: Position Sizing
  * Determines how many contracts to trade based on buying power and margin requirements
  *
+ * Enhanced implementation with:
+ * - Risk profile-based position sizing
+ * - Portfolio margin calculations (strangles vs single side)
+ * - Transparent reasoning chain
+ * - Buying power utilization tracking
+ *
  * Rules:
- * - 100% buying power utilization maximum
- * - Account for portfolio margin (strangles get ~12% margin, single side ~18%)
- * - Hard limit: 5 contracts maximum
+ * - Risk profile determines max contracts and BP utilization
+ * - Portfolio margin: strangles ~12%, single side ~18%
+ * - Hard limits per profile: CONSERVATIVE(2), BALANCED(3), AGGRESSIVE(5)
  */
 
 import { StrikeSelection } from './step3';
+import {
+  createReasoning,
+  StepReasoning,
+  formatNumber,
+  formatCurrency,
+  formatPercent,
+} from './reasoningLogger';
 
 export type RiskProfile = 'CONSERVATIVE' | 'BALANCED' | 'AGGRESSIVE';
 
@@ -18,7 +31,10 @@ export interface PositionSize {
   totalMarginRequired: number;
   buyingPowerUsed: number;
   buyingPowerRemaining: number;
-  reasoning: string;
+  reason: string;  // Short reason for display
+  riskProfile: RiskProfile;
+  // NEW: Transparent reasoning chain
+  reasoning?: StepReasoning;
 }
 
 export interface AccountInfo {
@@ -106,27 +122,125 @@ function calculateMaxContracts(
 
 /**
  * Main function: Calculate optimal position size
+ *
+ * This function builds a transparent reasoning chain showing:
+ * 1. Risk profile selection and parameters
+ * 2. Margin rate determination (strangle vs single side)
+ * 3. Margin per contract calculation
+ * 4. Max contracts calculation
+ * 5. Buying power utilization
+ *
  * @param strikeSelection - Selected strikes from Step 3
  * @param accountInfo - Current account information
  * @param riskProfile - Risk profile to use
- * @returns Position sizing decision
+ * @returns Position sizing decision with reasoning chain
  */
 export async function calculatePositionSize(
   strikeSelection: StrikeSelection,
   accountInfo: AccountInfo,
   riskProfile: RiskProfile = 'BALANCED'
 ): Promise<PositionSize> {
-  // Calculate margin per contract
+  // Initialize reasoning builder
+  const reasoning = createReasoning(4, 'Position Sizing');
+
+  const profile = RISK_PROFILES[riskProfile];
+  const isStrangle = strikeSelection.putStrike && strikeSelection.callStrike;
+  const marginRate = isStrangle ? 0.12 : 0.18;
+
+  // Step 4.1: Log inputs
+  reasoning.addInput('riskProfile', riskProfile);
+  reasoning.addInput('cashBalance', accountInfo.cashBalance);
+  reasoning.addInput('buyingPower', accountInfo.buyingPower);
+  reasoning.addInput('currentPositions', accountInfo.currentPositions);
+  reasoning.addInput('isStrangle', isStrangle);
+  reasoning.addInput('maxContractsFromProfile', profile.maxContracts);
+  reasoning.addInput('buyingPowerUtilization', profile.buyingPowerUtilization);
+
+  reasoning.addLogicStep(
+    `Selected risk profile: ${riskProfile}`,
+    profile.description
+  );
+
+  // Step 4.2: Calculate margin rate
+  reasoning.addComputation(
+    'Margin Rate Selection',
+    isStrangle ? 'STRANGLE → 12% margin' : 'SINGLE SIDE → 18% margin',
+    {
+      isStrangle,
+      marginRatePercent: formatPercent(marginRate),
+      reason: isStrangle ? 'Offsetting positions reduce risk' : 'Single directional exposure',
+    },
+    formatPercent(marginRate),
+    isStrangle
+      ? 'Strangle positions get ~12% margin rate due to offsetting risk'
+      : 'Single naked options require ~18% margin rate'
+  );
+
+  // Step 4.3: Calculate margin per contract
   const marginPerContract = calculateMarginPerContract(strikeSelection);
 
-  // Calculate maximum contracts
+  let notionalValue = 0;
+  if (strikeSelection.putStrike) {
+    notionalValue += strikeSelection.putStrike.strike * 100;
+  }
+  if (strikeSelection.callStrike) {
+    notionalValue += strikeSelection.callStrike.strike * 100;
+  }
+  if (isStrangle) {
+    notionalValue = notionalValue / 2; // Average for offsetting
+  }
+
+  reasoning.addComputation(
+    'Margin Per Contract',
+    'notionalValue * marginRate',
+    {
+      putStrike: strikeSelection.putStrike?.strike || 'N/A',
+      callStrike: strikeSelection.callStrike?.strike || 'N/A',
+      notionalValue: formatCurrency(notionalValue),
+      marginRate: formatPercent(marginRate),
+    },
+    marginPerContract,
+    `Each contract requires ${formatCurrency(marginPerContract)} margin`
+  );
+
+  // Step 4.4: Calculate available buying power
+  const availableBuyingPower = accountInfo.buyingPower * profile.buyingPowerUtilization;
+
+  reasoning.addComputation(
+    'Available Buying Power',
+    'totalBuyingPower * utilizationRate',
+    {
+      totalBuyingPower: formatCurrency(accountInfo.buyingPower),
+      utilizationRate: formatPercent(profile.buyingPowerUtilization),
+    },
+    availableBuyingPower,
+    `Using ${formatPercent(profile.buyingPowerUtilization)} of ${formatCurrency(accountInfo.buyingPower)} = ${formatCurrency(availableBuyingPower)}`
+  );
+
+  // Step 4.5: Calculate maximum contracts
+  const theoreticalMax = Math.floor(availableBuyingPower / marginPerContract);
   const maxContracts = calculateMaxContracts(
     accountInfo.buyingPower,
     marginPerContract,
     riskProfile
   );
 
-  // Ensure we have at least 1 contract if we have enough margin
+  const limitedBy = maxContracts === profile.maxContracts ? 'risk profile limit' : 'buying power';
+
+  reasoning.addComputation(
+    'Max Contracts Calculation',
+    'min(floor(availableBP / marginPerContract), profileLimit)',
+    {
+      theoreticalMax,
+      profileLimit: profile.maxContracts,
+      actualMax: maxContracts,
+      limitedBy,
+    },
+    maxContracts,
+    `Can trade ${maxContracts} contracts (limited by ${limitedBy})`
+  );
+
+  // Step 4.6: Determine final contract count
   const contracts = marginPerContract <= accountInfo.buyingPower ? Math.max(1, maxContracts) : 0;
 
   // Calculate totals
@@ -134,20 +248,50 @@ export async function calculatePositionSize(
   const buyingPowerUsed = totalMarginRequired;
   const buyingPowerRemaining = accountInfo.buyingPower - buyingPowerUsed;
 
-  // Build reasoning
-  const profile = RISK_PROFILES[riskProfile];
-  const isStrangle = strikeSelection.putStrike && strikeSelection.callStrike;
-  const marginRate = isStrangle ? 12 : 18;
+  reasoning.addComputation(
+    'Final Position Size',
+    'contracts * marginPerContract',
+    {
+      contracts,
+      marginPerContract: formatCurrency(marginPerContract),
+      totalMarginRequired: formatCurrency(totalMarginRequired),
+      buyingPowerRemaining: formatCurrency(buyingPowerRemaining),
+    },
+    contracts,
+    contracts > 0
+      ? `Trading ${contracts} contracts using ${formatCurrency(totalMarginRequired)} margin`
+      : 'Insufficient buying power for any contracts'
+  );
 
-  let reasoning = `Risk Profile: ${riskProfile} (${profile.description}). `;
-  reasoning += `Margin rate: ${marginRate}% (${isStrangle ? 'strangle offset' : 'single naked option'}). `;
-  reasoning += `Margin per contract: $${marginPerContract.toFixed(2)}. `;
-  reasoning += `Buying power available: $${accountInfo.buyingPower.toFixed(2)} at ${(profile.buyingPowerUtilization * 100)}% utilization. `;
-  reasoning += `Max contracts: ${maxContracts} (limited by ${maxContracts === profile.maxContracts ? 'risk profile' : 'buying power'}). `;
-
+  // Check for warnings
   if (contracts === 0) {
-    reasoning += 'WARNING: Insufficient buying power for even 1 contract.';
+    reasoning.addWarning('Insufficient buying power for even 1 contract');
+  } else if (buyingPowerRemaining < totalMarginRequired * 0.5) {
+    reasoning.addWarning(`Low remaining buying power: only ${formatCurrency(buyingPowerRemaining)} left`);
   }
+
+  // Step 4.7: Calculate confidence
+  let confidence = 0.8; // Base confidence for position sizing
+  if (contracts > 0) confidence += 0.10;
+  if (buyingPowerRemaining > totalMarginRequired) confidence += 0.05;
+  if (limitedBy === 'risk profile limit') confidence += 0.05; // Within safe limits
+  confidence = Math.min(confidence, 1);
+
+  // Build short reason
+  const reason = contracts > 0
+    ? `${contracts} contracts @ ${formatCurrency(marginPerContract)}/contract | ${riskProfile} | ${formatCurrency(buyingPowerRemaining)} BP remaining`
+    : `INSUFFICIENT BUYING POWER: Need ${formatCurrency(marginPerContract)}, have ${formatCurrency(accountInfo.buyingPower)}`;
+
+  // Build final reasoning
+  const decisionEmoji = contracts > 0 ? '✅' : '❌';
+  const finalReasoning = reasoning.build(
+    contracts > 0
+      ? `POSITION SIZE: ${contracts} contracts. Margin: ${formatCurrency(totalMarginRequired)}. BP remaining: ${formatCurrency(buyingPowerRemaining)}`
+      : 'CANNOT TRADE: Insufficient buying power',
+    decisionEmoji,
+    confidence * 100,
+    contracts > 0
+  );
 
   return {
     contracts,
@@ -155,7 +299,9 @@ export async function calculatePositionSize(
     totalMarginRequired: Number(totalMarginRequired.toFixed(2)),
     buyingPowerUsed: Number(buyingPowerUsed.toFixed(2)),
     buyingPowerRemaining: Number(buyingPowerRemaining.toFixed(2)),
-    reasoning
+    reason,
+    riskProfile,
+    reasoning: finalReasoning,
   };
 }
 
@@ -185,7 +331,7 @@ export async function testStep4(): Promise<void> {
         putStrike: { strike: 445, expiration: new Date(), delta: 0.18, bid: 0.50, ask: 0.55 },
         expectedPremium: 52.50,
         marginRequired: 8010,
-        reasoning: 'Single PUT'
+        reason: 'Single PUT'
       }
     },
     {
@@ -194,7 +340,7 @@ export async function testStep4(): Promise<void> {
         callStrike: { strike: 455, expiration: new Date(), delta: 0.18, bid: 0.48, ask: 0.52 },
         expectedPremium: 50.00,
         marginRequired: 8190,
-        reasoning: 'Single CALL'
+        reason: 'Single CALL'
       }
     },
     {
@@ -204,7 +350,7 @@ export async function testStep4(): Promise<void> {
         callStrike: { strike: 455, expiration: new Date(), delta: 0.18, bid: 0.48, ask: 0.52 },
         expectedPremium: 102.50,
         marginRequired: 5400,
-        reasoning: 'STRANGLE (both sides)'
+        reason: 'STRANGLE (both sides)'
       }
     }
   ];

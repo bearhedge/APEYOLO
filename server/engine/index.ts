@@ -2,19 +2,27 @@
  * APEYOLO Trading Engine Orchestrator
  * Coordinates the 5-step decision process for automated options trading
  *
- * Steps:
- * 1. Market Regime Check - Should we trade today?
- * 2. Direction Selection - PUT, CALL, or STRANGLE?
- * 3. Strike Selection - What strikes based on delta?
- * 4. Position Sizing - How many contracts?
- * 5. Exit Rules - When to exit?
+ * Enhanced with transparent reasoning chains across all 5 steps:
+ * 1. Market Regime Check - Should we trade today? (VIX hard stop at 20)
+ * 2. Direction Selection - PUT, CALL, or STRANGLE? (MA + RSI analysis)
+ * 3. Strike Selection - What strikes based on delta? (IBKR real-time data)
+ * 4. Position Sizing - How many contracts? (Risk profile + margin)
+ * 5. Exit Rules - When to exit? (Stop loss + time-based)
+ *
+ * All steps produce transparent reasoning chains for audit and display.
  */
 
 import { analyzeMarketRegime, MarketRegime } from './step1.ts';
 import { selectDirection, DirectionDecision } from './step2.ts';
 import { selectStrikes, StrikeSelection } from './step3.ts';
 import { calculatePositionSize, PositionSize, RiskProfile, AccountInfo } from './step4.ts';
-import { defineExitRules, ExitRules } from './step5.ts';
+import { defineExitRules, ExitRules, STOP_LOSS_OPTIONS } from './step5.ts';
+import {
+  createAggregator,
+  ReasoningAggregator,
+  StepReasoning,
+  ReasoningAuditEntry,
+} from './reasoningLogger.ts';
 
 /**
  * Complete trading decision combining all 5 steps
@@ -30,10 +38,23 @@ export interface TradingDecision {
   exitRules?: ExitRules;
   executionReady: boolean;
   audit: AuditEntry[];
+  // NEW: Full reasoning chains for transparency
+  reasoningChain?: StepReasoning[];
+  reasoningSummary?: {
+    totalSteps: number;
+    passedSteps: number;
+    totalWarnings: number;
+    totalComputations: number;
+    averageConfidence: number;
+    canExecute: boolean;
+    failedAtStep?: number;
+    elapsedMs: number;
+  };
 }
 
 /**
  * Audit entry for tracking decision process
+ * Enhanced with full reasoning chain
  */
 export interface AuditEntry {
   step: number;
@@ -43,6 +64,8 @@ export interface AuditEntry {
   output: any;
   passed: boolean;
   reason?: string;
+  // NEW: Full reasoning chain for this step
+  reasoning?: StepReasoning;
 }
 
 /**
@@ -51,30 +74,43 @@ export interface AuditEntry {
 export interface EngineConfig {
   riskProfile: RiskProfile;
   underlyingSymbol: string;
-  underlyingPrice?: number; // If not provided, will fetch from market
-  mockMode?: boolean;       // Use mock data for testing
+  underlyingPrice?: number;     // If not provided, will fetch from market
+  stopLossMultiplier?: number;  // Default: 2.0 (200%)
+  mockMode?: boolean;           // Use mock data for testing
 }
 
 /**
  * Main Trading Engine class
+ * Enhanced with transparent reasoning chains
  */
 export class TradingEngine {
   private config: EngineConfig;
   private audit: AuditEntry[] = [];
+  private reasoningAggregator: ReasoningAggregator;
 
   constructor(config: EngineConfig) {
     this.config = {
       riskProfile: 'BALANCED',
       underlyingSymbol: 'SPY',
-      mockMode: true, // Default to mock mode until IBKR integration
+      stopLossMultiplier: 2.0,
+      mockMode: false, // Use real IBKR data by default
       ...config
     };
+    this.reasoningAggregator = createAggregator();
   }
 
   /**
-   * Add entry to audit trail
+   * Add entry to audit trail with reasoning chain
    */
-  private addAudit(step: number, name: string, input: any, output: any, passed: boolean, reason?: string) {
+  private addAudit(
+    step: number,
+    name: string,
+    input: any,
+    output: any,
+    passed: boolean,
+    reason?: string,
+    reasoning?: StepReasoning
+  ) {
     this.audit.push({
       step,
       name,
@@ -82,76 +118,141 @@ export class TradingEngine {
       input,
       output,
       passed,
-      reason
+      reason,
+      reasoning,
     });
+
+    // Also add to reasoning aggregator if provided
+    if (reasoning) {
+      this.reasoningAggregator.addStep(reasoning);
+    }
   }
 
   /**
    * Execute the complete 5-step trading decision process
    * @param accountInfo - Current account information
-   * @returns Complete trading decision with audit trail
+   * @returns Complete trading decision with audit trail and full reasoning chains
    */
   async executeTradingDecision(accountInfo: AccountInfo): Promise<TradingDecision> {
+    const startTime = Date.now();
+
     console.log('\n' + '='.repeat(60));
     console.log('APEYOLO TRADING ENGINE - DECISION PROCESS');
     console.log('='.repeat(60));
 
-    // Reset audit trail
+    // Reset audit trail and reasoning aggregator
     this.audit = [];
+    this.reasoningAggregator = createAggregator();
 
     // Step 1: Market Regime Check
     console.log('\n📊 Step 1: Market Regime Check');
     const marketRegime = await analyzeMarketRegime();
-    this.addAudit(1, 'Market Regime Check', {}, marketRegime, marketRegime.shouldTrade, marketRegime.reason);
+    this.addAudit(
+      1,
+      'Market Regime Check',
+      { tradingWindow: '11AM-1PM ET', vixHardStop: 20 },
+      marketRegime,
+      marketRegime.shouldTrade,
+      marketRegime.reason,
+      marketRegime.reasoning // StepReasoning from step1
+    );
     console.log(`  Result: ${marketRegime.shouldTrade ? '✅ CAN TRADE' : '❌ NO TRADE'}`);
     console.log(`  Reason: ${marketRegime.reason}`);
 
     // Early exit if market conditions unfavorable
     if (!marketRegime.shouldTrade) {
+      const elapsedMs = Date.now() - startTime;
       return {
         timestamp: new Date(),
         canTrade: false,
         reason: marketRegime.reason,
         marketRegime,
         executionReady: false,
-        audit: this.audit
+        audit: this.audit,
+        reasoningChain: this.reasoningAggregator.getSteps(),
+        reasoningSummary: {
+          ...this.reasoningAggregator.getSummary(),
+          elapsedMs,
+        },
       };
     }
 
     // Step 2: Direction Selection
     console.log('\n🎯 Step 2: Direction Selection');
     const direction = await selectDirection(marketRegime);
-    this.addAudit(2, 'Direction Selection', { marketRegime }, direction, true, direction.reasoning);
+    this.addAudit(
+      2,
+      'Direction Selection',
+      { marketRegime: marketRegime.regime, volatilityRegime: marketRegime.volatilityRegime },
+      direction,
+      true,
+      direction.reasoning, // Short string reason
+      direction.stepReasoning // Full StepReasoning chain
+    );
     console.log(`  Direction: ${direction.direction}`);
+    console.log(`  Bias: ${direction.bias}`);
     console.log(`  Confidence: ${(direction.confidence * 100).toFixed(0)}%`);
+    console.log(`  Delta Target: ${direction.targetDelta.min}-${direction.targetDelta.max}`);
     console.log(`  Reasoning: ${direction.reasoning}`);
 
     // Step 3: Strike Selection
+    // Pass full DirectionDecision so step3 uses the targetDelta from step2
     console.log('\n🎲 Step 3: Strike Selection');
-    const underlyingPrice = this.config.underlyingPrice || 450; // Mock price, will get from IBKR later
-    const strikes = await selectStrikes(direction.direction, underlyingPrice);
-    this.addAudit(3, 'Strike Selection', { direction: direction.direction, underlyingPrice }, strikes, true, strikes.reasoning);
+    const strikes = await selectStrikes(
+      direction, // Pass full DirectionDecision, not just direction.direction
+      this.config.underlyingPrice, // Will be overridden by IBKR real-time price
+      this.config.underlyingSymbol
+    );
+    this.addAudit(
+      3,
+      'Strike Selection',
+      {
+        direction: direction.direction,
+        targetDelta: direction.targetDelta,
+        symbol: this.config.underlyingSymbol,
+      },
+      strikes,
+      true,
+      strikes.reason, // Short string reason
+      strikes.reasoning // Full StepReasoning chain
+    );
 
     if (strikes.putStrike) {
-      console.log(`  PUT Strike: $${strikes.putStrike.strike} (delta: ${strikes.putStrike.delta})`);
+      console.log(`  PUT Strike: $${strikes.putStrike.strike} (delta: ${strikes.putStrike.delta.toFixed(3)})`);
     }
     if (strikes.callStrike) {
-      console.log(`  CALL Strike: $${strikes.callStrike.strike} (delta: ${strikes.callStrike.delta})`);
+      console.log(`  CALL Strike: $${strikes.callStrike.strike} (delta: ${strikes.callStrike.delta.toFixed(3)})`);
     }
-    console.log(`  Expected Premium: $${strikes.expectedPremium}`);
+    console.log(`  Expected Premium: $${strikes.expectedPremium.toFixed(2)}`);
+    console.log(`  Margin Required: $${strikes.marginRequired.toLocaleString()}`);
 
     // Step 4: Position Sizing
     console.log('\n📏 Step 4: Position Sizing');
     const positionSize = await calculatePositionSize(strikes, accountInfo, this.config.riskProfile);
-    this.addAudit(4, 'Position Sizing', { strikes, accountInfo, riskProfile: this.config.riskProfile }, positionSize, positionSize.contracts > 0, positionSize.reasoning);
+    this.addAudit(
+      4,
+      'Position Sizing',
+      {
+        expectedPremium: strikes.expectedPremium,
+        marginRequired: strikes.marginRequired,
+        buyingPower: accountInfo.buyingPower,
+        riskProfile: this.config.riskProfile,
+      },
+      positionSize,
+      positionSize.contracts > 0,
+      positionSize.reason, // Short string reason
+      positionSize.reasoning // Full StepReasoning chain
+    );
 
     console.log(`  Risk Profile: ${this.config.riskProfile}`);
     console.log(`  Contracts: ${positionSize.contracts}`);
-    console.log(`  Margin Required: $${positionSize.totalMarginRequired.toLocaleString()}`);
+    console.log(`  Margin/Contract: $${positionSize.marginPerContract.toLocaleString()}`);
+    console.log(`  Total Margin: $${positionSize.totalMarginRequired.toLocaleString()}`);
     console.log(`  Buying Power Remaining: $${positionSize.buyingPowerRemaining.toLocaleString()}`);
 
     // Check if we can actually trade
     if (positionSize.contracts === 0) {
+      const elapsedMs = Date.now() - startTime;
       return {
         timestamp: new Date(),
         canTrade: false,
@@ -161,22 +262,45 @@ export class TradingEngine {
         strikes,
         positionSize,
         executionReady: false,
-        audit: this.audit
+        audit: this.audit,
+        reasoningChain: this.reasoningAggregator.getSteps(),
+        reasoningSummary: {
+          ...this.reasoningAggregator.getSummary(),
+          failedAtStep: 4,
+          elapsedMs,
+        },
       };
     }
 
     // Step 5: Exit Rules
     console.log('\n🚪 Step 5: Exit Rules');
-    const exitRules = await defineExitRules(strikes, positionSize);
-    this.addAudit(5, 'Exit Rules', { strikes, positionSize }, exitRules, true, exitRules.reasoning);
+    const stopLossMultiplier = this.config.stopLossMultiplier || 2.0;
+    const exitRules = await defineExitRules(strikes, positionSize, stopLossMultiplier);
+    this.addAudit(
+      5,
+      'Exit Rules',
+      {
+        expectedPremium: strikes.expectedPremium,
+        contracts: positionSize.contracts,
+        stopLossMultiplier,
+      },
+      exitRules,
+      true,
+      exitRules.reason, // Short string reason
+      exitRules.reasoning // Full StepReasoning chain
+    );
 
-    console.log(`  Stop Loss: $${exitRules.stopLossPrice} per share ($${exitRules.stopLossAmount} total)`);
-    console.log(`  Take Profit: ${exitRules.takeProfitPrice || 'None (let expire)'}`);
+    console.log(`  Stop Loss Multiplier: ${exitRules.stopLossMultiplier}x`);
+    console.log(`  Stop Loss Price: $${exitRules.stopLossPrice.toFixed(2)} per share`);
+    console.log(`  Max Loss Amount: $${exitRules.stopLossAmount.toFixed(2)}`);
+    console.log(`  Take Profit: ${exitRules.takeProfitPrice || 'None (let expire worthless)'}`);
     console.log(`  Max Hold Time: ${exitRules.maxHoldingTime} hours`);
 
     // Final decision
+    const elapsedMs = Date.now() - startTime;
     console.log('\n' + '='.repeat(60));
-    console.log('✅ TRADING DECISION COMPLETE - READY TO EXECUTE');
+    console.log('✅ TRADING DECISION COMPLETE - READY FOR MANUAL APPROVAL');
+    console.log(`   Total reasoning time: ${elapsedMs}ms`);
     console.log('='.repeat(60));
 
     return {
@@ -188,7 +312,12 @@ export class TradingEngine {
       positionSize,
       exitRules,
       executionReady: true,
-      audit: this.audit
+      audit: this.audit,
+      reasoningChain: this.reasoningAggregator.getSteps(),
+      reasoningSummary: {
+        ...this.reasoningAggregator.getSummary(),
+        elapsedMs,
+      },
     };
   }
 
@@ -223,7 +352,7 @@ export class TradingEngine {
   /**
    * Export decision for logging/storage
    * @param decision - Trading decision to export
-   * @returns JSON-serializable object
+   * @returns JSON-serializable object with full reasoning chains
    */
   exportDecision(decision: TradingDecision): object {
     return {
@@ -232,39 +361,66 @@ export class TradingEngine {
       reason: decision.reason,
       summary: decision.canTrade ? {
         direction: decision.direction?.direction,
+        bias: decision.direction?.bias,
         putStrike: decision.strikes?.putStrike?.strike,
+        putDelta: decision.strikes?.putStrike?.delta,
         callStrike: decision.strikes?.callStrike?.strike,
+        callDelta: decision.strikes?.callStrike?.delta,
         contracts: decision.positionSize?.contracts,
         expectedPremium: decision.strikes?.expectedPremium,
         marginRequired: decision.positionSize?.totalMarginRequired,
-        stopLoss: decision.exitRules?.stopLossAmount
+        stopLossMultiplier: decision.exitRules?.stopLossMultiplier,
+        stopLossAmount: decision.exitRules?.stopLossAmount,
+        stopLossPrice: decision.exitRules?.stopLossPrice,
       } : null,
+      // Reasoning summary for quick overview
+      reasoningSummary: decision.reasoningSummary,
+      // Full audit trail with reasoning
       audit: decision.audit.map(entry => ({
         step: entry.step,
         name: entry.name,
         timestamp: entry.timestamp.toISOString(),
         passed: entry.passed,
-        reason: entry.reason
-      }))
+        reason: entry.reason,
+        // Include step reasoning summary if available
+        confidence: entry.reasoning?.confidence,
+        decision: entry.reasoning?.decision,
+        warnings: entry.reasoning?.warnings,
+        computationCount: entry.reasoning?.computations?.length || 0,
+      })),
+      // Full reasoning chain for transparency
+      reasoningChain: decision.reasoningChain?.map(step => ({
+        step: step.step,
+        name: step.name,
+        decision: step.decision,
+        decisionEmoji: step.decisionEmoji,
+        confidence: step.confidence,
+        canProceed: step.canProceed,
+        warnings: step.warnings,
+        logicSteps: step.logic?.length || 0,
+        computations: step.computations?.length || 0,
+      })),
     };
   }
 }
 
 /**
- * Test the complete engine flow
+ * Test the complete engine flow with real IBKR data
+ * This test uses real market data - no hardcoded mock values
  */
 export async function testEngine(): Promise<void> {
-  console.log('Testing Complete Trading Engine\n');
+  console.log('Testing Complete Trading Engine with Real IBKR Data\n');
 
-  // Create engine with test configuration
+  // Create engine with real data configuration
+  // underlyingPrice is not specified - will be fetched from IBKR
   const engine = new TradingEngine({
     riskProfile: 'BALANCED',
     underlyingSymbol: 'SPY',
-    underlyingPrice: 450,
-    mockMode: true
+    stopLossMultiplier: 2.0,
+    mockMode: false, // Use real IBKR data
   });
 
-  // Mock account info
+  // Account info - in production, fetch from IBKR getAccount()
   const accountInfo: AccountInfo = {
     cashBalance: 100000,
     buyingPower: 666000,
@@ -274,9 +430,11 @@ export async function testEngine(): Promise<void> {
   console.log('Account Configuration:');
   console.log(`  Cash: $${accountInfo.cashBalance.toLocaleString()}`);
   console.log(`  Buying Power: $${accountInfo.buyingPower.toLocaleString()}`);
+  console.log(`  Leverage: ${(accountInfo.buyingPower / accountInfo.cashBalance).toFixed(2)}x`);
   console.log(`  Risk Profile: BALANCED`);
+  console.log(`  Stop Loss Multiplier: 2.0x`);
 
-  // Execute trading decision
+  // Execute trading decision with full reasoning chains
   const decision = await engine.executeTradingDecision(accountInfo);
 
   // Display summary
@@ -285,9 +443,44 @@ export async function testEngine(): Promise<void> {
   console.log('='.repeat(60));
   console.log(engine.generateSummary(decision));
 
+  // Display reasoning summary
+  if (decision.reasoningSummary) {
+    console.log('\n' + '='.repeat(60));
+    console.log('REASONING SUMMARY');
+    console.log('='.repeat(60));
+    console.log(`  Total Steps: ${decision.reasoningSummary.totalSteps}`);
+    console.log(`  Passed Steps: ${decision.reasoningSummary.passedSteps}`);
+    console.log(`  Total Warnings: ${decision.reasoningSummary.totalWarnings}`);
+    console.log(`  Total Computations: ${decision.reasoningSummary.totalComputations}`);
+    console.log(`  Average Confidence: ${decision.reasoningSummary.averageConfidence.toFixed(1)}%`);
+    console.log(`  Can Execute: ${decision.reasoningSummary.canExecute ? '✅ YES' : '❌ NO'}`);
+    console.log(`  Elapsed Time: ${decision.reasoningSummary.elapsedMs}ms`);
+    if (decision.reasoningSummary.failedAtStep) {
+      console.log(`  Failed At Step: ${decision.reasoningSummary.failedAtStep}`);
+    }
+  }
+
+  // Display reasoning chain
+  if (decision.reasoningChain && decision.reasoningChain.length > 0) {
+    console.log('\n' + '='.repeat(60));
+    console.log('REASONING CHAIN (Transparency Log)');
+    console.log('='.repeat(60));
+    for (const step of decision.reasoningChain) {
+      console.log(`\n  Step ${step.step}: ${step.name}`);
+      console.log(`    ${step.decisionEmoji} ${step.decision}`);
+      console.log(`    Confidence: ${step.confidence}%`);
+      console.log(`    Can Proceed: ${step.canProceed ? '✅' : '❌'}`);
+      console.log(`    Logic Steps: ${step.logic.length}`);
+      console.log(`    Computations: ${step.computations.length}`);
+      if (step.warnings.length > 0) {
+        console.log(`    ⚠️ Warnings: ${step.warnings.join(', ')}`);
+      }
+    }
+  }
+
   // Export for storage
   console.log('\n' + '='.repeat(60));
-  console.log('EXPORTED DECISION (for logging)');
+  console.log('EXPORTED DECISION (for logging/storage)');
   console.log('='.repeat(60));
   console.log(JSON.stringify(engine.exportDecision(decision), null, 2));
 }

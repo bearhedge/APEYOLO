@@ -1,12 +1,29 @@
 /**
  * Step 3: Strike Selection
- * Selects optimal strike prices based on delta targeting (0.15-0.20)
+ * Selects optimal strike prices based on delta targeting
  *
- * Uses real IBKR option chain data when available, falls back to mock data
+ * Enhanced implementation with:
+ * - Real IBKR option chain data integration
+ * - Dynamic delta targeting from Step 2 (0.15-0.20 normal, 0.10-0.15 neutral/strangle)
+ * - Transparent reasoning chain
+ * - Liquidity and spread analysis
+ *
+ * Rules:
+ * - For directional trades: Target delta 0.15-0.20
+ * - For neutral/strangle: Target delta 0.10-0.15 (further OTM for safety)
+ * - Prioritize liquid strikes with tight spreads
+ * - Use IBKR real-time data when available
  */
 
-import { TradeDirection } from './step2';
+import { TradeDirection, DirectionDecision } from './step2';
 import { getOptionChainWithStrikes } from '../broker/ibkr';
+import {
+  createReasoning,
+  StepReasoning,
+  formatNumber,
+  formatCurrency,
+  formatPercent,
+} from './reasoningLogger';
 
 export interface Strike {
   strike: number;
@@ -23,20 +40,32 @@ export interface StrikeSelection {
   callStrike?: Strike;
   expectedPremium: number;
   marginRequired: number;
-  reasoning: string;
+  reason: string;  // Short reason for display
   nearbyStrikes?: {
     puts: Array<{ strike: number; bid: number; ask: number; delta: number; oi?: number }>;
     calls: Array<{ strike: number; bid: number; ask: number; delta: number; oi?: number }>;
   };
+  // NEW: Transparent reasoning chain
+  reasoning?: StepReasoning;
 }
 
 /**
- * Target delta range for option selection
+ * Default delta range for option selection
  * 0.15-0.20 provides ~80-85% probability of expiring worthless
+ * For neutral/strangle trades: use 0.10-0.15 (further OTM)
  */
-const TARGET_DELTA_MIN = 0.15;
-const TARGET_DELTA_MAX = 0.20;
-const TARGET_DELTA_IDEAL = 0.18;
+const DEFAULT_DELTA_MIN = 0.15;
+const DEFAULT_DELTA_MAX = 0.20;
+const DEFAULT_DELTA_IDEAL = 0.18;
+
+// Neutral/Strangle delta range (further OTM for safety)
+const NEUTRAL_DELTA_MIN = 0.10;
+const NEUTRAL_DELTA_MAX = 0.15;
+const NEUTRAL_DELTA_IDEAL = 0.12;
+
+// Spread quality thresholds
+const MAX_ACCEPTABLE_SPREAD_PERCENT = 0.15; // 15% max bid-ask spread
+const IDEAL_SPREAD_PERCENT = 0.05; // 5% ideal spread
 
 /**
  * Generate mock option chain for testing
@@ -95,34 +124,91 @@ function getMockOptionChain(underlyingPrice: number, direction: 'PUT' | 'CALL'):
 }
 
 /**
+ * Delta target configuration from Step 2
+ */
+interface DeltaTarget {
+  min: number;
+  max: number;
+  ideal: number;
+}
+
+/**
+ * Get delta target configuration based on direction
+ */
+function getDeltaTarget(direction: TradeDirection): DeltaTarget {
+  if (direction === 'STRANGLE') {
+    // Neutral/Strangle: use further OTM for safety
+    return {
+      min: NEUTRAL_DELTA_MIN,
+      max: NEUTRAL_DELTA_MAX,
+      ideal: NEUTRAL_DELTA_IDEAL,
+    };
+  }
+  // Directional trades: normal delta range
+  return {
+    min: DEFAULT_DELTA_MIN,
+    max: DEFAULT_DELTA_MAX,
+    ideal: DEFAULT_DELTA_IDEAL,
+  };
+}
+
+/**
+ * Calculate spread quality score (0-1, higher is better)
+ */
+function calculateSpreadScore(strike: Strike): number {
+  if (strike.bid <= 0) return 0;
+  const spreadPercent = (strike.ask - strike.bid) / strike.bid;
+  if (spreadPercent >= MAX_ACCEPTABLE_SPREAD_PERCENT) return 0;
+  if (spreadPercent <= IDEAL_SPREAD_PERCENT) return 1;
+  // Linear interpolation between ideal and max
+  return 1 - ((spreadPercent - IDEAL_SPREAD_PERCENT) / (MAX_ACCEPTABLE_SPREAD_PERCENT - IDEAL_SPREAD_PERCENT));
+}
+
+/**
  * Find the best strike that matches our delta target
  * @param strikes - Available strikes
- * @param targetDelta - Target delta value
- * @returns Best matching strike
+ * @param deltaTarget - Target delta configuration
+ * @returns Best matching strike with selection info
  */
-function findBestStrike(strikes: Strike[], targetDelta: number = TARGET_DELTA_IDEAL): Strike | null {
+function findBestStrike(
+  strikes: Strike[],
+  deltaTarget: DeltaTarget
+): { strike: Strike | null; inRange: boolean; alternatives: Strike[] } {
+  if (strikes.length === 0) {
+    return { strike: null, inRange: false, alternatives: [] };
+  }
+
   // Filter strikes within our delta range
   const validStrikes = strikes.filter(s =>
-    s.delta >= TARGET_DELTA_MIN &&
-    s.delta <= TARGET_DELTA_MAX
+    s.delta >= deltaTarget.min &&
+    s.delta <= deltaTarget.max
   );
+
+  // Score strikes based on delta proximity and spread quality
+  const scoreStrike = (s: Strike): number => {
+    const deltaDiff = Math.abs(s.delta - deltaTarget.ideal);
+    const deltaScore = 1 - (deltaDiff / 0.10); // 0.10 is max expected diff
+    const spreadScore = calculateSpreadScore(s);
+    return (deltaScore * 0.7) + (spreadScore * 0.3); // Weight: 70% delta, 30% spread
+  };
 
   if (validStrikes.length === 0) {
     // If no strikes in range, find closest one
-    const closest = strikes.reduce((prev, curr) => {
-      const prevDiff = Math.abs(prev.delta - targetDelta);
-      const currDiff = Math.abs(curr.delta - targetDelta);
-      return currDiff < prevDiff ? curr : prev;
-    });
-    return closest;
+    const sorted = [...strikes].sort((a, b) => scoreStrike(b) - scoreStrike(a));
+    return {
+      strike: sorted[0],
+      inRange: false,
+      alternatives: sorted.slice(1, 4),
+    };
   }
 
-  // Find strike closest to ideal delta
-  return validStrikes.reduce((prev, curr) => {
-    const prevDiff = Math.abs(prev.delta - targetDelta);
-    const currDiff = Math.abs(curr.delta - targetDelta);
-    return currDiff < prevDiff ? curr : prev;
-  });
+  // Find best strike by combined score
+  const sorted = validStrikes.sort((a, b) => scoreStrike(b) - scoreStrike(a));
+  return {
+    strike: sorted[0],
+    inRange: true,
+    alternatives: sorted.slice(1, 4),
+  };
 }
 
 /**
@@ -215,78 +301,245 @@ async function fetchRealOptionChain(
 /**
  * Main function: Select optimal strikes based on delta targeting
  * Uses real IBKR data when available, falls back to mock data
- * @param direction - Trade direction from Step 2
+ *
+ * This function builds a transparent reasoning chain showing:
+ * 1. Delta target selection based on direction
+ * 2. Option chain fetch (IBKR or mock)
+ * 3. Strike selection with delta matching
+ * 4. Spread quality analysis
+ * 5. Premium and margin calculation
+ *
+ * @param directionDecision - Full direction decision from Step 2 (includes targetDelta)
  * @param underlyingPrice - Current price of underlying (used as fallback)
  * @param symbol - Underlying symbol (default: 'SPY')
- * @returns Selected strikes with expected premium
+ * @returns Selected strikes with expected premium and reasoning chain
  */
 export async function selectStrikes(
-  direction: TradeDirection,
+  directionDecision: DirectionDecision,
   underlyingPrice: number = 450, // Default SPY price for testing
   symbol: string = 'SPY'
 ): Promise<StrikeSelection> {
+  // Initialize reasoning builder
+  const reasoning = createReasoning(3, 'Strike Selection');
+
+  const direction = directionDecision.direction;
+
   const selection: StrikeSelection = {
     expectedPremium: 0,
     marginRequired: 0,
-    reasoning: ''
+    reason: ''
   };
 
   let usingRealData = false;
   let actualUnderlyingPrice = underlyingPrice;
 
-  // Try to fetch real IBKR data for put strikes
+  // Step 3.1: Determine delta target based on direction
+  const deltaTarget = getDeltaTarget(direction);
+  const customDelta = directionDecision.targetDelta;
+
+  // If Step 2 provided a custom delta target, use it
+  if (customDelta) {
+    deltaTarget.min = customDelta.min;
+    deltaTarget.max = customDelta.max;
+    deltaTarget.ideal = (customDelta.min + customDelta.max) / 2;
+  }
+
+  reasoning.addInput('direction', direction);
+  reasoning.addInput('symbol', symbol);
+  reasoning.addInput('fallbackUnderlyingPrice', underlyingPrice);
+  reasoning.addInput('deltaTargetMin', deltaTarget.min);
+  reasoning.addInput('deltaTargetMax', deltaTarget.max);
+  reasoning.addInput('deltaTargetIdeal', deltaTarget.ideal);
+
+  reasoning.addLogicStep(
+    `Determining delta target for ${direction} trade`,
+    direction === 'STRANGLE'
+      ? `Neutral/Strangle: Using further OTM delta ${formatNumber(deltaTarget.min, 2)}-${formatNumber(deltaTarget.max, 2)} for safety`
+      : `Directional: Using normal delta ${formatNumber(deltaTarget.min, 2)}-${formatNumber(deltaTarget.max, 2)}`
+  );
+
+  reasoning.addComputation(
+    'Delta Target Selection',
+    direction === 'STRANGLE' ? 'NEUTRAL → Further OTM' : 'DIRECTIONAL → Normal OTM',
+    {
+      direction,
+      isStrangle: direction === 'STRANGLE',
+      deltaMin: deltaTarget.min,
+      deltaMax: deltaTarget.max,
+      probability: direction === 'STRANGLE' ? '~90%' : '~80-85%',
+    },
+    `${deltaTarget.min}-${deltaTarget.max}`,
+    `Target strikes with delta ${formatNumber(deltaTarget.min, 2)}-${formatNumber(deltaTarget.max, 2)} (${formatPercent(1 - deltaTarget.max)} prob OTM)`
+  );
+
+  // Step 3.2: Fetch and analyze PUT strikes
   if (direction === 'PUT' || direction === 'STRANGLE') {
+    reasoning.addLogicStep('Fetching PUT option chain');
+
     const realData = await fetchRealOptionChain(symbol, 'PUT');
 
     if (realData && realData.strikes.length > 0) {
       usingRealData = true;
       actualUnderlyingPrice = realData.underlyingPrice;
-      const putStrike = findBestStrike(realData.strikes);
 
-      if (putStrike) {
-        selection.putStrike = putStrike;
-        selection.reasoning += `PUT (IBKR): Strike $${putStrike.strike} with delta ${putStrike.delta}. `;
+      reasoning.addLogicStep(
+        `Received ${realData.strikes.length} PUT strikes from IBKR`,
+        `Underlying price: ${formatCurrency(actualUnderlyingPrice)}`
+      );
+
+      const putResult = findBestStrike(realData.strikes, deltaTarget);
+
+      if (putResult.strike) {
+        selection.putStrike = putResult.strike;
+        const spreadScore = calculateSpreadScore(putResult.strike);
+
+        reasoning.addComputation(
+          'PUT Strike Selection',
+          'findBestStrike(strikes, deltaTarget)',
+          {
+            availableStrikes: realData.strikes.length,
+            selectedStrike: putResult.strike.strike,
+            selectedDelta: putResult.strike.delta,
+            inTargetRange: putResult.inRange,
+            bid: putResult.strike.bid,
+            ask: putResult.strike.ask,
+            spreadScore: formatPercent(spreadScore),
+          },
+          putResult.strike.strike,
+          putResult.inRange
+            ? `Selected $${putResult.strike.strike} PUT with delta ${formatNumber(putResult.strike.delta, 3)} (in range)`
+            : `Selected $${putResult.strike.strike} PUT with delta ${formatNumber(putResult.strike.delta, 3)} (closest available)`
+        );
       }
     } else {
       // Fall back to mock data
-      const putChain = getMockOptionChain(underlyingPrice, 'PUT');
-      const putStrike = findBestStrike(putChain);
+      reasoning.addLogicStepWithWarning(
+        'IBKR PUT chain unavailable, using mock data',
+        'Mock data used for estimation only'
+      );
 
-      if (putStrike) {
-        selection.putStrike = putStrike;
-        selection.reasoning += `PUT (mock): Strike $${putStrike.strike} with delta ${putStrike.delta}. `;
+      const putChain = getMockOptionChain(underlyingPrice, 'PUT');
+      const putResult = findBestStrike(putChain, deltaTarget);
+
+      if (putResult.strike) {
+        selection.putStrike = putResult.strike;
+        reasoning.addComputation(
+          'PUT Strike Selection (Mock)',
+          'findBestStrike(mockChain, deltaTarget)',
+          {
+            selectedStrike: putResult.strike.strike,
+            selectedDelta: putResult.strike.delta,
+            inTargetRange: putResult.inRange,
+          },
+          putResult.strike.strike,
+          `Mock: $${putResult.strike.strike} PUT with delta ${formatNumber(putResult.strike.delta, 3)}`
+        );
       }
     }
   }
 
-  // Try to fetch real IBKR data for call strikes
+  // Step 3.3: Fetch and analyze CALL strikes
   if (direction === 'CALL' || direction === 'STRANGLE') {
+    reasoning.addLogicStep('Fetching CALL option chain');
+
     const realData = await fetchRealOptionChain(symbol, 'CALL');
 
     if (realData && realData.strikes.length > 0) {
       usingRealData = true;
       actualUnderlyingPrice = realData.underlyingPrice;
-      const callStrike = findBestStrike(realData.strikes);
 
-      if (callStrike) {
-        selection.callStrike = callStrike;
-        selection.reasoning += `CALL (IBKR): Strike $${callStrike.strike} with delta ${callStrike.delta}. `;
+      reasoning.addLogicStep(
+        `Received ${realData.strikes.length} CALL strikes from IBKR`,
+        `Underlying price: ${formatCurrency(actualUnderlyingPrice)}`
+      );
+
+      const callResult = findBestStrike(realData.strikes, deltaTarget);
+
+      if (callResult.strike) {
+        selection.callStrike = callResult.strike;
+        const spreadScore = calculateSpreadScore(callResult.strike);
+
+        reasoning.addComputation(
+          'CALL Strike Selection',
+          'findBestStrike(strikes, deltaTarget)',
+          {
+            availableStrikes: realData.strikes.length,
+            selectedStrike: callResult.strike.strike,
+            selectedDelta: callResult.strike.delta,
+            inTargetRange: callResult.inRange,
+            bid: callResult.strike.bid,
+            ask: callResult.strike.ask,
+            spreadScore: formatPercent(spreadScore),
+          },
+          callResult.strike.strike,
+          callResult.inRange
+            ? `Selected $${callResult.strike.strike} CALL with delta ${formatNumber(callResult.strike.delta, 3)} (in range)`
+            : `Selected $${callResult.strike.strike} CALL with delta ${formatNumber(callResult.strike.delta, 3)} (closest available)`
+        );
       }
     } else {
       // Fall back to mock data
-      const callChain = getMockOptionChain(underlyingPrice, 'CALL');
-      const callStrike = findBestStrike(callChain);
+      reasoning.addLogicStepWithWarning(
+        'IBKR CALL chain unavailable, using mock data',
+        'Mock data used for estimation only'
+      );
 
-      if (callStrike) {
-        selection.callStrike = callStrike;
-        selection.reasoning += `CALL (mock): Strike $${callStrike.strike} with delta ${callStrike.delta}. `;
+      const callChain = getMockOptionChain(underlyingPrice, 'CALL');
+      const callResult = findBestStrike(callChain, deltaTarget);
+
+      if (callResult.strike) {
+        selection.callStrike = callResult.strike;
+        reasoning.addComputation(
+          'CALL Strike Selection (Mock)',
+          'findBestStrike(mockChain, deltaTarget)',
+          {
+            selectedStrike: callResult.strike.strike,
+            selectedDelta: callResult.strike.delta,
+            inTargetRange: callResult.inRange,
+          },
+          callResult.strike.strike,
+          `Mock: $${callResult.strike.strike} CALL with delta ${formatNumber(callResult.strike.delta, 3)}`
+        );
       }
     }
   }
 
-  // Calculate totals
+  // Step 3.4: Calculate totals
   selection.expectedPremium = calculateExpectedPremium(selection.putStrike, selection.callStrike);
   selection.marginRequired = calculateMarginRequirement(selection.putStrike, selection.callStrike);
+
+  reasoning.addLogicStep(
+    'Calculating expected premium and margin requirement'
+  );
+
+  reasoning.addComputation(
+    'Premium Calculation',
+    'sum(midPrice * 100) for each selected strike',
+    {
+      putPremium: selection.putStrike
+        ? formatCurrency(((selection.putStrike.bid + selection.putStrike.ask) / 2) * 100)
+        : 'N/A',
+      callPremium: selection.callStrike
+        ? formatCurrency(((selection.callStrike.bid + selection.callStrike.ask) / 2) * 100)
+        : 'N/A',
+    },
+    selection.expectedPremium,
+    `Total expected premium: ${formatCurrency(selection.expectedPremium)}`
+  );
+
+  const marginRate = selection.putStrike && selection.callStrike ? 0.12 : 0.18;
+  reasoning.addComputation(
+    'Margin Calculation',
+    direction === 'STRANGLE'
+      ? 'strikeValue * 100 * 0.12 (strangle offset)'
+      : 'strikeValue * 100 * 0.18 (naked)',
+    {
+      marginRate: formatPercent(marginRate),
+      isStrangle: direction === 'STRANGLE',
+    },
+    selection.marginRequired,
+    `Estimated margin: ${formatCurrency(selection.marginRequired)}`
+  );
 
   // Collect nearby strikes for UI display
   const nearbyStrikes: {
@@ -373,12 +626,53 @@ export async function selectStrikes(
   // Add nearby strikes to selection
   if (nearbyStrikes.puts.length > 0 || nearbyStrikes.calls.length > 0) {
     selection.nearbyStrikes = nearbyStrikes;
+    reasoning.addLogicStep(
+      `Collected ${nearbyStrikes.puts.length} nearby PUT strikes and ${nearbyStrikes.calls.length} nearby CALL strikes for comparison`
+    );
   }
 
-  // Add summary to reasoning
+  // Step 3.5: Build summary
   const dataSource = usingRealData ? 'IBKR real-time' : 'mock estimates';
-  selection.reasoning += `Data source: ${dataSource}. Underlying: $${actualUnderlyingPrice.toFixed(2)}. `;
-  selection.reasoning += `Expected premium: $${selection.expectedPremium}, Margin required: $${selection.marginRequired}`;
+
+  // Calculate confidence based on data quality and range matching
+  let confidence = 0.7; // Base confidence
+  if (usingRealData) confidence += 0.15;
+  if (selection.putStrike || selection.callStrike) confidence += 0.10;
+  // Check if all selected strikes are within target delta range
+  const putInRange = selection.putStrike
+    ? selection.putStrike.delta >= deltaTarget.min && selection.putStrike.delta <= deltaTarget.max
+    : true;
+  const callInRange = selection.callStrike
+    ? selection.callStrike.delta >= deltaTarget.min && selection.callStrike.delta <= deltaTarget.max
+    : true;
+  if (putInRange && callInRange) confidence += 0.05;
+  confidence = Math.min(confidence, 1);
+
+  // Build short reason for display
+  const strikesSummary: string[] = [];
+  if (selection.putStrike) {
+    strikesSummary.push(`PUT $${selection.putStrike.strike} (δ${formatNumber(selection.putStrike.delta, 2)})`);
+  }
+  if (selection.callStrike) {
+    strikesSummary.push(`CALL $${selection.callStrike.strike} (δ${formatNumber(selection.callStrike.delta, 2)})`);
+  }
+
+  selection.reason = strikesSummary.length > 0
+    ? `${strikesSummary.join(', ')} | Premium: ${formatCurrency(selection.expectedPremium)} | ${dataSource}`
+    : 'No strikes selected';
+
+  // Build final reasoning
+  const decisionEmoji = strikesSummary.length > 0 ? '✅' : '❌';
+  const finalReasoning = reasoning.build(
+    strikesSummary.length > 0
+      ? `STRIKES SELECTED: ${strikesSummary.join(', ')}. Expected premium: ${formatCurrency(selection.expectedPremium)}`
+      : 'NO STRIKES SELECTED: Unable to find suitable options',
+    decisionEmoji,
+    confidence * 100,
+    strikesSummary.length > 0
+  );
+
+  selection.reasoning = finalReasoning;
 
   return selection;
 }
