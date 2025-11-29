@@ -64,6 +64,14 @@ interface SymbolCache {
 // Stale threshold in milliseconds (5 seconds)
 const STALE_THRESHOLD_MS = 5000;
 
+// Broadcast function (injected from routes.ts)
+function broadcastOptionChainUpdate(message: object): void {
+  const broadcast = (global as any).broadcastOptionChainUpdate;
+  if (typeof broadcast === 'function') {
+    broadcast(message);
+  }
+}
+
 // How often to refresh the full chain from HTTP (backup, every 5 minutes)
 const FULL_REFRESH_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -325,6 +333,14 @@ export class OptionChainStreamer {
         if (update.last != null) {
           symbolCache.chain.underlyingPrice = update.last;
           symbolCache.chain.lastUpdate = update.timestamp;
+
+          // Broadcast underlying price update to browser clients
+          broadcastOptionChainUpdate({
+            type: 'underlying_price_update',
+            symbol,
+            price: update.last,
+            timestamp: update.timestamp.toISOString(),
+          });
         }
         return;
       }
@@ -352,6 +368,27 @@ export class OptionChainStreamer {
 
           // Update chain's lastUpdate
           symbolCache.chain.lastUpdate = update.timestamp;
+
+          // Broadcast option chain update to browser clients
+          broadcastOptionChainUpdate({
+            type: 'option_chain_update',
+            symbol,
+            data: {
+              conid: update.conid,
+              strike: strike.strike,
+              optionType: strikeInfo.type.toUpperCase(),
+              bid: strike.bid,
+              ask: strike.ask,
+              last: strike.last,
+              delta: strike.delta,
+              gamma: strike.gamma,
+              theta: strike.theta,
+              vega: strike.vega,
+              iv: strike.iv,
+              openInterest: strike.openInterest,
+            },
+            timestamp: update.timestamp.toISOString(),
+          });
         }
         return;
       }

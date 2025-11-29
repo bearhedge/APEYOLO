@@ -4,7 +4,60 @@
 
 ---
 
-## CURRENT STATUS (2025-11-30)
+## CURRENT STATUS (2025-11-30 - True WebSocket Streaming)
+
+### ✅ True WebSocket Streaming to Browser COMPLETE
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| **Server Broadcast** | ✅ Deployed | `broadcastOptionChainUpdate()` in optionChainStreamer.ts |
+| **Browser Integration** | ✅ Deployed | Data.tsx uses `useWebSocket` hook |
+| **Live Updates** | ✅ Ready | Option chain updates push instantly |
+| **Fallback Polling** | ✅ Ready | 30s interval when WS connected |
+
+### Architecture (After WebSocket Streaming)
+
+```
+IBKR WebSocket API
+       │
+       ▼ (push - instant)
+┌──────────────────────────┐
+│ IbkrWebSocketManager     │
+└──────────────────────────┘
+       │
+       ▼ (updates cache + broadcast)
+┌──────────────────────────┐
+│ OptionChainStreamer      │──────────────────────┐
+│ - handleMarketDataUpdate │                      │
+│ - broadcastOptionUpdate  │                      │
+└──────────────────────────┘                      │
+                                                  ▼ (push to browser)
+                                    ┌──────────────────────────┐
+                                    │ Express /ws Server       │
+                                    │ (wsClients.forEach)      │
+                                    └──────────────────────────┘
+                                                  │
+                                                  ▼ (instant)
+                                    ┌──────────────────────────┐
+                                    │ Data.tsx                 │
+                                    │ (useWebSocket hook)      │
+                                    │ - liveOptionChain state  │
+                                    │ - liveUnderlyingPrice    │
+                                    └──────────────────────────┘
+```
+
+### What to Expect Monday (Market Open)
+
+1. Open Data page in browser
+2. Should see "WS Connected" indicator (green Wifi icon)
+3. Click "Start Streaming" or search for SPY
+4. Should see "⚡ Live WebSocket" indicator
+5. Update counter should increase as IBKR pushes data
+6. Option chain table updates instantly (no visible polling)
+
+---
+
+## PREVIOUS STATUS (2025-11-30)
 
 ### ✅ UI Restructuring Complete
 

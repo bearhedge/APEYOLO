@@ -1,5 +1,33 @@
 ## 2025-11-29
 
+### True WebSocket Streaming to Browser (NEW)
+- **Added**: Real-time WebSocket streaming from server to browser
+  - Option chain updates now push instantly to the browser (no polling delay)
+  - Underlying price updates broadcast in real-time
+  - Browser receives updates the moment IBKR pushes them to server
+- **Modified**: `server/broker/optionChainStreamer.ts`
+  - Added `broadcastOptionChainUpdate()` function for broadcasting to browser clients
+  - Broadcasts `option_chain_update` messages when strikes are updated
+  - Broadcasts `underlying_price_update` messages when underlying price changes
+- **Modified**: `server/routes.ts`
+  - Exported `broadcastOptionChainUpdate` function via global for streamer access
+- **Modified**: `client/src/pages/Data.tsx`
+  - Integrated `useWebSocket` hook for real-time updates
+  - Added local state for live option chain data
+  - WebSocket updates merge into state instantly without polling
+  - Added WebSocket connection indicator (Wifi/WifiOff icons)
+  - Added live update counter to show streaming activity
+  - Changed polling interval to 30s when WebSocket connected (fallback only)
+  - Data source indicator now shows "⚡ Live WebSocket" when streaming
+
+### Message Types
+| Type | Description |
+|------|-------------|
+| `option_chain_update` | Single option strike update (bid/ask/delta/IV/etc) |
+| `underlying_price_update` | Underlying price change |
+
+---
+
 ### UI Restructuring (NEW)
 - **Added**: New Data page (`/data`)
   - Ticker search functionality

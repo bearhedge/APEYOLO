@@ -64,6 +64,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Store WebSocket clients for broadcasting
   const wsClients = new Set<WebSocket>();
 
+  // Export broadcast function for option chain updates (accessible from optionChainStreamer)
+  (global as any).broadcastOptionChainUpdate = (message: object) => {
+    const json = JSON.stringify(message);
+    wsClients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(json);
+      }
+    });
+  };
+
   wss.on('connection', (ws) => {
     console.log('Client connected to websocket');
     wsClients.add(ws);

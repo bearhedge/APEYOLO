@@ -1,8 +1,9 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useCallback, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { LeftNav } from '@/components/LeftNav';
 import { MiniChart } from '@/components/MiniChart';
-import { Search, RefreshCw, TrendingUp, TrendingDown, Activity, ChevronDown, Calendar } from 'lucide-react';
+import { useWebSocket } from '@/hooks/use-websocket';
+import { Search, RefreshCw, TrendingUp, TrendingDown, Activity, ChevronDown, Calendar, Wifi, WifiOff } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 interface OptionStrike {
@@ -15,7 +16,36 @@ interface OptionStrike {
   vega?: number;
   iv?: number;
   oi?: number;
+  openInterest?: number;
   optionType: 'PUT' | 'CALL';
+}
+
+// WebSocket message types for real-time updates
+interface OptionChainUpdateMessage {
+  type: 'option_chain_update';
+  symbol: string;
+  data: {
+    conid: number;
+    strike: number;
+    optionType: 'PUT' | 'CALL';
+    bid?: number;
+    ask?: number;
+    last?: number;
+    delta?: number;
+    gamma?: number;
+    theta?: number;
+    vega?: number;
+    iv?: number;
+    openInterest?: number;
+  };
+  timestamp: string;
+}
+
+interface UnderlyingPriceUpdateMessage {
+  type: 'underlying_price_update';
+  symbol: string;
+  price: number;
+  timestamp: string;
 }
 
 interface StreamStatus {
@@ -53,6 +83,83 @@ export function Data() {
   const [selectedExpiration, setSelectedExpiration] = useState<string | null>(null);
   const [isRefreshing, setIsRefreshing] = useState(false);
 
+  // WebSocket connection for real-time updates
+  const { isConnected: wsConnected, lastMessage } = useWebSocket();
+
+  // Local state for WebSocket-driven option chain updates
+  const [liveOptionChain, setLiveOptionChain] = useState<CachedChain | null>(null);
+  const [liveUnderlyingPrice, setLiveUnderlyingPrice] = useState<number | null>(null);
+  const [wsUpdateCount, setWsUpdateCount] = useState(0);
+
+  // Handle WebSocket messages for real-time updates
+  useEffect(() => {
+    if (!lastMessage) return;
+
+    // Handle option chain updates
+    if (lastMessage.type === 'option_chain_update') {
+      const msg = lastMessage as unknown as OptionChainUpdateMessage;
+      if (msg.symbol !== activeTicker) return;
+
+      setLiveOptionChain(prev => {
+        if (!prev) return prev;
+
+        const optionType = msg.data.optionType;
+        const targetArray = optionType === 'PUT' ? 'puts' : 'calls';
+
+        // Find and update the specific strike
+        const updatedArray = prev[targetArray].map(opt => {
+          if (opt.strike === msg.data.strike) {
+            return {
+              ...opt,
+              bid: msg.data.bid ?? opt.bid,
+              ask: msg.data.ask ?? opt.ask,
+              delta: msg.data.delta ?? opt.delta,
+              gamma: msg.data.gamma ?? opt.gamma,
+              theta: msg.data.theta ?? opt.theta,
+              vega: msg.data.vega ?? opt.vega,
+              iv: msg.data.iv ?? opt.iv,
+              oi: msg.data.openInterest ?? opt.oi,
+            };
+          }
+          return opt;
+        });
+
+        setWsUpdateCount(c => c + 1);
+
+        return {
+          ...prev,
+          [targetArray]: updatedArray,
+          lastUpdate: msg.timestamp,
+        };
+      });
+    }
+
+    // Handle underlying price updates
+    if (lastMessage.type === 'underlying_price_update') {
+      const msg = lastMessage as unknown as UnderlyingPriceUpdateMessage;
+      if (msg.symbol !== activeTicker) return;
+
+      setLiveUnderlyingPrice(msg.price);
+      setWsUpdateCount(c => c + 1);
+    }
+  }, [lastMessage, activeTicker]);
+
+  // Sync live option chain when HTTP data arrives
+  useEffect(() => {
+    if (optionChain && optionChain.cached) {
+      // Convert HTTP response to match our local state structure
+      const chainData: CachedChain = {
+        ...optionChain,
+        puts: optionChain.puts || [],
+        calls: optionChain.calls || [],
+      };
+      setLiveOptionChain(chainData);
+      if (optionChain.underlyingPrice) {
+        setLiveUnderlyingPrice(optionChain.underlyingPrice);
+      }
+    }
+  }, [optionChain]);
+
   // Fetch streaming status
   const { data: streamStatus } = useQuery<StreamStatus>({
     queryKey: ['/api/broker/stream/status'],
@@ -86,7 +193,9 @@ export function Data() {
       }
       return res.json();
     },
-    refetchInterval: streamStatus?.isStreaming ? 2000 : 10000,
+    // Only poll as fallback - WebSocket provides instant updates
+    // Use 30s when WebSocket connected, 10s otherwise
+    refetchInterval: wsConnected && streamStatus?.isStreaming ? 30000 : 10000,
     enabled: !!activeTicker,
   });
 
@@ -171,11 +280,17 @@ export function Data() {
 
   const sparklineData = marketData?.price ? generateSparklineData(marketData.price) : [];
   const isPriceUp = (marketData?.change || 0) >= 0;
-  const underlyingPrice = optionChain?.underlyingPrice || marketData?.price || 0;
 
-  // Sort options by strike
-  const sortedPuts = [...(optionChain?.puts || [])].sort((a, b) => b.strike - a.strike);
-  const sortedCalls = [...(optionChain?.calls || [])].sort((a, b) => a.strike - b.strike);
+  // Use live WebSocket data when available, fallback to HTTP
+  const underlyingPrice = liveUnderlyingPrice || optionChain?.underlyingPrice || marketData?.price || 0;
+  const displayChain = liveOptionChain || optionChain;
+
+  // Sort options by strike - use live chain when available
+  const sortedPuts = [...(displayChain?.puts || [])].sort((a, b) => b.strike - a.strike);
+  const sortedCalls = [...(displayChain?.calls || [])].sort((a, b) => a.strike - b.strike);
+
+  // Determine if we're getting real-time WebSocket updates
+  const isLiveStreaming = wsConnected && streamStatus?.isStreaming && streamStatus.symbols.includes(activeTicker);
 
   return (
     <div className="flex h-[calc(100vh-64px)]">
@@ -237,12 +352,19 @@ export function Data() {
               )}
             </div>
 
-            {/* Stream Status */}
+            {/* Stream Status - Show WebSocket connection status */}
             <div className="flex items-center gap-4">
-              {streamStatus?.isStreaming && streamStatus.symbols.includes(activeTicker) && (
+              {/* WebSocket Connection Status */}
+              <div className={`flex items-center gap-2 text-sm ${wsConnected ? 'text-green-500' : 'text-yellow-500'}`}>
+                {wsConnected ? <Wifi className="w-4 h-4" /> : <WifiOff className="w-4 h-4" />}
+                <span>{wsConnected ? 'WS Connected' : 'WS Disconnected'}</span>
+              </div>
+
+              {/* Live Streaming Status */}
+              {isLiveStreaming && (
                 <div className="flex items-center gap-2 text-green-500 text-sm">
                   <Activity className="w-4 h-4 animate-pulse" />
-                  <span>Live</span>
+                  <span>Live ({wsUpdateCount} updates)</span>
                 </div>
               )}
               <button
@@ -329,14 +451,20 @@ export function Data() {
               )}
 
               {/* Data Source Indicator */}
-              <div className={`text-xs px-2 py-1 rounded ${optionChain?.cached ? 'bg-green-500/20 text-green-400' : 'bg-yellow-500/20 text-yellow-400'}`}>
-                {optionChain?.cached ? 'WebSocket Cache' : 'HTTP Snapshot'}
+              <div className={`text-xs px-2 py-1 rounded ${
+                isLiveStreaming
+                  ? 'bg-green-500/30 text-green-400 border border-green-500/50'
+                  : displayChain?.cached
+                    ? 'bg-green-500/20 text-green-400'
+                    : 'bg-yellow-500/20 text-yellow-400'
+              }`}>
+                {isLiveStreaming ? '⚡ Live WebSocket' : displayChain?.cached ? 'WebSocket Cache' : 'HTTP Snapshot'}
               </div>
 
               {/* Last Update */}
-              {optionChain?.lastUpdate && (
+              {displayChain?.lastUpdate && (
                 <span className="text-xs text-silver">
-                  Updated: {new Date(optionChain.lastUpdate).toLocaleTimeString()}
+                  Updated: {new Date(displayChain.lastUpdate).toLocaleTimeString()}
                 </span>
               )}
             </div>
