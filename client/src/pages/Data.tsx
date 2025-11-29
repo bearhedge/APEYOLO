@@ -91,6 +91,75 @@ export function Data() {
   const [liveUnderlyingPrice, setLiveUnderlyingPrice] = useState<number | null>(null);
   const [wsUpdateCount, setWsUpdateCount] = useState(0);
 
+  // ========================================
+  // useQuery hooks MUST come before useEffects that depend on them
+  // (JavaScript temporal dead zone - can't access const before declaration)
+  // ========================================
+
+  // Fetch streaming status
+  const { data: streamStatus } = useQuery<StreamStatus>({
+    queryKey: ['/api/broker/stream/status'],
+    queryFn: async () => {
+      const res = await fetch('/api/broker/stream/status', { credentials: 'include' });
+      if (!res.ok) throw new Error('Failed to fetch stream status');
+      return res.json();
+    },
+    refetchInterval: 5000,
+  });
+
+  // Fetch cached option chain
+  const { data: optionChain, isLoading: chainLoading, refetch: refetchChain } = useQuery<CachedChain>({
+    queryKey: ['/api/broker/stream/chain', activeTicker],
+    queryFn: async () => {
+      const res = await fetch(`/api/broker/stream/chain/${activeTicker}`, { credentials: 'include' });
+      if (!res.ok) {
+        // Fall back to test-options endpoint
+        const fallback = await fetch(`/api/broker/test-options/${activeTicker}`, { credentials: 'include' });
+        if (!fallback.ok) throw new Error('Failed to fetch option chain');
+        const data = await fallback.json();
+        return {
+          cached: false,
+          symbol: activeTicker,
+          puts: data.optionChain?.filter((o: any) => o.optionType === 'PUT') || [],
+          calls: data.optionChain?.filter((o: any) => o.optionType === 'CALL') || [],
+          underlyingPrice: data.spotPrice || 0,
+          lastUpdate: new Date().toISOString(),
+          expirations: data.expirations || []
+        };
+      }
+      return res.json();
+    },
+    // Only poll as fallback - WebSocket provides instant updates
+    // Use 30s when WebSocket connected, 10s otherwise
+    refetchInterval: wsConnected && streamStatus?.isStreaming ? 30000 : 10000,
+    enabled: !!activeTicker,
+  });
+
+  // Fetch market data for the ticker
+  const { data: marketData, isLoading: marketLoading } = useQuery<MarketData>({
+    queryKey: ['/api/broker/test-market', activeTicker],
+    queryFn: async () => {
+      const res = await fetch(`/api/broker/test-market/${activeTicker}`, { credentials: 'include' });
+      if (!res.ok) throw new Error('Failed to fetch market data');
+      const data = await res.json();
+      return {
+        price: data.price || 0,
+        change: data.change || 0,
+        changePct: data.changePct || 0,
+        volume: data.volume,
+        high: data.high,
+        low: data.low,
+        open: data.open,
+      };
+    },
+    refetchInterval: 5000,
+    enabled: !!activeTicker,
+  });
+
+  // ========================================
+  // useEffect hooks (can now reference queries declared above)
+  // ========================================
+
   // Handle WebSocket messages for real-time updates
   useEffect(() => {
     if (!lastMessage) return;
@@ -159,66 +228,6 @@ export function Data() {
       }
     }
   }, [optionChain]);
-
-  // Fetch streaming status
-  const { data: streamStatus } = useQuery<StreamStatus>({
-    queryKey: ['/api/broker/stream/status'],
-    queryFn: async () => {
-      const res = await fetch('/api/broker/stream/status', { credentials: 'include' });
-      if (!res.ok) throw new Error('Failed to fetch stream status');
-      return res.json();
-    },
-    refetchInterval: 5000,
-  });
-
-  // Fetch cached option chain
-  const { data: optionChain, isLoading: chainLoading, refetch: refetchChain } = useQuery<CachedChain>({
-    queryKey: ['/api/broker/stream/chain', activeTicker],
-    queryFn: async () => {
-      const res = await fetch(`/api/broker/stream/chain/${activeTicker}`, { credentials: 'include' });
-      if (!res.ok) {
-        // Fall back to test-options endpoint
-        const fallback = await fetch(`/api/broker/test-options/${activeTicker}`, { credentials: 'include' });
-        if (!fallback.ok) throw new Error('Failed to fetch option chain');
-        const data = await fallback.json();
-        return {
-          cached: false,
-          symbol: activeTicker,
-          puts: data.optionChain?.filter((o: any) => o.optionType === 'PUT') || [],
-          calls: data.optionChain?.filter((o: any) => o.optionType === 'CALL') || [],
-          underlyingPrice: data.spotPrice || 0,
-          lastUpdate: new Date().toISOString(),
-          expirations: data.expirations || []
-        };
-      }
-      return res.json();
-    },
-    // Only poll as fallback - WebSocket provides instant updates
-    // Use 30s when WebSocket connected, 10s otherwise
-    refetchInterval: wsConnected && streamStatus?.isStreaming ? 30000 : 10000,
-    enabled: !!activeTicker,
-  });
-
-  // Fetch market data for the ticker
-  const { data: marketData, isLoading: marketLoading } = useQuery<MarketData>({
-    queryKey: ['/api/broker/test-market', activeTicker],
-    queryFn: async () => {
-      const res = await fetch(`/api/broker/test-market/${activeTicker}`, { credentials: 'include' });
-      if (!res.ok) throw new Error('Failed to fetch market data');
-      const data = await res.json();
-      return {
-        price: data.price || 0,
-        change: data.change || 0,
-        changePct: data.changePct || 0,
-        volume: data.volume,
-        high: data.high,
-        low: data.low,
-        open: data.open,
-      };
-    },
-    refetchInterval: 5000,
-    enabled: !!activeTicker,
-  });
 
   // Start streaming mutation
   const startStreamMutation = useMutation({
