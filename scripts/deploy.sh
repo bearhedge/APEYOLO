@@ -32,6 +32,7 @@ gcloud run deploy "${SERVICE}" \
   --region "${REGION}" \
   --project "${PROJECT}" \
   --set-env-vars "APP_ENV=${APP_ENV}" \
+  --set-secrets "IBKR_CLIENT_ID=ibkr-client-id:latest,IBKR_CLIENT_KEY_ID=ibkr-client-key-id:latest,IBKR_CREDENTIAL=ibkr-credential:latest,IBKR_PRIVATE_KEY=ibkr-private-key:latest,DATABASE_URL=database-url:latest,JWT_SECRET=jwt-secret:latest,GOOGLE_CLIENT_ID=google-oauth-client-id:latest,GOOGLE_CLIENT_SECRET=google-oauth-client-secret:latest" \
   --allow-unauthenticated
 
 echo "✅ Deployed ${SERVICE} to ${REGION}"
