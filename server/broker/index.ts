@@ -19,6 +19,18 @@ function createMockProvider(): BrokerProvider {
       // For mock, placement is handled by routes today; return a simple ack.
       return { status: "accepted_mock" };
     },
+    getMarketData: async (symbol: string) => {
+      // Mock market data
+      const basePrice = symbol === 'SPY' ? 680 : symbol === 'VIX' ? 15 : 100;
+      return {
+        price: basePrice + (Math.random() - 0.5) * 2,
+        bid: basePrice - 0.01,
+        ask: basePrice + 0.01,
+        volume: Math.floor(Math.random() * 1000000),
+        change: (Math.random() - 0.5) * 5,
+        changePercent: (Math.random() - 0.5) * 2,
+      };
+    },
   };
 }
 
