@@ -15,8 +15,7 @@ import {
 import { CheckCircle, XCircle, Clock, Zap, AlertTriangle, Play, RefreshCw } from 'lucide-react';
 import { useEngine } from '@/hooks/useEngine';
 import { useBrokerStatus } from '@/hooks/useBrokerStatus';
-import EngineLog from '@/components/EngineLog';
-import { SPYChart } from '@/components/charts/SPYChart';
+import EngineLog, { OperationEntry, LogEntry } from '@/components/EngineLog';
 import toast from 'react-hot-toast';
 
 export function Engine() {
@@ -44,7 +43,25 @@ export function Engine() {
   const [optionChainExpanded, setOptionChainExpanded] = useState(true);
   const [riskTier, setRiskTier] = useState<RiskTier>('balanced');
   const [stopMultiplier, setStopMultiplier] = useState<StopMultiplier>(3);
-  const [engineLogs, setEngineLogs] = useState<any[]>([]);
+  const [engineLogs, setEngineLogs] = useState<LogEntry[]>([]);
+
+  // Helper to add operation log entries in real-time
+  const addOperationLog = useCallback((
+    category: OperationEntry['category'],
+    message: string,
+    status?: OperationEntry['status'],
+    value?: string | number
+  ) => {
+    const entry: OperationEntry = {
+      type: 'operation',
+      category,
+      message,
+      timestamp: new Date().toISOString(),
+      status,
+      value,
+    };
+    setEngineLogs(prev => [...prev, entry]);
+  }, []);
 
   // Auto-connect to IBKR when page loads (same as Settings page)
   useEffect(() => {
@@ -69,17 +86,55 @@ export function Engine() {
       setIsExecuting(true);
       setEngineLogs([]); // Clear previous logs
       toast.loading('Running engine analysis...', { id: 'engine-execute' });
+
+      // Real-time operation logs
+      addOperationLog('IBKR', 'Checking connection status...', 'pending');
+      await new Promise(r => setTimeout(r, 100)); // Allow UI to update
+
+      addOperationLog('IBKR', brokerConnectedFinal
+        ? 'Connected to paper trading account'
+        : 'Using mock data (IBKR disconnected)', 'success');
+
+      addOperationLog('MARKET', 'Fetching SPY price...', 'pending');
+      await new Promise(r => setTimeout(r, 100));
+
+      addOperationLog('MARKET', 'Fetching VIX data...', 'pending');
+      await new Promise(r => setTimeout(r, 100));
+
+      addOperationLog('OPTIONS', 'Loading 0DTE option chain...', 'pending');
+      await new Promise(r => setTimeout(r, 100));
+
+      addOperationLog('ANALYSIS', 'Starting 5-step decision process...', 'pending');
+
+      // Run the actual analysis
       const result = await analyzeEngine({ riskTier, stopMultiplier });
+
+      // Update operation logs with actual values
+      if (result.q1MarketRegime?.inputs) {
+        const vix = result.q1MarketRegime.inputs.vixValue;
+        const spy = result.q1MarketRegime.inputs.spyPrice;
+        addOperationLog('MARKET', `SPY price: $${spy?.toFixed(2) || 'N/A'}`, 'success');
+        addOperationLog('MARKET', `VIX: ${vix?.toFixed(2) || 'N/A'} (${vix < 20 ? 'LOW - safe' : vix < 30 ? 'ELEVATED' : 'HIGH - caution'})`, 'success');
+      }
+
+      if (result.q3Strikes?.candidates?.length) {
+        addOperationLog('OPTIONS', `Found ${result.q3Strikes.candidates.length} strikes for SPY`, 'success');
+      }
 
       // Store audit logs from the result if available
       if (result.audit) {
-        setEngineLogs(result.audit.map((entry: any) => ({
-          ...entry,
-          timestamp: entry.timestamp || new Date().toISOString()
-        })));
+        setEngineLogs(prev => [
+          ...prev,
+          ...result.audit.map((entry: any) => ({
+            ...entry,
+            timestamp: entry.timestamp || new Date().toISOString()
+          }))
+        ]);
       }
 
+      // Final decision log
       if (result.canTrade) {
+        addOperationLog('DECISION', 'Trade proposal ready for execution', 'success');
         toast.success('Engine analysis complete - Trade opportunity found!', { id: 'engine-execute' });
 
         // If in auto mode and guard rails passed, execute automatically
@@ -89,15 +144,17 @@ export function Engine() {
           toast.success('Trade executed automatically!', { id: 'auto-execute' });
         }
       } else {
+        addOperationLog('DECISION', `No trade: ${result.reason}`, 'error');
         toast.error(`Cannot trade: ${result.reason}`, { id: 'engine-execute' });
       }
     } catch (err) {
       console.error('[Engine] Run error:', err);
+      addOperationLog('ANALYSIS', 'Engine analysis failed', 'error');
       toast.error('Failed to run engine', { id: 'engine-execute' });
     } finally {
       setIsExecuting(false);
     }
-  }, [analyzeEngine, riskTier, stopMultiplier, executionMode, executePaperTrade]);
+  }, [analyzeEngine, riskTier, stopMultiplier, executionMode, executePaperTrade, addOperationLog, brokerConnectedFinal]);
 
   // Handle paper trade execution
   const handleExecuteTrade = useCallback(async () => {
@@ -165,10 +222,10 @@ export function Engine() {
             testId="engine-status"
           />
           <StatCard
-            label="Broker"
+            label="IBKR"
             value={isConnecting ? 'Connecting...' : (brokerConnectedFinal ? 'Connected' : 'Disconnected')}
             icon={brokerConnectedFinal ? <Zap className="w-5 h-5 text-green-500" /> : isConnecting ? <RefreshCw className="w-5 h-5 animate-spin" /> : <XCircle className="w-5 h-5 text-red-500" />}
-            testId="broker-status"
+            testId="ibkr-status"
           />
           <StatCard
             label="Trading Window"
@@ -250,16 +307,6 @@ export function Engine() {
                 trend={analysis?.q2Direction?.signals?.trend}
                 reasoning={analysis?.q2Direction?.comment}
               />
-              {/* Large SPY Chart for Direction Analysis */}
-              <div className="mt-4">
-                <SPYChart
-                  height={400}
-                  defaultTimeframe="1D"
-                  chartType="candlestick"
-                  showTimeframeSelector={true}
-                  showOHLC={true}
-                />
-              </div>
             </StepCard>
 
             {/* Step 3: Strike Selection */}
@@ -291,6 +338,35 @@ export function Engine() {
                 }))}
                 expectedPremium={analysis?.q3Strikes?.expectedPremiumPerContract}
               />
+              {/* Option Chain embedded in Step 3 */}
+              {analysis && (
+                <div className="mt-4 border-t border-white/10 pt-4">
+                  <OptionChainViewer
+                    underlyingPrice={analysis.q3Strikes?.underlyingPrice || 450}
+                    selectedPutStrike={analysis.q3Strikes?.selectedPut?.strike}
+                    selectedCallStrike={analysis.q3Strikes?.selectedCall?.strike}
+                    optionChain={{
+                      puts: analysis.q3Strikes?.candidates?.filter(c => c.optionType === 'PUT').map(c => ({
+                        strike: c.strike,
+                        bid: c.bid,
+                        ask: c.ask,
+                        delta: c.delta,
+                        oi: c.openInterest
+                      })) || [],
+                      calls: analysis.q3Strikes?.candidates?.filter(c => c.optionType === 'CALL').map(c => ({
+                        strike: c.strike,
+                        bid: c.bid,
+                        ask: c.ask,
+                        delta: c.delta,
+                        oi: c.openInterest
+                      })) || []
+                    }}
+                    isExpanded={optionChainExpanded}
+                    onToggle={() => setOptionChainExpanded(!optionChainExpanded)}
+                    expiration="0DTE"
+                  />
+                </div>
+              )}
             </StepCard>
 
             {/* Step 4: Position Size (CONFIGURABLE) */}
@@ -332,6 +408,16 @@ export function Engine() {
               />
             </StepCard>
           </div>
+        </div>
+
+        {/* Engine Log - Terminal-like execution viewer */}
+        <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
+          <h3 className="text-lg font-semibold mb-4">Engine Log</h3>
+          <EngineLog
+            logs={engineLogs}
+            isRunning={isExecuting}
+            className="max-h-96"
+          />
         </div>
 
         {/* Current Decision - Trade Proposal */}
@@ -444,34 +530,6 @@ export function Engine() {
           </div>
         )}
 
-        {/* Option Chain Viewer */}
-        {analysis && (
-          <OptionChainViewer
-            underlyingPrice={analysis.q3Strikes?.underlyingPrice || 450}
-            selectedPutStrike={analysis.q3Strikes?.selectedPut?.strike}
-            selectedCallStrike={analysis.q3Strikes?.selectedCall?.strike}
-            optionChain={{
-              puts: analysis.q3Strikes?.candidates?.filter(c => c.optionType === 'PUT').map(c => ({
-                strike: c.strike,
-                bid: c.bid,
-                ask: c.ask,
-                delta: c.delta,
-                oi: c.openInterest
-              })) || [],
-              calls: analysis.q3Strikes?.candidates?.filter(c => c.optionType === 'CALL').map(c => ({
-                strike: c.strike,
-                bid: c.bid,
-                ask: c.ask,
-                delta: c.delta,
-                oi: c.openInterest
-              })) || []
-            }}
-            isExpanded={optionChainExpanded}
-            onToggle={() => setOptionChainExpanded(!optionChainExpanded)}
-            expiration="0DTE"
-          />
-        )}
-
         {/* Guard Rails Configuration */}
         {status?.guardRails && Object.keys(status.guardRails).length > 0 && (
           <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
@@ -516,16 +574,6 @@ export function Engine() {
             </div>
           </div>
         )}
-
-        {/* Engine Log - Terminal-like execution viewer */}
-        <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
-          <h3 className="text-lg font-semibold mb-4">Engine Log</h3>
-          <EngineLog
-            logs={engineLogs}
-            isRunning={isExecuting}
-            className="max-h-96"
-          />
-        </div>
       </div>
     </div>
   );

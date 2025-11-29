@@ -1,11 +1,16 @@
 /**
  * EngineLog - Terminal-like component for displaying engine execution logs
  * Shows step-by-step operations, computations, and values during engine execution
+ *
+ * Supports two entry types:
+ * 1. Operation entries - Real-time IBKR/market data operations (connection, fetching)
+ * 2. Step entries - 5-step analysis process results
  */
 
 import { useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Terminal, Loader2 } from 'lucide-react';
+import { ChevronDown, ChevronRight, Terminal, Loader2, Zap, TrendingUp, BarChart3, LineChart, Settings2 } from 'lucide-react';
 
+// Step analysis entry (from backend)
 interface AuditEntry {
   step: number;
   name: string;
@@ -16,8 +21,26 @@ interface AuditEntry {
   reason?: string;
 }
 
+// Operation log entry (real-time operations)
+export interface OperationEntry {
+  type: 'operation';
+  category: 'IBKR' | 'MARKET' | 'OPTIONS' | 'ANALYSIS' | 'DECISION';
+  message: string;
+  timestamp: string;
+  status?: 'pending' | 'success' | 'error';
+  value?: string | number;
+}
+
+// Union type for all log entries
+export type LogEntry = AuditEntry | OperationEntry;
+
+// Type guard to check if entry is an operation
+function isOperationEntry(entry: LogEntry): entry is OperationEntry {
+  return 'type' in entry && entry.type === 'operation';
+}
+
 interface EngineLogProps {
-  logs: AuditEntry[];
+  logs: LogEntry[];
   isRunning?: boolean;
   className?: string;
 }
@@ -82,9 +105,49 @@ function renderTree(data: Record<string, any>, prefix = '  ', isLast = true): JS
 }
 
 /**
- * Single log entry component
+ * Category icons and colors for operation entries
  */
-function LogEntry({ entry, isExpanded, onToggle }: {
+const categoryConfig: Record<OperationEntry['category'], { icon: React.ReactNode; color: string }> = {
+  IBKR: { icon: <Zap className="w-3 h-3" />, color: 'text-blue-400' },
+  MARKET: { icon: <TrendingUp className="w-3 h-3" />, color: 'text-green-400' },
+  OPTIONS: { icon: <BarChart3 className="w-3 h-3" />, color: 'text-yellow-400' },
+  ANALYSIS: { icon: <LineChart className="w-3 h-3" />, color: 'text-purple-400' },
+  DECISION: { icon: <Settings2 className="w-3 h-3" />, color: 'text-cyan-400' },
+};
+
+/**
+ * Operation log entry component (for real-time IBKR operations)
+ */
+function OperationLogEntry({ entry }: { entry: OperationEntry }) {
+  const config = categoryConfig[entry.category];
+  const statusIcon = entry.status === 'pending' ? (
+    <Loader2 className="w-3 h-3 animate-spin text-yellow-400" />
+  ) : entry.status === 'error' ? (
+    <span className="text-red-400">✗</span>
+  ) : entry.status === 'success' ? (
+    <span className="text-green-400">✓</span>
+  ) : null;
+
+  return (
+    <div className="font-mono text-sm flex items-center px-2 py-1 hover:bg-gray-900/30 rounded">
+      <span className="text-gray-500">[{formatTimestamp(entry.timestamp)}]</span>
+      <span className={`mx-2 ${config.color} flex items-center gap-1`}>
+        {config.icon}
+        <span className="font-bold">[{entry.category}]</span>
+      </span>
+      <span className="text-gray-300">{entry.message}</span>
+      {entry.value !== undefined && (
+        <span className="ml-2 text-cyan-400 font-bold">{entry.value}</span>
+      )}
+      {statusIcon && <span className="ml-auto">{statusIcon}</span>}
+    </div>
+  );
+}
+
+/**
+ * Single step log entry component (for 5-step analysis)
+ */
+function StepLogEntry({ entry, isExpanded, onToggle }: {
   entry: AuditEntry;
   isExpanded: boolean;
   onToggle: () => void;
@@ -245,14 +308,26 @@ export default function EngineLog({ logs, isRunning = false, className = '' }: E
           </div>
         ) : (
           <div className="space-y-1">
-            {logs.map((entry, index) => (
-              <LogEntry
-                key={`${entry.step}-${index}`}
-                entry={entry}
-                isExpanded={expandedSteps.has(entry.step)}
-                onToggle={() => toggleStep(entry.step)}
-              />
-            ))}
+            {logs.map((entry, index) => {
+              // Render operation entries (real-time IBKR operations)
+              if (isOperationEntry(entry)) {
+                return (
+                  <OperationLogEntry
+                    key={`op-${index}`}
+                    entry={entry}
+                  />
+                );
+              }
+              // Render step entries (5-step analysis)
+              return (
+                <StepLogEntry
+                  key={`step-${entry.step}-${index}`}
+                  entry={entry}
+                  isExpanded={expandedSteps.has(entry.step)}
+                  onToggle={() => toggleStep(entry.step)}
+                />
+              );
+            })}
           </div>
         )}
       </div>
@@ -262,7 +337,14 @@ export default function EngineLog({ logs, isRunning = false, className = '' }: E
         <div className="px-4 py-2 bg-gray-900/30 border-t border-gray-800 text-xs">
           <div className="flex items-center justify-between text-gray-500">
             <span>
-              {logs.filter(l => l.passed).length}/{logs.length} steps passed
+              {(() => {
+                const stepLogs = logs.filter((l): l is AuditEntry => !isOperationEntry(l));
+                const opLogs = logs.filter(isOperationEntry);
+                if (stepLogs.length > 0) {
+                  return `${stepLogs.filter(l => l.passed).length}/${stepLogs.length} steps passed`;
+                }
+                return `${opLogs.length} operations`;
+              })()}
             </span>
             <span>
               {logs.length > 0 && formatTimestamp(logs[logs.length - 1].timestamp)}

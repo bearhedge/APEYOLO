@@ -199,7 +199,7 @@ export function VIXChart({
       </div>
 
       {/* Chart area */}
-      <div className="relative" style={{ height: height + 'px' }}>
+      <div className="relative group" style={{ height: height + 'px' }}>
         {loading && historyData.length === 0 && (
           <div className="absolute inset-0 flex items-center justify-center">
             <div className="text-neutral-500">Loading chart...</div>
@@ -210,7 +210,13 @@ export function VIXChart({
             <div className="text-red-400 text-sm">{error}</div>
           </div>
         )}
-        <div ref={containerRef} className="w-full h-full" />
+        <div ref={containerRef} className="w-full h-full cursor-crosshair" />
+        {/* Interactivity hint - shows on hover */}
+        <div className="absolute bottom-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none">
+          <span className="text-xs text-neutral-500 bg-neutral-900/80 px-2 py-1 rounded">
+            Scroll to zoom • Drag to pan
+          </span>
+        </div>
       </div>
 
       {/* OHLC Bar */}

@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Settings, LogOut } from "lucide-react";
+import { Settings, LogOut, Zap, XCircle, RefreshCw } from "lucide-react";
 import type { AccountInfo } from "@/lib/types";
+import { useBrokerStatus } from "@/hooks/useBrokerStatus";
 
 export default function AppHeader() {
   const queryClient = useQueryClient();
@@ -9,6 +10,9 @@ export default function AppHeader() {
     queryKey: ['/api/account'],
     refetchInterval: 30000, // Refresh every 30 seconds
   });
+
+  // Unified broker status - same query key as Engine and Settings
+  const { connected: brokerConnected, isConnecting } = useBrokerStatus();
 
   // Logout mutation
   const logoutMutation = useMutation({
@@ -40,6 +44,19 @@ export default function AppHeader() {
         <div className="text-sm text-muted-foreground">Professional Trading Platform</div>
       </div>
       <div className="flex items-center space-x-4">
+        {/* IBKR Status - synced with Engine and Settings */}
+        <div className="text-sm flex items-center gap-1.5" data-testid="ibkr-status">
+          {isConnecting ? (
+            <RefreshCw className="h-3.5 w-3.5 text-yellow-500 animate-spin" />
+          ) : brokerConnected ? (
+            <Zap className="h-3.5 w-3.5 text-green-500" />
+          ) : (
+            <XCircle className="h-3.5 w-3.5 text-red-500" />
+          )}
+          <span className={`font-medium ${brokerConnected ? 'text-green-500' : isConnecting ? 'text-yellow-500' : 'text-red-500'}`}>
+            {isConnecting ? 'Connecting...' : brokerConnected ? 'IBKR' : 'Disconnected'}
+          </span>
+        </div>
         <div className="text-sm" data-testid="account-number">
           <span className="text-muted-foreground">Account:</span>
           <span className="font-mono ml-1">{account?.accountNumber || 'Loading...'}</span>
