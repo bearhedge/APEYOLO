@@ -8,6 +8,9 @@ type BrokerBundle = {
   api: BrokerProvider;
 };
 
+// SINGLETON: Cache IBKR provider to prevent creating new instances on every call
+let cachedIbkrProvider: BrokerProvider | null = null;
+
 // Adapter over existing in-memory storage for the mock provider.
 function createMockProvider(): BrokerProvider {
   return {
@@ -18,6 +21,19 @@ function createMockProvider(): BrokerProvider {
     placeOrder: async (trade: InsertTrade) => {
       // For mock, placement is handled by routes today; return a simple ack.
       return { status: "accepted_mock" };
+    },
+    getMarketData: async (symbol: string) => {
+      // Mock market data - returns reasonable defaults
+      return {
+        symbol,
+        price: symbol === 'SPY' ? 600 : 100,
+        bid: symbol === 'SPY' ? 599.95 : 99.95,
+        ask: symbol === 'SPY' ? 600.05 : 100.05,
+        volume: 1000000,
+        change: 0.5,
+        changePercent: 0.08,
+        timestamp: new Date(),
+      };
     },
   };
 }
@@ -32,7 +48,12 @@ export function getBroker(): BrokerBundle {
     const accountId = process.env.IBKR_ACCOUNT_ID;
     const baseUrl = process.env.IBKR_BASE_URL;
 
-    const api = createIbkrProvider({ env, accountId, baseUrl });
+    // SINGLETON: Reuse existing IBKR provider instance
+    if (!cachedIbkrProvider) {
+      console.log('[Broker] Creating singleton IBKR provider');
+      cachedIbkrProvider = createIbkrProvider({ env, accountId, baseUrl });
+    }
+    const api = cachedIbkrProvider;
 
     // Check actual IBKR connection status dynamically
     const diagnostics = getIbkrDiagnostics();
