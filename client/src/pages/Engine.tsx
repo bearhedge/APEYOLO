@@ -301,9 +301,9 @@ export function Engine() {
               <DirectionContent
                 direction={analysis?.q2Direction?.recommendedDirection}
                 confidence={analysis?.q2Direction?.confidencePct ? analysis.q2Direction.confidencePct / 100 : undefined}
-                spyPrice={analysis?.q2Direction?.inputs?.spyPrice}
-                maFast={analysis?.q2Direction?.inputs?.maFast}
-                maSlow={analysis?.q2Direction?.inputs?.maSlow}
+                spyPrice={analysis?.q2Direction?.signals?.spyPrice}
+                maFast={analysis?.q2Direction?.signals?.maFast}
+                maSlow={analysis?.q2Direction?.signals?.maSlow}
                 trend={analysis?.q2Direction?.signals?.trend}
                 reasoning={analysis?.q2Direction?.comment}
               />

@@ -11,7 +11,8 @@ import {
   fetchHistoricalData,
   fetchVIXData,
   fetchMarketSnapshot,
-  type TimeRange
+  type TimeRange,
+  type BarInterval
 } from './services/yahooFinanceService';
 
 const router = Router();
@@ -39,12 +40,14 @@ router.get('/quote/:symbol', async (req, res) => {
  * GET /api/market/history/:symbol
  * Fetch historical OHLC data
  * Query params:
- *   - range: 1D | 5D | 1M | 3M | 6M | 1Y | MAX (default: 1D)
+ *   - range: 1D | 5D | 1M | 3M | 6M | 1Y | MAX (default: 1D) - lookback period
+ *   - interval: 1m | 5m | 15m | 30m | 1h | 1d (optional) - candlestick bar size
  */
 router.get('/history/:symbol', async (req, res) => {
   try {
     const { symbol } = req.params;
     const range = (req.query.range as TimeRange) || '1D';
+    const interval = req.query.interval as BarInterval | undefined;
 
     // Validate range
     const validRanges: TimeRange[] = ['1D', '5D', '1M', '3M', '6M', '1Y', 'MAX'];
@@ -52,12 +55,21 @@ router.get('/history/:symbol', async (req, res) => {
       return res.status(400).json({ error: `Invalid range. Must be one of: ${validRanges.join(', ')}` });
     }
 
+    // Validate interval if provided
+    if (interval) {
+      const validIntervals: BarInterval[] = ['1m', '5m', '15m', '30m', '1h', '1d'];
+      if (!validIntervals.includes(interval)) {
+        return res.status(400).json({ error: `Invalid interval. Must be one of: ${validIntervals.join(', ')}` });
+      }
+    }
+
     const yahooSymbol = mapSymbol(symbol);
-    const history = await fetchHistoricalData(yahooSymbol, range);
+    const history = await fetchHistoricalData(yahooSymbol, range, interval);
 
     res.json({
       symbol,
       range,
+      interval: interval || 'default',
       count: history.length,
       data: history
     });
@@ -84,21 +96,33 @@ router.get('/vix', async (_req, res) => {
 /**
  * GET /api/market/vix/history
  * VIX historical data with chart-ready format
+ * Query params:
+ *   - range: 1D | 5D | 1M | 3M | 6M | 1Y | MAX (default: 1D)
+ *   - interval: 1m | 5m | 15m | 30m | 1h | 1d (optional)
  */
 router.get('/vix/history', async (req, res) => {
   try {
     const range = (req.query.range as TimeRange) || '1D';
+    const interval = req.query.interval as BarInterval | undefined;
 
     const validRanges: TimeRange[] = ['1D', '5D', '1M', '3M', '6M', '1Y', 'MAX'];
     if (!validRanges.includes(range)) {
       return res.status(400).json({ error: `Invalid range. Must be one of: ${validRanges.join(', ')}` });
     }
 
-    const history = await fetchHistoricalData('^VIX', range);
+    if (interval) {
+      const validIntervals: BarInterval[] = ['1m', '5m', '15m', '30m', '1h', '1d'];
+      if (!validIntervals.includes(interval)) {
+        return res.status(400).json({ error: `Invalid interval. Must be one of: ${validIntervals.join(', ')}` });
+      }
+    }
+
+    const history = await fetchHistoricalData('^VIX', range, interval);
 
     res.json({
       symbol: 'VIX',
       range,
+      interval: interval || 'default',
       count: history.length,
       data: history
     });

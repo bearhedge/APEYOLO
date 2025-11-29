@@ -9,7 +9,7 @@
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { createChartProvider, ChartProvider, TimeRange, ChartType, OHLCData } from './ChartProvider';
+import { createChartProvider, ChartProvider, TimeRange, BarInterval, ChartType, OHLCData } from './ChartProvider';
 
 interface QuoteData {
   price: number;
@@ -41,6 +41,7 @@ interface SymbolChartProps {
   symbol: string;
   height?: number;
   defaultTimeframe?: TimeRange;
+  defaultInterval?: BarInterval;
   chartType?: ChartType;
   showTimeframeSelector?: boolean;
   showOHLC?: boolean;
@@ -48,12 +49,17 @@ interface SymbolChartProps {
   className?: string;
 }
 
-const timeframeOptions: TimeRange[] = ['1D', '5D', '1M', '3M', '6M', '1Y', 'MAX'];
+// Time range options (how far back to look)
+const rangeOptions: TimeRange[] = ['1D', '5D', '1M', '3M', '6M', '1Y', 'MAX'];
+
+// Bar interval options (candlestick size)
+const intervalOptions: BarInterval[] = ['1m', '5m', '15m', '30m', '1h', '1d'];
 
 export function SymbolChart({
   symbol,
   height = 150,
   defaultTimeframe = '5D',
+  defaultInterval = '15m',
   chartType = 'candlestick',
   showTimeframeSelector = true,
   showOHLC = true,
@@ -63,7 +69,8 @@ export function SymbolChart({
   const containerRef = useRef<HTMLDivElement>(null);
   const chartProviderRef = useRef<ChartProvider | null>(null);
 
-  const [timeframe, setTimeframe] = useState<TimeRange>(defaultTimeframe);
+  const [range, setRange] = useState<TimeRange>(defaultTimeframe);
+  const [interval, setInterval] = useState<BarInterval>(defaultInterval);
   const [quoteData, setQuoteData] = useState<QuoteData | null>(null);
   const [historyData, setHistoryData] = useState<OHLCData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -82,11 +89,11 @@ export function SymbolChart({
   }, [symbol]);
 
   // Fetch historical data for chart
-  const fetchHistoryData = useCallback(async (range: TimeRange) => {
+  const fetchHistoryData = useCallback(async (selectedRange: TimeRange, selectedInterval: BarInterval) => {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`/api/market/history/${symbol}?range=${range}`);
+      const response = await fetch(`/api/market/history/${symbol}?range=${selectedRange}&interval=${selectedInterval}`);
       if (!response.ok) throw new Error(`Failed to fetch ${symbol} history`);
       const data: HistoryResponse = await response.json();
 
@@ -140,15 +147,20 @@ export function SymbolChart({
     };
   }, []);
 
-  // Fetch data on mount and timeframe change
+  // Fetch data on mount and range/interval change
   useEffect(() => {
     fetchQuote();
-    fetchHistoryData(timeframe);
-  }, [timeframe, fetchQuote, fetchHistoryData]);
+    fetchHistoryData(range, interval);
+  }, [range, interval, fetchQuote, fetchHistoryData]);
 
-  // Handle timeframe change
-  const handleTimeframeChange = (newTimeframe: TimeRange) => {
-    setTimeframe(newTimeframe);
+  // Handle range change
+  const handleRangeChange = (newRange: TimeRange) => {
+    setRange(newRange);
+  };
+
+  // Handle interval change
+  const handleIntervalChange = (newInterval: BarInterval) => {
+    setInterval(newInterval);
   };
 
   // Determine change color (green up, red down for stocks)
@@ -173,20 +185,39 @@ export function SymbolChart({
           </div>
 
           {showTimeframeSelector && (
-            <div className="flex gap-1">
-              {timeframeOptions.map((tf) => (
-                <button
-                  key={tf}
-                  onClick={() => handleTimeframeChange(tf)}
-                  className={`px-2 py-1 text-xs rounded transition-colors ${
-                    timeframe === tf
-                      ? 'bg-neutral-700 text-white'
-                      : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'
-                  }`}
-                >
-                  {tf}
-                </button>
-              ))}
+            <div className="flex items-center gap-3">
+              {/* Range selector (lookback period) */}
+              <div className="flex gap-1">
+                {rangeOptions.map((r) => (
+                  <button
+                    key={r}
+                    onClick={() => handleRangeChange(r)}
+                    className={`px-2 py-1 text-xs rounded transition-colors ${
+                      range === r
+                        ? 'bg-neutral-700 text-white'
+                        : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'
+                    }`}
+                  >
+                    {r}
+                  </button>
+                ))}
+              </div>
+              {/* Interval selector (candlestick bar size) */}
+              <div className="flex gap-1 border-l border-neutral-700 pl-3">
+                {intervalOptions.map((int) => (
+                  <button
+                    key={int}
+                    onClick={() => handleIntervalChange(int)}
+                    className={`px-2 py-1 text-xs rounded transition-colors ${
+                      interval === int
+                        ? 'bg-blue-600 text-white'
+                        : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'
+                    }`}
+                  >
+                    {int}
+                  </button>
+                ))}
+              </div>
             </div>
           )}
         </div>

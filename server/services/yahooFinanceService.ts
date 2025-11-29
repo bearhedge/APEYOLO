@@ -45,22 +45,32 @@ export interface VIXContext {
   lastUpdate: Date;
 }
 
-// Granular timeframes (1m, 5m, 15m, 30m) + standard daily ranges
-export type TimeRange = '1m' | '5m' | '15m' | '30m' | '1D' | '5D' | '1M' | '3M' | '6M' | '1Y' | 'MAX';
+// Time range = how far back to look (lookback period)
+export type TimeRange = '1D' | '5D' | '1M' | '3M' | '6M' | '1Y' | 'MAX';
 
-// Map TimeRange to Yahoo Finance interval and period
-const rangeConfig: Record<TimeRange, { interval: '1m' | '5m' | '15m' | '30m' | '1h' | '1d'; period1: string | Date }> = {
-  '1m': { interval: '1m', period1: getDateOffset(1/24) },   // 1 hour lookback
-  '5m': { interval: '5m', period1: getDateOffset(1) },       // 1 day lookback
-  '15m': { interval: '15m', period1: getDateOffset(3) },     // 3 days lookback
-  '30m': { interval: '30m', period1: getDateOffset(7) },     // 1 week lookback
-  '1D': { interval: '5m', period1: getDateOffset(1) },
-  '5D': { interval: '15m', period1: getDateOffset(5) },
-  '1M': { interval: '1h', period1: getDateOffset(30) },
-  '3M': { interval: '1d', period1: getDateOffset(90) },
-  '6M': { interval: '1d', period1: getDateOffset(180) },
-  '1Y': { interval: '1d', period1: getDateOffset(365) },
-  'MAX': { interval: '1d', period1: '2010-01-01' }
+// Bar interval = candlestick size (what each bar represents)
+export type BarInterval = '1m' | '5m' | '15m' | '30m' | '1h' | '1d';
+
+// Map TimeRange to lookback period
+const rangeConfig: Record<TimeRange, { period1: string | Date }> = {
+  '1D': { period1: getDateOffset(1) },
+  '5D': { period1: getDateOffset(5) },
+  '1M': { period1: getDateOffset(30) },
+  '3M': { period1: getDateOffset(90) },
+  '6M': { period1: getDateOffset(180) },
+  '1Y': { period1: getDateOffset(365) },
+  'MAX': { period1: '2010-01-01' }
+};
+
+// Default intervals for each range (used when no interval specified)
+const defaultIntervalForRange: Record<TimeRange, BarInterval> = {
+  '1D': '5m',
+  '5D': '15m',
+  '1M': '1h',
+  '3M': '1d',
+  '6M': '1d',
+  '1Y': '1d',
+  'MAX': '1d'
 };
 
 // Price bounds for sanity checking OHLC data (filter outliers/artifacts)
@@ -164,9 +174,18 @@ export async function fetchQuote(symbol: string): Promise<QuoteData> {
 
 /**
  * Fetch historical OHLC data
+ * @param symbol - Stock symbol (SPY, ^VIX, etc.)
+ * @param range - How far back to look (1D, 5D, 1M, etc.)
+ * @param interval - Candlestick bar size (1m, 5m, 15m, 30m, 1h, 1d)
  */
-export async function fetchHistoricalData(symbol: string, range: TimeRange): Promise<OHLCData[]> {
-  const cacheKey = `history:${symbol}:${range}`;
+export async function fetchHistoricalData(
+  symbol: string,
+  range: TimeRange,
+  interval?: BarInterval
+): Promise<OHLCData[]> {
+  // Use provided interval or default based on range
+  const actualInterval = interval || defaultIntervalForRange[range];
+  const cacheKey = `history:${symbol}:${range}:${actualInterval}`;
   const cached = getCached<OHLCData[]>(cacheKey, CACHE_TTL.history);
   if (cached) return cached;
 
@@ -175,7 +194,7 @@ export async function fetchHistoricalData(symbol: string, range: TimeRange): Pro
 
     const result = await yahooFinance.chart(symbol, {
       period1: config.period1,
-      interval: config.interval
+      interval: actualInterval
     });
 
     if (!result.quotes || result.quotes.length === 0) {

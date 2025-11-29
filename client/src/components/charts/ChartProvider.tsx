@@ -19,8 +19,12 @@ export interface OHLCData {
 }
 
 export type ChartType = 'candlestick' | 'line';
-// Granular minute timeframes + standard day/week/month ranges
-export type TimeRange = '1m' | '5m' | '15m' | '30m' | '1D' | '5D' | '1M' | '3M' | '6M' | '1Y' | 'MAX';
+
+// Time range = how far back to look (lookback period)
+export type TimeRange = '1D' | '5D' | '1M' | '3M' | '6M' | '1Y' | 'MAX';
+
+// Bar interval = candlestick size (what each bar represents)
+export type BarInterval = '1m' | '5m' | '15m' | '30m' | '1h' | '1d';
 
 export interface ChartOptions {
   type: ChartType;

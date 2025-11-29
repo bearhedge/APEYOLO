@@ -13,7 +13,7 @@
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { createChartProvider, ChartProvider, TimeRange, ChartType, OHLCData } from './ChartProvider';
+import { createChartProvider, ChartProvider, TimeRange, BarInterval, ChartType, OHLCData } from './ChartProvider';
 import { TrendingUp, TrendingDown, Minus } from 'lucide-react';
 
 interface SPYData {
@@ -47,8 +47,10 @@ interface SPYHistoryResponse {
 interface SPYChartProps {
   /** Chart height in pixels (default: 400 for 4x VIX chart size) */
   height?: number;
-  /** Default timeframe */
+  /** Default range (lookback period) */
   defaultTimeframe?: TimeRange;
+  /** Default interval (candlestick bar size) */
+  defaultInterval?: BarInterval;
   /** Chart type - defaults to candlestick */
   chartType?: ChartType;
   /** Show timeframe selector buttons */
@@ -61,12 +63,16 @@ interface SPYChartProps {
   className?: string;
 }
 
-// Granular minute timeframes (1m, 5m, 15m, 30m) + standard day/week/month ranges
-const timeframeOptions: TimeRange[] = ['1m', '5m', '15m', '30m', '1D', '5D', '1M', '3M', '6M', '1Y', 'MAX'];
+// Time range options (how far back to look)
+const rangeOptions: TimeRange[] = ['1D', '5D', '1M', '3M', '6M', '1Y', 'MAX'];
+
+// Bar interval options (candlestick size)
+const intervalOptions: BarInterval[] = ['1m', '5m', '15m', '30m', '1h', '1d'];
 
 export function SPYChart({
   height = 400, // 4x larger than VIX chart (100px)
-  defaultTimeframe = '1D',
+  defaultTimeframe = '5D',
+  defaultInterval = '15m',
   chartType = 'candlestick', // Default to candlestick for SPY
   showTimeframeSelector = true,
   showOHLC = true,
@@ -76,7 +82,8 @@ export function SPYChart({
   const containerRef = useRef<HTMLDivElement>(null);
   const chartProviderRef = useRef<ChartProvider | null>(null);
 
-  const [timeframe, setTimeframe] = useState<TimeRange>(defaultTimeframe);
+  const [range, setRange] = useState<TimeRange>(defaultTimeframe);
+  const [interval, setInterval] = useState<BarInterval>(defaultInterval);
   const [spyData, setSpyData] = useState<SPYData | null>(null);
   const [historyData, setHistoryData] = useState<OHLCData[]>([]);
   const [loading, setLoading] = useState(true);
@@ -95,11 +102,11 @@ export function SPYChart({
   }, []);
 
   // Fetch historical data for chart
-  const fetchHistoryData = useCallback(async (range: TimeRange) => {
+  const fetchHistoryData = useCallback(async (selectedRange: TimeRange, selectedInterval: BarInterval) => {
     setLoading(true);
     setError(null);
     try {
-      const response = await fetch(`/api/market/history/SPY?range=${range}`);
+      const response = await fetch(`/api/market/history/SPY?range=${selectedRange}&interval=${selectedInterval}`);
       if (!response.ok) throw new Error('Failed to fetch SPY history');
       const data: SPYHistoryResponse = await response.json();
 
@@ -154,21 +161,26 @@ export function SPYChart({
     };
   }, []);
 
-  // Fetch data on mount and timeframe change
+  // Fetch data on mount and range/interval change
   useEffect(() => {
     fetchSPYData();
-    fetchHistoryData(timeframe);
-  }, [timeframe, fetchSPYData, fetchHistoryData]);
+    fetchHistoryData(range, interval);
+  }, [range, interval, fetchSPYData, fetchHistoryData]);
 
   // Refresh data periodically (every 30s for price, chart stays)
   useEffect(() => {
-    const interval = setInterval(fetchSPYData, 30000);
-    return () => clearInterval(interval);
+    const refreshTimer = setInterval(fetchSPYData, 30000);
+    return () => clearInterval(refreshTimer);
   }, [fetchSPYData]);
 
-  // Handle timeframe change
-  const handleTimeframeChange = (newTimeframe: TimeRange) => {
-    setTimeframe(newTimeframe);
+  // Handle range change
+  const handleRangeChange = (newRange: TimeRange) => {
+    setRange(newRange);
+  };
+
+  // Handle interval change
+  const handleIntervalChange = (newInterval: BarInterval) => {
+    setInterval(newInterval);
   };
 
   // Determine change color and icon
@@ -214,22 +226,41 @@ export function SPYChart({
           )}
         </div>
 
-        {/* Timeframe selector */}
+        {/* Range + Interval selectors */}
         {showTimeframeSelector && (
-          <div className="flex gap-1">
-            {timeframeOptions.map((tf) => (
-              <button
-                key={tf}
-                onClick={() => handleTimeframeChange(tf)}
-                className={`px-3 py-1.5 text-sm rounded transition-colors ${
-                  timeframe === tf
-                    ? 'bg-blue-600 text-white'
-                    : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'
-                }`}
-              >
-                {tf}
-              </button>
-            ))}
+          <div className="flex items-center gap-4">
+            {/* Range selector (lookback period) */}
+            <div className="flex gap-1">
+              {rangeOptions.map((r) => (
+                <button
+                  key={r}
+                  onClick={() => handleRangeChange(r)}
+                  className={`px-2 py-1.5 text-sm rounded transition-colors ${
+                    range === r
+                      ? 'bg-neutral-700 text-white'
+                      : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'
+                  }`}
+                >
+                  {r}
+                </button>
+              ))}
+            </div>
+            {/* Interval selector (candlestick bar size) */}
+            <div className="flex gap-1 border-l border-neutral-700 pl-4">
+              {intervalOptions.map((int) => (
+                <button
+                  key={int}
+                  onClick={() => handleIntervalChange(int)}
+                  className={`px-2 py-1.5 text-sm rounded transition-colors ${
+                    interval === int
+                      ? 'bg-blue-600 text-white'
+                      : 'text-neutral-400 hover:text-neutral-200 hover:bg-neutral-800'
+                  }`}
+                >
+                  {int}
+                </button>
+              ))}
+            </div>
           </div>
         )}
       </div>
