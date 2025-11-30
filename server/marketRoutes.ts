@@ -14,6 +14,7 @@ import {
   type TimeRange,
   type BarInterval
 } from './services/yahooFinanceService';
+import { sanitizeBars, type Bar, type SanitizeResult } from './utils/barSanitizer';
 
 const router = Router();
 
@@ -66,12 +67,31 @@ router.get('/history/:symbol', async (req, res) => {
     const yahooSymbol = mapSymbol(symbol);
     const history = await fetchHistoricalData(yahooSymbol, range, interval);
 
+    // Convert to chart-ready format with Unix seconds and sanitize
+    const rawBars = history.map(d => ({
+      time: Math.floor(d.timestamp.getTime() / 1000),
+      open: d.open,
+      high: d.high,
+      low: d.low,
+      close: d.close,
+      volume: d.volume
+    }));
+
+    // Sanitize bars - removes invalid/corrupt data
+    const { bars, stats } = sanitizeBars(rawBars, symbol);
+
     res.json({
       symbol,
       range,
       interval: interval || 'default',
-      count: history.length,
-      data: history
+      count: bars.length,
+      data: bars,
+      _meta: {
+        rawCount: stats.input,
+        cleanCount: stats.output,
+        dropped: stats.dropped,
+        reasons: stats.dropped > 0 ? stats.reasons : undefined
+      }
     });
   } catch (error: any) {
     console.error('[Market] History error:', error);
@@ -119,12 +139,31 @@ router.get('/vix/history', async (req, res) => {
 
     const history = await fetchHistoricalData('^VIX', range, interval);
 
+    // Convert to chart-ready format with Unix seconds and sanitize
+    const rawBars = history.map(d => ({
+      time: Math.floor(d.timestamp.getTime() / 1000),
+      open: d.open,
+      high: d.high,
+      low: d.low,
+      close: d.close,
+      volume: d.volume
+    }));
+
+    // Sanitize bars - removes invalid/corrupt data
+    const { bars, stats } = sanitizeBars(rawBars, 'VIX');
+
     res.json({
       symbol: 'VIX',
       range,
       interval: interval || 'default',
-      count: history.length,
-      data: history
+      count: bars.length,
+      data: bars,
+      _meta: {
+        rawCount: stats.input,
+        cleanCount: stats.output,
+        dropped: stats.dropped,
+        reasons: stats.dropped > 0 ? stats.reasons : undefined
+      }
     });
   } catch (error: any) {
     console.error('[Market] VIX history error:', error);

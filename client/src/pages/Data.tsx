@@ -211,13 +211,26 @@ export function Data() {
       const msg = lastMessage as unknown as UnderlyingPriceUpdateMessage;
       if (msg.symbol !== activeTicker) return;
 
-      setLiveUnderlyingPrice(msg.price);
+      // Validate price before accepting
+      const price = msg.price;
+      if (typeof price !== 'number' || !isFinite(price) || price <= 0) {
+        console.warn('[Data.tsx] dropped invalid price update', msg);
+        return;
+      }
+
+      setLiveUnderlyingPrice(price);
       setWsUpdateCount(c => c + 1);
 
       // Push price update to candlestick chart for live candle updates
-      if (chartRef.current) {
-        const timestamp = Math.floor(new Date(msg.timestamp).getTime() / 1000);
-        chartRef.current.updateWithTick(msg.price, timestamp);
+      if (chartRef.current && msg.timestamp) {
+        const parsedTime = new Date(msg.timestamp).getTime();
+        if (isNaN(parsedTime)) {
+          console.warn('[Data.tsx] dropped tick with invalid timestamp', msg.timestamp);
+          return;
+        }
+        // Convert to Unix seconds
+        const timestamp = Math.floor(parsedTime / 1000);
+        chartRef.current.updateWithTick(price, timestamp);
       }
     }
   }, [lastMessage, activeTicker]);

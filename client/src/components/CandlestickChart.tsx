@@ -29,14 +29,14 @@ interface OHLCBar {
   volume?: number;
 }
 
-// API response format from Yahoo Finance
-interface YahooOHLCData {
-  timestamp: string; // ISO date string
+// API response format - now returns sanitized bars with Unix seconds
+interface SanitizedBar {
+  time: number;   // Unix timestamp in seconds (already sanitized by server)
   open: number;
   high: number;
   low: number;
   close: number;
-  volume: number;
+  volume?: number;
 }
 
 interface HistoryResponse {
@@ -44,7 +44,29 @@ interface HistoryResponse {
   range: string;
   interval: string;
   count: number;
-  data: YahooOHLCData[];
+  data: SanitizedBar[];
+  _meta?: {
+    rawCount: number;
+    cleanCount: number;
+    dropped: number;
+    reasons?: Record<string, number>;
+  };
+}
+
+// Validation helpers for live tick updates
+function isValidPrice(price: any): price is number {
+  return (
+    typeof price === 'number' &&
+    isFinite(price) &&
+    price > 0 &&
+    price < 100000 // No stock is worth $100k
+  );
+}
+
+function isValidTimestamp(ts: any): ts is number {
+  if (typeof ts !== 'number' || !isFinite(ts)) return false;
+  // Must be between 2020 and 2035 (Unix seconds)
+  return ts >= 1577836800 && ts <= 2051222400;
 }
 
 // Calculate Simple Moving Average
@@ -75,16 +97,31 @@ function getTimeframeRange(tf: Timeframe): string {
   }
 }
 
-// Convert Yahoo Finance data to chart format
-function convertToChartFormat(data: YahooOHLCData[]): OHLCBar[] {
-  return data.map(bar => ({
-    time: Math.floor(new Date(bar.timestamp).getTime() / 1000),
-    open: bar.open,
-    high: bar.high,
-    low: bar.low,
-    close: bar.close,
-    volume: bar.volume,
-  }));
+// Convert sanitized API response to internal chart format
+// Server already sanitizes data, but we validate one more time
+function convertToChartFormat(data: SanitizedBar[]): OHLCBar[] {
+  return data
+    .filter(bar => {
+      // Double-check validation (server should have done this)
+      if (!isValidPrice(bar.open) || !isValidPrice(bar.high) ||
+          !isValidPrice(bar.low) || !isValidPrice(bar.close)) {
+        console.warn('[chart] filtered bar with invalid price', bar);
+        return false;
+      }
+      if (!isValidTimestamp(bar.time)) {
+        console.warn('[chart] filtered bar with invalid timestamp', bar);
+        return false;
+      }
+      return true;
+    })
+    .map(bar => ({
+      time: bar.time,
+      open: bar.open,
+      high: bar.high,
+      low: bar.low,
+      close: bar.close,
+      volume: bar.volume,
+    }));
 }
 
 export const CandlestickChart = forwardRef<CandlestickChartRef, CandlestickChartProps>(function CandlestickChart({
@@ -351,8 +388,25 @@ export const CandlestickChart = forwardRef<CandlestickChartRef, CandlestickChart
   const updateWithTick = useCallback((price: number, timestamp: number) => {
     if (!candleSeriesRef.current || !currentCandle) return;
 
+    // Validate tick before processing
+    if (!isValidPrice(price)) {
+      console.warn('[chart] dropped tick with invalid price', { price, timestamp });
+      return;
+    }
+
+    // Normalize timestamp to Unix seconds if in milliseconds
+    let normalizedTs = timestamp;
+    if (timestamp > 10_000_000_000) {
+      normalizedTs = Math.floor(timestamp / 1000);
+    }
+
+    if (!isValidTimestamp(normalizedTs)) {
+      console.warn('[chart] dropped tick with invalid timestamp', { price, timestamp, normalizedTs });
+      return;
+    }
+
     const intervalSeconds = timeframe === '1m' ? 60 : timeframe === '5m' ? 300 : timeframe === '15m' ? 900 : timeframe === '1h' ? 3600 : 86400;
-    const candleTime = Math.floor(timestamp / intervalSeconds) * intervalSeconds;
+    const candleTime = Math.floor(normalizedTs / intervalSeconds) * intervalSeconds;
 
     if (candleTime === currentCandle.time) {
       // Update current candle
