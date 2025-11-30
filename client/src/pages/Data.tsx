@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { LeftNav } from '@/components/LeftNav';
-import { CandlestickChart, CandlestickChartRef } from '@/components/CandlestickChart';
+import { ChartWithControls } from '@/components/DeterministicChart';
 import { useWebSocket } from '@/hooks/use-websocket';
 import { Search, RefreshCw, TrendingUp, TrendingDown, Activity, ChevronDown, Calendar, Wifi, WifiOff } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -76,6 +76,21 @@ interface MarketData {
   open?: number;
 }
 
+// Historical bar for fallback price
+interface HistoricalBar {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume?: number;
+}
+
+interface HistoryResponse {
+  symbol: string;
+  data: HistoricalBar[];
+}
+
 export function Data() {
   const queryClient = useQueryClient();
   const [searchTicker, setSearchTicker] = useState('');
@@ -91,8 +106,7 @@ export function Data() {
   const [liveUnderlyingPrice, setLiveUnderlyingPrice] = useState<number | null>(null);
   const [wsUpdateCount, setWsUpdateCount] = useState(0);
 
-  // Ref for candlestick chart to push live price updates
-  const chartRef = useRef<CandlestickChartRef>(null);
+  // Note: DeterministicChart handles its own data fetching from IBKR
 
   // ========================================
   // useQuery hooks MUST come before useEffects that depend on them
@@ -156,6 +170,19 @@ export function Data() {
       };
     },
     refetchInterval: 5000,
+    enabled: !!activeTicker,
+  });
+
+  // Fetch historical data for fallback price when market is closed
+  // This gives us the last close price when IBKR returns 0
+  const { data: historicalData } = useQuery<HistoryResponse>({
+    queryKey: ['/api/market/history', activeTicker, '1D'],
+    queryFn: async () => {
+      const res = await fetch(`/api/market/history/${activeTicker}?range=1D&interval=5m`, { credentials: 'include' });
+      if (!res.ok) throw new Error('Failed to fetch historical data');
+      return res.json();
+    },
+    staleTime: 60000, // Consider data stale after 1 minute
     enabled: !!activeTicker,
   });
 
@@ -299,6 +326,18 @@ export function Data() {
 
   const isPriceUp = (marketData?.change || 0) >= 0;
 
+  // Get last close from historical data for fallback when market is closed
+  const lastClosePrice = historicalData?.data?.length
+    ? historicalData.data[historicalData.data.length - 1].close
+    : null;
+
+  // Determine if market is closed (IBKR returns 0)
+  const ibkrPrice = marketData?.price || 0;
+  const isMarketClosed = ibkrPrice === 0 && lastClosePrice !== null;
+
+  // Display price: use IBKR price if valid, otherwise fallback to last close
+  const displayPrice = ibkrPrice > 0 ? ibkrPrice : (lastClosePrice || 0);
+
   // Use live WebSocket data when available, fallback to HTTP
   const underlyingPrice = liveUnderlyingPrice || optionChain?.underlyingPrice || marketData?.price || 0;
   const displayChain = liveOptionChain || optionChain;
@@ -349,17 +388,26 @@ export function Data() {
           <div className="flex items-center justify-between mb-6">
             <div className="flex items-center gap-4">
               <h2 className="text-2xl font-bold">{activeTicker}</h2>
-              {!marketLoading && marketData && (
+              {!marketLoading && (displayPrice > 0 || marketData) && (
                 <div className="flex items-center gap-3">
-                  <span className="text-3xl font-bold tabular-nums">
-                    ${marketData.price.toFixed(2)}
+                  <span className={`text-3xl font-bold tabular-nums ${isMarketClosed ? 'text-silver' : ''}`}>
+                    ${displayPrice.toFixed(2)}
                   </span>
-                  <div className={`flex items-center gap-1 ${isPriceUp ? 'text-green-500' : 'text-red-500'}`}>
-                    {isPriceUp ? <TrendingUp className="w-5 h-5" /> : <TrendingDown className="w-5 h-5" />}
-                    <span className="font-medium tabular-nums">
-                      {isPriceUp ? '+' : ''}{marketData.change.toFixed(2)} ({isPriceUp ? '+' : ''}{marketData.changePct.toFixed(2)}%)
-                    </span>
-                  </div>
+                  {isMarketClosed ? (
+                    <div className="flex items-center gap-2 text-yellow-500">
+                      <span className="text-sm font-medium px-2 py-1 bg-yellow-500/20 rounded">
+                        Market Closed
+                      </span>
+                      <span className="text-xs text-silver">Last Close</span>
+                    </div>
+                  ) : (
+                    <div className={`flex items-center gap-1 ${isPriceUp ? 'text-green-500' : 'text-red-500'}`}>
+                      {isPriceUp ? <TrendingUp className="w-5 h-5" /> : <TrendingDown className="w-5 h-5" />}
+                      <span className="font-medium tabular-nums">
+                        {isPriceUp ? '+' : ''}{(marketData?.change || 0).toFixed(2)} ({isPriceUp ? '+' : ''}{(marketData?.changePct || 0).toFixed(2)}%)
+                      </span>
+                    </div>
+                  )}
                 </div>
               )}
               {marketLoading && (
@@ -396,14 +444,13 @@ export function Data() {
             </div>
           </div>
 
-          {/* Candlestick Chart with MA overlays */}
+          {/* Deterministic Candlestick Chart (IBKR data only) */}
           <div className="mt-4">
-            <CandlestickChart
-              ref={chartRef}
+            <ChartWithControls
               symbol={activeTicker}
+              defaultTimeframe="5m"
+              width={800}
               height={350}
-              showMAs={true}
-              showVolume={true}
               className="rounded-lg overflow-hidden"
             />
           </div>

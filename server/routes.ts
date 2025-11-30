@@ -1251,6 +1251,92 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ============================================
+  // Chart Historical Data API (IBKR Only)
+  // ============================================
+  // Import historical service
+  const { fetchHistoricalBars, getRecentBars, clearHistoricalCache, getCacheStatus } = await import('./services/ibkrHistoricalService');
+
+  // GET /api/chart/history/:symbol - Fetch historical bars from IBKR
+  app.get('/api/chart/history/:symbol', async (req, res) => {
+    try {
+      const { symbol } = req.params;
+      const timeframe = (req.query.timeframe as string) || '5m';
+      const count = parseInt(req.query.count as string) || 200;
+      const forceRefresh = req.query.refresh === 'true';
+
+      // Validate timeframe
+      const validTimeframes = ['1m', '5m', '15m', '1h', '1D'];
+      if (!validTimeframes.includes(timeframe)) {
+        return res.status(400).json({
+          error: `Invalid timeframe. Must be one of: ${validTimeframes.join(', ')}`,
+          validTimeframes,
+        });
+      }
+
+      console.log(`[Chart] Fetching ${symbol} ${timeframe} bars (count=${count}, refresh=${forceRefresh})`);
+
+      // Check if IBKR is configured
+      if (broker.status.provider !== 'ibkr') {
+        return res.status(503).json({
+          error: 'IBKR broker not configured. Chart requires live IBKR data.',
+          provider: broker.status.provider,
+        });
+      }
+
+      // Fetch bars from IBKR
+      const bars = await getRecentBars(symbol, timeframe as any, count);
+
+      return res.json({
+        symbol,
+        timeframe,
+        count: bars.length,
+        source: 'ibkr',
+        bars: bars.map(bar => ({
+          time: bar.time,
+          open: bar.open,
+          high: bar.high,
+          low: bar.low,
+          close: bar.close,
+          volume: bar.volume,
+        })),
+      });
+    } catch (error: any) {
+      console.error('[Chart] Historical data error:', error);
+      return res.status(500).json({
+        error: 'Failed to fetch historical data from IBKR',
+        message: error.message || String(error),
+      });
+    }
+  });
+
+  // POST /api/chart/cache/clear - Clear historical data cache
+  app.post('/api/chart/cache/clear', async (req, res) => {
+    try {
+      const { symbol } = req.body;
+      clearHistoricalCache(symbol);
+      return res.json({
+        success: true,
+        message: symbol ? `Cache cleared for ${symbol}` : 'All cache cleared',
+      });
+    } catch (error: any) {
+      return res.status(500).json({
+        error: 'Failed to clear cache',
+        message: error.message,
+      });
+    }
+  });
+
+  // GET /api/chart/cache/status - Get cache status
+  app.get('/api/chart/cache/status', async (_req, res) => {
+    try {
+      const status = getCacheStatus();
+      return res.json(status);
+    } catch (error: any) {
+      return res.status(500).json({ error: error.message });
+    }
+  });
+
+  // ============================================
   // Auto-schedule Option Chain Streaming at Market Open
   // ============================================
   // Initialize the option chain streamer and schedule it to auto-start
