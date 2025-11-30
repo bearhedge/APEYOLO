@@ -1,7 +1,7 @@
 /**
  * IBKR Historical Data Service
  *
- * Fetches historical OHLCV bars from IBKR's HMDS (Historical Market Data Service).
+ * Fetches historical OHLCV bars from IBKR's iserver/marketdata/history endpoint.
  * This is the ONLY source of truth for chart data - no Yahoo Finance fallbacks.
  *
  * Key features:
@@ -11,11 +11,13 @@
  * - Supports multiple timeframes: 1m, 5m, 15m, 1h, 1D
  */
 
-import { ensureIbkrReady, resolveSymbolConid, getIbkrCookieString } from '../broker/ibkr';
+import {
+  ensureIbkrReady,
+  resolveSymbolConid,
+  fetchIbkrHistoricalData,
+  type IbkrHistoricalBar,
+} from '../broker/ibkr';
 import { sanitizeBars, type Bar } from '../utils/barSanitizer';
-import axios, { AxiosInstance } from 'axios';
-import { wrapper } from 'axios-cookiejar-support';
-import { CookieJar } from 'tough-cookie';
 
 // Curated bar with provenance tracking
 export interface CuratedBar extends Bar {
@@ -27,48 +29,6 @@ export interface CuratedBar extends Bar {
 }
 
 export type Timeframe = '1m' | '5m' | '15m' | '1h' | '1D';
-
-// IBKR HMDS API parameters
-interface HmdsParams {
-  conid: number;
-  period: string;     // "1d", "1w", "1m", "1y"
-  bar: string;        // "1min", "5min", "15min", "1h", "1d"
-  outsideRth?: boolean;
-}
-
-// IBKR HMDS response format
-interface HmdsResponse {
-  serverId: string;
-  symbol: string;
-  text: string;
-  priceFactor: number;
-  startTime: string;
-  high: string;       // Formatted "price/time"
-  low: string;        // Formatted "price/time"
-  timePeriod: string;
-  barLength: number;
-  mdAvailability: string;
-  mktDataDelay: number;
-  outsideRth: boolean;
-  tradingDayDuration: number;
-  volumeFactor: number;
-  priceDisplayRule: number;
-  priceDisplayValue: string;
-  negativeCapable: boolean;
-  messageVersion: number;
-  data: HmdsBar[];
-  points: number;
-  travelTime: number;
-}
-
-interface HmdsBar {
-  o: number;  // Open
-  c: number;  // Close
-  h: number;  // High
-  l: number;  // Low
-  v: number;  // Volume
-  t: number;  // Timestamp (Unix ms)
-}
 
 // Cache for historical bars
 interface CacheEntry {
@@ -128,48 +88,6 @@ class HistoricalDataCache {
 // Singleton cache instance
 const cache = new HistoricalDataCache();
 
-// HTTP client for HMDS requests
-let hmdsClient: AxiosInstance | null = null;
-let hmdsJar: CookieJar | null = null;
-
-async function getHmdsClient(): Promise<AxiosInstance> {
-  if (hmdsClient) return hmdsClient;
-
-  // Get cookies from IBKR session
-  const cookieString = await getIbkrCookieString();
-
-  hmdsJar = new CookieJar();
-
-  // Parse and add cookies to jar
-  if (cookieString) {
-    const cookies = cookieString.split(';').map(c => c.trim());
-    for (const cookie of cookies) {
-      try {
-        await hmdsJar.setCookie(cookie, 'https://api.ibkr.com');
-      } catch {
-        // Ignore invalid cookies
-      }
-    }
-  }
-
-  hmdsClient = wrapper(axios.create({
-    baseURL: 'https://api.ibkr.com',
-    // @ts-ignore
-    jar: hmdsJar,
-    withCredentials: true,
-    validateStatus: () => true,
-    headers: { 'User-Agent': 'apeyolo/1.0' },
-  }));
-
-  return hmdsClient;
-}
-
-// Reset HTTP client (call when auth changes)
-export function resetHmdsClient(): void {
-  hmdsClient = null;
-  hmdsJar = null;
-}
-
 /**
  * Map our timeframe to IBKR bar size
  */
@@ -199,7 +117,7 @@ function timeframeToPeriod(tf: Timeframe): string {
 }
 
 /**
- * Fetch historical bars from IBKR HMDS API
+ * Fetch historical bars from IBKR iserver/marketdata/history endpoint
  */
 export async function fetchHistoricalBars(
   symbol: string,
@@ -232,43 +150,22 @@ export async function fetchHistoricalBars(
 
   console.log(`[IBKR-Historical] Fetching ${symbol} (conid=${conid}) ${timeframe} bars...`);
 
-  // Build HMDS request
-  const params: HmdsParams = {
-    conid,
+  // Fetch historical data using the authenticated IBKR client
+  const historicalData = await fetchIbkrHistoricalData(conid, {
     period: timeframeToPeriod(timeframe),
     bar: timeframeToBar(timeframe),
     outsideRth,
-  };
-
-  const client = await getHmdsClient();
-
-  // IBKR HMDS endpoint
-  const url = `/v1/api/hmds/history`;
-  const queryParams = new URLSearchParams({
-    conid: String(params.conid),
-    period: params.period,
-    bar: params.bar,
-    outsideRth: String(params.outsideRth),
   });
 
-  const resp = await client.get(`${url}?${queryParams.toString()}`);
-
-  if (resp.status !== 200) {
-    console.error(`[IBKR-Historical] HMDS request failed: status=${resp.status} body=${JSON.stringify(resp.data).slice(0, 500)}`);
-    throw new Error(`HMDS request failed with status ${resp.status}`);
+  if (!historicalData.data || !Array.isArray(historicalData.data)) {
+    console.error(`[IBKR-Historical] Invalid response: no data array`);
+    throw new Error('Invalid IBKR response: no data array');
   }
 
-  const hmdsData = resp.data as HmdsResponse;
+  console.log(`[IBKR-Historical] Received ${historicalData.data.length} raw bars for ${symbol}`);
 
-  if (!hmdsData.data || !Array.isArray(hmdsData.data)) {
-    console.error(`[IBKR-Historical] Invalid HMDS response: no data array`);
-    throw new Error('Invalid HMDS response: no data array');
-  }
-
-  console.log(`[IBKR-Historical] Received ${hmdsData.data.length} raw bars for ${symbol}`);
-
-  // Convert HMDS bars to our format
-  const rawBars = hmdsData.data.map(bar => ({
+  // Convert IBKR bars to our format
+  const rawBars = historicalData.data.map((bar: IbkrHistoricalBar) => ({
     time: Math.floor(bar.t / 1000),  // Convert ms to seconds
     open: bar.o,
     high: bar.h,

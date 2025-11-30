@@ -2253,3 +2253,72 @@ export async function resolveSymbolConid(symbol: string): Promise<number | null>
   if (!activeClient) throw new Error('IBKR client not initialized');
   return activeClient.resolveConid(symbol);
 }
+
+// Historical data response types
+export interface IbkrHistoricalBar {
+  o: number;  // Open
+  c: number;  // Close
+  h: number;  // High
+  l: number;  // Low
+  v: number;  // Volume
+  t: number;  // Timestamp (Unix ms)
+}
+
+export interface IbkrHistoricalResponse {
+  serverId?: string;
+  symbol?: string;
+  text?: string;
+  priceFactor?: number;
+  startTime?: string;
+  high?: string;
+  low?: string;
+  timePeriod?: string;
+  barLength?: number;
+  mdAvailability?: string;
+  mktDataDelay?: number;
+  outsideRth?: boolean;
+  volumeFactor?: number;
+  data?: IbkrHistoricalBar[];
+  points?: number;
+  travelTime?: number;
+}
+
+/**
+ * Fetch historical market data from IBKR iserver/marketdata/history endpoint
+ * Uses the authenticated HTTP client session
+ */
+export async function fetchIbkrHistoricalData(
+  conid: number,
+  params: {
+    period: string;     // "1d", "1w", "1m", "1y" etc
+    bar: string;        // "1min", "5mins", "15mins", "1h", "1d"
+    outsideRth?: boolean;
+  }
+): Promise<IbkrHistoricalResponse> {
+  if (!activeClient) throw new Error('IBKR client not initialized');
+
+  await activeClient.ensureReady();
+
+  const queryParams = new URLSearchParams({
+    conid: String(conid),
+    period: params.period,
+    bar: params.bar,
+    outsideRth: String(params.outsideRth ?? false),
+  });
+
+  // Use iserver endpoint - more reliable than hmds
+  const url = `/v1/api/iserver/marketdata/history?${queryParams.toString()}`;
+
+  console.log(`[IBKR][fetchHistoricalData] Requesting ${url}`);
+
+  const resp = await (activeClient as any).http.get(url);
+
+  console.log(`[IBKR][fetchHistoricalData] Response status=${resp.status} data_length=${JSON.stringify(resp.data).length}`);
+
+  if (resp.status !== 200) {
+    console.error(`[IBKR][fetchHistoricalData] Failed: status=${resp.status} body=${JSON.stringify(resp.data).slice(0, 500)}`);
+    throw new Error(`Historical data request failed with status ${resp.status}`);
+  }
+
+  return resp.data as IbkrHistoricalResponse;
+}
