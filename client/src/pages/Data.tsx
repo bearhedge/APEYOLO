@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { LeftNav } from '@/components/LeftNav';
-import { ChartWithControls } from '@/components/DeterministicChart';
+import { EngineBoundsChart } from '@/components/EngineBoundsChart';
 import { useWebSocket } from '@/hooks/use-websocket';
 import { Search, RefreshCw, TrendingUp, TrendingDown, Activity, ChevronDown, Calendar, Wifi, WifiOff } from 'lucide-react';
 import toast from 'react-hot-toast';
@@ -444,14 +444,13 @@ export function Data() {
             </div>
           </div>
 
-          {/* Deterministic Candlestick Chart (IBKR data only) */}
+          {/* Engine Bounds Chart with PUT/CALL strike visualization */}
           <div className="mt-4">
-            <ChartWithControls
+            <EngineBoundsChart
               symbol={activeTicker}
               defaultTimeframe="5m"
               width={800}
               height={350}
-              className="rounded-lg overflow-hidden"
             />
           </div>
 

@@ -79,6 +79,49 @@ function isValidOHLC(bar: any): boolean {
 }
 
 /**
+ * Check for anomalous price spreads (extended hours data artifacts)
+ *
+ * Yahoo Finance extended hours bars often have corrupted "low" values that
+ * create visual spikes. Example: open=674, high=675, low=630, close=674
+ * The OHLC relationship is technically valid (low < close), but the spread
+ * is anomalously large (~7% when typical intraday spreads are <1%).
+ *
+ * This function detects bars where:
+ * - The low is significantly below open AND close (spike down)
+ * - The high is significantly above open AND close (spike up)
+ */
+function hasAnomalousSpread(bar: { open: number; high: number; low: number; close: number }): boolean {
+  const { open, high, low, close } = bar;
+
+  // Calculate the "body" range (open to close) and "wick" ranges
+  const bodyMid = (open + close) / 2;
+  const bodyRange = Math.abs(close - open);
+
+  // Calculate how far low/high deviate from the body
+  const lowDeviation = bodyMid - low;  // Positive if low is below body
+  const highDeviation = high - bodyMid; // Positive if high is above body
+
+  // Maximum allowed deviation: 5% of body mid price
+  // For SPY at ~680, this is ~$34 max spike
+  // Normal intraday bars rarely exceed 1-2%
+  const maxAllowedDeviation = bodyMid * 0.05;
+
+  // If the low is abnormally far below the body (spike down)
+  // AND the body itself is small (not a legitimate large range bar)
+  if (lowDeviation > maxAllowedDeviation && bodyRange < bodyMid * 0.02) {
+    return true;
+  }
+
+  // If the high is abnormally far above the body (spike up)
+  // AND the body itself is small
+  if (highDeviation > maxAllowedDeviation && bodyRange < bodyMid * 0.02) {
+    return true;
+  }
+
+  return false;
+}
+
+/**
  * Check if price is within reasonable bounds for the symbol
  */
 function isWithinBounds(price: number, symbol: string): boolean {
@@ -182,6 +225,12 @@ export function sanitizeBars(rawBars: any[], symbol: string): SanitizeResult {
     const bar = { time, open, high, low, close, volume };
     if (!isValidOHLC(bar)) {
       addReason('invalid_ohlc_relationship');
+      continue;
+    }
+
+    // Check for anomalous spreads (extended hours artifacts)
+    if (hasAnomalousSpread(bar)) {
+      addReason('anomalous_spread');
       continue;
     }
 

@@ -1,8 +1,7 @@
-import { useState, useCallback, useEffect, useRef } from 'react';
+import { useState, useCallback, useEffect } from 'react';
 import { LeftNav } from '@/components/LeftNav';
 import { StatCard } from '@/components/StatCard';
 import { OptionChainViewer } from '@/components/OptionChainViewer';
-import { EngineBoundsChart } from '@/components/EngineBoundsChart';
 import {
   StepCard,
   MarketRegimeContent,
@@ -45,7 +44,6 @@ export function Engine() {
   const [riskTier, setRiskTier] = useState<RiskTier>('balanced');
   const [stopMultiplier, setStopMultiplier] = useState<StopMultiplier>(3);
   const [engineLogs, setEngineLogs] = useState<LogEntry[]>([]);
-  const [chartKey, setChartKey] = useState(0); // Used to trigger bounds refresh
 
   // Helper to add operation log entries in real-time
   const addOperationLog = useCallback((
@@ -134,9 +132,6 @@ export function Engine() {
         ]);
       }
 
-      // Refresh chart bounds after analysis
-      handleChartBoundsRefresh();
-
       // Final decision log
       if (result.canTrade) {
         addOperationLog('DECISION', 'Trade proposal ready for execution', 'success');
@@ -159,7 +154,7 @@ export function Engine() {
     } finally {
       setIsExecuting(false);
     }
-  }, [analyzeEngine, riskTier, stopMultiplier, executionMode, executePaperTrade, addOperationLog, brokerConnectedFinal, handleChartBoundsRefresh]);
+  }, [analyzeEngine, riskTier, stopMultiplier, executionMode, executePaperTrade, addOperationLog, brokerConnectedFinal]);
 
   // Handle paper trade execution
   const handleExecuteTrade = useCallback(async () => {
@@ -200,11 +195,6 @@ export function Engine() {
   // Execution still requires trading window to be open
   const canRunAnalysis = brokerConnectedFinal;
   const canExecuteTrade = status?.tradingWindowOpen && brokerConnectedFinal;
-
-  // Callback to trigger chart bounds refresh
-  const handleChartBoundsRefresh = useCallback(() => {
-    setChartKey(prev => prev + 1);
-  }, []);
 
   return (
     <div className="flex h-[calc(100vh-64px)]">
@@ -258,16 +248,6 @@ export function Engine() {
             <p className="text-sm">{status.tradingWindowReason}</p>
           </div>
         )}
-
-        {/* Engine Bounds Chart - Visualization with PUT/CALL boundaries */}
-        <EngineBoundsChart
-          key={chartKey}
-          symbol="SPY"
-          defaultTimeframe="5m"
-          width={800}
-          height={350}
-          onBoundsRefresh={handleChartBoundsRefresh}
-        />
 
         {/* 5-Step Decision Process */}
         <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">

@@ -4,304 +4,333 @@
 
 ---
 
-## CURRENT STATUS (2025-11-30 - True WebSocket Streaming)
+## CURRENT OBJECTIVE (2025-12-01)
 
-### ✅ True WebSocket Streaming to Browser COMPLETE
+### Goal: Complete IBKR Data Integration
 
-| Component | Status | Notes |
-|-----------|--------|-------|
-| **Server Broadcast** | ✅ Deployed | `broadcastOptionChainUpdate()` in optionChainStreamer.ts |
-| **Browser Integration** | ✅ Deployed | Data.tsx uses `useWebSocket` hook |
-| **Live Updates** | ✅ Ready | Option chain updates push instantly |
-| **Fallback Polling** | ✅ Ready | 30s interval when WS connected |
+Plug IBKR into the system for:
+1. **Historical candlestick data** - Chart bars from IBKR (not Yahoo Finance)
+2. **Real-time WebSocket streaming** - Live price updates pushed to browser
 
-### Architecture (After WebSocket Streaming)
+### Current IBKR Connection Status: CONNECTED
 
 ```
-IBKR WebSocket API
-       │
-       ▼ (push - instant)
-┌──────────────────────────┐
-│ IbkrWebSocketManager     │
-└──────────────────────────┘
-       │
-       ▼ (updates cache + broadcast)
-┌──────────────────────────┐
-│ OptionChainStreamer      │──────────────────────┐
-│ - handleMarketDataUpdate │                      │
-│ - broadcastOptionUpdate  │                      │
-└──────────────────────────┘                      │
-                                                  ▼ (push to browser)
-                                    ┌──────────────────────────┐
-                                    │ Express /ws Server       │
-                                    │ (wsClients.forEach)      │
-                                    └──────────────────────────┘
-                                                  │
-                                                  ▼ (instant)
-                                    ┌──────────────────────────┐
-                                    │ Data.tsx                 │
-                                    │ (useWebSocket hook)      │
-                                    │ - liveOptionChain state  │
-                                    │ - liveUnderlyingPrice    │
-                                    └──────────────────────────┘
-```
+Authentication Pipeline Status:
+- OAuth Token:           Connected (200)
+- SSO Session:           Active (200)
+- Session Validation:    Validated (200)
+- Brokerage Init:        Ready (200)
 
-### What to Expect Monday (Market Open)
-
-1. Open Data page in browser
-2. Should see "WS Connected" indicator (green Wifi icon)
-3. Click "Start Streaming" or search for SPY
-4. Should see "⚡ Live WebSocket" indicator
-5. Update counter should increase as IBKR pushes data
-6. Option chain table updates instantly (no visible polling)
-
----
-
-## PREVIOUS STATUS (2025-11-30)
-
-### ✅ UI Restructuring Complete
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| **Data Page** | ✅ Deployed | `/data` - Option chain viewer + stock chart |
-| **Portfolio Merge** | ✅ Deployed | Tabs: [Positions] [History] |
-| **Engine Refactor** | ✅ Deployed | Step 2 uses MiniPriceWidget |
-| **Navigation** | ✅ Deployed | Data replaced Trades in nav |
-
-### Page Structure (After Restructuring)
-
-```
-PAGES:
-├── Dashboard (/)
-├── Portfolio (/portfolio)
-│   ├── Tab: Positions (open positions table)
-│   └── Tab: History (execution log - was Trades)
-├── Data (/data)  ← NEW
-│   ├── Ticker search
-│   ├── Stock chart with sparkline
-│   └── Option chain (PUT/CALL tables)
-├── Engine (/engine)
-│   ├── Step 1: VIX (full chart stays)
-│   ├── Step 2: Direction (mini widget)
-│   ├── Step 3: Strikes (option chain)
-│   ├── Step 4: Sizing
-│   └── Step 5: Exit
-├── Agent (/agent)
-├── Jobs (/jobs)
-└── Settings (/settings)
+Environment: paper
+Account ID:  DU9807013
 ```
 
 ---
 
-## PREVIOUS STATUS (2025-11-29 Late Evening)
-
-### ✅ WebSocket Cache Layer Implemented
-
-| Component | Status | Notes |
-|-----------|--------|-------|
-| **IBKR Market Data** | ✅ Ready | SPY resolves to US conid 756733 |
-| **Option Chain + VIX σ** | ✅ Ready | 2σ strike filtering, Greeks, OI, IV |
-| **WebSocket Streaming** | ✅ Ready | Real-time push updates from IBKR |
-| **Option Chain Cache** | ✅ NEW | Engine reads from cache for instant strike selection |
-| **Auto-Start at Market Open** | ✅ NEW | Streaming auto-starts at 9:30 AM ET |
-
-### Why Engine Shows "Mock Data" Right Now
-
-When you run the engine on weekends, Step 3 shows:
-```
-PUT (mock): Strike $431... Data source: mock estimates. Underlying: $450.00
-```
-
-**This is EXPECTED** - IBKR returns no data when market is closed, so the engine falls back to mock data.
-
----
-
-## What to Expect Monday (Market Open)
-
-### Engine Step 3 Will Show:
-```
-PUT (IBKR): Strike $595 with delta 0.18
-CALL (IBKR): Strike $605 with delta 0.18
-Data source: IBKR real-time. Underlying: $600.00.
-```
-
-| Field | Weekend (Now) | Monday (Expected) |
-|-------|---------------|-------------------|
-| Data source | "mock estimates" | "IBKR real-time" |
-| Underlying | $450.00 (hardcoded) | ~$600 (real SPY) |
-| Strikes | Random mock | Real IBKR strikes |
-| Delta | ~0.39 (calculated) | ~0.15-0.20 (from IBKR) |
-
----
-
-## Architecture: WebSocket Cache Layer (NEW)
+## ARCHITECTURE OVERVIEW
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                     TRADING SYSTEM LAYERS                       │
-├─────────────────────────────────────────────────────────────────┤
-│                                                                 │
-│  Layer 3: ENGINE (Decision Making)                              │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │ Step 1: Market Regime → Step 2: Direction →              │   │
-│  │ Step 3: Strike Selection → Step 4: Sizing → Step 5: Exit │   │
-│  │         ↓                                                │   │
-│  │    Reads from OptionChainCache (instant, no HTTP)        │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                         ↑                                       │
-│  Layer 2: OPTION CHAIN CACHE (Live Data Store)                  │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │ OptionChainStreamer                                      │   │
-│  │ - Maintains live option chain in memory                  │   │
-│  │ - Updates on every WebSocket push                        │   │
-│  │ - Provides instant reads for engine                      │   │
-│  │ - Falls back to HTTP if cache stale/empty                │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                         ↑                                       │
-│  Layer 1: WEBSOCKET STREAMING (Data Transport)                  │
-│  ┌─────────────────────────────────────────────────────────┐   │
-│  │ IbkrWebSocketManager (already built)                     │   │
-│  │ - Connects to wss://api.ibkr.com/v1/api/ws               │   │
-│  │ - Subscribes to SPY + option conids                      │   │
-│  │ - Pushes updates to Layer 2 cache                        │   │
-│  └─────────────────────────────────────────────────────────┘   │
-│                         ↑                                       │
-│                    IBKR WebSocket API                           │
-└─────────────────────────────────────────────────────────────────┘
-```
-
-### Data Flow
-
-**Monday 9:30 AM ET - Market Opens:**
-1. Server auto-starts `OptionChainStreamer`
-2. Fetches initial option chain via HTTP (gets conids)
-3. Subscribes all option conids via WebSocket
-4. Cache populates with real-time updates
-
-**11:00 AM ET - Trading Window Opens:**
-1. Engine runs
-2. Step 3 reads from cache (instant, already populated)
-3. Gets real-time bid/ask/delta
-4. Selects optimal strike
-
-### Fallback Strategy
-
-```
-Engine needs option chain
-        ↓
-    Cache available?
-    /            \
-  YES             NO
-   ↓               ↓
-Read cache    HTTP snapshot
-(instant)     (200-500ms latency)
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        IBKR DATA INTEGRATION                                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                              │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                     BROWSER (Data.tsx)                              │    │
+│  │  ┌──────────────┐    ┌──────────────┐    ┌──────────────────────┐  │    │
+│  │  │ DeterminChart│    │ OptionChain  │    │ Price Display        │  │    │
+│  │  │ (candlestick)│    │ (PUT/CALL)   │    │ ($XXX.XX + change)   │  │    │
+│  │  └──────────────┘    └──────────────┘    └──────────────────────┘  │    │
+│  │         ↑                   ↑                      ↑               │    │
+│  │         │                   │                      │               │    │
+│  │  ┌──────┴───────────────────┴──────────────────────┴─────────┐    │    │
+│  │  │              WebSocket Connection (useWebSocket)          │    │    │
+│  │  │              - underlying_price_update                    │    │    │
+│  │  │              - option_chain_update                        │    │    │
+│  │  └───────────────────────────────────────────────────────────┘    │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                    ↑                                         │
+│                                    │ WebSocket                               │
+│                                    ↓                                         │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                     EXPRESS SERVER (/api)                           │    │
+│  │                                                                     │    │
+│  │  HTTP ENDPOINTS:                                                    │    │
+│  │  ├── /api/chart/history/:symbol     → ibkrHistoricalService.ts     │    │
+│  │  ├── /api/broker/test-market/:sym   → ibkr.ts getMarketData()      │    │
+│  │  ├── /api/broker/test-options/:sym  → ibkr.ts getOptionChain()     │    │
+│  │  └── /api/broker/stream/*           → optionChainStreamer.ts       │    │
+│  │                                                                     │    │
+│  │  WEBSOCKET SERVER:                                                  │    │
+│  │  └── /ws                            → broadcasts to browser         │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                    ↑                                         │
+│                                    │                                         │
+│                                    ↓                                         │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                     IBKR INTEGRATION LAYER                          │    │
+│  │                                                                     │    │
+│  │  ┌───────────────────────┐    ┌────────────────────────────────┐   │    │
+│  │  │ ibkrWebSocket.ts      │    │ ibkr.ts                        │   │    │
+│  │  │ - Real-time streaming │    │ - HTTP snapshot requests       │   │    │
+│  │  │ - wss://api.ibkr.com  │    │ - Option chain, market data    │   │    │
+│  │  │ - Pushes to cache     │    │ - Symbol → conid resolution    │   │    │
+│  │  └───────────────────────┘    └────────────────────────────────┘   │    │
+│  │                                                                     │    │
+│  │  ┌───────────────────────┐    ┌────────────────────────────────┐   │    │
+│  │  │ ibkrHistoricalService │    │ optionChainStreamer.ts         │   │    │
+│  │  │ - OHLCV bar data      │    │ - Option chain cache           │   │    │
+│  │  │ - Timeframes: 1m-1D   │    │ - Auto-start at market open    │   │    │
+│  │  │ - Curated bars        │    │ - Broadcasts to browser WS     │   │    │
+│  │  └───────────────────────┘    └────────────────────────────────┘   │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+│                                    ↑                                         │
+│                                    │ HTTPS/WSS                               │
+│                                    ↓                                         │
+│  ┌─────────────────────────────────────────────────────────────────────┐    │
+│  │                     IBKR CLIENT PORTAL API                          │    │
+│  │  Base URL: https://api.ibkr.com                                     │    │
+│  │  WebSocket: wss://api.ibkr.com/v1/api/ws                           │    │
+│  └─────────────────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---
 
-## API Endpoints
+## KEY FILES
 
-### Option Chain Streamer (NEW - for Engine)
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/broker/stream/start` | POST | Start streaming for symbol (default: SPY) |
-| `/api/broker/stream/stop` | POST | Stop streaming (all or specific symbol) |
-| `/api/broker/stream/status` | GET | Get streamer status |
-| `/api/broker/stream/chain/:symbol` | GET | Get cached option chain |
-| `/api/broker/stream/schedule` | POST | Schedule auto-start at market open |
-
-### WebSocket Streaming (for UI)
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/broker/ws/start` | POST | Start WebSocket connection to IBKR |
-| `/api/broker/ws/stop` | POST | Stop WebSocket connection |
-| `/api/broker/ws/subscribe` | POST | Subscribe to a symbol `{symbol, type}` |
-| `/api/broker/ws/subscribe-options` | POST | Subscribe to option conids `{symbol, conids}` |
-| `/api/broker/ws/subscribe/:symbol` | DELETE | Unsubscribe from a symbol |
-| `/api/broker/ws/status` | GET | Get connection status |
-
----
-
-## Monday Verification Checklist
-
-### 1. Test SPY Price
-```bash
-curl -s https://apeyolo.com/api/broker/test-market/SPY | jq .
-# Expected: price ~$600, not 0
-```
-
-### 2. Test Option Chain
-```bash
-curl -s https://apeyolo.com/api/broker/test-options/SPY | jq .
-# Expected: Real strikes, Greeks, IV, OI
-```
-
-### 3. Check Streamer Status
-```bash
-# Check if auto-scheduled
-curl -s https://apeyolo.com/api/broker/stream/status | jq .
-# Expected: isStreaming: true (after 9:30 AM)
-```
-
-### 4. Run Engine
-- Click "Run Engine" in the UI
-- Step 3 should show "Using WebSocket cache" or "IBKR real-time"
-- Strikes should be real (within 2σ of SPY price)
-
-### 5. Test Cached Chain (Optional)
-```bash
-curl -s https://apeyolo.com/api/broker/stream/chain/SPY | jq .
-# Expected: cached: true, with puts and calls
-```
-
----
-
-## Key Files
+### Server - IBKR Integration
 
 | File | Purpose |
 |------|---------|
-| `server/broker/optionChainStreamer.ts` | NEW - Cache layer for engine |
-| `server/broker/ibkrWebSocket.ts` | WebSocket streaming module |
-| `server/broker/ibkr.ts` | IBKR client, option chain, Greeks |
-| `server/routes.ts` | API endpoints (HTTP + WebSocket + Streamer) |
-| `server/engine/step3.ts` | Strike selection (now uses cache first) |
+| `server/broker/ibkr.ts` | Core IBKR client - auth, market data, option chains |
+| `server/broker/ibkrWebSocket.ts` | WebSocket streaming to IBKR for real-time data |
+| `server/broker/optionChainStreamer.ts` | Option chain cache with browser broadcast |
+| `server/services/ibkrHistoricalService.ts` | Historical OHLCV bars from IBKR |
+| `server/routes.ts` | All API endpoints |
+
+### Client - Data Display
+
+| File | Purpose |
+|------|---------|
+| `client/src/pages/Data.tsx` | Main data page - chart + option chain |
+| `client/src/components/DeterministicChart.tsx` | Canvas-based candlestick chart |
+| `client/src/engine/ChartEngine.ts` | Low-level chart rendering engine |
+| `client/src/hooks/use-websocket.ts` | WebSocket connection hook |
 
 ---
 
-## Session Changes (2025-11-29 Late Evening)
+## DATA FLOW: HISTORICAL BARS (CHART)
 
-### 1. Option Chain Streamer Module (NEW)
-   - Created `server/broker/optionChainStreamer.ts`
-   - Maintains live option chain cache in memory
-   - Auto-starts at market open (9:30 AM ET)
-   - Falls back to HTTP when cache is stale (>5s)
-
-### 2. Engine Step 3 Integration
-   - Modified `server/engine/step3.ts` to try cache first
-   - Uses `getOptionChainStreamer().getOptionChain(symbol)`
-   - Falls back to HTTP if cache unavailable
-
-### 3. New API Endpoints
-   - `/api/broker/stream/start` - Manual start
-   - `/api/broker/stream/stop` - Stop streaming
-   - `/api/broker/stream/status` - Check status
-   - `/api/broker/stream/chain/:symbol` - View cached data
-   - `/api/broker/stream/schedule` - Schedule for market open
-
-### 4. Auto-Start at Server Startup
-   - Server automatically schedules streaming for 9:30 AM ET
-   - No manual intervention needed on production
+```
+User selects SPY + 5m timeframe
+        │
+        ▼
+DeterministicChart.tsx
+        │
+        ▼ fetch()
+/api/chart/history/SPY?timeframe=5m
+        │
+        ▼
+routes.ts → ibkrHistoricalService.fetchHistoricalBars()
+        │
+        ▼
+ensureIbkrReady() → resolveSymbolConid(SPY) → 756733
+        │
+        ▼
+fetchIbkrHistoricalData(756733, {period: '2d', bar: '5mins'})
+        │
+        ▼
+IBKR: GET /iserver/marketdata/history?conid=756733&period=2d&bar=5mins
+        │
+        ▼
+Returns: [{t: timestamp, o: open, h: high, l: low, c: close, v: volume}, ...]
+        │
+        ▼
+sanitizeBars() → CuratedBar[] with provenance {source: 'ibkr', fetchedAt, version}
+        │
+        ▼
+Cache (60s TTL) → Return to client
+        │
+        ▼
+ChartEngine renders candlesticks on Canvas
+```
 
 ---
 
-## Production Status
+## DATA FLOW: REAL-TIME WEBSOCKET
+
+```
+Server starts
+        │
+        ▼
+IbkrWebSocketManager.connect() → wss://api.ibkr.com/v1/api/ws
+        │
+        ▼
+subscribe('smd+756733+{"fields":["31","84","86"]}')  // SPY: last, bid, ask
+        │
+        ▼
+IBKR pushes price updates
+        │
+        ▼
+handleMarketDataUpdate() → parses fields 31/84/86
+        │
+        ▼
+optionChainStreamer.broadcastOptionChainUpdate()
+        │
+        ▼
+Express WS server → wsClients.forEach(client.send())
+        │
+        ▼
+Browser useWebSocket hook receives message
+        │
+        ▼
+Data.tsx updates: liveOptionChain, liveUnderlyingPrice
+        │
+        ▼
+UI shows live price with "WS Connected" indicator
+```
+
+---
+
+## API ENDPOINTS
+
+### Historical Data (Chart)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/chart/history/:symbol` | GET | IBKR historical OHLCV bars |
+| Query: `timeframe` | - | `1m`, `5m`, `15m`, `1h`, `1D` |
+| Query: `count` | - | Number of bars (default: 200) |
+
+### Market Data (Snapshot)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/broker/test-market/:symbol` | GET | Current price snapshot from IBKR |
+| `/api/broker/test-options/:symbol` | GET | Option chain from IBKR |
+
+### WebSocket Streaming
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/broker/ws/start` | POST | Connect to IBKR WebSocket |
+| `/api/broker/ws/stop` | POST | Disconnect from IBKR WebSocket |
+| `/api/broker/ws/subscribe` | POST | Subscribe to symbol `{symbol, type}` |
+| `/api/broker/ws/status` | GET | Connection status |
+
+### Option Chain Streamer (Cache)
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/broker/stream/start` | POST | Start streaming for symbol |
+| `/api/broker/stream/stop` | POST | Stop streaming |
+| `/api/broker/stream/status` | GET | Streamer status |
+| `/api/broker/stream/chain/:symbol` | GET | Get cached option chain |
+
+### IBKR Status
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/ibkr/status` | GET | Auth pipeline status (4 steps) |
+| `/api/ibkr/test` | POST | Force re-authenticate |
+
+---
+
+## KNOWN ISSUES & FIXES NEEDED
+
+### Issue 1: Silent Yahoo Finance Fallback
+
+**Problem**: When IBKR returns price=0 (session expired), UI silently falls back to Yahoo Finance without indication.
+
+**Location**: `Data.tsx` line ~339
+```typescript
+const displayPrice = ibkrPrice > 0 ? ibkrPrice : (lastClosePrice || 0);
+```
+
+**Fix Needed**:
+- Add data source indicator showing "IBKR Live" vs "Yahoo Fallback"
+- Show "IBKR Disconnected" banner when auth fails
+- Add "Reconnect" button to trigger `/api/ibkr/test`
+
+### Issue 2: WebSocket Disconnects
+
+**Problem**: Browser WebSocket shows "Disconnected" intermittently.
+
+**Possible Causes**:
+- Cloud Run cold starts (container restarts)
+- IBKR session expiry (typically 1-24 hours)
+- Network issues
+
+**Fix Needed**:
+- Auto-reconnect logic in `useWebSocket` hook
+- Session keepalive (call `/v1/api/tickle` every 5 min)
+- Better connection state management
+
+### Issue 3: No Auto-Reauthentication
+
+**Problem**: When IBKR session expires, market data returns 0 instead of re-authenticating.
+
+**Location**: `server/broker/ibkr.ts`
+
+**Fix Needed**:
+- Add retry logic in `getMarketData()` - if returns 0/error, call `ensureReady()` and retry once
+- Log: "IBKR session expired, reauthenticating..."
+
+---
+
+## TESTING COMMANDS
+
+### Verify IBKR Connection
+```bash
+curl -s https://apeyolo.com/api/ibkr/status | jq .
+# Expected: connected: true, all steps: Connected/200
+```
+
+### Test Historical Bars
+```bash
+curl -s "https://apeyolo.com/api/chart/history/SPY?timeframe=5m&count=5" | jq .
+# Expected: bars with source: 'ibkr', real OHLCV data
+```
+
+### Test Market Snapshot
+```bash
+curl -s https://apeyolo.com/api/broker/test-market/SPY | jq .
+# Expected: price > 0 (e.g., 680.00)
+```
+
+### Test Option Chain
+```bash
+curl -s https://apeyolo.com/api/broker/test-options/SPY | jq .
+# Expected: puts/calls with strikes, deltas, Greeks
+```
+
+### Force Re-authenticate
+```bash
+curl -X POST https://apeyolo.com/api/ibkr/test | jq .
+```
+
+---
+
+## PRODUCTION
 
 - **URL**: https://apeyolo.com
 - **Cloud Run Service**: `apeyolo` (asia-east1)
-- **IBKR Status**: All 4 phases returning 200 (oauth, sso, validate, init)
+- **Project**: fabled-cocoa-443004-n3
+
+### Deploy
+```bash
+./scripts/deploy.sh prod
+```
 
 ---
 
-**Last Updated**: 2025-11-29T23:30:00Z
+## CONID REFERENCE
+
+| Symbol | Conid | Type |
+|--------|-------|------|
+| SPY | 756733 | US Stock |
+| VIX | 13455763 | Index |
+
+---
+
+**Last Updated**: 2025-12-01

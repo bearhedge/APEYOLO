@@ -11,7 +11,16 @@ import { DeterministicChart } from './DeterministicChart';
 import { useChartBounds } from '@/hooks/useChartBounds';
 import { useWebSocket } from '@/hooks/use-websocket';
 import { RefreshCw, TrendingUp, TrendingDown, Target, AlertTriangle } from 'lucide-react';
-import type { Bar } from '@/engine/ChartEngine';
+
+// Local Bar type to avoid circular imports
+interface Bar {
+  time: number;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume?: number;
+}
 
 // ============================================
 // Types
