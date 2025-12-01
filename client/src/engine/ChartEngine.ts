@@ -46,11 +46,25 @@ export interface ChartConfig {
     text: string;
     crosshair: string;
     priceLabel: string;
+    // Engine-driven bounds overlay colors
+    winZone: string;
+    dangerZone: string;
+    putStrikeLine: string;
+    callStrikeLine: string;
+    currentPriceLine: string;
   };
   font: {
     family: string;
     size: number;
   };
+}
+
+// Engine-driven bounds overlay configuration
+export interface ChartOverlays {
+  putStrike?: number;      // PUT strike price (lower bound)
+  callStrike?: number;     // CALL strike price (upper bound)
+  currentPrice?: number;   // Live current price
+  showZones?: boolean;     // Whether to show win/danger zones
 }
 
 export interface Viewport {
@@ -63,6 +77,7 @@ export interface ChartInput {
   config: ChartConfig;
   viewport: Viewport;
   crosshair?: { x: number; y: number } | null;
+  overlays?: ChartOverlays;  // Engine-driven bounds overlays
 }
 
 export interface ChartOutput {
@@ -101,6 +116,12 @@ export const DEFAULT_CONFIG: ChartConfig = {
     text: '#9ca3af',
     crosshair: '#4b5563',
     priceLabel: '#374151',
+    // Engine-driven bounds overlay colors
+    winZone: 'rgba(34, 197, 94, 0.12)',      // Semi-transparent green
+    dangerZone: 'rgba(239, 68, 68, 0.08)',   // Semi-transparent red
+    putStrikeLine: '#ef4444',                 // Red for PUT
+    callStrikeLine: '#3b82f6',                // Blue for CALL
+    currentPriceLine: '#fbbf24',              // Amber for current price
   },
   font: {
     family: 'SF Mono, Monaco, Consolas, monospace',
@@ -408,6 +429,199 @@ function renderCrosshair(
 }
 
 // ============================================
+// Engine-Driven Bounds Overlay Renderers
+// ============================================
+
+/**
+ * Render a shaded zone between two price levels
+ * Used for win zone (between strikes) and danger zones (beyond strikes)
+ */
+function renderZone(
+  ctx: CanvasRenderingContext2D,
+  priceHigh: number,
+  priceLow: number,
+  coords: CoordinateSystem,
+  config: ChartConfig,
+  color: string
+): void {
+  const { chartArea } = coords;
+
+  // Clamp prices to visible range
+  const clampedHigh = Math.min(priceHigh, coords.priceMax);
+  const clampedLow = Math.max(priceLow, coords.priceMin);
+
+  if (clampedHigh <= clampedLow) return;
+
+  const yHigh = coords.priceToY(clampedHigh);
+  const yLow = coords.priceToY(clampedLow);
+
+  ctx.fillStyle = color;
+  ctx.fillRect(chartArea.left, yHigh, chartArea.width, yLow - yHigh);
+}
+
+/**
+ * Render a strike price line with label
+ * Dashed horizontal line indicating PUT or CALL strike
+ */
+function renderStrikeLine(
+  ctx: CanvasRenderingContext2D,
+  price: number,
+  coords: CoordinateSystem,
+  config: ChartConfig,
+  color: string,
+  label: string,
+  labelPosition: 'left' | 'right' = 'left'
+): void {
+  const { chartArea } = coords;
+
+  // Don't render if price is outside visible range
+  if (price < coords.priceMin || price > coords.priceMax) return;
+
+  const y = coords.priceToY(price);
+
+  // Dashed line across chart
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.setLineDash([6, 4]);
+  ctx.beginPath();
+  ctx.moveTo(chartArea.left, Math.round(y) + 0.5);
+  ctx.lineTo(chartArea.right, Math.round(y) + 0.5);
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Label background and text
+  ctx.font = `bold ${config.font.size}px ${config.font.family}`;
+  const labelWidth = ctx.measureText(label).width + 8;
+  const labelHeight = config.font.size + 4;
+
+  const labelX = labelPosition === 'left'
+    ? chartArea.left + 4
+    : chartArea.right - labelWidth - 4;
+  const labelY = y - labelHeight - 2;
+
+  // Label background
+  ctx.fillStyle = color;
+  ctx.globalAlpha = 0.9;
+  ctx.fillRect(labelX, labelY, labelWidth, labelHeight);
+  ctx.globalAlpha = 1.0;
+
+  // Label text
+  ctx.fillStyle = '#ffffff';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, labelX + 4, labelY + labelHeight / 2);
+}
+
+/**
+ * Render current price line with prominent badge
+ * Solid amber line showing live price position
+ */
+function renderCurrentPriceLine(
+  ctx: CanvasRenderingContext2D,
+  price: number,
+  coords: CoordinateSystem,
+  config: ChartConfig
+): void {
+  const { chartArea } = coords;
+
+  // Don't render if price is outside visible range
+  if (price < coords.priceMin || price > coords.priceMax) return;
+
+  const y = coords.priceToY(price);
+  const color = config.colors.currentPriceLine;
+
+  // Solid bright line
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
+  ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.moveTo(chartArea.left, Math.round(y) + 0.5);
+  ctx.lineTo(chartArea.right, Math.round(y) + 0.5);
+  ctx.stroke();
+
+  // Price badge on right side (outside chart area)
+  const label = `$${price.toFixed(2)}`;
+  ctx.font = `bold ${config.font.size}px ${config.font.family}`;
+  const labelWidth = ctx.measureText(label).width + 12;
+  const labelHeight = config.font.size + 8;
+
+  // Badge background
+  ctx.fillStyle = color;
+  ctx.fillRect(chartArea.right + 2, y - labelHeight / 2, labelWidth, labelHeight);
+
+  // Badge text
+  ctx.fillStyle = '#000000';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(label, chartArea.right + 8, y);
+}
+
+/**
+ * Render all overlay zones (called before candles)
+ * Draws win zone and danger zones as background shading
+ */
+function renderOverlayZones(
+  ctx: CanvasRenderingContext2D,
+  overlays: ChartOverlays,
+  coords: CoordinateSystem,
+  config: ChartConfig
+): void {
+  const { putStrike, callStrike, showZones = true } = overlays;
+
+  if (!showZones) return;
+
+  // Need both strikes to render zones
+  if (putStrike !== undefined && callStrike !== undefined) {
+    // Win zone (between strikes) - green
+    renderZone(ctx, callStrike, putStrike, coords, config, config.colors.winZone);
+
+    // Upper danger zone (above call strike) - red
+    renderZone(ctx, coords.priceMax, callStrike, coords, config, config.colors.dangerZone);
+
+    // Lower danger zone (below put strike) - red
+    renderZone(ctx, putStrike, coords.priceMin, coords, config, config.colors.dangerZone);
+  }
+}
+
+/**
+ * Render all overlay lines (called after candles)
+ * Draws strike lines and current price marker
+ */
+function renderOverlayLines(
+  ctx: CanvasRenderingContext2D,
+  overlays: ChartOverlays,
+  coords: CoordinateSystem,
+  config: ChartConfig
+): void {
+  const { putStrike, callStrike, currentPrice } = overlays;
+
+  // PUT strike line (red, lower bound)
+  if (putStrike !== undefined) {
+    renderStrikeLine(
+      ctx, putStrike, coords, config,
+      config.colors.putStrikeLine,
+      `PUT $${putStrike}`,
+      'left'
+    );
+  }
+
+  // CALL strike line (blue, upper bound)
+  if (callStrike !== undefined) {
+    renderStrikeLine(
+      ctx, callStrike, coords, config,
+      config.colors.callStrikeLine,
+      `CALL $${callStrike}`,
+      'left'
+    );
+  }
+
+  // Current price line (amber, most prominent)
+  if (currentPrice !== undefined) {
+    renderCurrentPriceLine(ctx, currentPrice, coords, config);
+  }
+}
+
+// ============================================
 // Hash Calculation (for determinism verification)
 // ============================================
 
@@ -465,7 +679,7 @@ export class DeterministicChartEngine {
 
   async render(input: ChartInput): Promise<ChartOutput> {
     const startTime = performance.now();
-    const { bars, viewport, crosshair } = input;
+    const { bars, viewport, crosshair, overlays } = input;
     const config = { ...this.config, ...input.config };
 
     // Validate input
@@ -486,12 +700,30 @@ export class DeterministicChartEngine {
     this.ctx.setTransform(1, 0, 0, 1, 0, 0);
 
     // Render in fixed order (deterministic)
+    // 1. Background
     renderBackground(this.ctx, config);
+
+    // 2. Grid
     renderGrid(this.ctx, coords, config);
+
+    // 3. Engine-driven overlay zones (behind candles)
+    if (overlays) {
+      renderOverlayZones(this.ctx, overlays, coords, config);
+    }
+
+    // 4. Candlesticks
     renderCandles(this.ctx, bars, safeViewport, coords, config);
+
+    // 5. Engine-driven overlay lines (on top of candles)
+    if (overlays) {
+      renderOverlayLines(this.ctx, overlays, coords, config);
+    }
+
+    // 6. Axes
     renderPriceAxis(this.ctx, coords, config);
     renderTimeAxis(this.ctx, bars, safeViewport, coords, config);
 
+    // 7. Crosshair (always on top)
     if (crosshair) {
       renderCrosshair(this.ctx, crosshair, bars, coords, config);
     }

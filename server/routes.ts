@@ -129,6 +129,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 timestamp: new Date().toISOString()
               }
             }));
+
+            // Chart price update for real-time current price line
+            // Only send if we have a valid price (>0)
+            if (spyData.price > 0) {
+              ws.send(JSON.stringify({
+                type: 'chart_price_update',
+                data: {
+                  symbol: 'SPY',
+                  price: spyData.price,
+                  change: spyData.change || 0,
+                  changePct: spyData.changePercent || 0,
+                  timestamp: Date.now()
+                }
+              }));
+            }
           } catch (error) {
             console.error('[WebSocket] Error fetching market data:', error);
           }
@@ -1333,6 +1348,80 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return res.json(status);
     } catch (error: any) {
       return res.status(500).json({ error: error.message });
+    }
+  });
+
+  // GET /api/chart/bounds/:symbol - Get engine-selected strikes for chart overlay
+  // Returns the trading engine's selected PUT/CALL strikes as chart bounds
+  app.get('/api/chart/bounds/:symbol', async (req, res) => {
+    try {
+      const { symbol } = req.params;
+
+      // Import step3 selectStrikes function
+      const { selectStrikes } = await import('./engine/step3.js');
+
+      // Get current underlying price from IBKR
+      let underlyingPrice = 0;
+      try {
+        const marketData = await broker.api.getMarketData(symbol);
+        underlyingPrice = marketData?.price || 0;
+      } catch (err) {
+        console.warn('[Chart Bounds] Could not fetch market data, using default:', err);
+      }
+
+      // If we couldn't get a live price, try from recent historical bars
+      if (underlyingPrice === 0) {
+        try {
+          const recentBars = getRecentBars(symbol, 1);
+          if (recentBars && recentBars.length > 0) {
+            underlyingPrice = recentBars[0].close;
+          }
+        } catch (err) {
+          console.warn('[Chart Bounds] Could not get recent bars:', err);
+        }
+      }
+
+      // Get strikes for STRANGLE (both PUT and CALL)
+      const selection = await selectStrikes('STRANGLE', underlyingPrice, symbol);
+
+      // Format response
+      const response = {
+        symbol,
+        underlyingPrice,
+        putStrike: selection.putStrike ? {
+          strike: selection.putStrike.strike,
+          delta: selection.putStrike.delta,
+          premium: (selection.putStrike.bid + selection.putStrike.ask) / 2,
+          bid: selection.putStrike.bid,
+          ask: selection.putStrike.ask,
+        } : null,
+        callStrike: selection.callStrike ? {
+          strike: selection.callStrike.strike,
+          delta: selection.callStrike.delta,
+          premium: (selection.callStrike.bid + selection.callStrike.ask) / 2,
+          bid: selection.callStrike.bid,
+          ask: selection.callStrike.ask,
+        } : null,
+        winZone: selection.putStrike && selection.callStrike ? {
+          low: selection.putStrike.strike,
+          high: selection.callStrike.strike,
+          width: selection.callStrike.strike - selection.putStrike.strike,
+        } : null,
+        expectedPremium: selection.expectedPremium,
+        marginRequired: selection.marginRequired,
+        reasoning: selection.reasoning,
+        timestamp: new Date().toISOString(),
+        source: 'engine',
+        expiration: '0DTE',
+      };
+
+      return res.json(response);
+    } catch (error: any) {
+      console.error('[Chart Bounds] Error:', error);
+      return res.status(500).json({
+        error: 'Failed to fetch chart bounds',
+        message: error.message || String(error),
+      });
     }
   });
 

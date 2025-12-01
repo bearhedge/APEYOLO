@@ -1,10 +1,16 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 
 type WebSocketMessage = {
   type: string;
   data?: any;
   message?: string;
 };
+
+// Callback type for chart price updates
+type ChartPriceCallback = (price: number, symbol: string, timestamp: number) => void;
+
+// Global callback registry (shared across hook instances)
+const chartPriceCallbacks = new Set<ChartPriceCallback>();
 
 export function useWebSocket() {
   const [isConnected, setIsConnected] = useState(false);
@@ -14,7 +20,7 @@ export function useWebSocket() {
   useEffect(() => {
     const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
     const wsUrl = `${protocol}//${window.location.host}/ws`;
-    
+
     try {
       const ws = new WebSocket(wsUrl);
       wsRef.current = ws;
@@ -28,6 +34,20 @@ export function useWebSocket() {
         try {
           const message = JSON.parse(event.data);
           setLastMessage(message);
+
+          // Handle chart_price_update messages
+          if (message.type === 'chart_price_update' && message.data) {
+            const { symbol, price, timestamp } = message.data;
+            if (price > 0) {
+              chartPriceCallbacks.forEach(callback => {
+                try {
+                  callback(price, symbol, timestamp);
+                } catch (err) {
+                  console.error('[WebSocket] Chart price callback error:', err);
+                }
+              });
+            }
+          }
         } catch (error) {
           console.error('Failed to parse WebSocket message:', error);
         }
@@ -60,9 +80,19 @@ export function useWebSocket() {
     }
   };
 
+  // Register a callback for chart price updates
+  // Returns an unsubscribe function
+  const onChartPriceUpdate = useCallback((callback: ChartPriceCallback) => {
+    chartPriceCallbacks.add(callback);
+    return () => {
+      chartPriceCallbacks.delete(callback);
+    };
+  }, []);
+
   return {
     isConnected,
     lastMessage,
-    sendMessage
+    sendMessage,
+    onChartPriceUpdate,
   };
 }

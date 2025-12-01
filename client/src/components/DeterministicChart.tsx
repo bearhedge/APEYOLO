@@ -17,6 +17,7 @@ import {
   type Bar,
   type ChartConfig,
   type Viewport,
+  type ChartOverlays,
 } from '../engine/ChartEngine';
 
 // ============================================
@@ -33,6 +34,11 @@ interface DeterministicChartProps {
   config?: Partial<ChartConfig>;
   onBarHover?: (bar: Bar | null, price: number) => void;
   className?: string;
+  // Engine-driven bounds overlay props
+  putStrike?: number;
+  callStrike?: number;
+  currentPrice?: number;
+  showZones?: boolean;
 }
 
 interface ChartState {
@@ -76,6 +82,11 @@ export function DeterministicChart({
   config = {},
   onBarHover,
   className = '',
+  // Engine-driven bounds overlay props
+  putStrike,
+  callStrike,
+  currentPrice,
+  showZones = true,
 }: DeterministicChartProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<DeterministicChartEngine | null>(null);
@@ -172,6 +183,20 @@ export function DeterministicChart({
     }
   }, [state.bars.length, visibleBars, viewOffset]);
 
+  // Build overlays object for engine-driven bounds
+  const overlays: ChartOverlays | undefined = useMemo(() => {
+    // Only create overlays if at least one bound is defined
+    if (putStrike === undefined && callStrike === undefined && currentPrice === undefined) {
+      return undefined;
+    }
+    return {
+      putStrike,
+      callStrike,
+      currentPrice,
+      showZones,
+    };
+  }, [putStrike, callStrike, currentPrice, showZones]);
+
   // Render chart
   useEffect(() => {
     if (!engineRef.current || state.bars.length === 0) return;
@@ -181,8 +206,9 @@ export function DeterministicChart({
       config: mergedConfig,
       viewport,
       crosshair,
+      overlays,
     }).catch(console.error);
-  }, [state.bars, mergedConfig, viewport, crosshair]);
+  }, [state.bars, mergedConfig, viewport, crosshair, overlays]);
 
   // Mouse handlers
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
