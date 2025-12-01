@@ -202,22 +202,25 @@ export function DeterministicChart({
   useEffect(() => {
     if (!engineRef.current || state.bars.length === 0) return;
 
+    // Calculate viewport directly to avoid race condition with state updates
+    const currentViewport = calculateViewport(state.bars.length, visibleBars, viewOffset);
+
     // Validate viewport before rendering
-    if (viewport.startIndex >= viewport.endIndex) {
-      console.warn('[Chart] Invalid viewport, skipping render:', viewport);
+    if (currentViewport.startIndex >= currentViewport.endIndex) {
+      console.warn('[Chart] Invalid viewport, skipping render:', currentViewport);
       return;
     }
 
     console.log('[Chart] Rendering', {
       barsCount: state.bars.length,
-      viewport,
+      viewport: currentViewport,
       hasOverlays: !!overlays,
     });
 
     engineRef.current.render({
       bars: state.bars,
       config: mergedConfig,
-      viewport,
+      viewport: currentViewport,
       crosshair,
       overlays,
     })
@@ -228,7 +231,7 @@ export function DeterministicChart({
         console.error('[Chart] Render failed:', err);
         setRenderError(err.message || 'Failed to render chart');
       });
-  }, [state.bars, mergedConfig, viewport, crosshair, overlays]);
+  }, [state.bars, mergedConfig, visibleBars, viewOffset, crosshair, overlays]);
 
   // Mouse handlers
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
