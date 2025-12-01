@@ -137,9 +137,9 @@ export function Data() {
         return {
           cached: false,
           symbol: activeTicker,
-          puts: data.optionChain?.filter((o: any) => o.optionType === 'PUT') || [],
-          calls: data.optionChain?.filter((o: any) => o.optionType === 'CALL') || [],
-          underlyingPrice: data.spotPrice || 0,
+          puts: data.puts || [],
+          calls: data.calls || [],
+          underlyingPrice: data.underlyingPrice || 0,
           lastUpdate: new Date().toISOString(),
           expirations: data.expirations || []
         };

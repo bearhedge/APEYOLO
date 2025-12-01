@@ -18,6 +18,26 @@ import { useBrokerStatus } from '@/hooks/useBrokerStatus';
 import EngineLog, { OperationEntry, LogEntry } from '@/components/EngineLog';
 import toast from 'react-hot-toast';
 
+// Session storage helpers for engine logs persistence
+const ENGINE_LOGS_KEY = 'engine_logs';
+
+function getLogsFromSession(): LogEntry[] {
+  try {
+    const stored = sessionStorage.getItem(ENGINE_LOGS_KEY);
+    return stored ? JSON.parse(stored) : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistLogsToSession(logs: LogEntry[]): void {
+  try {
+    sessionStorage.setItem(ENGINE_LOGS_KEY, JSON.stringify(logs));
+  } catch (err) {
+    console.warn('[Engine] Failed to persist logs to sessionStorage:', err);
+  }
+}
+
 export function Engine() {
   const {
     status,
@@ -43,7 +63,12 @@ export function Engine() {
   const [optionChainExpanded, setOptionChainExpanded] = useState(true);
   const [riskTier, setRiskTier] = useState<RiskTier>('balanced');
   const [stopMultiplier, setStopMultiplier] = useState<StopMultiplier>(3);
-  const [engineLogs, setEngineLogs] = useState<LogEntry[]>([]);
+  const [engineLogs, setEngineLogs] = useState<LogEntry[]>(() => getLogsFromSession());
+
+  // Persist engine logs to sessionStorage when they change
+  useEffect(() => {
+    persistLogsToSession(engineLogs);
+  }, [engineLogs]);
 
   // Helper to add operation log entries in real-time
   const addOperationLog = useCallback((

@@ -104,6 +104,7 @@ export function DeterministicChart({
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState<{ x: number; offset: number } | null>(null);
   const [viewOffset, setViewOffset] = useState(0);
+  const [renderError, setRenderError] = useState<string | null>(null);
 
   // Merged config
   const mergedConfig = useMemo(() => ({
@@ -201,13 +202,32 @@ export function DeterministicChart({
   useEffect(() => {
     if (!engineRef.current || state.bars.length === 0) return;
 
+    // Validate viewport before rendering
+    if (viewport.startIndex >= viewport.endIndex) {
+      console.warn('[Chart] Invalid viewport, skipping render:', viewport);
+      return;
+    }
+
+    console.log('[Chart] Rendering', {
+      barsCount: state.bars.length,
+      viewport,
+      hasOverlays: !!overlays,
+    });
+
     engineRef.current.render({
       bars: state.bars,
       config: mergedConfig,
       viewport,
       crosshair,
       overlays,
-    }).catch(console.error);
+    })
+      .then(() => {
+        setRenderError(null);
+      })
+      .catch((err) => {
+        console.error('[Chart] Render failed:', err);
+        setRenderError(err.message || 'Failed to render chart');
+      });
   }, [state.bars, mergedConfig, viewport, crosshair, overlays]);
 
   // Mouse handlers
@@ -307,6 +327,29 @@ export function DeterministicChart({
         style={{ width, height }}
       >
         <div className="text-gray-500 text-sm">No chart data available</div>
+      </div>
+    );
+  }
+
+  // Render error state (show chart with error overlay)
+  if (renderError) {
+    return (
+      <div
+        className={`relative bg-[#0a0a0a] ${className}`}
+        style={{ width, height }}
+      >
+        <canvas
+          ref={canvasRef}
+          width={width}
+          height={height}
+          style={{ display: 'block' }}
+        />
+        <div className="absolute inset-0 flex items-center justify-center bg-black/50">
+          <div className="text-red-500 text-sm text-center px-4">
+            <div className="mb-2">Chart render error</div>
+            <div className="text-xs text-gray-400">{renderError}</div>
+          </div>
+        </div>
       </div>
     );
   }

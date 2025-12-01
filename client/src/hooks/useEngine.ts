@@ -91,14 +91,55 @@ export interface EngineConfig {
   guardRails: any;
 }
 
+// Session storage helpers for state persistence across navigation
+const STORAGE_KEYS = {
+  analysis: 'engine_analysis',
+  decision: 'engine_decision',
+};
+
+function getFromSession<T>(key: string, fallback: T): T {
+  try {
+    const stored = sessionStorage.getItem(key);
+    return stored ? JSON.parse(stored) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function persistToSession(key: string, data: any): void {
+  try {
+    sessionStorage.setItem(key, JSON.stringify(data));
+  } catch (err) {
+    console.warn('[Engine] Failed to persist to sessionStorage:', err);
+  }
+}
+
 export function useEngine() {
   const [status, setStatus] = useState<EngineStatus | null>(null);
-  const [decision, setDecision] = useState<TradingDecision | null>(null);
-  const [analysis, setAnalysis] = useState<EngineAnalyzeResponse | null>(null);
+  const [decision, setDecision] = useState<TradingDecision | null>(
+    () => getFromSession(STORAGE_KEYS.decision, null)
+  );
+  const [analysis, setAnalysis] = useState<EngineAnalyzeResponse | null>(
+    () => getFromSession(STORAGE_KEYS.analysis, null)
+  );
   const [config, setConfig] = useState<EngineConfig | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const queryClient = useQueryClient();
+
+  // Persist analysis to sessionStorage when it changes
+  useEffect(() => {
+    if (analysis) {
+      persistToSession(STORAGE_KEYS.analysis, analysis);
+    }
+  }, [analysis]);
+
+  // Persist decision to sessionStorage when it changes
+  useEffect(() => {
+    if (decision) {
+      persistToSession(STORAGE_KEYS.decision, decision);
+    }
+  }, [decision]);
 
   // Use React Query for IBKR status - shares cache with NAV header for instant sync
   // When Settings refetches this query, Engine updates immediately too
