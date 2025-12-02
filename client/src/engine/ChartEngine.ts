@@ -78,6 +78,7 @@ export interface ChartInput {
   viewport: Viewport;
   crosshair?: { x: number; y: number } | null;
   overlays?: ChartOverlays;  // Engine-driven bounds overlays
+  timeframe?: string;  // Timeframe for axis formatting (e.g., '1m', '5m', '1D')
 }
 
 export interface ChartOutput {
@@ -170,13 +171,30 @@ function createCoordinateSystem(
   // Get visible bars
   const visibleBars = bars.slice(viewport.startIndex, viewport.endIndex + 1);
 
+  // GUARD: Must have visible bars
+  if (visibleBars.length === 0) {
+    console.error('[ChartEngine] No visible bars! viewport:', viewport, 'bars.length:', bars.length);
+    throw new Error(`No visible bars: viewport ${viewport.startIndex}-${viewport.endIndex}, total bars: ${bars.length}`);
+  }
+
   // Calculate price range with 5% padding
   let priceMin = Infinity;
   let priceMax = -Infinity;
 
   for (const bar of visibleBars) {
+    // Validate bar data
+    if (typeof bar.low !== 'number' || typeof bar.high !== 'number' || isNaN(bar.low) || isNaN(bar.high)) {
+      console.error('[ChartEngine] Invalid bar data:', bar);
+      continue;
+    }
     if (bar.low < priceMin) priceMin = bar.low;
     if (bar.high > priceMax) priceMax = bar.high;
+  }
+
+  // GUARD: Must have valid price range
+  if (!isFinite(priceMin) || !isFinite(priceMax)) {
+    console.error('[ChartEngine] Invalid price range! priceMin:', priceMin, 'priceMax:', priceMax, 'visibleBars:', visibleBars.slice(0, 3));
+    throw new Error(`Invalid price range: min=${priceMin}, max=${priceMax}. Check bar data has valid low/high values.`);
   }
 
   // Add padding (5% on each side)
@@ -352,7 +370,8 @@ function renderTimeAxis(
   bars: Bar[],
   viewport: Viewport,
   coords: CoordinateSystem,
-  config: ChartConfig
+  config: ChartConfig,
+  timeframe?: string
 ): void {
   const { chartArea } = coords;
 
@@ -365,14 +384,27 @@ function renderTimeAxis(
   const visibleBars = viewport.endIndex - viewport.startIndex + 1;
   const labelInterval = Math.max(1, Math.floor(visibleBars / 6));
 
+  // Determine if we should show dates (for daily charts) or times (for intraday)
+  const isDaily = timeframe === '1D' || timeframe === 'D' || timeframe === '1d';
+
   for (let i = viewport.startIndex; i <= viewport.endIndex && i < bars.length; i += labelInterval) {
     const bar = bars[i];
     const x = coords.indexToX(i);
 
     const date = new Date(bar.time * 1000);
-    const hours = date.getHours().toString().padStart(2, '0');
-    const minutes = date.getMinutes().toString().padStart(2, '0');
-    const label = `${hours}:${minutes}`;
+    let label: string;
+
+    if (isDaily) {
+      // For daily charts, show month/day format
+      const month = (date.getMonth() + 1).toString();
+      const day = date.getDate().toString();
+      label = `${month}/${day}`;
+    } else {
+      // For intraday charts, show HH:MM format
+      const hours = date.getHours().toString().padStart(2, '0');
+      const minutes = date.getMinutes().toString().padStart(2, '0');
+      label = `${hours}:${minutes}`;
+    }
 
     ctx.fillText(label, x, chartArea.bottom + 5);
   }
@@ -679,7 +711,7 @@ export class DeterministicChartEngine {
 
   async render(input: ChartInput): Promise<ChartOutput> {
     const startTime = performance.now();
-    const { bars, viewport, crosshair, overlays } = input;
+    const { bars, viewport, crosshair, overlays, timeframe } = input;
     const config = { ...this.config, ...input.config };
 
     // Validate input
@@ -721,7 +753,7 @@ export class DeterministicChartEngine {
 
     // 6. Axes
     renderPriceAxis(this.ctx, coords, config);
-    renderTimeAxis(this.ctx, bars, safeViewport, coords, config);
+    renderTimeAxis(this.ctx, bars, safeViewport, coords, config, timeframe);
 
     // 7. Crosshair (always on top)
     if (crosshair) {

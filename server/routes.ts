@@ -149,7 +149,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           }
         }
       }
-    }, 5000);
+    }, 1000); // 1 second interval for live chart updates
 
     ws.on('close', () => {
       clearInterval(interval);
@@ -446,7 +446,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       console.log(`[TEST] Calling IBKR getOptionChainWithStrikes for ${symbol}...`);
       const { getOptionChainWithStrikes } = await import('./broker/ibkr');
-      const data = await getOptionChainWithStrikes(symbol, expiration);
+
+      // Add 30-second timeout to prevent hanging
+      const timeoutPromise = new Promise((_, reject) =>
+        setTimeout(() => reject(new Error('Option chain request timed out after 30 seconds')), 30000)
+      );
+      const data = await Promise.race([
+        getOptionChainWithStrikes(symbol, expiration),
+        timeoutPromise,
+      ]) as Awaited<ReturnType<typeof getOptionChainWithStrikes>>;
 
       console.log(`[TEST] Got ${symbol} option chain: ${data.puts.length} puts, ${data.calls.length} calls, underlying: $${data.underlyingPrice}, VIX: ${data.vix}`);
 
@@ -1266,19 +1274,258 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ============================================
-  // Chart Historical Data API (IBKR Only)
+  // Chart Historical Data API (Database + IBKR)
   // ============================================
-  // Import historical service
+  // Import historical service and market hours utility
   const { fetchHistoricalBars, getRecentBars, clearHistoricalCache, getCacheStatus } = await import('./services/ibkrHistoricalService');
+  const { getMarketStatus } = await import('./utils/marketHours');
+
+  // Import database-backed ingestion service
+  const {
+    ingestHistoricalData,
+    ingestIncrementalData,
+    getIngestionProgress,
+    getAllIngestionProgress,
+    getStorageStats,
+    clearStoredData,
+  } = await import('./services/historicalDataIngestion');
+  type BarInterval = '1m' | '5m' | '15m' | '1h' | '1D' | '1W' | '1M';
+
+  // Import database and schema for chart queries
+  const { db: chartDb } = await import('./db');
+  const { marketData: chartMarketData } = await import('@shared/schema');
+  const { eq, and, gte, asc, desc } = await import('drizzle-orm');
+
+  // ============================================
+  // Database-Backed Chart Data API (Fast, Reliable)
+  // ============================================
+
+  // Time range to lookback period mapping
+  const RANGE_TO_MS: Record<string, number> = {
+    '1D': 1 * 24 * 60 * 60 * 1000,
+    '5D': 5 * 24 * 60 * 60 * 1000,
+    '1M': 30 * 24 * 60 * 60 * 1000,
+    '3M': 90 * 24 * 60 * 60 * 1000,
+    '6M': 180 * 24 * 60 * 60 * 1000,
+    'YTD': 0, // Special case: calculated from Jan 1
+    '1Y': 365 * 24 * 60 * 60 * 1000,
+    '5Y': 5 * 365 * 24 * 60 * 60 * 1000,
+    'MAX': 20 * 365 * 24 * 60 * 60 * 1000, // 20 years
+  };
+
+  // Default interval for each range
+  const RANGE_DEFAULT_INTERVAL: Record<string, string> = {
+    '1D': '1m',
+    '5D': '5m',
+    '1M': '1h',
+    '3M': '1D',
+    '6M': '1D',
+    'YTD': '1D',
+    '1Y': '1D',
+    '5Y': '1W',
+    'MAX': '1M',
+  };
+
+  // GET /api/chart/data/:symbol - Fetch chart data from DATABASE (fast, reliable)
+  app.get('/api/chart/data/:symbol', async (req, res) => {
+    const { symbol } = req.params;
+    const range = (req.query.range as string) || '1D';
+    const interval = (req.query.interval as string) || RANGE_DEFAULT_INTERVAL[range] || '5m';
+
+    try {
+      if (!chartDb) {
+        return res.status(503).json({
+          error: 'Database not configured',
+          message: 'DATABASE_URL environment variable not set',
+        });
+      }
+
+      // Calculate start time based on range
+      let startTime: Date;
+      if (range === 'YTD') {
+        const now = new Date();
+        startTime = new Date(now.getFullYear(), 0, 1); // Jan 1 of current year
+      } else {
+        const lookbackMs = RANGE_TO_MS[range] || RANGE_TO_MS['1D'];
+        startTime = new Date(Date.now() - lookbackMs);
+      }
+
+      console.log(`[Chart DB] Fetching ${symbol} ${interval} bars from ${startTime.toISOString()} (range=${range})`);
+
+      // Query database
+      const bars = await chartDb
+        .select()
+        .from(chartMarketData)
+        .where(
+          and(
+            eq(chartMarketData.symbol, symbol.toUpperCase()),
+            eq(chartMarketData.interval, interval),
+            gte(chartMarketData.timestamp, startTime)
+          )
+        )
+        .orderBy(asc(chartMarketData.timestamp));
+
+      // Get market status
+      const marketStatus = getMarketStatus();
+
+      // Format response
+      return res.json({
+        symbol: symbol.toUpperCase(),
+        range,
+        interval,
+        count: bars.length,
+        source: 'database',
+        cached: false,
+        marketStatus,
+        bars: bars.map(bar => ({
+          time: Math.floor(bar.timestamp.getTime() / 1000), // Unix timestamp in seconds
+          open: parseFloat(bar.open),
+          high: parseFloat(bar.high),
+          low: parseFloat(bar.low),
+          close: parseFloat(bar.close),
+          volume: bar.volume || 0,
+        })),
+      });
+    } catch (error: any) {
+      console.error('[Chart DB] Error fetching data:', error.message);
+      return res.status(500).json({
+        error: 'Failed to fetch chart data from database',
+        message: error.message,
+        symbol,
+        range,
+        interval,
+      });
+    }
+  });
+
+  // GET /api/chart/stats - Get storage statistics
+  app.get('/api/chart/stats', async (req, res) => {
+    try {
+      const symbol = req.query.symbol as string | undefined;
+      const stats = await getStorageStats(symbol);
+      return res.json({
+        success: true,
+        ...stats,
+      });
+    } catch (error: any) {
+      return res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  });
+
+  // ============================================
+  // Admin Ingestion API (Trigger historical data fetch)
+  // ============================================
+
+  // POST /api/admin/ingest/:symbol - Trigger ingestion for a symbol
+  app.post('/api/admin/ingest/:symbol', async (req, res) => {
+    const { symbol } = req.params;
+    const intervals = (req.body.intervals as BarInterval[]) || ['1m', '5m', '15m', '1h', '1D'];
+
+    try {
+      // Start ingestion asynchronously
+      console.log(`[Admin] Starting ingestion for ${symbol} with intervals: ${intervals.join(', ')}`);
+
+      // Don't await - let it run in background
+      ingestHistoricalData(symbol.toUpperCase(), intervals)
+        .then(results => {
+          console.log(`[Admin] Ingestion completed for ${symbol}:`, results);
+        })
+        .catch(err => {
+          console.error(`[Admin] Ingestion failed for ${symbol}:`, err);
+        });
+
+      return res.json({
+        success: true,
+        message: `Ingestion started for ${symbol}`,
+        symbol: symbol.toUpperCase(),
+        intervals,
+        statusUrl: `/api/admin/ingest/status/${symbol}`,
+      });
+    } catch (error: any) {
+      return res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  });
+
+  // GET /api/admin/ingest/status - Get all ingestion progress
+  app.get('/api/admin/ingest/status', async (_req, res) => {
+    try {
+      const allProgress = getAllIngestionProgress();
+      return res.json({
+        success: true,
+        activeIngestions: allProgress.length,
+        ingestions: allProgress,
+      });
+    } catch (error: any) {
+      return res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  });
+
+  // GET /api/admin/ingest/status/:symbol - Get ingestion progress for a symbol
+  app.get('/api/admin/ingest/status/:symbol', async (req, res) => {
+    try {
+      const { symbol } = req.params;
+      const progress = getIngestionProgress(symbol.toUpperCase());
+
+      if (!progress) {
+        return res.json({
+          success: true,
+          found: false,
+          message: `No active or recent ingestion for ${symbol}`,
+        });
+      }
+
+      return res.json({
+        success: true,
+        found: true,
+        ...progress,
+      });
+    } catch (error: any) {
+      return res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  });
+
+  // DELETE /api/admin/data/:symbol - Clear stored data for a symbol
+  app.delete('/api/admin/data/:symbol', async (req, res) => {
+    try {
+      const { symbol } = req.params;
+      const interval = req.query.interval as string | undefined;
+
+      const deletedCount = await clearStoredData(symbol.toUpperCase(), interval as BarInterval);
+
+      return res.json({
+        success: true,
+        deletedCount,
+        message: `Deleted ${deletedCount} bars for ${symbol}${interval ? ` (${interval})` : ''}`,
+      });
+    } catch (error: any) {
+      return res.status(500).json({
+        success: false,
+        error: error.message,
+      });
+    }
+  });
 
   // GET /api/chart/history/:symbol - Fetch historical bars from IBKR
   app.get('/api/chart/history/:symbol', async (req, res) => {
-    try {
-      const { symbol } = req.params;
-      const timeframe = (req.query.timeframe as string) || '5m';
-      const count = parseInt(req.query.count as string) || 200;
-      const forceRefresh = req.query.refresh === 'true';
+    // Extract params outside try block so they're available in catch
+    const { symbol } = req.params;
+    const timeframe = (req.query.timeframe as string) || '5m';
+    const count = parseInt(req.query.count as string) || 200;
+    const forceRefresh = req.query.refresh === 'true';
 
+    try {
       // Validate timeframe
       const validTimeframes = ['1m', '5m', '15m', '1h', '1D'];
       if (!validTimeframes.includes(timeframe)) {
@@ -1301,11 +1548,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Fetch bars from IBKR
       const bars = await getRecentBars(symbol, timeframe as any, count);
 
+      // Get current market status
+      const marketStatus = getMarketStatus();
+
       return res.json({
         symbol,
         timeframe,
         count: bars.length,
         source: 'ibkr',
+        marketStatus,
         bars: bars.map(bar => ({
           time: bar.time,
           open: bar.open,
@@ -1316,10 +1567,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
         })),
       });
     } catch (error: any) {
-      console.error('[Chart] Historical data error:', error);
-      return res.status(500).json({
-        error: 'Failed to fetch historical data from IBKR',
+      console.error('[Chart] Historical data error:', error.message);
+
+      // Return appropriate status code based on error type
+      const isTimeout = error.message?.includes('timeout');
+      const statusCode = isTimeout ? 504 : 500;
+
+      return res.status(statusCode).json({
+        error: isTimeout
+          ? 'IBKR data temporarily unavailable. Please try again in a few seconds.'
+          : 'Failed to fetch historical data from IBKR',
         message: error.message || String(error),
+        symbol,
+        timeframe,
+        marketStatus: getMarketStatus(),
       });
     }
   });

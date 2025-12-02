@@ -6,11 +6,11 @@
  * Receives real-time price updates via WebSocket.
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
-import { DeterministicChart } from './DeterministicChart';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { DeterministicChart, type DeterministicChartRef, type MarketStatusInfo, type TimeRange, type BarInterval } from './DeterministicChart';
 import { useChartBounds } from '@/hooks/useChartBounds';
 import { useWebSocket } from '@/hooks/use-websocket';
-import { RefreshCw, TrendingUp, TrendingDown, Target, AlertTriangle } from 'lucide-react';
+import { RefreshCw, TrendingUp, TrendingDown, Target, AlertTriangle, Clock, ChevronDown } from 'lucide-react';
 
 // Local Bar type to avoid circular imports
 interface Bar {
@@ -26,11 +26,36 @@ interface Bar {
 // Types
 // ============================================
 
-type Timeframe = '1m' | '5m' | '15m' | '1h' | '1D';
+// Default interval for each range
+const RANGE_DEFAULT_INTERVAL: Record<TimeRange, BarInterval> = {
+  '1D': '1m',
+  '5D': '5m',
+  '1M': '1h',
+  '3M': '1D',
+  '6M': '1D',
+  'YTD': '1D',
+  '1Y': '1D',
+  '5Y': '1W',
+  'MAX': '1M',
+};
+
+// Available intervals for each range
+const RANGE_AVAILABLE_INTERVALS: Record<TimeRange, BarInterval[]> = {
+  '1D': ['1m', '5m', '15m'],
+  '5D': ['1m', '5m', '15m', '1h'],
+  '1M': ['15m', '1h', '1D'],
+  '3M': ['1h', '1D'],
+  '6M': ['1D'],
+  'YTD': ['1D'],
+  '1Y': ['1D', '1W'],
+  '5Y': ['1W', '1M'],
+  'MAX': ['1M'],
+};
 
 interface EngineBoundsChartProps {
   symbol?: string;
-  defaultTimeframe?: Timeframe;
+  defaultRange?: TimeRange;
+  defaultInterval?: BarInterval;
   width?: number;
   height?: number;
   className?: string;
@@ -43,15 +68,45 @@ interface EngineBoundsChartProps {
 
 export function EngineBoundsChart({
   symbol = 'SPY',
-  defaultTimeframe = '5m',
-  width = 800,
-  height = 400,
+  defaultRange = '1D',
+  defaultInterval,
+  // Increased default size (was 800x400)
+  width = 1200,
+  height = 550,
   className = '',
   onBoundsRefresh,
 }: EngineBoundsChartProps) {
-  const [timeframe, setTimeframe] = useState<Timeframe>(defaultTimeframe);
+  // Range and interval state (Yahoo Finance style)
+  const [range, setRange] = useState<TimeRange>(defaultRange);
+  const [interval, setInterval] = useState<BarInterval>(
+    defaultInterval || RANGE_DEFAULT_INTERVAL[defaultRange]
+  );
+  const [showIntervalDropdown, setShowIntervalDropdown] = useState(false);
   const [hoveredBar, setHoveredBar] = useState<Bar | null>(null);
   const [currentPrice, setCurrentPrice] = useState<number | undefined>(undefined);
+  const [marketStatus, setMarketStatus] = useState<MarketStatusInfo | null>(null);
+
+  // Ref to the chart for live updates
+  const chartRef = useRef<DeterministicChartRef>(null);
+
+  // Update interval when range changes (to valid default for that range)
+  useEffect(() => {
+    const availableIntervals = RANGE_AVAILABLE_INTERVALS[range];
+    if (!availableIntervals.includes(interval)) {
+      setInterval(RANGE_DEFAULT_INTERVAL[range]);
+    }
+  }, [range, interval]);
+
+  // Poll market status from chart ref
+  useEffect(() => {
+    const pollInterval = globalThis.setInterval(() => {
+      const status = chartRef.current?.getMarketStatus();
+      if (status) {
+        setMarketStatus(status);
+      }
+    }, 1000);
+    return () => globalThis.clearInterval(pollInterval);
+  }, []);
 
   // Fetch engine-selected bounds
   const { bounds, loading: boundsLoading, error: boundsError, refresh: refreshBounds } = useChartBounds(symbol);
@@ -64,6 +119,8 @@ export function EngineBoundsChart({
     const unsubscribe = onChartPriceUpdate((price, sym, timestamp) => {
       if (sym === symbol && price > 0) {
         setCurrentPrice(price);
+        // Update the chart's candlestick in real-time
+        chartRef.current?.updateWithTick(price, timestamp);
       }
     });
     return unsubscribe;
@@ -80,14 +137,21 @@ export function EngineBoundsChart({
     onBoundsRefresh?.();
   }, [refreshBounds, onBoundsRefresh]);
 
-  // Timeframe options
-  const timeframes: { value: Timeframe; label: string }[] = [
-    { value: '1m', label: '1m' },
-    { value: '5m', label: '5m' },
-    { value: '15m', label: '15m' },
-    { value: '1h', label: '1H' },
+  // Range options (Yahoo Finance style)
+  const ranges: { value: TimeRange; label: string }[] = [
     { value: '1D', label: '1D' },
+    { value: '5D', label: '5D' },
+    { value: '1M', label: '1M' },
+    { value: '3M', label: '3M' },
+    { value: '6M', label: '6M' },
+    { value: 'YTD', label: 'YTD' },
+    { value: '1Y', label: '1Y' },
+    { value: '5Y', label: '5Y' },
+    { value: 'MAX', label: 'MAX' },
   ];
+
+  // Get available intervals for current range
+  const availableIntervals = RANGE_AVAILABLE_INTERVALS[range];
 
   // Extract bounds values
   const putStrike = bounds?.putStrike?.strike;
@@ -110,21 +174,50 @@ export function EngineBoundsChart({
         <div className="flex items-center gap-4">
           <h3 className="font-semibold">{symbol} Chart</h3>
 
-          {/* Timeframe selector */}
+          {/* Range selector (Yahoo Finance style) */}
           <div className="flex gap-1">
-            {timeframes.map(tf => (
+            {ranges.map(r => (
               <button
-                key={tf.value}
-                onClick={() => setTimeframe(tf.value)}
+                key={r.value}
+                onClick={() => setRange(r.value)}
                 className={`px-2 py-1 text-xs rounded transition-colors ${
-                  timeframe === tf.value
+                  range === r.value
                     ? 'bg-blue-600 text-white'
                     : 'bg-gray-800 text-gray-400 hover:bg-gray-700'
                 }`}
               >
-                {tf.label}
+                {r.label}
               </button>
             ))}
+          </div>
+
+          {/* Interval dropdown */}
+          <div className="relative">
+            <button
+              onClick={() => setShowIntervalDropdown(!showIntervalDropdown)}
+              className="flex items-center gap-1 px-2 py-1 text-xs bg-gray-800 text-gray-300 rounded hover:bg-gray-700 transition-colors"
+            >
+              {interval}
+              <ChevronDown className="w-3 h-3" />
+            </button>
+            {showIntervalDropdown && (
+              <div className="absolute top-full left-0 mt-1 bg-gray-800 rounded shadow-lg border border-white/10 z-50">
+                {availableIntervals.map(iv => (
+                  <button
+                    key={iv}
+                    onClick={() => {
+                      setInterval(iv);
+                      setShowIntervalDropdown(false);
+                    }}
+                    className={`block w-full px-3 py-1.5 text-xs text-left hover:bg-gray-700 transition-colors ${
+                      interval === iv ? 'bg-blue-600 text-white' : 'text-gray-300'
+                    }`}
+                  >
+                    {iv}
+                  </button>
+                ))}
+              </div>
+            )}
           </div>
 
           {/* WebSocket status */}
@@ -132,6 +225,25 @@ export function EngineBoundsChart({
             <span className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-gray-500'}`} />
             {isConnected ? 'Live' : 'Offline'}
           </div>
+
+          {/* Market Status */}
+          {marketStatus && (
+            <div className={`flex items-center gap-1 text-xs ${
+              marketStatus.status === 'open' ? 'text-green-500' :
+              marketStatus.status === 'pre-market' ? 'text-amber-500' :
+              marketStatus.status === 'after-hours' ? 'text-blue-500' :
+              'text-gray-500'
+            }`}>
+              <Clock className="w-3 h-3" />
+              {marketStatus.status === 'pre-market' && 'Pre-Market'}
+              {marketStatus.status === 'open' && 'Market Open'}
+              {marketStatus.status === 'after-hours' && 'After Hours'}
+              {marketStatus.status === 'closed' && 'Closed'}
+              <span className="text-gray-500 text-[10px]">
+                (→ {marketStatus.nextChange})
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Right side controls */}
@@ -242,8 +354,10 @@ export function EngineBoundsChart({
 
       {/* Chart */}
       <DeterministicChart
+        ref={chartRef}
         symbol={symbol}
-        timeframe={timeframe}
+        range={range}
+        interval={interval}
         width={width}
         height={height}
         onBarHover={handleBarHover}

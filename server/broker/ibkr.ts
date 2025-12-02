@@ -117,6 +117,7 @@ class IbkrClient {
       jar: this.jar,
       withCredentials: true,
       validateStatus: () => true,
+      timeout: 60000,  // 60 second timeout for large historical data requests
       headers: { 'User-Agent': 'apeyolo/1.0' },
     }));
   }
@@ -1059,8 +1060,22 @@ class IbkrClient {
     let underlyingPrice = 0;
     let underlyingConid: number | null = null;
 
+    // Known conids for common symbols (fallback when search API is rate limited)
+    const knownConids: Record<string, number> = {
+      'SPY': 756733,
+      'QQQ': 320227571,
+      'IWM': 9579976,
+      'DIA': 37018770,
+    };
+
     try {
       underlyingConid = await this.resolveConid(symbol);
+
+      // Fallback to known conid if resolution fails
+      if (!underlyingConid && knownConids[symbol.toUpperCase()]) {
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Using known conid fallback for ${symbol}`);
+        underlyingConid = knownConids[symbol.toUpperCase()];
+      }
       if (underlyingConid) {
         const snap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${underlyingConid}`);
         if (snap.status === 200) {
@@ -1079,6 +1094,23 @@ class IbkrClient {
             const data = (retry.data as any[]) || [];
             const last = data?.[0]?.["31"] ?? data?.[0]?.["84"] ?? data?.[0]?.last;
             if (last != null) underlyingPrice = Number(last);
+          }
+        }
+
+        // Fallback: use historical data if snapshot still returns 0
+        if (underlyingPrice === 0 && underlyingConid) {
+          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Using historical data fallback for price...`);
+          try {
+            const histResp = await this.http.get(`/v1/api/iserver/marketdata/history?conid=${underlyingConid}&period=1d&bar=5mins`);
+            if (histResp.status === 200 && Array.isArray(histResp.data?.data) && histResp.data.data.length > 0) {
+              const lastBar = histResp.data.data[histResp.data.data.length - 1];
+              if (lastBar?.c > 0) {
+                underlyingPrice = lastBar.c;
+                console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Got price from historical: $${underlyingPrice}`);
+              }
+            }
+          } catch (histErr) {
+            console.error(`[IBKR][getOptionChainWithStrikes][${reqId}] Historical fallback failed:`, histErr);
           }
         }
       }
@@ -1166,26 +1198,95 @@ class IbkrClient {
 
       console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Processing ${otmPuts.length} OTM puts, ${otmCalls.length} OTM calls (within 2σ range)`);
 
-      // Phase 1: Resolve all option conids
+      // Phase 1: Resolve all option conids using BULK /trsrv/secdef endpoint
+      // This is MUCH faster and avoids rate limits on /secdef/search
       const putConidMap = new Map<number, number>(); // strike -> conid
       const callConidMap = new Map<number, number>();
 
-      for (const strike of otmPuts) {
-        try {
-          const conid = await this.resolveOptionConid(symbol, targetExpiration, 'PUT', strike);
-          if (conid) putConidMap.set(strike, conid);
-        } catch {
-          // Continue without conid
-        }
-      }
+      try {
+        // Use /trsrv/secdef to get all option conids in ONE request
+        const secdefUrl = `/v1/api/trsrv/secdef`;
+        const allStrikes = [...new Set([...otmPuts, ...otmCalls])].sort((a, b) => a - b);
 
-      for (const strike of otmCalls) {
-        try {
-          const conid = await this.resolveOptionConid(symbol, targetExpiration, 'CALL', strike);
-          if (conid) callConidMap.set(strike, conid);
-        } catch {
-          // Continue without conid
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Fetching option conids via /trsrv/secdef for ${allStrikes.length} strikes...`);
+
+        const secdefPayload = {
+          conid: underlyingConid,
+          sectype: 'OPT',
+          month: expirationMonth,
+          exchange: 'SMART',
+          strike: allStrikes.join(';'),
+          right: 'P;C', // Both puts and calls
+        };
+
+        const secdefResp = await this.http.post(secdefUrl, secdefPayload);
+
+        if (secdefResp.status === 200 && secdefResp.data) {
+          // Response is array of option contracts with conids
+          const contracts = Array.isArray(secdefResp.data) ? secdefResp.data : [secdefResp.data];
+
+          for (const contract of contracts) {
+            if (!contract.conid || !contract.strike) continue;
+
+            const conid = Number(contract.conid);
+            const strike = Number(contract.strike);
+            const right = contract.right?.toUpperCase() || contract.putOrCall;
+
+            if (right === 'P' || right === 'PUT') {
+              if (otmPuts.includes(strike)) {
+                putConidMap.set(strike, conid);
+              }
+            } else if (right === 'C' || right === 'CALL') {
+              if (otmCalls.includes(strike)) {
+                callConidMap.set(strike, conid);
+              }
+            }
+          }
+
+          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Bulk resolved ${putConidMap.size} puts, ${callConidMap.size} calls`);
+        } else {
+          console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] /trsrv/secdef failed: status=${secdefResp.status}`);
+
+          // Fallback to individual resolution if bulk fails (slower but works)
+          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Falling back to individual conid resolution...`);
+          const resolveWithTimeout = async (strike: number, optType: 'PUT' | 'CALL') => {
+            try {
+              const conid = await Promise.race([
+                this.resolveOptionConid(symbol, targetExpiration, optType, strike),
+                new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000))
+              ]);
+              if (conid) return { strike, conid };
+            } catch { }
+            return null;
+          };
+
+          // Process in small batches with delays
+          const batchSize = 5;
+          const allStrikesWithType = [
+            ...otmPuts.map(s => ({ strike: s, type: 'PUT' as const })),
+            ...otmCalls.map(s => ({ strike: s, type: 'CALL' as const })),
+          ];
+
+          for (let i = 0; i < allStrikesWithType.length; i += batchSize) {
+            const batch = allStrikesWithType.slice(i, i + batchSize);
+            const results = await Promise.all(batch.map(({ strike, type }) => resolveWithTimeout(strike, type)));
+
+            for (let j = 0; j < results.length; j++) {
+              const result = results[j];
+              if (result) {
+                if (batch[j].type === 'PUT') putConidMap.set(result.strike, result.conid);
+                else callConidMap.set(result.strike, result.conid);
+              }
+            }
+
+            // Add delay between batches to avoid rate limits
+            if (i + batchSize < allStrikesWithType.length) {
+              await new Promise(r => setTimeout(r, 300));
+            }
+          }
         }
+      } catch (err) {
+        console.error(`[IBKR][getOptionChainWithStrikes][${reqId}] Error resolving option conids:`, err);
       }
 
       // Phase 2: Batch fetch market data for all option conids (including Greeks, OI, IV)
@@ -2311,7 +2412,14 @@ export async function fetchIbkrHistoricalData(
 
   console.log(`[IBKR][fetchHistoricalData] Requesting ${url}`);
 
-  const resp = await (activeClient as any).http.get(url);
+  // Add explicit timeout wrapper in case axios timeout doesn't trigger
+  // Increased to 60s for large historical data requests
+  const resp = await Promise.race([
+    (activeClient as any).http.get(url),
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error('IBKR historical data timeout (60s)')), 60000)
+    )
+  ]);
 
   console.log(`[IBKR][fetchHistoricalData] Response status=${resp.status} data_length=${JSON.stringify(resp.data).length}`);
 

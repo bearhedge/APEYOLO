@@ -236,7 +236,50 @@ UI shows live price with "WS Connected" indicator
 
 ---
 
-## KNOWN ISSUES & FIXES NEEDED
+## CRITICAL BUGS (Dec 1, 2025)
+
+### BUG 1: BLACK CHART (Debugging in progress)
+
+**Status**: Added debug logging and validation. Deployed.
+
+**What was added**:
+- `ChartEngine.ts`: Explicit guards for empty visibleBars and NaN price values
+- `DeterministicChart.tsx`: Console logging of fetched bar data
+
+**Next steps**:
+1. Open https://apeyolo.com/data in browser
+2. Open browser console (F12)
+3. Look for:
+   - `[DeterministicChart] Fetched bars:` - shows raw data from API
+   - `[Chart] Rendering` - shows render attempt
+   - `[ChartEngine]` errors - shows why rendering fails
+4. If still black with no errors, the issue is CSS or canvas initialization
+
+**API confirmed working**:
+```bash
+curl "https://apeyolo.com/api/chart/history/SPY?timeframe=5m&count=10"
+# Returns valid OHLCV: {"bars":[{"time":1764601560,"open":680.93,"high":681.25,"low":680.83,"close":681.07},...]}
+```
+
+---
+
+### BUG 2: "Market Closed" shows when market is OPEN
+
+**Root cause**: `Data.tsx` uses `isMarketClosed = ibkrPrice === 0 && lastClosePrice !== null`
+
+**Fix needed**: Replace with actual market hours check (9:30 AM - 4 PM ET weekdays)
+
+---
+
+### BUG 3: "Start Streaming" button hangs forever
+
+**Root cause**: `POST /api/broker/stream/start` → `getOptionChainWithStrikes()` makes many IBKR HTTP calls with NO TIMEOUT
+
+**Fix needed**: Add 30-second timeout to endpoint, per-request timeouts to IBKR calls
+
+---
+
+## LEGACY ISSUES (Lower Priority)
 
 ### Issue 1: Silent Yahoo Finance Fallback
 

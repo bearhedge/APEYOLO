@@ -127,7 +127,7 @@ export async function fetchHistoricalBars(
     forceRefresh?: boolean;
   } = {}
 ): Promise<CuratedBar[]> {
-  const { outsideRth = false, forceRefresh = false } = options;
+  const { outsideRth = true, forceRefresh = false } = options;  // Enable extended hours by default
 
   // Check cache first (unless force refresh)
   if (!forceRefresh) {

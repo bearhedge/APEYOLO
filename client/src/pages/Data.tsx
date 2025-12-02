@@ -6,6 +6,28 @@ import { useWebSocket } from '@/hooks/use-websocket';
 import { Search, RefreshCw, TrendingUp, TrendingDown, Activity, ChevronDown, Calendar, Wifi, WifiOff } from 'lucide-react';
 import toast from 'react-hot-toast';
 
+// Check if US market is currently open (9:30 AM - 4:00 PM ET, Mon-Fri)
+function isUSMarketOpen(): boolean {
+  const now = new Date();
+  const nyTime = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  }).format(now);
+
+  const [hour, minute] = nyTime.split(':').map(Number);
+  const currentMinutes = hour * 60 + minute;
+  const marketOpen = 9 * 60 + 30;  // 9:30 AM
+  const marketClose = 16 * 60;      // 4:00 PM
+
+  const nyDate = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const dayOfWeek = nyDate.getDay();
+  const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
+
+  return isWeekday && currentMinutes >= marketOpen && currentMinutes < marketClose;
+}
+
 interface OptionStrike {
   strike: number;
   bid: number;
@@ -331,9 +353,9 @@ export function Data() {
     ? historicalData.data[historicalData.data.length - 1].close
     : null;
 
-  // Determine if market is closed (IBKR returns 0)
+  // Determine if market is closed using actual market hours (not price-based)
   const ibkrPrice = marketData?.price || 0;
-  const isMarketClosed = ibkrPrice === 0 && lastClosePrice !== null;
+  const isMarketClosed = !isUSMarketOpen();
 
   // Display price: use IBKR price if valid, otherwise fallback to last close
   const displayPrice = ibkrPrice > 0 ? ibkrPrice : (lastClosePrice || 0);

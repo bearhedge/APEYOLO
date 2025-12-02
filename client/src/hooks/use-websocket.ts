@@ -9,8 +9,26 @@ type WebSocketMessage = {
 // Callback type for chart price updates
 type ChartPriceCallback = (price: number, symbol: string, timestamp: number) => void;
 
-// Global callback registry (shared across hook instances)
+// Callback type for option chain updates
+export interface OptionChainUpdate {
+  conid: number;
+  strike: number;
+  optionType: 'PUT' | 'CALL';
+  bid: number;
+  ask: number;
+  last?: number;
+  delta?: number;
+  gamma?: number;
+  theta?: number;
+  vega?: number;
+  iv?: number;
+  openInterest?: number;
+}
+type OptionChainCallback = (update: OptionChainUpdate, symbol: string) => void;
+
+// Global callback registries (shared across hook instances)
 const chartPriceCallbacks = new Set<ChartPriceCallback>();
+const optionChainCallbacks = new Set<OptionChainCallback>();
 
 export function useWebSocket() {
   const [isConnected, setIsConnected] = useState(false);
@@ -44,6 +62,32 @@ export function useWebSocket() {
                   callback(price, symbol, timestamp);
                 } catch (err) {
                   console.error('[WebSocket] Chart price callback error:', err);
+                }
+              });
+            }
+          }
+
+          // Handle option_chain_update messages
+          if (message.type === 'option_chain_update' && message.data) {
+            const { symbol } = message;
+            optionChainCallbacks.forEach(callback => {
+              try {
+                callback(message.data as OptionChainUpdate, symbol);
+              } catch (err) {
+                console.error('[WebSocket] Option chain callback error:', err);
+              }
+            });
+          }
+
+          // Handle underlying_price_update messages (also update chart)
+          if (message.type === 'underlying_price_update') {
+            const { symbol, price, timestamp } = message;
+            if (price > 0) {
+              chartPriceCallbacks.forEach(callback => {
+                try {
+                  callback(price, symbol, new Date(timestamp).getTime());
+                } catch (err) {
+                  console.error('[WebSocket] Underlying price callback error:', err);
                 }
               });
             }
@@ -89,10 +133,20 @@ export function useWebSocket() {
     };
   }, []);
 
+  // Register a callback for option chain updates
+  // Returns an unsubscribe function
+  const onOptionChainUpdate = useCallback((callback: OptionChainCallback) => {
+    optionChainCallbacks.add(callback);
+    return () => {
+      optionChainCallbacks.delete(callback);
+    };
+  }, []);
+
   return {
     isConnected,
     lastMessage,
     sendMessage,
     onChartPriceUpdate,
+    onOptionChainUpdate,
   };
 }

@@ -5,6 +5,7 @@ if (process.env.NODE_ENV !== 'production') {
 }
 import { registerRoutes } from "./routes";
 import { serveStatic, log } from "./utils"; // Production-safe utilities
+import { testDatabaseConnection } from "./db";
 
 const app = express();
 app.use(express.json());
@@ -36,6 +37,9 @@ app.use((req, res, next) => {
 
 (async () => {
   const server = await registerRoutes(app);
+
+  // Test database connection on startup
+  await testDatabaseConnection();
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;

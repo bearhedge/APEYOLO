@@ -9,7 +9,7 @@
  * - Responsive sizing
  */
 
-import React, { useRef, useEffect, useState, useCallback, useMemo } from 'react';
+import React, { useRef, useEffect, useState, useCallback, useMemo, forwardRef, useImperativeHandle } from 'react';
 import {
   DeterministicChartEngine,
   calculateViewport,
@@ -24,11 +24,21 @@ import {
 // Types
 // ============================================
 
-type Timeframe = '1m' | '5m' | '15m' | '1h' | '1D';
+// Time range for historical data selection (Yahoo Finance style)
+export type TimeRange = '1D' | '5D' | '1M' | '3M' | '6M' | 'YTD' | '1Y' | '5Y' | 'MAX';
+
+// Bar interval for candlestick granularity
+export type BarInterval = '1m' | '5m' | '15m' | '1h' | '1D' | '1W' | '1M';
+
+// Legacy Timeframe type for backwards compatibility
+type Timeframe = BarInterval;
 
 interface DeterministicChartProps {
   symbol: string;
   timeframe?: Timeframe;
+  // NEW: Yahoo Finance style range + interval
+  range?: TimeRange;
+  interval?: BarInterval;
   width?: number;
   height?: number;
   config?: Partial<ChartConfig>;
@@ -39,6 +49,14 @@ interface DeterministicChartProps {
   callStrike?: number;
   currentPrice?: number;
   showZones?: boolean;
+  // NEW: Use database-backed endpoint
+  useDatabase?: boolean;
+}
+
+// Ref interface for external control
+export interface DeterministicChartRef {
+  updateWithTick: (price: number, timestamp: number) => void;
+  getMarketStatus: () => MarketStatusInfo | null;
 }
 
 interface ChartState {
@@ -46,17 +64,64 @@ interface ChartState {
   loading: boolean;
   error: string | null;
   lastUpdate: number;
+  marketStatus: MarketStatusInfo | null;
+}
+
+// ============================================
+// Market Status Types
+// ============================================
+
+export type MarketStatus = 'pre-market' | 'open' | 'after-hours' | 'closed';
+
+export interface MarketStatusInfo {
+  status: MarketStatus;
+  nextChange: string;
+  isExtendedHours: boolean;
+}
+
+interface ChartDataResponse {
+  bars: Bar[];
+  marketStatus?: MarketStatusInfo;
 }
 
 // ============================================
 // Data Fetching
 // ============================================
 
-async function fetchChartData(
+// Default interval for each range (for database-backed queries)
+const RANGE_DEFAULT_INTERVAL: Record<TimeRange, BarInterval> = {
+  '1D': '1m',
+  '5D': '5m',
+  '1M': '1h',
+  '3M': '1D',
+  '6M': '1D',
+  'YTD': '1D',
+  '1Y': '1D',
+  '5Y': '1W',
+  'MAX': '1M',
+};
+
+// Available intervals for each range
+const RANGE_AVAILABLE_INTERVALS: Record<TimeRange, BarInterval[]> = {
+  '1D': ['1m', '5m', '15m'],
+  '5D': ['1m', '5m', '15m', '1h'],
+  '1M': ['15m', '1h', '1D'],
+  '3M': ['1h', '1D'],
+  '6M': ['1D'],
+  'YTD': ['1D'],
+  '1Y': ['1D', '1W'],
+  '5Y': ['1W', '1M'],
+  'MAX': ['1M'],
+};
+
+/**
+ * Fetch chart data from IBKR API (legacy endpoint)
+ */
+async function fetchChartDataFromIBKR(
   symbol: string,
   timeframe: Timeframe,
   count: number = 200
-): Promise<Bar[]> {
+): Promise<ChartDataResponse> {
   const response = await fetch(
     `/api/chart/history/${symbol}?timeframe=${timeframe}&count=${count}`
   );
@@ -67,18 +132,94 @@ async function fetchChartData(
   }
 
   const data = await response.json();
-  return data.bars || [];
+  return {
+    bars: data.bars || [],
+    marketStatus: data.marketStatus,
+  };
+}
+
+/**
+ * Fetch chart data from Database (new fast endpoint)
+ */
+async function fetchChartDataFromDB(
+  symbol: string,
+  range: TimeRange,
+  interval: BarInterval
+): Promise<ChartDataResponse> {
+  const response = await fetch(
+    `/api/chart/data/${symbol}?range=${range}&interval=${interval}`
+  );
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: 'Unknown error' }));
+    throw new Error(error.error || error.message || `HTTP ${response.status}`);
+  }
+
+  const data = await response.json();
+  return {
+    bars: data.bars || [],
+    marketStatus: data.marketStatus,
+  };
+}
+
+/**
+ * Main fetch function - uses database if enabled, falls back to IBKR
+ */
+async function fetchChartData(
+  symbol: string,
+  options: {
+    range?: TimeRange;
+    interval?: BarInterval;
+    timeframe?: Timeframe;
+    useDatabase?: boolean;
+  }
+): Promise<ChartDataResponse> {
+  const { range, interval, timeframe, useDatabase = true } = options;
+
+  // If using database-backed endpoint
+  if (useDatabase && range) {
+    const effectiveInterval = interval || RANGE_DEFAULT_INTERVAL[range];
+    try {
+      return await fetchChartDataFromDB(symbol, range, effectiveInterval);
+    } catch (err) {
+      console.warn('[Chart] Database fetch failed, falling back to IBKR:', err);
+      // Fall through to IBKR
+    }
+  }
+
+  // Fall back to IBKR endpoint
+  const effectiveTimeframe = interval || timeframe || '5m';
+  return fetchChartDataFromIBKR(symbol, effectiveTimeframe);
+}
+
+// ============================================
+// Helper: Get timeframe interval in seconds
+// ============================================
+
+function getTimeframeInterval(timeframe: Timeframe): number {
+  switch (timeframe) {
+    case '1m': return 60;
+    case '5m': return 300;
+    case '15m': return 900;
+    case '1h': return 3600;
+    case '1D': return 86400;
+    default: return 300;
+  }
 }
 
 // ============================================
 // Component
 // ============================================
 
-export function DeterministicChart({
+export const DeterministicChart = forwardRef<DeterministicChartRef, DeterministicChartProps>(function DeterministicChart({
   symbol,
   timeframe = '5m',
-  width = 800,
-  height = 400,
+  // NEW: Yahoo Finance style range + interval
+  range,
+  interval,
+  // Increased default size (was 800x400)
+  width = 1200,
+  height = 550,
   config = {},
   onBarHover,
   className = '',
@@ -87,7 +228,11 @@ export function DeterministicChart({
   callStrike,
   currentPrice,
   showZones = true,
-}: DeterministicChartProps) {
+  // NEW: Use database-backed endpoint
+  useDatabase = true,
+}, ref) {
+  // Effective interval: prefer interval prop, fall back to range default, then timeframe
+  const effectiveInterval = interval || (range ? RANGE_DEFAULT_INTERVAL[range] : timeframe);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const engineRef = useRef<DeterministicChartEngine | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -97,7 +242,62 @@ export function DeterministicChart({
     loading: true,
     error: null,
     lastUpdate: 0,
+    marketStatus: null,
   });
+
+  // Expose updateWithTick method via ref
+  useImperativeHandle(ref, () => ({
+    updateWithTick: (price: number, timestamp: number) => {
+      if (price <= 0 || state.bars.length === 0) return;
+
+      const interval = getTimeframeInterval(timeframe);
+      const lastBar = state.bars[state.bars.length - 1];
+
+      // Align timestamp to interval boundary
+      const tickBarTime = Math.floor(timestamp / 1000 / interval) * interval;
+      const lastBarTime = lastBar.time;
+
+      setState(prev => {
+        if (prev.bars.length === 0) return prev;
+
+        const newBars = [...prev.bars];
+        const lastIdx = newBars.length - 1;
+
+        if (tickBarTime > lastBarTime) {
+          // New candle: create a new bar
+          newBars.push({
+            time: tickBarTime,
+            open: price,
+            high: price,
+            low: price,
+            close: price,
+            volume: 0,
+          });
+          // Keep only last 200 bars to prevent memory growth
+          if (newBars.length > 200) {
+            newBars.shift();
+          }
+          console.log('[Chart] New candle started:', tickBarTime, 'price:', price);
+        } else {
+          // Update existing candle
+          const bar = newBars[lastIdx];
+          newBars[lastIdx] = {
+            ...bar,
+            close: price,
+            high: Math.max(bar.high, price),
+            low: Math.min(bar.low, price),
+          };
+        }
+
+        return {
+          ...prev,
+          bars: newBars,
+          lastUpdate: Date.now(),
+        };
+      });
+    },
+    getMarketStatus: () => state.marketStatus,
+  }), [state.bars, state.marketStatus, timeframe]);
 
   const [viewport, setViewport] = useState<Viewport>({ startIndex: 0, endIndex: 0 });
   const [crosshair, setCrosshair] = useState<{ x: number; y: number } | null>(null);
@@ -121,25 +321,34 @@ export function DeterministicChart({
     return Math.floor(chartWidth / candleTotal);
   }, [mergedConfig]);
 
-  // Initialize engine
+  // Initialize engine - must run AFTER canvas is in DOM (not during loading)
   useEffect(() => {
     if (!canvasRef.current) return;
+    if (state.loading) return;  // Don't init while loading (canvas not in DOM)
 
-    engineRef.current = new DeterministicChartEngine(canvasRef.current, mergedConfig);
+    // Only create engine if not already created
+    if (!engineRef.current) {
+      console.log('[DeterministicChart] Initializing engine');
+      engineRef.current = new DeterministicChartEngine(canvasRef.current, mergedConfig);
+    }
+    // No cleanup - engine persists until component unmounts
+  }, [state.loading]); // Only depend on loading state, not mergedConfig
 
-    return () => {
-      engineRef.current = null;
-    };
-  }, []);
-
-  // Update engine config
+  // Update engine config when it changes
   useEffect(() => {
     if (engineRef.current) {
       engineRef.current.updateConfig(mergedConfig);
     }
   }, [mergedConfig]);
 
-  // Fetch data
+  // Cleanup on unmount only
+  useEffect(() => {
+    return () => {
+      engineRef.current = null;
+    };
+  }, []);
+
+  // Fetch data - supports both database-backed (range+interval) and IBKR (timeframe)
   useEffect(() => {
     let cancelled = false;
 
@@ -147,14 +356,32 @@ export function DeterministicChart({
       setState(prev => ({ ...prev, loading: true, error: null }));
 
       try {
-        const bars = await fetchChartData(symbol, timeframe);
+        const { bars, marketStatus } = await fetchChartData(symbol, {
+          range,
+          interval,
+          timeframe,
+          useDatabase,
+        });
         if (cancelled) return;
+
+        // Debug: Log fetched data
+        console.log('[DeterministicChart] Fetched bars:', {
+          count: bars.length,
+          source: useDatabase && range ? 'database' : 'ibkr',
+          range,
+          interval: effectiveInterval,
+          firstBar: bars[0],
+          lastBar: bars[bars.length - 1],
+          sampleOHLC: bars[0] ? { o: bars[0].open, h: bars[0].high, l: bars[0].low, c: bars[0].close } : null,
+          marketStatus: marketStatus?.status,
+        });
 
         setState({
           bars,
           loading: false,
           error: null,
           lastUpdate: Date.now(),
+          marketStatus: marketStatus || null,
         });
 
         // Reset viewport to show most recent bars
@@ -174,7 +401,7 @@ export function DeterministicChart({
     return () => {
       cancelled = true;
     };
-  }, [symbol, timeframe]);
+  }, [symbol, range, interval, timeframe, useDatabase, effectiveInterval]);
 
   // Update viewport when bars or offset changes
   useEffect(() => {
@@ -223,6 +450,7 @@ export function DeterministicChart({
       viewport: currentViewport,
       crosshair,
       overlays,
+      timeframe,
     })
       .then(() => {
         setRenderError(null);
@@ -231,7 +459,7 @@ export function DeterministicChart({
         console.error('[Chart] Render failed:', err);
         setRenderError(err.message || 'Failed to render chart');
       });
-  }, [state.bars, mergedConfig, visibleBars, viewOffset, crosshair, overlays]);
+  }, [state.bars, mergedConfig, visibleBars, viewOffset, crosshair, overlays, timeframe]);
 
   // Mouse handlers
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
@@ -375,7 +603,7 @@ export function DeterministicChart({
       />
     </div>
   );
-}
+});
 
 // ============================================
 // Chart with Controls
