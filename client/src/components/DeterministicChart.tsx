@@ -321,14 +321,23 @@ export const DeterministicChart = forwardRef<DeterministicChartRef, Deterministi
     return Math.floor(chartWidth / candleTotal);
   }, [mergedConfig]);
 
+  // CRITICAL: Clear engine when loading starts (canvas will be unmounted)
+  // This ensures a fresh engine is created when the new canvas mounts
+  useEffect(() => {
+    if (state.loading) {
+      console.log('[DeterministicChart] Loading started, clearing engine reference');
+      engineRef.current = null;
+    }
+  }, [state.loading]);
+
   // Initialize engine - must run AFTER canvas is in DOM (not during loading)
   useEffect(() => {
     if (!canvasRef.current) return;
     if (state.loading) return;  // Don't init while loading (canvas not in DOM)
 
-    // Only create engine if not already created
+    // Create engine (engineRef should be null after loading due to effect above)
     if (!engineRef.current) {
-      console.log('[DeterministicChart] Initializing engine');
+      console.log('[DeterministicChart] Initializing engine for new canvas');
       engineRef.current = new DeterministicChartEngine(canvasRef.current, mergedConfig);
     }
     // No cleanup - engine persists until component unmounts
