@@ -141,6 +141,8 @@ interface CoordinateSystem {
   xToIndex: (x: number) => number;
   priceMin: number;
   priceMax: number;
+  candleWidth: number;      // Dynamic candle width based on bar count
+  candleSpacing: number;    // Dynamic spacing between candles
   chartArea: {
     left: number;
     right: number;
@@ -157,7 +159,6 @@ function createCoordinateSystem(
   config: ChartConfig
 ): CoordinateSystem {
   const { width, height, paddingTop, paddingBottom, paddingLeft, paddingRight } = config;
-  const { candleWidth, candleSpacing } = config;
 
   const chartArea = {
     left: paddingLeft,
@@ -209,22 +210,41 @@ function createCoordinateSystem(
     priceMax = priceMax * 1.01;
   }
 
-  const candleTotalWidth = candleWidth + candleSpacing;
   const visibleCount = viewport.endIndex - viewport.startIndex + 1;
 
-  // Calculate how many bars can fit in the chart area
-  const maxBarsInChart = Math.floor(chartArea.width / candleTotalWidth);
+  // ============================================
+  // DYNAMIC CANDLE WIDTH CALCULATION
+  // ============================================
+  // Calculate total width per candle (body + spacing) to fill chart area
+  const rawCandleTotalWidth = chartArea.width / visibleCount;
 
-  // Right-align offset: when fewer bars than can fit, shift right so most recent bar is at right edge
-  // This prevents candles from clustering on the left side of the chart
-  const rightAlignOffset = visibleCount < maxBarsInChart
-    ? (maxBarsInChart - visibleCount) * candleTotalWidth
+  // Apply min/max bounds for usability
+  const MIN_CANDLE_WIDTH = 2;   // Minimum for visibility
+  const MAX_CANDLE_WIDTH = 20;  // Maximum for aesthetics
+  const SPACING_RATIO = 0.2;    // 20% spacing between candles
+
+  const boundedTotalWidth = Math.max(
+    MIN_CANDLE_WIDTH * (1 + SPACING_RATIO),
+    Math.min(MAX_CANDLE_WIDTH * (1 + SPACING_RATIO), rawCandleTotalWidth)
+  );
+
+  const candleWidth = Math.floor(boundedTotalWidth / (1 + SPACING_RATIO));
+  const candleSpacing = Math.floor(boundedTotalWidth - candleWidth);
+  const candleTotalWidth = candleWidth + candleSpacing;
+
+  // NO MORE rightAlignOffset - candles fill from left to right naturally
+  // If we're at max candle width, center the content instead
+  const totalBarsWidth = visibleCount * candleTotalWidth;
+  const leftOffset = totalBarsWidth < chartArea.width
+    ? 0  // Start from left - let bars fill naturally
     : 0;
 
   return {
     priceMin,
     priceMax,
     chartArea,
+    candleWidth,
+    candleSpacing,
     priceToY: (price: number): number => {
       const ratio = (price - priceMin) / (priceMax - priceMin);
       // Invert Y (price increases upward)
@@ -236,11 +256,11 @@ function createCoordinateSystem(
     },
     indexToX: (index: number): number => {
       const relativeIndex = index - viewport.startIndex;
-      // Add right-align offset to push bars toward right edge when fewer bars than space
-      return Math.round(chartArea.left + rightAlignOffset + relativeIndex * candleTotalWidth + candleWidth / 2);
+      // No more rightAlignOffset - candles start from left and fill dynamically
+      return Math.round(chartArea.left + leftOffset + relativeIndex * candleTotalWidth + candleWidth / 2);
     },
     xToIndex: (x: number): number => {
-      const relativeX = x - chartArea.left - rightAlignOffset;
+      const relativeX = x - chartArea.left - leftOffset;
       return Math.round(viewport.startIndex + relativeX / candleTotalWidth);
     },
   };
@@ -303,7 +323,8 @@ function renderCandles(
   coords: CoordinateSystem,
   config: ChartConfig
 ): void {
-  const { candleWidth } = config;
+  // Use dynamic candleWidth from coords instead of fixed config.candleWidth
+  const candleWidth = coords.candleWidth;
   const halfWidth = Math.floor(candleWidth / 2);
 
   for (let i = viewport.startIndex; i <= viewport.endIndex && i < bars.length; i++) {
