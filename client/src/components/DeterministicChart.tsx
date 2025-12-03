@@ -51,6 +51,8 @@ interface DeterministicChartProps {
   showZones?: boolean;
   // NEW: Use database-backed endpoint
   useDatabase?: boolean;
+  // NEW: Show extended hours (pre-market/after-hours) - default false (RTH only)
+  showExtendedHours?: boolean;
 }
 
 // Ref interface for external control
@@ -140,14 +142,16 @@ async function fetchChartDataFromIBKR(
 
 /**
  * Fetch chart data from Database (new fast endpoint)
+ * @param rth - If true, filter to Regular Trading Hours only (9:30am-4pm ET)
  */
 async function fetchChartDataFromDB(
   symbol: string,
   range: TimeRange,
-  interval: BarInterval
+  interval: BarInterval,
+  rth: boolean = true
 ): Promise<ChartDataResponse> {
   const response = await fetch(
-    `/api/chart/data/${symbol}?range=${range}&interval=${interval}`
+    `/api/chart/data/${symbol}?range=${range}&interval=${interval}&rth=${rth}`
   );
 
   if (!response.ok) {
@@ -172,22 +176,23 @@ async function fetchChartData(
     interval?: BarInterval;
     timeframe?: Timeframe;
     useDatabase?: boolean;
+    rth?: boolean;  // RTH filter: true = regular hours only, false = include extended hours
   }
 ): Promise<ChartDataResponse> {
-  const { range, interval, timeframe, useDatabase = true } = options;
+  const { range, interval, timeframe, useDatabase = true, rth = true } = options;
 
   // If using database-backed endpoint
   if (useDatabase && range) {
     const effectiveInterval = interval || RANGE_DEFAULT_INTERVAL[range];
     try {
-      return await fetchChartDataFromDB(symbol, range, effectiveInterval);
+      return await fetchChartDataFromDB(symbol, range, effectiveInterval, rth);
     } catch (err) {
       console.warn('[Chart] Database fetch failed, falling back to IBKR:', err);
       // Fall through to IBKR
     }
   }
 
-  // Fall back to IBKR endpoint
+  // Fall back to IBKR endpoint (doesn't support RTH filter)
   const effectiveTimeframe = interval || timeframe || '5m';
   return fetchChartDataFromIBKR(symbol, effectiveTimeframe);
 }
@@ -230,6 +235,8 @@ export const DeterministicChart = forwardRef<DeterministicChartRef, Deterministi
   showZones = true,
   // NEW: Use database-backed endpoint
   useDatabase = true,
+  // NEW: Show extended hours (default: false = RTH only)
+  showExtendedHours = false,
 }, ref) {
   // Effective interval: prefer interval prop, fall back to range default, then timeframe
   const effectiveInterval = interval || (range ? RANGE_DEFAULT_INTERVAL[range] : timeframe);
@@ -365,11 +372,17 @@ export const DeterministicChart = forwardRef<DeterministicChartRef, Deterministi
       setState(prev => ({ ...prev, loading: true, error: null }));
 
       try {
+        // RTH filter: inverse of showExtendedHours
+        // rth=true (default) → only regular trading hours
+        // rth=false → include pre-market and after-hours
+        const rth = !showExtendedHours;
+
         const { bars, marketStatus } = await fetchChartData(symbol, {
           range,
           interval,
           timeframe,
           useDatabase,
+          rth,
         });
         if (cancelled) return;
 
@@ -379,6 +392,8 @@ export const DeterministicChart = forwardRef<DeterministicChartRef, Deterministi
           source: useDatabase && range ? 'database' : 'ibkr',
           range,
           interval: effectiveInterval,
+          rth,
+          showExtendedHours,
           firstBar: bars[0],
           lastBar: bars[bars.length - 1],
           sampleOHLC: bars[0] ? { o: bars[0].open, h: bars[0].high, l: bars[0].low, c: bars[0].close } : null,
@@ -410,7 +425,7 @@ export const DeterministicChart = forwardRef<DeterministicChartRef, Deterministi
     return () => {
       cancelled = true;
     };
-  }, [symbol, range, interval, timeframe, useDatabase, effectiveInterval]);
+  }, [symbol, range, interval, timeframe, useDatabase, effectiveInterval, showExtendedHours]);
 
   // Update viewport when bars or offset changes
   useEffect(() => {

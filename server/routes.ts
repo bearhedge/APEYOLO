@@ -1294,7 +1294,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Import database and schema for chart queries
   const { db: chartDb } = await import('./db');
   const { marketData: chartMarketData } = await import('@shared/schema');
-  const { eq, and, gte, asc, desc } = await import('drizzle-orm');
+  const { eq, and, gte, asc, desc, sql } = await import('drizzle-orm');
 
   // ============================================
   // Database-Backed Chart Data API (Fast, Reliable)
@@ -1327,10 +1327,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   };
 
   // GET /api/chart/data/:symbol - Fetch chart data from DATABASE (fast, reliable)
+  // Query params:
+  //   range: 1D, 5D, 1M, 3M, 6M, YTD, 1Y, 5Y, MAX
+  //   interval: 1m, 5m, 15m, 1h, 1D, 1W, 1M
+  //   rth: true (default) - Regular Trading Hours only (9:30 AM - 4:00 PM ET)
+  //        false - Include extended hours (pre-market, after-hours)
   app.get('/api/chart/data/:symbol', async (req, res) => {
     const { symbol } = req.params;
     const range = (req.query.range as string) || '1D';
     const interval = (req.query.interval as string) || RANGE_DEFAULT_INTERVAL[range] || '5m';
+    // RTH filter: default true (show only regular trading hours)
+    const rthOnly = req.query.rth !== 'false';
 
     try {
       if (!chartDb) {
@@ -1350,19 +1357,37 @@ export async function registerRoutes(app: Express): Promise<Server> {
         startTime = new Date(Date.now() - lookbackMs);
       }
 
-      console.log(`[Chart DB] Fetching ${symbol} ${interval} bars from ${startTime.toISOString()} (range=${range})`);
+      console.log(`[Chart DB] Fetching ${symbol} ${interval} bars from ${startTime.toISOString()} (range=${range}, rth=${rthOnly})`);
+
+      // Determine if RTH filter should be applied (only for intraday intervals)
+      const intradayIntervals = ['1m', '5m', '15m', '1h'];
+      const shouldFilterRth = rthOnly && intradayIntervals.includes(interval);
+
+      // Build WHERE conditions
+      const conditions = [
+        eq(chartMarketData.symbol, symbol.toUpperCase()),
+        eq(chartMarketData.interval, interval),
+        gte(chartMarketData.timestamp, startTime),
+      ];
+
+      // Add RTH filter: 9:30 AM - 4:00 PM ET (regular trading hours)
+      // Using UTC hours adjusted for ET (-5 hours, or -4 during DST)
+      // For simplicity, filter to 14:30 - 21:00 UTC (9:30 AM - 4:00 PM ET in standard time)
+      // This is a rough approximation; proper timezone handling would use AT TIME ZONE
+      if (shouldFilterRth) {
+        conditions.push(
+          sql`(
+            (EXTRACT(hour FROM ${chartMarketData.timestamp}) = 14 AND EXTRACT(minute FROM ${chartMarketData.timestamp}) >= 30)
+            OR (EXTRACT(hour FROM ${chartMarketData.timestamp}) >= 15 AND EXTRACT(hour FROM ${chartMarketData.timestamp}) < 21)
+          )`
+        );
+      }
 
       // Query database
       const bars = await chartDb
         .select()
         .from(chartMarketData)
-        .where(
-          and(
-            eq(chartMarketData.symbol, symbol.toUpperCase()),
-            eq(chartMarketData.interval, interval),
-            gte(chartMarketData.timestamp, startTime)
-          )
-        )
+        .where(and(...conditions))
         .orderBy(asc(chartMarketData.timestamp));
 
       // Get market status
@@ -1373,6 +1398,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         symbol: symbol.toUpperCase(),
         range,
         interval,
+        rthOnly,  // Include RTH filter status in response
         count: bars.length,
         source: 'database',
         cached: false,

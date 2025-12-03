@@ -101,10 +101,11 @@ function hasAnomalousSpread(bar: { open: number; high: number; low: number; clos
   const lowDeviation = bodyMid - low;  // Positive if low is below body
   const highDeviation = high - bodyMid; // Positive if high is above body
 
-  // Maximum allowed deviation: 5% of body mid price
-  // For SPY at ~680, this is ~$34 max spike
-  // Normal intraday bars rarely exceed 1-2%
-  const maxAllowedDeviation = bodyMid * 0.05;
+  // Maximum allowed deviation: 2% of body mid price (tightened from 5%)
+  // For SPY at ~680, this is ~$13.60 max spike
+  // Normal intraday bars rarely exceed 0.5-1%
+  // This catches extended hours artifacts and corrupted data
+  const maxAllowedDeviation = bodyMid * 0.02;
 
   // If the low is abnormally far below the body (spike down)
   // AND the body itself is small (not a legitimate large range bar)

@@ -71,7 +71,7 @@ export function EngineBoundsChart({
   defaultRange = '1D',
   defaultInterval,
   // Increased default size (was 800x400)
-  width = 1200,
+  width: propWidth,
   height = 550,
   className = '',
   onBoundsRefresh,
@@ -85,9 +85,35 @@ export function EngineBoundsChart({
   const [hoveredBar, setHoveredBar] = useState<Bar | null>(null);
   const [currentPrice, setCurrentPrice] = useState<number | undefined>(undefined);
   const [marketStatus, setMarketStatus] = useState<MarketStatusInfo | null>(null);
+  // Extended hours toggle (default: show only RTH)
+  const [showExtendedHours, setShowExtendedHours] = useState(false);
+  // Responsive width state
+  const [containerWidth, setContainerWidth] = useState(propWidth || 1200);
 
   // Ref to the chart for live updates
   const chartRef = useRef<DeterministicChartRef>(null);
+  // Ref to container for resize observer
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  // ResizeObserver for responsive width
+  useEffect(() => {
+    if (!containerRef.current) return;
+
+    const observer = new ResizeObserver(entries => {
+      const entry = entries[0];
+      if (entry) {
+        // Use contentRect width, with minimum of 600px
+        const newWidth = Math.max(600, entry.contentRect.width - 32); // 32px for padding
+        setContainerWidth(newWidth);
+      }
+    });
+
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, []);
+
+  // Use prop width if provided, otherwise use responsive width
+  const effectiveWidth = propWidth || containerWidth;
 
   // Update interval when range changes (to valid default for that range)
   useEffect(() => {
@@ -168,7 +194,7 @@ export function EngineBoundsChart({
     : null;
 
   return (
-    <div className={`bg-charcoal rounded-2xl border border-white/10 shadow-lg overflow-hidden ${className}`}>
+    <div ref={containerRef} className={`bg-charcoal rounded-2xl border border-white/10 shadow-lg overflow-hidden ${className}`}>
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-white/10">
         <div className="flex items-center gap-4">
@@ -244,6 +270,19 @@ export function EngineBoundsChart({
               </span>
             </div>
           )}
+
+          {/* Extended Hours Toggle */}
+          <label className="flex items-center gap-1.5 text-xs text-gray-400 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={showExtendedHours}
+              onChange={(e) => setShowExtendedHours(e.target.checked)}
+              className="w-3 h-3 rounded border-gray-600 bg-gray-800 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+            />
+            <span className={showExtendedHours ? 'text-blue-400' : 'text-gray-500'}>
+              Extended Hours
+            </span>
+          </label>
         </div>
 
         {/* Right side controls */}
@@ -358,11 +397,12 @@ export function EngineBoundsChart({
         symbol={symbol}
         range={range}
         interval={interval}
-        width={width}
+        width={effectiveWidth}
         height={height}
         onBarHover={handleBarHover}
         putStrike={putStrike}
         callStrike={callStrike}
+        showExtendedHours={showExtendedHours}
         currentPrice={currentPrice}
         showZones={true}
       />

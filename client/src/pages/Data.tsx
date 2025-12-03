@@ -467,12 +467,13 @@ export function Data() {
           </div>
 
           {/* Engine Bounds Chart with PUT/CALL strike visualization */}
-          <div className="mt-4">
+          {/* Responsive container - EngineBoundsChart uses ResizeObserver internally */}
+          <div className="mt-4 w-full">
             <EngineBoundsChart
               symbol={activeTicker}
-              defaultTimeframe="5m"
-              width={800}
-              height={350}
+              defaultRange="1D"
+              height={550}
+              className="w-full"
             />
           </div>
 
