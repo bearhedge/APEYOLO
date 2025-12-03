@@ -267,7 +267,14 @@ export function useEngine() {
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.error || 'Failed to run analysis');
+        // Create error with full structured data attached
+        const err = new Error(errorData.reason || errorData.error || 'Failed to run analysis') as any;
+        err.failedStep = errorData.failedStep;
+        err.stepName = errorData.stepName;
+        err.reason = errorData.reason;
+        err.audit = errorData.audit;
+        err.isEngineError = true;
+        throw err;
       }
 
       const data: EngineAnalyzeResponse = await response.json();

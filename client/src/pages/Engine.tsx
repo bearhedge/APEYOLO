@@ -172,10 +172,27 @@ export function Engine() {
         addOperationLog('DECISION', `No trade: ${result.reason}`, 'error');
         toast.error(`Cannot trade: ${result.reason}`, { id: 'engine-execute' });
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('[Engine] Run error:', err);
-      addOperationLog('ANALYSIS', 'Engine analysis failed', 'error');
-      toast.error('Failed to run engine', { id: 'engine-execute' });
+
+      // Check if it's a structured engine error with step details
+      if (err.isEngineError && err.failedStep) {
+        addOperationLog('ANALYSIS', `Step ${err.failedStep} (${err.stepName}) FAILED`, 'error');
+        addOperationLog('ANALYSIS', `Reason: ${err.reason || err.message}`, 'error');
+
+        // Log audit trail if available
+        if (err.audit && Array.isArray(err.audit)) {
+          err.audit.forEach((entry: any) => {
+            const status = entry.passed ? 'success' : 'error';
+            addOperationLog('AUDIT', `Step ${entry.step}: ${entry.name} - ${entry.passed ? 'PASSED' : 'FAILED'}${entry.reason ? ': ' + entry.reason : ''}`, status);
+          });
+        }
+
+        toast.error(`Step ${err.failedStep} failed: ${err.reason || err.message}`, { id: 'engine-execute' });
+      } else {
+        addOperationLog('ANALYSIS', `Engine analysis failed: ${err.message || 'Unknown error'}`, 'error');
+        toast.error('Failed to run engine', { id: 'engine-execute' });
+      }
     } finally {
       setIsExecuting(false);
     }
