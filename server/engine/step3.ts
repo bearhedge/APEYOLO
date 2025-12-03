@@ -208,8 +208,18 @@ function convertCachedToStrikes(
   };
 }
 
+// Cache for option chain data within a single selectStrikes call
+interface FullOptionChainResult {
+  putStrikes: Strike[];
+  callStrikes: Strike[];
+  underlyingPrice: number;
+  vix?: number;
+  expectedMove?: number;
+  source: 'websocket' | 'http' | 'mock';
+}
+
 /**
- * Fetch real option chain from IBKR and convert to Strike format
+ * Fetch full option chain from IBKR (both PUT and CALL) in a single call
  * Now includes real Greeks (delta, gamma, theta, vega), IV, and open interest from IBKR
  *
  * Data source priority:
@@ -217,28 +227,37 @@ function convertCachedToStrikes(
  * 2. HTTP snapshot (200-500ms) - fallback when cache is stale or unavailable
  *
  * @param symbol - Underlying symbol (e.g., 'SPY')
- * @param direction - PUT, CALL, or STRANGLE
- * @returns Array of strikes from real IBKR data
+ * @returns Full option chain with both PUT and CALL strikes
  */
-async function fetchRealOptionChain(
-  symbol: string,
-  direction: 'PUT' | 'CALL'
-): Promise<{ strikes: Strike[]; underlyingPrice: number; vix?: number; expectedMove?: number } | null> {
+async function fetchFullOptionChain(symbol: string): Promise<FullOptionChainResult | null> {
+  const today = new Date();
+  const expiration = new Date(today);
+  expiration.setHours(16, 0, 0, 0); // 4 PM ET close
+
   try {
     // Priority 1: Try WebSocket cache first (instant, real-time)
     const streamer = getOptionChainStreamer();
     const cachedChain = streamer.getOptionChain(symbol);
 
     if (cachedChain && cachedChain.underlyingPrice > 0) {
-      const result = convertCachedToStrikes(cachedChain, direction);
-      if (result.strikes.length > 0) {
-        console.log(`[Step3] Using WebSocket cache for ${direction} strikes (${result.strikes.length} options, underlying: $${result.underlyingPrice})`);
-        return result;
+      const putResult = convertCachedToStrikes(cachedChain, 'PUT');
+      const callResult = convertCachedToStrikes(cachedChain, 'CALL');
+
+      if (putResult.strikes.length > 0 || callResult.strikes.length > 0) {
+        console.log(`[Step3] Using WebSocket cache: ${putResult.strikes.length} PUTs, ${callResult.strikes.length} CALLs, underlying: $${cachedChain.underlyingPrice}`);
+        return {
+          putStrikes: putResult.strikes,
+          callStrikes: callResult.strikes,
+          underlyingPrice: cachedChain.underlyingPrice,
+          vix: cachedChain.vix,
+          expectedMove: cachedChain.expectedMove,
+          source: 'websocket'
+        };
       }
     }
 
     // Priority 2: Fall back to HTTP snapshot
-    console.log(`[Step3] WebSocket cache unavailable, falling back to HTTP snapshot for ${symbol}`);
+    console.log(`[Step3] WebSocket cache unavailable, fetching HTTP snapshot for ${symbol}...`);
     const chainData = await getOptionChainWithStrikes(symbol);
 
     if (!chainData || chainData.underlyingPrice === 0) {
@@ -246,13 +265,7 @@ async function fetchRealOptionChain(
       return null;
     }
 
-    const today = new Date();
-    const expiration = new Date(today);
-    expiration.setHours(16, 0, 0, 0); // 4 PM ET close
-
-    const sourceStrikes = direction === 'PUT' ? chainData.puts : chainData.calls;
-
-    const strikes: Strike[] = sourceStrikes.map(opt => ({
+    const putStrikes: Strike[] = chainData.puts.map(opt => ({
       strike: opt.strike,
       expiration,
       delta: Math.abs(opt.delta), // Use absolute delta for comparison
@@ -262,11 +275,31 @@ async function fetchRealOptionChain(
       theta: opt.theta,
       vega: opt.vega,
       openInterest: opt.openInterest ?? 0,
-      impliedVolatility: opt.iv ?? 0.20, // Use real IV from IBKR or default
+      impliedVolatility: opt.iv ?? 0.20,
     }));
 
-    console.log(`[Step3] Fetched ${strikes.length} ${direction} strikes from HTTP (VIX: ${chainData.vix}, expected move: $${chainData.expectedMove?.toFixed(2)}), underlying: $${chainData.underlyingPrice}`);
-    return { strikes, underlyingPrice: chainData.underlyingPrice, vix: chainData.vix, expectedMove: chainData.expectedMove };
+    const callStrikes: Strike[] = chainData.calls.map(opt => ({
+      strike: opt.strike,
+      expiration,
+      delta: Math.abs(opt.delta),
+      bid: opt.bid,
+      ask: opt.ask,
+      gamma: opt.gamma,
+      theta: opt.theta,
+      vega: opt.vega,
+      openInterest: opt.openInterest ?? 0,
+      impliedVolatility: opt.iv ?? 0.20,
+    }));
+
+    console.log(`[Step3] HTTP snapshot: ${putStrikes.length} PUTs, ${callStrikes.length} CALLs (VIX: ${chainData.vix}, expected move: $${chainData.expectedMove?.toFixed(2)}), underlying: $${chainData.underlyingPrice}`);
+    return {
+      putStrikes,
+      callStrikes,
+      underlyingPrice: chainData.underlyingPrice,
+      vix: chainData.vix,
+      expectedMove: chainData.expectedMove,
+      source: 'http'
+    };
   } catch (err) {
     console.error('[Step3] Error fetching real option chain:', err);
     return null;
@@ -274,8 +307,30 @@ async function fetchRealOptionChain(
 }
 
 /**
+ * Legacy function for backward compatibility
+ */
+async function fetchRealOptionChain(
+  symbol: string,
+  direction: 'PUT' | 'CALL'
+): Promise<{ strikes: Strike[]; underlyingPrice: number; vix?: number; expectedMove?: number } | null> {
+  const fullChain = await fetchFullOptionChain(symbol);
+  if (!fullChain) return null;
+
+  return {
+    strikes: direction === 'PUT' ? fullChain.putStrikes : fullChain.callStrikes,
+    underlyingPrice: fullChain.underlyingPrice,
+    vix: fullChain.vix,
+    expectedMove: fullChain.expectedMove
+  };
+}
+
+/**
  * Main function: Select optimal strikes based on delta targeting
  * Uses real IBKR data when available, falls back to mock data
+ *
+ * IMPORTANT: Fetches option chain ONCE and reuses for both PUT and CALL
+ * to ensure consistent data source across the entire trade.
+ *
  * @param direction - Trade direction from Step 2
  * @param underlyingPrice - Current price of underlying (used as fallback)
  * @param symbol - Underlying symbol (default: 'SPY')
@@ -292,75 +347,64 @@ export async function selectStrikes(
     reasoning: ''
   };
 
-  let usingRealData = false;
   let actualUnderlyingPrice = underlyingPrice;
+  let dataSource: 'websocket' | 'http' | 'mock' = 'mock';
 
-  // Try to fetch real IBKR data for put strikes
-  if (direction === 'PUT' || direction === 'STRANGLE') {
-    const realData = await fetchRealOptionChain(symbol, 'PUT');
+  // CRITICAL: Fetch option chain ONCE and reuse for both PUT and CALL
+  // This ensures consistent data source and avoids the bug where PUT uses IBKR but CALL uses mock
+  const fullChain = await fetchFullOptionChain(symbol);
 
-    if (realData && realData.strikes.length > 0) {
-      usingRealData = true;
-      actualUnderlyingPrice = realData.underlyingPrice;
-      const putStrike = findBestStrike(realData.strikes);
+  if (fullChain && (fullChain.putStrikes.length > 0 || fullChain.callStrikes.length > 0)) {
+    actualUnderlyingPrice = fullChain.underlyingPrice;
+    dataSource = fullChain.source;
 
-      if (putStrike) {
-        selection.putStrike = putStrike;
-        selection.reasoning += `PUT (IBKR): Strike $${putStrike.strike} with delta ${putStrike.delta}. `;
-      }
-    } else {
-      // Fall back to mock data
-      const putChain = getMockOptionChain(underlyingPrice, 'PUT');
-      const putStrike = findBestStrike(putChain);
-
-      if (putStrike) {
-        selection.putStrike = putStrike;
-        selection.reasoning += `PUT (mock): Strike $${putStrike.strike} with delta ${putStrike.delta}. `;
-      }
-    }
-  }
-
-  // Try to fetch real IBKR data for call strikes
-  if (direction === 'CALL' || direction === 'STRANGLE') {
-    const realData = await fetchRealOptionChain(symbol, 'CALL');
-
-    if (realData && realData.strikes.length > 0) {
-      usingRealData = true;
-      actualUnderlyingPrice = realData.underlyingPrice;
-      const callStrike = findBestStrike(realData.strikes);
-
-      if (callStrike) {
-        selection.callStrike = callStrike;
-        selection.reasoning += `CALL (IBKR): Strike $${callStrike.strike} with delta ${callStrike.delta}. `;
-      }
-    } else {
-      // Fall back to mock data
-      const callChain = getMockOptionChain(underlyingPrice, 'CALL');
-      const callStrike = findBestStrike(callChain);
-
-      if (callStrike) {
-        selection.callStrike = callStrike;
-        selection.reasoning += `CALL (mock): Strike $${callStrike.strike} with delta ${callStrike.delta}. `;
+    // Select PUT strike from real data
+    if (direction === 'PUT' || direction === 'STRANGLE') {
+      if (fullChain.putStrikes.length > 0) {
+        const putStrike = findBestStrike(fullChain.putStrikes);
+        if (putStrike) {
+          selection.putStrike = putStrike;
+          selection.reasoning += `PUT (IBKR ${dataSource}): Strike $${putStrike.strike} with delta ${putStrike.delta.toFixed(3)}. `;
+        }
+      } else {
+        console.warn('[Step3] No PUT strikes from IBKR, falling back to mock');
+        const mockPutChain = getMockOptionChain(actualUnderlyingPrice, 'PUT');
+        const putStrike = findBestStrike(mockPutChain);
+        if (putStrike) {
+          selection.putStrike = putStrike;
+          selection.reasoning += `PUT (MOCK fallback): Strike $${putStrike.strike} with delta ${putStrike.delta.toFixed(3)}. `;
+        }
       }
     }
-  }
 
-  // Calculate totals
-  selection.expectedPremium = calculateExpectedPremium(selection.putStrike, selection.callStrike);
-  selection.marginRequired = calculateMarginRequirement(selection.putStrike, selection.callStrike);
+    // Select CALL strike from real data
+    if (direction === 'CALL' || direction === 'STRANGLE') {
+      if (fullChain.callStrikes.length > 0) {
+        const callStrike = findBestStrike(fullChain.callStrikes);
+        if (callStrike) {
+          selection.callStrike = callStrike;
+          selection.reasoning += `CALL (IBKR ${dataSource}): Strike $${callStrike.strike} with delta ${callStrike.delta.toFixed(3)}. `;
+        }
+      } else {
+        console.warn('[Step3] No CALL strikes from IBKR, falling back to mock');
+        const mockCallChain = getMockOptionChain(actualUnderlyingPrice, 'CALL');
+        const callStrike = findBestStrike(mockCallChain);
+        if (callStrike) {
+          selection.callStrike = callStrike;
+          selection.reasoning += `CALL (MOCK fallback): Strike $${callStrike.strike} with delta ${callStrike.delta.toFixed(3)}. `;
+        }
+      }
+    }
 
-  // Collect nearby strikes for UI display
-  const nearbyStrikes: {
-    puts: Array<{ strike: number; bid: number; ask: number; delta: number; oi?: number }>;
-    calls: Array<{ strike: number; bid: number; ask: number; delta: number; oi?: number }>;
-  } = { puts: [], calls: [] };
+    // Collect nearby strikes for UI display from the same data source
+    const nearbyStrikes: {
+      puts: Array<{ strike: number; bid: number; ask: number; delta: number; oi?: number }>;
+      calls: Array<{ strike: number; bid: number; ask: number; delta: number; oi?: number }>;
+    } = { puts: [], calls: [] };
 
-  // Try to get nearby put strikes
-  if (direction === 'PUT' || direction === 'STRANGLE') {
-    const putData = await fetchRealOptionChain(symbol, 'PUT');
-    if (putData && putData.strikes.length > 0) {
+    if (direction === 'PUT' || direction === 'STRANGLE') {
       const selectedStrike = selection.putStrike?.strike;
-      const sortedPuts = [...putData.strikes].sort((a, b) => {
+      const sortedPuts = [...fullChain.putStrikes].sort((a, b) => {
         if (selectedStrike) {
           return Math.abs(a.strike - selectedStrike) - Math.abs(b.strike - selectedStrike);
         }
@@ -373,32 +417,11 @@ export async function selectStrikes(
         delta: s.delta,
         oi: s.openInterest
       })).sort((a, b) => a.strike - b.strike);
-    } else {
-      // Use mock data for nearby put strikes when IBKR unavailable
-      const mockPutChain = getMockOptionChain(actualUnderlyingPrice, 'PUT');
-      const selectedStrike = selection.putStrike?.strike;
-      const sortedMockPuts = [...mockPutChain].sort((a, b) => {
-        if (selectedStrike) {
-          return Math.abs(a.strike - selectedStrike) - Math.abs(b.strike - selectedStrike);
-        }
-        return Math.abs(a.strike - actualUnderlyingPrice) - Math.abs(b.strike - actualUnderlyingPrice);
-      });
-      nearbyStrikes.puts = sortedMockPuts.slice(0, 7).map(s => ({
-        strike: s.strike,
-        bid: s.bid,
-        ask: s.ask,
-        delta: s.delta,
-        oi: s.openInterest
-      })).sort((a, b) => a.strike - b.strike);
     }
-  }
 
-  // Try to get nearby call strikes
-  if (direction === 'CALL' || direction === 'STRANGLE') {
-    const callData = await fetchRealOptionChain(symbol, 'CALL');
-    if (callData && callData.strikes.length > 0) {
+    if (direction === 'CALL' || direction === 'STRANGLE') {
       const selectedStrike = selection.callStrike?.strike;
-      const sortedCalls = [...callData.strikes].sort((a, b) => {
+      const sortedCalls = [...fullChain.callStrikes].sort((a, b) => {
         if (selectedStrike) {
           return Math.abs(a.strike - selectedStrike) - Math.abs(b.strike - selectedStrike);
         }
@@ -411,17 +434,44 @@ export async function selectStrikes(
         delta: s.delta,
         oi: s.openInterest
       })).sort((a, b) => a.strike - b.strike);
-    } else {
-      // Use mock data for nearby call strikes when IBKR unavailable
-      const mockCallChain = getMockOptionChain(actualUnderlyingPrice, 'CALL');
-      const selectedStrike = selection.callStrike?.strike;
-      const sortedMockCalls = [...mockCallChain].sort((a, b) => {
-        if (selectedStrike) {
-          return Math.abs(a.strike - selectedStrike) - Math.abs(b.strike - selectedStrike);
-        }
-        return Math.abs(a.strike - actualUnderlyingPrice) - Math.abs(b.strike - actualUnderlyingPrice);
-      });
-      nearbyStrikes.calls = sortedMockCalls.slice(0, 7).map(s => ({
+    }
+
+    if (nearbyStrikes.puts.length > 0 || nearbyStrikes.calls.length > 0) {
+      selection.nearbyStrikes = nearbyStrikes;
+    }
+
+  } else {
+    // IBKR completely unavailable, fall back to mock for everything
+    console.warn('[Step3] IBKR option chain unavailable, using MOCK data for all strikes');
+    dataSource = 'mock';
+
+    if (direction === 'PUT' || direction === 'STRANGLE') {
+      const mockPutChain = getMockOptionChain(underlyingPrice, 'PUT');
+      const putStrike = findBestStrike(mockPutChain);
+      if (putStrike) {
+        selection.putStrike = putStrike;
+        selection.reasoning += `PUT (MOCK): Strike $${putStrike.strike} with delta ${putStrike.delta.toFixed(3)}. `;
+      }
+    }
+
+    if (direction === 'CALL' || direction === 'STRANGLE') {
+      const mockCallChain = getMockOptionChain(underlyingPrice, 'CALL');
+      const callStrike = findBestStrike(mockCallChain);
+      if (callStrike) {
+        selection.callStrike = callStrike;
+        selection.reasoning += `CALL (MOCK): Strike $${callStrike.strike} with delta ${callStrike.delta.toFixed(3)}. `;
+      }
+    }
+
+    // Add mock nearby strikes
+    const nearbyStrikes: {
+      puts: Array<{ strike: number; bid: number; ask: number; delta: number; oi?: number }>;
+      calls: Array<{ strike: number; bid: number; ask: number; delta: number; oi?: number }>;
+    } = { puts: [], calls: [] };
+
+    if (direction === 'PUT' || direction === 'STRANGLE') {
+      const mockPutChain = getMockOptionChain(underlyingPrice, 'PUT');
+      nearbyStrikes.puts = mockPutChain.slice(0, 7).map(s => ({
         strike: s.strike,
         bid: s.bid,
         ask: s.ask,
@@ -429,16 +479,30 @@ export async function selectStrikes(
         oi: s.openInterest
       })).sort((a, b) => a.strike - b.strike);
     }
+
+    if (direction === 'CALL' || direction === 'STRANGLE') {
+      const mockCallChain = getMockOptionChain(underlyingPrice, 'CALL');
+      nearbyStrikes.calls = mockCallChain.slice(0, 7).map(s => ({
+        strike: s.strike,
+        bid: s.bid,
+        ask: s.ask,
+        delta: s.delta,
+        oi: s.openInterest
+      })).sort((a, b) => a.strike - b.strike);
+    }
+
+    if (nearbyStrikes.puts.length > 0 || nearbyStrikes.calls.length > 0) {
+      selection.nearbyStrikes = nearbyStrikes;
+    }
   }
 
-  // Add nearby strikes to selection
-  if (nearbyStrikes.puts.length > 0 || nearbyStrikes.calls.length > 0) {
-    selection.nearbyStrikes = nearbyStrikes;
-  }
+  // Calculate totals
+  selection.expectedPremium = calculateExpectedPremium(selection.putStrike, selection.callStrike);
+  selection.marginRequired = calculateMarginRequirement(selection.putStrike, selection.callStrike);
 
   // Add summary to reasoning
-  const dataSource = usingRealData ? 'IBKR real-time' : 'mock estimates';
-  selection.reasoning += `Data source: ${dataSource}. Underlying: $${actualUnderlyingPrice.toFixed(2)}. `;
+  const sourceLabel = dataSource === 'mock' ? 'MOCK estimates' : `IBKR ${dataSource}`;
+  selection.reasoning += `Data source: ${sourceLabel}. Underlying: $${actualUnderlyingPrice.toFixed(2)}. `;
   selection.reasoning += `Expected premium: $${selection.expectedPremium}, Margin required: $${selection.marginRequired}`;
 
   return selection;
