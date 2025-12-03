@@ -4,7 +4,7 @@
  */
 
 import { Router } from "express";
-import { TradingEngine } from "./engine/index";
+import { TradingEngine, EngineError } from "./engine/index";
 import { getBroker, getBrokerWithStatus } from "./broker/index";
 import { ensureIbkrReady, placePaperOptionOrder, getIbkrDiagnostics } from "./broker/ibkr";
 import { storage } from "./storage";
@@ -223,7 +223,29 @@ router.post('/execute', requireAuth, async (req, res) => {
     res.json(response);
   } catch (error) {
     console.error('[Engine] Execute error:', error);
-    res.status(500).json({ error: 'Failed to execute trading decision' });
+
+    // Check if it's an EngineError with step context
+    if (error instanceof EngineError) {
+      console.error(`[Engine/execute] EngineError at Step ${error.step} (${error.stepName}): ${error.reason}`);
+      return res.status(500).json({
+        error: 'Failed to execute trading decision',
+        failedStep: error.step,
+        stepName: error.stepName,
+        reason: error.reason,
+        audit: error.audit.map(entry => ({
+          step: entry.step,
+          name: entry.name,
+          passed: entry.passed,
+          reason: entry.reason
+        }))
+      });
+    }
+
+    res.status(500).json({
+      error: 'Failed to execute trading decision',
+      reason: error instanceof Error ? error.message : 'Unknown error',
+      failedStep: null
+    });
   }
 });
 
@@ -324,7 +346,30 @@ router.get('/analyze', requireAuth, async (req, res) => {
     res.json(response);
   } catch (error) {
     console.error('[Engine/analyze] Error:', error);
-    res.status(500).json({ error: 'Failed to run analysis' });
+
+    // Check if it's an EngineError with step context
+    if (error instanceof EngineError) {
+      console.error(`[Engine/analyze] EngineError at Step ${error.step} (${error.stepName}): ${error.reason}`);
+      return res.status(500).json({
+        error: 'Engine analysis failed',
+        failedStep: error.step,
+        stepName: error.stepName,
+        reason: error.reason,
+        audit: error.audit.map(entry => ({
+          step: entry.step,
+          name: entry.name,
+          passed: entry.passed,
+          reason: entry.reason
+        }))
+      });
+    }
+
+    // Generic error
+    res.status(500).json({
+      error: 'Failed to run analysis',
+      reason: error instanceof Error ? error.message : 'Unknown error',
+      failedStep: null
+    });
   }
 });
 

@@ -17,6 +17,21 @@ import { calculatePositionSize, PositionSize, RiskProfile, AccountInfo } from '.
 import { defineExitRules, ExitRules } from './step5.ts';
 
 /**
+ * Custom error class for engine failures with step context
+ */
+export class EngineError extends Error {
+  constructor(
+    public step: number,
+    public stepName: string,
+    public reason: string,
+    public audit: AuditEntry[]
+  ) {
+    super(`[Step ${step}] ${stepName} failed: ${reason}`);
+    this.name = 'EngineError';
+  }
+}
+
+/**
  * Complete trading decision combining all 5 steps
  */
 export interface TradingDecision {
@@ -95,15 +110,27 @@ export class TradingEngine {
    */
   async executeTradingDecision(accountInfo: AccountInfo): Promise<TradingDecision> {
     console.log('\n' + '='.repeat(60));
-    console.log('APEYOLO TRADING ENGINE - DECISION PROCESS');
+    console.log('[Engine] APEYOLO TRADING ENGINE - DECISION PROCESS');
+    console.log('[Engine] Started at:', new Date().toISOString());
     console.log('='.repeat(60));
 
     // Reset audit trail
     this.audit = [];
 
     // Step 1: Market Regime Check
-    console.log('\n📊 Step 1: Market Regime Check');
-    const marketRegime = await analyzeMarketRegime();
+    let marketRegime: MarketRegime;
+    let step1Start = Date.now();
+    console.log('\n[Engine] Step 1 START: Market Regime Check');
+    try {
+      marketRegime = await analyzeMarketRegime();
+      console.log(`[Engine] Step 1 COMPLETE (${Date.now() - step1Start}ms)`);
+      console.log(`[Engine] Step 1 Result: VIX=${marketRegime.metadata?.vix?.toFixed(2) || 'N/A'}, SPY=$${marketRegime.metadata?.spyPrice?.toFixed(2) || 'N/A'}`);
+    } catch (error: any) {
+      console.error(`[Engine] Step 1 FAILED (${Date.now() - step1Start}ms): ${error.message}`);
+      this.addAudit(1, 'Market Regime Check', {}, { error: error.message }, false, error.message);
+      throw new EngineError(1, 'Market Regime Check', error.message, this.audit);
+    }
+
     const withinTradingWindow = marketRegime.withinTradingWindow;
     const canExecute = marketRegime.canExecute;
 
@@ -124,24 +151,46 @@ export class TradingEngine {
     // Only EXTREME VIX (shouldTrade=false) should stop, but we still show the data
 
     // Step 2: Direction Selection
-    console.log('\n🎯 Step 2: Direction Selection');
-    const direction = await selectDirection(marketRegime);
+    let direction: DirectionDecision;
+    let step2Start = Date.now();
+    console.log('\n[Engine] Step 2 START: Direction Selection');
+    try {
+      direction = await selectDirection(marketRegime);
+      console.log(`[Engine] Step 2 COMPLETE (${Date.now() - step2Start}ms)`);
+    } catch (error: any) {
+      console.error(`[Engine] Step 2 FAILED (${Date.now() - step2Start}ms): ${error.message}`);
+      this.addAudit(2, 'Direction Selection', { marketRegime }, { error: error.message }, false, error.message);
+      throw new EngineError(2, 'Direction Selection', error.message, this.audit);
+    }
     this.addAudit(2, 'Direction Selection', { marketRegime }, direction, true, direction.reasoning);
     console.log(`  Direction: ${direction.direction}`);
     console.log(`  Confidence: ${(direction.confidence * 100).toFixed(0)}%`);
     console.log(`  Reasoning: ${direction.reasoning}`);
 
     // Step 3: Strike Selection
-    console.log('\n🎲 Step 3: Strike Selection');
+    let strikes: StrikeSelection;
+    let step3Start = Date.now();
+    console.log('\n[Engine] Step 3 START: Strike Selection');
+
     // Use REAL SPY price from Step 1 (IBKR only - no fallbacks)
     const underlyingPrice = marketRegime.metadata?.spyPrice || 0;
+    console.log(`[Engine] Step 3: SPY price from Step 1 = $${underlyingPrice}`);
 
     if (!underlyingPrice || underlyingPrice <= 0) {
-      throw new Error('[IBKR] No SPY price available from Step 1 - cannot proceed without real IBKR data');
+      const errorMsg = '[IBKR] No SPY price available from Step 1 - cannot proceed without real IBKR data';
+      console.error(`[Engine] Step 3 FAILED: ${errorMsg}`);
+      this.addAudit(3, 'Strike Selection', { underlyingPrice }, { error: errorMsg }, false, errorMsg);
+      throw new EngineError(3, 'Strike Selection', errorMsg, this.audit);
     }
-    console.log(`  Using SPY price: $${underlyingPrice.toFixed(2)} (source: Step 1 IBKR)`);
 
-    const strikes = await selectStrikes(direction.direction, underlyingPrice);
+    try {
+      strikes = await selectStrikes(direction.direction, underlyingPrice);
+      console.log(`[Engine] Step 3 COMPLETE (${Date.now() - step3Start}ms)`);
+    } catch (error: any) {
+      console.error(`[Engine] Step 3 FAILED (${Date.now() - step3Start}ms): ${error.message}`);
+      this.addAudit(3, 'Strike Selection', { direction: direction.direction, underlyingPrice }, { error: error.message }, false, error.message);
+      throw new EngineError(3, 'Strike Selection', error.message, this.audit);
+    }
     this.addAudit(3, 'Strike Selection', { direction: direction.direction, underlyingPrice }, strikes, true, strikes.reasoning);
 
     if (strikes.putStrike) {
@@ -153,8 +202,17 @@ export class TradingEngine {
     console.log(`  Expected Premium: $${strikes.expectedPremium}`);
 
     // Step 4: Position Sizing
-    console.log('\n📏 Step 4: Position Sizing');
-    const positionSize = await calculatePositionSize(strikes, accountInfo, this.config.riskProfile);
+    let positionSize: PositionSize;
+    let step4Start = Date.now();
+    console.log('\n[Engine] Step 4 START: Position Sizing');
+    try {
+      positionSize = await calculatePositionSize(strikes, accountInfo, this.config.riskProfile);
+      console.log(`[Engine] Step 4 COMPLETE (${Date.now() - step4Start}ms)`);
+    } catch (error: any) {
+      console.error(`[Engine] Step 4 FAILED (${Date.now() - step4Start}ms): ${error.message}`);
+      this.addAudit(4, 'Position Sizing', { strikes, accountInfo, riskProfile: this.config.riskProfile }, { error: error.message }, false, error.message);
+      throw new EngineError(4, 'Position Sizing', error.message, this.audit);
+    }
     this.addAudit(4, 'Position Sizing', { strikes, accountInfo, riskProfile: this.config.riskProfile }, positionSize, positionSize.contracts > 0, positionSize.reasoning);
 
     console.log(`  Risk Profile: ${this.config.riskProfile}`);
@@ -169,8 +227,17 @@ export class TradingEngine {
     }
 
     // Step 5: Exit Rules
-    console.log('\n🚪 Step 5: Exit Rules');
-    const exitRules = await defineExitRules(strikes, positionSize);
+    let exitRules: ExitRules;
+    let step5Start = Date.now();
+    console.log('\n[Engine] Step 5 START: Exit Rules');
+    try {
+      exitRules = await defineExitRules(strikes, positionSize);
+      console.log(`[Engine] Step 5 COMPLETE (${Date.now() - step5Start}ms)`);
+    } catch (error: any) {
+      console.error(`[Engine] Step 5 FAILED (${Date.now() - step5Start}ms): ${error.message}`);
+      this.addAudit(5, 'Exit Rules', { strikes, positionSize }, { error: error.message }, false, error.message);
+      throw new EngineError(5, 'Exit Rules', error.message, this.audit);
+    }
     this.addAudit(5, 'Exit Rules', { strikes, positionSize }, exitRules, true, exitRules.reasoning);
 
     console.log(`  Stop Loss: $${exitRules.stopLossPrice} per share ($${exitRules.stopLossAmount} total)`);

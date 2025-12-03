@@ -113,19 +113,29 @@ export async function analyzeMarketRegime(useRealData: boolean = true): Promise<
   let spyChange: number | undefined;
 
   if (useRealData) {
+    // Fetch VIX data (with fallback to mock)
+    console.log('[Step1] Fetching VIX data...');
     try {
-      // Fetch VIX data
       const vixData = await getVIXData();
       vixLevel = vixData.value;
       vixChange = vixData.changePercent;
+      console.log(`[Step1] VIX: ${vixLevel?.toFixed(2)} (${vixChange && vixChange > 0 ? '+' : ''}${vixChange?.toFixed(2)}%)`);
+    } catch (error: any) {
+      console.error(`[Step1] VIX fetch FAILED: ${error.message}`);
+      // VIX has fallback in marketDataService, so this is unlikely
+    }
 
-      // Fetch SPY data
+    // Fetch SPY data (IBKR-only, no fallback)
+    console.log('[Step1] Fetching SPY price from IBKR...');
+    try {
       const spyData = await getMarketData('SPY');
       spyPrice = spyData.price;
       spyChange = spyData.changePercent;
-    } catch (error) {
-      console.error('[Step1] Error fetching market data:', error);
-      // Continue with undefined values, don't block trading on data fetch error
+      console.log(`[Step1] SPY: $${spyPrice?.toFixed(2)} (${spyChange && spyChange > 0 ? '+' : ''}${spyChange?.toFixed(2)}%)`);
+    } catch (error: any) {
+      console.error(`[Step1] SPY price fetch FAILED: ${error.message}`);
+      // Re-throw to let engine know Step 1 failed
+      throw new Error(`[Step1] Cannot get SPY price: ${error.message}`);
     }
   }
 

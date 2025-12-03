@@ -120,29 +120,33 @@ export async function getMarketData(symbol: string): Promise<MarketData> {
   // Try IBKR with retry logic (up to 3 attempts with 500ms delay)
   let marketData: MarketData | null = null;
   const maxRetries = 3;
+  console.log(`[MarketData] Starting IBKR fetch for ${symbol} (max ${maxRetries} attempts)...`);
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    console.log(`[MarketData] IBKR ${symbol} attempt ${attempt}/${maxRetries}...`);
     try {
       const data = await broker.api.getMarketData(symbol);
+      console.log(`[MarketData] IBKR response: price=$${data.price?.toFixed(2) || '0'}, bid=$${data.bid?.toFixed(2) || '0'}, ask=$${data.ask?.toFixed(2) || '0'}`);
+
       if (data.price > 0) {
         marketData = data;
-        console.log(`[MarketData] IBKR ${symbol}: $${marketData.price.toFixed(2)} (attempt ${attempt})`);
+        console.log(`[MarketData] ✓ ${symbol}: $${marketData.price.toFixed(2)} (success on attempt ${attempt})`);
         break;
       }
-      console.log(`[MarketData] IBKR ${symbol} returned $0, retry ${attempt}/${maxRetries}...`);
-      if (attempt < maxRetries) {
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
-    } catch (err) {
-      console.error(`[MarketData] IBKR ${symbol} error on attempt ${attempt}:`, err);
-      if (attempt < maxRetries) {
-        await new Promise(resolve => setTimeout(resolve, 500));
-      }
+      console.log(`[MarketData] ⚠ ${symbol} returned $0 (market closed or data unavailable)`);
+    } catch (err: any) {
+      console.error(`[MarketData] ✗ ${symbol} error on attempt ${attempt}: ${err?.message || err}`);
+    }
+
+    if (attempt < maxRetries) {
+      console.log(`[MarketData] Waiting 500ms before retry...`);
+      await new Promise(resolve => setTimeout(resolve, 500));
     }
   }
 
   // IBKR-only: No fallbacks - throw error if data unavailable
   if (!marketData || marketData.price === 0) {
+    console.error(`[MarketData] ✗ All ${maxRetries} attempts failed for ${symbol}`);
     throw new Error(`[IBKR] Market data unavailable for ${symbol} after ${maxRetries} attempts`);
   }
 

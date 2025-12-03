@@ -341,6 +341,9 @@ export async function selectStrikes(
   underlyingPrice: number = 450, // Default SPY price for testing
   symbol: string = 'SPY'
 ): Promise<StrikeSelection> {
+  console.log(`[Step3] Strike Selection START`);
+  console.log(`[Step3] Direction: ${direction}, Underlying fallback price: $${underlyingPrice.toFixed(2)}, Symbol: ${symbol}`);
+
   const selection: StrikeSelection = {
     expectedPremium: 0,
     marginRequired: 0,
@@ -352,11 +355,20 @@ export async function selectStrikes(
 
   // CRITICAL: Fetch option chain ONCE and reuse for both PUT and CALL
   // This ensures consistent data source and avoids the bug where PUT uses IBKR but CALL uses mock
+  console.log(`[Step3] Fetching option chain for ${symbol}...`);
+  const chainStart = Date.now();
   const fullChain = await fetchFullOptionChain(symbol);
+  console.log(`[Step3] Option chain fetch took ${Date.now() - chainStart}ms`);
 
   if (fullChain && (fullChain.putStrikes.length > 0 || fullChain.callStrikes.length > 0)) {
     actualUnderlyingPrice = fullChain.underlyingPrice;
     dataSource = fullChain.source;
+    console.log(`[Step3] Data source: ${dataSource}`);
+    console.log(`[Step3] Underlying price: $${actualUnderlyingPrice.toFixed(2)}`);
+    console.log(`[Step3] PUT strikes available: ${fullChain.putStrikes.length}`);
+    console.log(`[Step3] CALL strikes available: ${fullChain.callStrikes.length}`);
+    if (fullChain.vix) console.log(`[Step3] VIX from chain: ${fullChain.vix}`);
+    if (fullChain.expectedMove) console.log(`[Step3] Expected move: $${fullChain.expectedMove.toFixed(2)}`);
 
     // Select PUT strike from real data
     if (direction === 'PUT' || direction === 'STRANGLE') {
@@ -364,9 +376,13 @@ export async function selectStrikes(
         const putStrike = findBestStrike(fullChain.putStrikes);
         if (putStrike) {
           selection.putStrike = putStrike;
+          console.log(`[Step3] Selected PUT: $${putStrike.strike} (delta: ${putStrike.delta.toFixed(3)}, bid: $${putStrike.bid.toFixed(2)}, ask: $${putStrike.ask.toFixed(2)})`);
           selection.reasoning += `PUT (IBKR ${dataSource}): Strike $${putStrike.strike} with delta ${putStrike.delta.toFixed(3)}. `;
+        } else {
+          console.error(`[Step3] Failed to find PUT strike matching delta target ${TARGET_DELTA_IDEAL}`);
         }
       } else {
+        console.error(`[Step3] No PUT strikes in option chain`);
         throw new Error('[IBKR] No PUT strikes available - cannot proceed without real option data');
       }
     }
@@ -377,9 +393,13 @@ export async function selectStrikes(
         const callStrike = findBestStrike(fullChain.callStrikes);
         if (callStrike) {
           selection.callStrike = callStrike;
+          console.log(`[Step3] Selected CALL: $${callStrike.strike} (delta: ${callStrike.delta.toFixed(3)}, bid: $${callStrike.bid.toFixed(2)}, ask: $${callStrike.ask.toFixed(2)})`);
           selection.reasoning += `CALL (IBKR ${dataSource}): Strike $${callStrike.strike} with delta ${callStrike.delta.toFixed(3)}. `;
+        } else {
+          console.error(`[Step3] Failed to find CALL strike matching delta target ${TARGET_DELTA_IDEAL}`);
         }
       } else {
+        console.error(`[Step3] No CALL strikes in option chain`);
         throw new Error('[IBKR] No CALL strikes available - cannot proceed without real option data');
       }
     }
@@ -430,6 +450,8 @@ export async function selectStrikes(
 
   } else {
     // IBKR completely unavailable - throw error, no mock fallback
+    console.error(`[Step3] Option chain returned NULL or EMPTY from fetchFullOptionChain`);
+    console.error(`[Step3] fullChain: ${JSON.stringify(fullChain)}`);
     throw new Error('[IBKR] Option chain unavailable - cannot proceed without real IBKR data');
   }
 
@@ -441,6 +463,9 @@ export async function selectStrikes(
   const sourceLabel = dataSource === 'mock' ? 'MOCK estimates' : `IBKR ${dataSource}`;
   selection.reasoning += `Data source: ${sourceLabel}. Underlying: $${actualUnderlyingPrice.toFixed(2)}. `;
   selection.reasoning += `Expected premium: $${selection.expectedPremium}, Margin required: $${selection.marginRequired}`;
+
+  console.log(`[Step3] Strike Selection COMPLETE`);
+  console.log(`[Step3] Expected premium: $${selection.expectedPremium}, Margin: $${selection.marginRequired}`);
 
   return selection;
 }
