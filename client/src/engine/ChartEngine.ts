@@ -391,13 +391,40 @@ function renderTimeAxis(
   ctx.textBaseline = 'top';
 
   // Show time labels at regular intervals
-  const visibleBars = viewport.endIndex - viewport.startIndex + 1;
-  const labelInterval = Math.max(1, Math.floor(visibleBars / 6));
+  const visibleCount = viewport.endIndex - viewport.startIndex + 1;
+  const labelInterval = Math.max(1, Math.floor(visibleCount / 6));
 
-  // Determine if we should show dates (for daily/weekly/monthly intervals) or times (for intraday)
-  // Daily+ intervals: 1D, D, 1d, 1W, 1M → show dates
-  // Intraday intervals: 1m, 5m, 15m, 1h → show times in NY timezone
-  const isDailyOrLonger = ['1D', 'D', '1d', '1W', '1M'].includes(timeframe || '');
+  // SPAN-BASED LABEL FORMAT DETECTION
+  // Calculate the time span of visible bars to determine the most appropriate format
+  const firstBar = bars[viewport.startIndex];
+  const lastBar = bars[Math.min(viewport.endIndex, bars.length - 1)];
+
+  if (!firstBar || !lastBar) return;
+
+  const timeSpanSeconds = lastBar.time - firstBar.time;
+  const timeSpanDays = timeSpanSeconds / 86400; // 86400 = seconds per day
+
+  // Determine label format based on data span (not interval)
+  // This ensures correct formatting regardless of what interval is passed
+  type LabelFormat = 'time' | 'datetime' | 'date' | 'monthyear' | 'year';
+  let labelFormat: LabelFormat;
+
+  if (timeSpanDays < 1) {
+    // Less than 1 day of data → show times only (e.g., "09:30")
+    labelFormat = 'time';
+  } else if (timeSpanDays <= 7) {
+    // 1-7 days of data → show date + time (e.g., "Dec 3 09:30")
+    labelFormat = 'datetime';
+  } else if (timeSpanDays <= 365) {
+    // 7 days to 1 year → show dates (e.g., "Dec 3")
+    labelFormat = 'date';
+  } else if (timeSpanDays <= 365 * 3) {
+    // 1-3 years → show month + year (e.g., "Dec 2024")
+    labelFormat = 'monthyear';
+  } else {
+    // More than 3 years → show years (e.g., "2024")
+    labelFormat = 'year';
+  }
 
   for (let i = viewport.startIndex; i <= viewport.endIndex && i < bars.length; i += labelInterval) {
     const bar = bars[i];
@@ -406,19 +433,63 @@ function renderTimeAxis(
     const date = new Date(bar.time * 1000);
     let label: string;
 
-    if (isDailyOrLonger) {
-      // For daily/weekly/monthly charts, show date format: "Dec 3"
-      const month = date.toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short' });
-      const day = date.toLocaleString('en-US', { timeZone: 'America/New_York', day: 'numeric' });
-      label = `${month} ${day}`;
-    } else {
-      // For intraday charts, show HH:MM format in New York timezone
-      label = date.toLocaleTimeString('en-US', {
-        timeZone: 'America/New_York',
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: false
-      });
+    switch (labelFormat) {
+      case 'time':
+        // Intraday: "09:30"
+        label = date.toLocaleTimeString('en-US', {
+          timeZone: 'America/New_York',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false
+        });
+        break;
+
+      case 'datetime':
+        // Multi-day intraday: "Dec 3 09:30"
+        const month1 = date.toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short' });
+        const day1 = date.toLocaleString('en-US', { timeZone: 'America/New_York', day: 'numeric' });
+        const time1 = date.toLocaleTimeString('en-US', {
+          timeZone: 'America/New_York',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false
+        });
+        label = `${month1} ${day1} ${time1}`;
+        break;
+
+      case 'date':
+        // Weekly/Monthly: "Dec 3"
+        label = date.toLocaleString('en-US', {
+          timeZone: 'America/New_York',
+          month: 'short',
+          day: 'numeric'
+        });
+        break;
+
+      case 'monthyear':
+        // Yearly: "Dec 2024"
+        label = date.toLocaleString('en-US', {
+          timeZone: 'America/New_York',
+          month: 'short',
+          year: 'numeric'
+        });
+        break;
+
+      case 'year':
+        // Multi-year: "2024"
+        label = date.toLocaleString('en-US', {
+          timeZone: 'America/New_York',
+          year: 'numeric'
+        });
+        break;
+
+      default:
+        label = date.toLocaleTimeString('en-US', {
+          timeZone: 'America/New_York',
+          hour: '2-digit',
+          minute: '2-digit',
+          hour12: false
+        });
     }
 
     ctx.fillText(label, x, chartArea.bottom + 5);

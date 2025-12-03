@@ -90,11 +90,11 @@ interface ChartDataResponse {
 // Data Fetching
 // ============================================
 
-// Default interval for each range (for database-backed queries)
+// Default interval for each range (matching available database data)
 const RANGE_DEFAULT_INTERVAL: Record<TimeRange, BarInterval> = {
   '1D': '1m',
   '5D': '5m',
-  '1M': '1h',
+  '1M': '1D',      // Changed from '1h' - database only has daily data for 1M+
   '3M': '1D',
   '6M': '1D',
   'YTD': '1D',
@@ -103,12 +103,12 @@ const RANGE_DEFAULT_INTERVAL: Record<TimeRange, BarInterval> = {
   'MAX': '1M',
 };
 
-// Available intervals for each range
+// Available intervals for each range (only intervals with actual database data)
 const RANGE_AVAILABLE_INTERVALS: Record<TimeRange, BarInterval[]> = {
   '1D': ['1m', '5m', '15m'],
-  '5D': ['1m', '5m', '15m', '1h'],
-  '1M': ['15m', '1h', '1D'],
-  '3M': ['1h', '1D'],
+  '5D': ['5m', '15m'],           // Removed '1m', '1h' - not enough data
+  '1M': ['1D'],                  // Removed '15m', '1h' - only daily data available
+  '3M': ['1D'],                  // Removed '1h' - only daily data available
   '6M': ['1D'],
   'YTD': ['1D'],
   '1Y': ['1D', '1W'],
@@ -474,7 +474,7 @@ export const DeterministicChart = forwardRef<DeterministicChartRef, Deterministi
       viewport: currentViewport,
       crosshair,
       overlays,
-      timeframe,
+      timeframe: effectiveInterval,
     })
       .then(() => {
         setRenderError(null);
@@ -483,7 +483,7 @@ export const DeterministicChart = forwardRef<DeterministicChartRef, Deterministi
         console.error('[Chart] Render failed:', err);
         setRenderError(err.message || 'Failed to render chart');
       });
-  }, [state.bars, mergedConfig, visibleBars, viewOffset, crosshair, overlays, timeframe]);
+  }, [state.bars, mergedConfig, visibleBars, viewOffset, crosshair, overlays, effectiveInterval]);
 
   // Mouse handlers
   const handleMouseMove = useCallback((e: React.MouseEvent<HTMLCanvasElement>) => {
