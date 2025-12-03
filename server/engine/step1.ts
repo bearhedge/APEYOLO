@@ -6,7 +6,8 @@
  * Checks: Trading hours, VIX levels, market trend, volatility regime
  */
 
-import { getMarketData, getVIXData } from '../services/marketDataService.js';
+import { getVIXData } from '../services/marketDataService.js';
+import { getOptionChainWithStrikes } from '../broker/ibkr';
 
 export interface MarketRegime {
   shouldTrade: boolean;
@@ -125,16 +126,21 @@ export async function analyzeMarketRegime(useRealData: boolean = true): Promise<
       // VIX has fallback in marketDataService, so this is unlikely
     }
 
-    // Fetch SPY data (IBKR-only, no fallback)
-    console.log('[Step1] Fetching SPY price from IBKR...');
+    // Fetch SPY data using getOptionChainWithStrikes (has proper retry + historical fallback)
+    console.log('[Step1] Fetching SPY price from IBKR via option chain...');
     try {
-      const spyData = await getMarketData('SPY');
-      spyPrice = spyData.price;
-      spyChange = spyData.changePercent;
-      console.log(`[Step1] SPY: $${spyPrice?.toFixed(2)} (${spyChange && spyChange > 0 ? '+' : ''}${spyChange?.toFixed(2)}%)`);
+      const chainData = await getOptionChainWithStrikes('SPY');
+      spyPrice = chainData.underlyingPrice;
+      // Note: getOptionChainWithStrikes doesn't return changePercent, set to 0
+      spyChange = 0;
+
+      if (!spyPrice || spyPrice === 0) {
+        throw new Error('Option chain returned $0 underlying price');
+      }
+
+      console.log(`[Step1] SPY: $${spyPrice.toFixed(2)} (VIX from chain: ${chainData.vix})`);
     } catch (error: any) {
       console.error(`[Step1] SPY price fetch FAILED: ${error.message}`);
-      // Re-throw to let engine know Step 1 failed
       throw new Error(`[Step1] Cannot get SPY price: ${error.message}`);
     }
   }
