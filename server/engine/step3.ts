@@ -367,13 +367,7 @@ export async function selectStrikes(
           selection.reasoning += `PUT (IBKR ${dataSource}): Strike $${putStrike.strike} with delta ${putStrike.delta.toFixed(3)}. `;
         }
       } else {
-        console.warn('[Step3] No PUT strikes from IBKR, falling back to mock');
-        const mockPutChain = getMockOptionChain(actualUnderlyingPrice, 'PUT');
-        const putStrike = findBestStrike(mockPutChain);
-        if (putStrike) {
-          selection.putStrike = putStrike;
-          selection.reasoning += `PUT (MOCK fallback): Strike $${putStrike.strike} with delta ${putStrike.delta.toFixed(3)}. `;
-        }
+        throw new Error('[IBKR] No PUT strikes available - cannot proceed without real option data');
       }
     }
 
@@ -386,13 +380,7 @@ export async function selectStrikes(
           selection.reasoning += `CALL (IBKR ${dataSource}): Strike $${callStrike.strike} with delta ${callStrike.delta.toFixed(3)}. `;
         }
       } else {
-        console.warn('[Step3] No CALL strikes from IBKR, falling back to mock');
-        const mockCallChain = getMockOptionChain(actualUnderlyingPrice, 'CALL');
-        const callStrike = findBestStrike(mockCallChain);
-        if (callStrike) {
-          selection.callStrike = callStrike;
-          selection.reasoning += `CALL (MOCK fallback): Strike $${callStrike.strike} with delta ${callStrike.delta.toFixed(3)}. `;
-        }
+        throw new Error('[IBKR] No CALL strikes available - cannot proceed without real option data');
       }
     }
 
@@ -441,59 +429,8 @@ export async function selectStrikes(
     }
 
   } else {
-    // IBKR completely unavailable, fall back to mock for everything
-    console.warn('[Step3] IBKR option chain unavailable, using MOCK data for all strikes');
-    dataSource = 'mock';
-
-    if (direction === 'PUT' || direction === 'STRANGLE') {
-      const mockPutChain = getMockOptionChain(underlyingPrice, 'PUT');
-      const putStrike = findBestStrike(mockPutChain);
-      if (putStrike) {
-        selection.putStrike = putStrike;
-        selection.reasoning += `PUT (MOCK): Strike $${putStrike.strike} with delta ${putStrike.delta.toFixed(3)}. `;
-      }
-    }
-
-    if (direction === 'CALL' || direction === 'STRANGLE') {
-      const mockCallChain = getMockOptionChain(underlyingPrice, 'CALL');
-      const callStrike = findBestStrike(mockCallChain);
-      if (callStrike) {
-        selection.callStrike = callStrike;
-        selection.reasoning += `CALL (MOCK): Strike $${callStrike.strike} with delta ${callStrike.delta.toFixed(3)}. `;
-      }
-    }
-
-    // Add mock nearby strikes
-    const nearbyStrikes: {
-      puts: Array<{ strike: number; bid: number; ask: number; delta: number; oi?: number }>;
-      calls: Array<{ strike: number; bid: number; ask: number; delta: number; oi?: number }>;
-    } = { puts: [], calls: [] };
-
-    if (direction === 'PUT' || direction === 'STRANGLE') {
-      const mockPutChain = getMockOptionChain(underlyingPrice, 'PUT');
-      nearbyStrikes.puts = mockPutChain.slice(0, 7).map(s => ({
-        strike: s.strike,
-        bid: s.bid,
-        ask: s.ask,
-        delta: s.delta,
-        oi: s.openInterest
-      })).sort((a, b) => a.strike - b.strike);
-    }
-
-    if (direction === 'CALL' || direction === 'STRANGLE') {
-      const mockCallChain = getMockOptionChain(underlyingPrice, 'CALL');
-      nearbyStrikes.calls = mockCallChain.slice(0, 7).map(s => ({
-        strike: s.strike,
-        bid: s.bid,
-        ask: s.ask,
-        delta: s.delta,
-        oi: s.openInterest
-      })).sort((a, b) => a.strike - b.strike);
-    }
-
-    if (nearbyStrikes.puts.length > 0 || nearbyStrikes.calls.length > 0) {
-      selection.nearbyStrikes = nearbyStrikes;
-    }
+    // IBKR completely unavailable - throw error, no mock fallback
+    throw new Error('[IBKR] Option chain unavailable - cannot proceed without real IBKR data');
   }
 
   // Calculate totals

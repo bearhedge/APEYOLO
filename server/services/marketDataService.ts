@@ -141,43 +141,9 @@ export async function getMarketData(symbol: string): Promise<MarketData> {
     }
   }
 
-  // If IBKR failed or returned $0, try Yahoo Finance fallback for SPY
-  if ((!marketData || marketData.price === 0) && symbol === 'SPY') {
-    console.log(`[MarketData] IBKR ${symbol} unavailable, falling back to Yahoo Finance...`);
-    try {
-      const historical = await fetchHistoricalData('SPY', '1m', 5); // Last 5 minutes
-      if (historical && historical.length > 0) {
-        const latest = historical[historical.length - 1];
-        marketData = {
-          symbol: 'SPY',
-          price: latest.close,
-          bid: latest.close - 0.01,
-          ask: latest.close + 0.01,
-          volume: latest.volume || 0,
-          change: 0,
-          changePercent: 0,
-          timestamp: new Date(latest.timestamp)
-        };
-        console.log(`[MarketData] Yahoo Finance SPY: $${marketData.price.toFixed(2)} (fallback)`);
-      }
-    } catch (yahooErr) {
-      console.error(`[MarketData] Yahoo Finance fallback failed:`, yahooErr);
-    }
-  }
-
-  // Final fallback: use last known price or reasonable default
+  // IBKR-only: No fallbacks - throw error if data unavailable
   if (!marketData || marketData.price === 0) {
-    console.warn(`[MarketData] All sources failed for ${symbol}, using fallback price`);
-    marketData = {
-      symbol,
-      price: symbol === 'SPY' ? 600 : 100, // Reasonable defaults
-      bid: 0,
-      ask: 0,
-      volume: 0,
-      change: 0,
-      changePercent: 0,
-      timestamp: new Date()
-    };
+    throw new Error(`[IBKR] Market data unavailable for ${symbol} after ${maxRetries} attempts`);
   }
 
   cache.set(cacheKey, marketData);

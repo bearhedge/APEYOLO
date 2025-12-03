@@ -133,19 +133,13 @@ export class TradingEngine {
 
     // Step 3: Strike Selection
     console.log('\n🎲 Step 3: Strike Selection');
-    // Use REAL SPY price - priority: Step 1 (IBKR) → Step 2 (Yahoo) → config → default
-    let underlyingPrice = marketRegime.metadata?.spyPrice || 0;
-    let priceSource = 'Step 1 (IBKR)';
+    // Use REAL SPY price from Step 1 (IBKR only - no fallbacks)
+    const underlyingPrice = marketRegime.metadata?.spyPrice || 0;
 
     if (!underlyingPrice || underlyingPrice <= 0) {
-      underlyingPrice = direction.signals?.spyPrice || 0;
-      priceSource = 'Step 2 (Yahoo)';
+      throw new Error('[IBKR] No SPY price available from Step 1 - cannot proceed without real IBKR data');
     }
-    if (!underlyingPrice || underlyingPrice <= 0) {
-      underlyingPrice = this.config.underlyingPrice || 600;
-      priceSource = 'config fallback';
-    }
-    console.log(`  Using SPY price: $${underlyingPrice.toFixed(2)} (source: ${priceSource})`);
+    console.log(`  Using SPY price: $${underlyingPrice.toFixed(2)} (source: Step 1 IBKR)`);
 
     const strikes = await selectStrikes(direction.direction, underlyingPrice);
     this.addAudit(3, 'Strike Selection', { direction: direction.direction, underlyingPrice }, strikes, true, strikes.reasoning);
