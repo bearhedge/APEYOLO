@@ -357,13 +357,13 @@ export function EngineBoundsChart({
         </div>
       )}
 
-      {/* Bounds Error */}
-      {boundsError && (
+      {/* Bounds Error - Hidden for now, focusing on chart correctness */}
+      {/* {boundsError && (
         <div className="flex items-center gap-2 px-4 py-2 bg-red-500/10 border-b border-red-500/20 text-xs text-red-400">
           <AlertTriangle className="w-4 h-4" />
           {boundsError}
         </div>
-      )}
+      )} */}
 
       {/* Price Position Indicator */}
       {pricePosition && currentPrice && (

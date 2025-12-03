@@ -212,6 +212,15 @@ function createCoordinateSystem(
   const candleTotalWidth = candleWidth + candleSpacing;
   const visibleCount = viewport.endIndex - viewport.startIndex + 1;
 
+  // Calculate how many bars can fit in the chart area
+  const maxBarsInChart = Math.floor(chartArea.width / candleTotalWidth);
+
+  // Right-align offset: when fewer bars than can fit, shift right so most recent bar is at right edge
+  // This prevents candles from clustering on the left side of the chart
+  const rightAlignOffset = visibleCount < maxBarsInChart
+    ? (maxBarsInChart - visibleCount) * candleTotalWidth
+    : 0;
+
   return {
     priceMin,
     priceMax,
@@ -227,10 +236,11 @@ function createCoordinateSystem(
     },
     indexToX: (index: number): number => {
       const relativeIndex = index - viewport.startIndex;
-      return Math.round(chartArea.left + relativeIndex * candleTotalWidth + candleWidth / 2);
+      // Add right-align offset to push bars toward right edge when fewer bars than space
+      return Math.round(chartArea.left + rightAlignOffset + relativeIndex * candleTotalWidth + candleWidth / 2);
     },
     xToIndex: (x: number): number => {
-      const relativeX = x - chartArea.left;
+      const relativeX = x - chartArea.left - rightAlignOffset;
       return Math.round(viewport.startIndex + relativeX / candleTotalWidth);
     },
   };
@@ -384,8 +394,10 @@ function renderTimeAxis(
   const visibleBars = viewport.endIndex - viewport.startIndex + 1;
   const labelInterval = Math.max(1, Math.floor(visibleBars / 6));
 
-  // Determine if we should show dates (for daily charts) or times (for intraday)
-  const isDaily = timeframe === '1D' || timeframe === 'D' || timeframe === '1d';
+  // Determine if we should show dates (for daily/weekly/monthly intervals) or times (for intraday)
+  // Daily+ intervals: 1D, D, 1d, 1W, 1M → show dates
+  // Intraday intervals: 1m, 5m, 15m, 1h → show times in NY timezone
+  const isDailyOrLonger = ['1D', 'D', '1d', '1W', '1M'].includes(timeframe || '');
 
   for (let i = viewport.startIndex; i <= viewport.endIndex && i < bars.length; i += labelInterval) {
     const bar = bars[i];
@@ -394,16 +406,19 @@ function renderTimeAxis(
     const date = new Date(bar.time * 1000);
     let label: string;
 
-    if (isDaily) {
-      // For daily charts, show month/day format
-      const month = (date.getMonth() + 1).toString();
-      const day = date.getDate().toString();
-      label = `${month}/${day}`;
+    if (isDailyOrLonger) {
+      // For daily/weekly/monthly charts, show date format: "Dec 3"
+      const month = date.toLocaleString('en-US', { timeZone: 'America/New_York', month: 'short' });
+      const day = date.toLocaleString('en-US', { timeZone: 'America/New_York', day: 'numeric' });
+      label = `${month} ${day}`;
     } else {
-      // For intraday charts, show HH:MM format
-      const hours = date.getHours().toString().padStart(2, '0');
-      const minutes = date.getMinutes().toString().padStart(2, '0');
-      label = `${hours}:${minutes}`;
+      // For intraday charts, show HH:MM format in New York timezone
+      label = date.toLocaleTimeString('en-US', {
+        timeZone: 'America/New_York',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      });
     }
 
     ctx.fillText(label, x, chartArea.bottom + 5);
@@ -823,7 +838,11 @@ export function formatPrice(price: number): string {
 
 export function formatTime(timestamp: number): string {
   const date = new Date(timestamp * 1000);
-  const hours = date.getHours().toString().padStart(2, '0');
-  const minutes = date.getMinutes().toString().padStart(2, '0');
-  return `${hours}:${minutes}`;
+  // Use New York timezone for consistent display
+  return date.toLocaleTimeString('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false
+  });
 }
