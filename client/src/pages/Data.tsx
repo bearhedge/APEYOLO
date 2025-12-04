@@ -152,22 +152,41 @@ export function Data() {
     queryKey: ['/api/broker/stream/chain', activeTicker],
     queryFn: async () => {
       const res = await fetch(`/api/broker/stream/chain/${activeTicker}`, { credentials: 'include' });
-      if (!res.ok) {
-        // Fall back to test-options endpoint
+
+      // Parse response first to check content
+      const data = await res.json();
+
+      // Fall back to test-options if:
+      // 1. HTTP error, OR
+      // 2. Cache is empty (cached: false), OR
+      // 3. No actual option data in response
+      if (!res.ok || !data.cached || !data.chain?.puts?.length) {
         const fallback = await fetch(`/api/broker/test-options/${activeTicker}`, { credentials: 'include' });
         if (!fallback.ok) throw new Error('Failed to fetch option chain');
-        const data = await fallback.json();
+        const fallbackData = await fallback.json();
         return {
           cached: false,
           symbol: activeTicker,
-          puts: data.puts || [],
-          calls: data.calls || [],
-          underlyingPrice: data.underlyingPrice || 0,
+          puts: fallbackData.puts || [],
+          calls: fallbackData.calls || [],
+          underlyingPrice: fallbackData.underlyingPrice || 0,
           lastUpdate: new Date().toISOString(),
-          expirations: data.expirations || []
+          expirations: fallbackData.expirations || [],
+          isHistorical: fallbackData.isHistorical || false
         };
       }
-      return res.json();
+
+      // Cache hit - extract from wrapper structure
+      return {
+        cached: true,
+        symbol: data.chain.symbol,
+        puts: data.chain.puts || [],
+        calls: data.chain.calls || [],
+        underlyingPrice: data.chain.underlyingPrice || 0,
+        lastUpdate: data.chain.lastUpdate,
+        expirations: [],
+        isHistorical: false
+      };
     },
     // Only poll as fallback - WebSocket provides instant updates
     // Use 30s when WebSocket connected, 10s otherwise
