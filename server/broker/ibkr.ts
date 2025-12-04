@@ -1002,6 +1002,7 @@ class IbkrClient {
 
   async getOptionChain(symbol: string, expiration?: string): Promise<OptionChainData> {
     await this.ensureReady();
+    await this.ensureAccountSelected(); // CRITICAL: Prime session for option data
     const reqId = randomUUID().slice(0, 8);
     console.log(`[IBKR][getOptionChain][${reqId}] Starting for ${symbol} expiration=${expiration || '0DTE'}`);
 
@@ -1159,6 +1160,7 @@ class IbkrClient {
     isHistorical?: boolean;
   }> {
     await this.ensureReady();
+    await this.ensureAccountSelected(); // CRITICAL: Prime session for option data
     const reqId = randomUUID().slice(0, 8);
     console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Starting for ${symbol}`);
 
