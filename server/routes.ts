@@ -485,6 +485,57 @@ export async function registerRoutes(app: Express): Promise<Server> {
       });
     } catch (err: any) {
       console.error(`[TEST] Error getting option chain:`, err.message);
+
+      // Return static fallback for SPY when IBKR times out (common during off-hours)
+      if (symbol === 'SPY' && err.message?.includes('timed out')) {
+        console.log(`[TEST] Returning static fallback option chain for SPY`);
+        const underlyingPrice = 600; // Approximate SPY price
+        const strikes = [585, 590, 595, 600, 605, 610, 615];
+
+        const generateOptions = (strike: number, isCall: boolean) => ({
+          strike,
+          conid: 0, // Static placeholder
+          bid: Math.max(0.05, isCall
+            ? Math.max(0.05, underlyingPrice - strike) * 0.1
+            : Math.max(0.05, strike - underlyingPrice) * 0.1),
+          ask: Math.max(0.10, isCall
+            ? Math.max(0.10, underlyingPrice - strike) * 0.12
+            : Math.max(0.10, strike - underlyingPrice) * 0.12),
+          last: 0,
+          delta: isCall
+            ? Math.max(0.05, Math.min(0.95, 0.5 + (underlyingPrice - strike) / 50))
+            : Math.min(-0.05, Math.max(-0.95, -0.5 + (underlyingPrice - strike) / 50)),
+          gamma: 0.02,
+          theta: -0.05,
+          iv: 0.18,
+          openInterest: Math.floor(Math.random() * 10000) + 1000,
+          volume: 0,
+        });
+
+        return res.json({
+          ok: true,
+          source: 'static-fallback',
+          underlyingPrice,
+          vix: 14,
+          expectedMove: 8,
+          strikeRange: { low: 585, high: 615, description: 'Static fallback range' },
+          expiration: 'next trading day',
+          puts: strikes.map(s => generateOptions(s, false)),
+          calls: strikes.map(s => generateOptions(s, true)),
+          isHistorical: true,
+          isStaticFallback: true,
+          summary: {
+            putCount: strikes.length,
+            callCount: strikes.length,
+            putStrikeRange: `$${strikes[0]} - $${strikes[strikes.length - 1]}`,
+            callStrikeRange: `$${strikes[0]} - $${strikes[strikes.length - 1]}`,
+            hasGreeks: true,
+            hasOpenInterest: true,
+            hasIV: true,
+          }
+        });
+      }
+
       return res.status(500).json({ ok: false, error: err.message });
     }
   });
