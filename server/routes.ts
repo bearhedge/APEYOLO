@@ -487,7 +487,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.error(`[TEST] Error getting option chain:`, err.message);
 
       // Return static fallback for SPY when IBKR times out (common during off-hours)
-      if (symbol === 'SPY' && err.message?.includes('timed out')) {
+      const reqSymbol = req.params.symbol?.toUpperCase() || 'SPY';
+      if (reqSymbol === 'SPY' && err.message?.includes('timed out')) {
         console.log(`[TEST] Returning static fallback option chain for SPY`);
         const underlyingPrice = 600; // Approximate SPY price
         const strikes = [585, 590, 595, 600, 605, 610, 615];
