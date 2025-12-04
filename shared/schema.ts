@@ -341,6 +341,37 @@ export type InsertOptionChainSnapshot = z.infer<typeof insertOptionChainSnapshot
 
 // ==================== END JOBS SYSTEM ====================
 
+// ==================== ECONOMIC EVENTS ====================
+// Macroeconomic calendar from FRED API
+
+export const economicEvents = pgTable("economic_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  eventType: text("event_type").notNull(), // 'fomc', 'cpi', 'ppi', 'gdp', 'employment', 'pce'
+  eventName: text("event_name").notNull(), // 'FOMC Press Release', 'Consumer Price Index'
+  eventDate: text("event_date").notNull(), // YYYY-MM-DD
+  eventTime: text("event_time"), // HH:MM ET (e.g., '08:30', '14:00')
+  releaseId: integer("release_id"), // FRED release ID for reference
+  impactLevel: text("impact_level").notNull().default("high"), // 'low', 'medium', 'high', 'critical'
+  description: text("description"),
+  source: text("source").notNull().default("fred"), // 'fred', 'manual', 'fed_calendar'
+  fetchedAt: timestamp("fetched_at").notNull().defaultNow(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  index("economic_events_date_idx").on(table.eventDate),
+  index("economic_events_type_date_idx").on(table.eventType, table.eventDate),
+]);
+
+export const insertEconomicEventSchema = createInsertSchema(economicEvents).omit({
+  id: true,
+  createdAt: true,
+  fetchedAt: true,
+});
+
+export type EconomicEvent = typeof economicEvents.$inferSelect;
+export type InsertEconomicEvent = z.infer<typeof insertEconomicEventSchema>;
+
+// ==================== END ECONOMIC EVENTS ====================
+
 // Option chain types
 export type OptionData = {
   strike: number;

@@ -143,14 +143,21 @@ export function isMarketOpen(date: Date = new Date()): boolean {
   return !isHoliday;
 }
 
+// Market trading hours (Eastern Time)
+const MARKET_OPEN_TIME = '09:30';
+const MARKET_CLOSE_NORMAL = '16:00';
+const MARKET_CLOSE_EARLY = '13:00';
+
 /**
  * Get market status for a specific date/time
+ * Now includes time-of-day check for accurate open/closed status
  */
 export function getMarketStatus(date: Date = new Date()): MarketStatus {
   const dateStr = getETDateString(date);
   const timeStr = getETTimeString(date);
   const closeTime = getMarketCloseTime(date);
 
+  // Weekend check
   if (isWeekend(date)) {
     return {
       isOpen: false,
@@ -160,6 +167,7 @@ export function getMarketStatus(date: Date = new Date()): MarketStatus {
     };
   }
 
+  // Holiday check
   const { isHoliday, holiday } = isMarketHoliday(date);
   if (isHoliday) {
     return {
@@ -170,15 +178,39 @@ export function getMarketStatus(date: Date = new Date()): MarketStatus {
     };
   }
 
-  const { isEarlyClose, reason } = isEarlyCloseDay(date);
+  // Early close day check
+  const { isEarlyClose, reason: earlyCloseReason } = isEarlyCloseDay(date);
+  const marketCloseToday = isEarlyClose ? MARKET_CLOSE_EARLY : MARKET_CLOSE_NORMAL;
+
+  // Time-of-day check: Market is only open 9:30 AM - close time
+  if (timeStr < MARKET_OPEN_TIME) {
+    return {
+      isOpen: false,
+      currentTimeET: timeStr,
+      marketCloseET: marketCloseToday,
+      reason: `Pre-market - opens at 9:30 AM ET`,
+    };
+  }
+
+  if (timeStr >= marketCloseToday) {
+    const closeTimeFormatted = isEarlyClose ? '1:00 PM' : '4:00 PM';
+    return {
+      isOpen: false,
+      currentTimeET: timeStr,
+      marketCloseET: marketCloseToday,
+      reason: `After hours - closed at ${closeTimeFormatted} ET`,
+    };
+  }
+
+  // Market is open (within trading hours)
   const reasonStr = isEarlyClose
-    ? `Open (early close at 1:00 PM ET - ${reason})`
+    ? `Open (early close at 1:00 PM ET - ${earlyCloseReason})`
     : 'Open (closes at 4:00 PM ET)';
 
   return {
     isOpen: true,
     currentTimeET: timeStr,
-    marketCloseET: closeTime,
+    marketCloseET: marketCloseToday,
     reason: reasonStr,
   };
 }

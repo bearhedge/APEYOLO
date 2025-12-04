@@ -88,6 +88,27 @@ export function Engine() {
     setEngineLogs(prev => [...prev, entry]);
   }, []);
 
+  // Helper to update existing operation log entry by message pattern
+  const updateOperationLog = useCallback((
+    messagePattern: string,
+    status: OperationEntry['status'],
+    newMessage?: string,
+    value?: string | number
+  ) => {
+    setEngineLogs(prev => prev.map(entry => {
+      if ('type' in entry && entry.type === 'operation' && entry.message.includes(messagePattern)) {
+        return {
+          ...entry,
+          message: newMessage || entry.message,
+          status,
+          value,
+          timestamp: new Date().toISOString()
+        };
+      }
+      return entry;
+    }));
+  }, []);
+
   // Auto-connect to IBKR when page loads (same as Settings page)
   useEffect(() => {
     const connectBroker = async () => {
@@ -112,13 +133,13 @@ export function Engine() {
       setEngineLogs([]); // Clear previous logs
       toast.loading('Running engine analysis...', { id: 'engine-execute' });
 
-      // Real-time operation logs
+      // Real-time operation logs - create pending entries
       addOperationLog('IBKR', 'Checking connection status...', 'pending');
       await new Promise(r => setTimeout(r, 100)); // Allow UI to update
 
-      addOperationLog('IBKR', brokerConnectedFinal
-        ? 'Connected to paper trading account'
-        : 'Using mock data (IBKR disconnected)', 'success');
+      // Update the connection status entry (not create a new one)
+      updateOperationLog('Checking connection', 'success',
+        brokerConnectedFinal ? 'Connected to paper trading account' : 'Using mock data (IBKR disconnected)');
 
       addOperationLog('MARKET', 'Fetching SPY price...', 'pending');
       await new Promise(r => setTimeout(r, 100));
@@ -134,17 +155,19 @@ export function Engine() {
       // Run the actual analysis
       const result = await analyzeEngine({ riskTier, stopMultiplier });
 
-      // Update operation logs with actual values
+      // Update existing pending entries with actual values (not create new ones)
       if (result.q1MarketRegime?.inputs) {
         const vix = result.q1MarketRegime.inputs.vixValue;
         const spy = result.q1MarketRegime.inputs.spyPrice;
-        addOperationLog('MARKET', `SPY price: $${spy?.toFixed(2) || 'N/A'}`, 'success');
-        addOperationLog('MARKET', `VIX: ${vix?.toFixed(2) || 'N/A'} (${vix < 20 ? 'LOW - safe' : vix < 30 ? 'ELEVATED' : 'HIGH - caution'})`, 'success');
+        updateOperationLog('Fetching SPY price', 'success', `SPY price: $${spy?.toFixed(2) || 'N/A'}`);
+        updateOperationLog('Fetching VIX', 'success', `VIX: ${vix?.toFixed(2) || 'N/A'} (${vix < 20 ? 'LOW - safe' : vix < 30 ? 'ELEVATED' : 'HIGH - caution'})`);
       }
 
       if (result.q3Strikes?.candidates?.length) {
-        addOperationLog('OPTIONS', `Found ${result.q3Strikes.candidates.length} strikes for SPY`, 'success');
+        updateOperationLog('Loading 0DTE option chain', 'success', `Found ${result.q3Strikes.candidates.length} strikes for SPY`);
       }
+
+      updateOperationLog('Starting 5-step decision', 'success', '5-step analysis complete');
 
       // Store audit logs from the result if available
       if (result.audit) {
@@ -184,7 +207,7 @@ export function Engine() {
         if (err.audit && Array.isArray(err.audit)) {
           err.audit.forEach((entry: any) => {
             const status = entry.passed ? 'success' : 'error';
-            addOperationLog('AUDIT', `Step ${entry.step}: ${entry.name} - ${entry.passed ? 'PASSED' : 'FAILED'}${entry.reason ? ': ' + entry.reason : ''}`, status);
+            addOperationLog('ANALYSIS', `Step ${entry.step}: ${entry.name} - ${entry.passed ? 'PASSED' : 'FAILED'}${entry.reason ? ': ' + entry.reason : ''}`, status);
           });
         }
 
@@ -196,7 +219,7 @@ export function Engine() {
     } finally {
       setIsExecuting(false);
     }
-  }, [analyzeEngine, riskTier, stopMultiplier, executionMode, executePaperTrade, addOperationLog, brokerConnectedFinal]);
+  }, [analyzeEngine, riskTier, stopMultiplier, executionMode, executePaperTrade, addOperationLog, updateOperationLog, brokerConnectedFinal]);
 
   // Handle paper trade execution
   const handleExecuteTrade = useCallback(async () => {

@@ -27,6 +27,30 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 // ============================================
+// Impact Badge Component
+// ============================================
+
+function ImpactBadge({ level }: { level?: 'low' | 'medium' | 'high' | 'critical' }) {
+  if (!level) return null;
+
+  const styles: Record<string, string> = {
+    critical: 'bg-red-500/30 text-red-400 border-red-500/50 animate-pulse',
+    high: 'bg-orange-500/20 text-orange-400 border-orange-500/30',
+    medium: 'bg-yellow-500/20 text-yellow-400 border-yellow-500/30',
+    low: 'bg-gray-500/20 text-gray-400 border-gray-500/30',
+  };
+
+  return (
+    <span className={cn(
+      'px-1.5 py-0.5 text-[10px] font-medium rounded border uppercase tracking-wider',
+      styles[level]
+    )}>
+      {level}
+    </span>
+  );
+}
+
+// ============================================
 // Market Status Card
 // ============================================
 
@@ -48,11 +72,31 @@ function MarketStatusCard({
     );
   }
 
-  const nextHoliday = upcomingEvents.find(e => e.type === 'holiday');
-  const nextEarlyClose = upcomingEvents.find(e => e.type === 'early_close');
+  // Separate market events from economic events
+  const marketEvents = upcomingEvents.filter(e => e.type === 'holiday' || e.type === 'early_close');
+  const economicEvents = upcomingEvents.filter(e => e.type === 'economic');
+
+  // Check if there's a high-impact event today
+  const todayHighImpactEvents = economicEvents.filter(
+    e => e.date === today && (e.impactLevel === 'critical' || e.impactLevel === 'high')
+  );
 
   return (
     <div className="bg-charcoal rounded-2xl p-6 border border-white/10">
+      {/* High-impact event alert banner */}
+      {todayHighImpactEvents.length > 0 && (
+        <div className="bg-orange-500/10 border border-orange-500/30 rounded-lg p-3 mb-4 flex items-center gap-2">
+          <span className="text-orange-400 text-lg">&#9888;</span>
+          <div>
+            <p className="text-orange-400 font-medium text-sm">High-Impact Event Today</p>
+            <p className="text-orange-300/80 text-xs">
+              {todayHighImpactEvents.map(e => e.event).join(', ')}
+              {todayHighImpactEvents[0]?.time && ` at ${todayHighImpactEvents[0].time} ET`}
+            </p>
+          </div>
+        </div>
+      )}
+
       <div className="flex items-start justify-between mb-4">
         <div>
           <h2 className="text-lg font-semibold">Market Status</h2>
@@ -83,24 +127,39 @@ function MarketStatusCard({
         </div>
       </div>
 
-      {(nextHoliday || nextEarlyClose) && (
+      {/* Market Holidays / Early Close */}
+      {marketEvents.length > 0 && (
         <div className="border-t border-white/10 pt-4 mt-4">
-          <p className="text-silver text-xs uppercase tracking-wider mb-2">Upcoming Events</p>
+          <p className="text-silver text-xs uppercase tracking-wider mb-2">Market Closures</p>
           <div className="space-y-1">
-            {nextHoliday && (
-              <p className="text-sm">
-                <span className="text-red-400">{nextHoliday.date}</span>
-                <span className="text-silver mx-2">-</span>
-                <span>{nextHoliday.event}</span>
+            {marketEvents.slice(0, 3).map((event, i) => (
+              <p key={i} className="text-sm flex items-center gap-2">
+                <span className={event.type === 'holiday' ? 'text-red-400' : 'text-yellow-400'}>
+                  {event.date}
+                </span>
+                <span className="text-silver">-</span>
+                <span>{event.event}</span>
               </p>
-            )}
-            {nextEarlyClose && (
-              <p className="text-sm">
-                <span className="text-yellow-400">{nextEarlyClose.date}</span>
-                <span className="text-silver mx-2">-</span>
-                <span>{nextEarlyClose.event}</span>
-              </p>
-            )}
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Economic Events */}
+      {economicEvents.length > 0 && (
+        <div className="border-t border-white/10 pt-4 mt-4">
+          <p className="text-silver text-xs uppercase tracking-wider mb-2">Upcoming Economic Events</p>
+          <div className="space-y-2">
+            {economicEvents.slice(0, 6).map((event, i) => (
+              <div key={i} className="flex items-center gap-2 text-sm">
+                <span className="text-electric font-mono w-24">{event.date}</span>
+                <ImpactBadge level={event.impactLevel} />
+                <span className="flex-1">{event.event}</span>
+                {event.time && (
+                  <span className="text-silver text-xs">{event.time} ET</span>
+                )}
+              </div>
+            ))}
           </div>
         </div>
       )}

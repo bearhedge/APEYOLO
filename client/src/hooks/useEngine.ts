@@ -12,6 +12,22 @@ import type {
   ExecutePaperTradeResponse,
 } from '@shared/types/engine';
 
+/**
+ * Safely parse JSON from a fetch response.
+ * Handles cases where server returns HTML (e.g., "Service Unavailable")
+ * instead of JSON, preventing "Unexpected token 'S'" errors.
+ */
+async function safeParseJSON<T = any>(response: Response): Promise<T> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    // If not valid JSON, throw an error with the response text
+    const preview = text.slice(0, 200).trim() || `HTTP ${response.status}`;
+    throw new Error(preview);
+  }
+}
+
 export interface EngineStatus {
   engineActive: boolean;
   brokerConnected: boolean;
@@ -235,11 +251,11 @@ export function useEngine() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
+        const errorData = await safeParseJSON(response);
         throw new Error(errorData.error || 'Failed to execute decision');
       }
 
-      const data = await response.json();
+      const data = await safeParseJSON(response);
       setDecision(data);
       return data;
     } catch (err: any) {
@@ -266,7 +282,7 @@ export function useEngine() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
+        const errorData = await safeParseJSON(response);
         // Create error with full structured data attached
         const err = new Error(errorData.reason || errorData.error || 'Failed to run analysis') as any;
         err.failedStep = errorData.failedStep;
@@ -277,7 +293,7 @@ export function useEngine() {
         throw err;
       }
 
-      const data: EngineAnalyzeResponse = await response.json();
+      const data: EngineAnalyzeResponse = await safeParseJSON(response);
       setAnalysis(data);
       return data;
     } catch (err: any) {
@@ -304,11 +320,11 @@ export function useEngine() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
+        const errorData = await safeParseJSON(response);
         throw new Error(errorData.error || 'Failed to execute paper trade');
       }
 
-      return await response.json();
+      return await safeParseJSON(response);
     } catch (err: any) {
       console.error('[Engine] Execute paper trade error:', err);
       setError(err.message || 'Failed to execute paper trade');
@@ -331,11 +347,11 @@ export function useEngine() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
+        const errorData = await safeParseJSON(response);
         throw new Error(errorData.error || 'Failed to execute trade');
       }
 
-      const data = await response.json();
+      const data = await safeParseJSON(response);
       return data;
     } catch (err: any) {
       console.error('[Engine] Execute trade error:', err);
@@ -353,7 +369,7 @@ export function useEngine() {
         credentials: 'include'
       });
       if (!response.ok) throw new Error('Failed to fetch engine config');
-      const data = await response.json();
+      const data = await safeParseJSON(response);
       setConfig(data);
       setError(null);
     } catch (err) {
@@ -375,11 +391,11 @@ export function useEngine() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json();
+        const errorData = await safeParseJSON(response);
         throw new Error(errorData.error || 'Failed to update config');
       }
 
-      const data = await response.json();
+      const data = await safeParseJSON(response);
       setConfig(data.config);
       return data;
     } catch (err: any) {

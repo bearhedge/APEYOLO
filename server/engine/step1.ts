@@ -29,23 +29,50 @@ export interface MarketRegime {
 }
 
 /**
+ * Get Eastern Time components reliably using Intl.DateTimeFormat.formatToParts()
+ * This works correctly regardless of the server's local timezone
+ */
+function getETTimeComponents(date: Date = new Date()): { hour: number; minute: number; dayOfWeek: number } {
+  // Use formatToParts to get reliable numeric values in ET timezone
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric',
+    minute: 'numeric',
+    weekday: 'short',
+    hour12: false
+  });
+
+  const parts = formatter.formatToParts(date);
+  let hour = 0, minute = 0, dayOfWeek = 0;
+
+  for (const part of parts) {
+    if (part.type === 'hour') hour = parseInt(part.value, 10);
+    if (part.type === 'minute') minute = parseInt(part.value, 10);
+    if (part.type === 'weekday') {
+      const dayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+      dayOfWeek = dayMap[part.value] ?? 0;
+    }
+  }
+
+  // Handle midnight edge case (hour12: false returns '24' for midnight in some locales)
+  if (hour === 24) hour = 0;
+
+  return { hour, minute, dayOfWeek };
+}
+
+/**
  * Check if current time is within trading window
  * Trading window: 11:00 AM - 1:00 PM ET
  */
 function isWithinTradingHours(): boolean {
-  const now = new Date();
-  const et = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
-
-  const hour = et.getHours();
-  const minute = et.getMinutes();
+  const { hour, minute, dayOfWeek } = getETTimeComponents();
   const currentMinutes = hour * 60 + minute;
 
   // 11:00 AM = 660 minutes, 1:00 PM = 780 minutes
   const windowStart = 11 * 60; // 11:00 AM
   const windowEnd = 13 * 60;   // 1:00 PM
 
-  // Check if it's a weekday
-  const dayOfWeek = et.getDay();
+  // Check if it's a weekday (Mon=1, Tue=2, Wed=3, Thu=4, Fri=5)
   const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
 
   return isWeekday && currentMinutes >= windowStart && currentMinutes < windowEnd;

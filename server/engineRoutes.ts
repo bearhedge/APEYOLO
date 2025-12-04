@@ -82,17 +82,48 @@ const engineConfigSchema = z.object({
   }).optional()
 });
 
+/**
+ * Get time components reliably in a specific timezone using Intl.DateTimeFormat.formatToParts()
+ * This works correctly regardless of the server's local timezone
+ */
+function getTimeComponentsInTimezone(
+  date: Date,
+  timezone: string
+): { hour: number; minute: number; dayOfWeek: number } {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    hour: 'numeric',
+    minute: 'numeric',
+    weekday: 'short',
+    hour12: false
+  });
+
+  const parts = formatter.formatToParts(date);
+  let hour = 0, minute = 0, dayOfWeek = 0;
+
+  for (const part of parts) {
+    if (part.type === 'hour') hour = parseInt(part.value, 10);
+    if (part.type === 'minute') minute = parseInt(part.value, 10);
+    if (part.type === 'weekday') {
+      const dayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+      dayOfWeek = dayMap[part.value] ?? 0;
+    }
+  }
+
+  // Handle midnight edge case (hour12: false returns '24' for midnight in some locales)
+  if (hour === 24) hour = 0;
+
+  return { hour, minute, dayOfWeek };
+}
+
 // Check if we're within trading window
 function isWithinTradingWindow(): { allowed: boolean; reason?: string } {
   const now = new Date();
-  const nyTime = new Intl.DateTimeFormat('en-US', {
-    timeZone: currentGuardRails.tradingWindow.timezone,
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false
-  }).format(now);
+  const timezone = currentGuardRails.tradingWindow.timezone;
 
-  const [currentHour, currentMinute] = nyTime.split(':').map(Number);
+  // Get time components reliably in the target timezone
+  const { hour: currentHour, minute: currentMinute, dayOfWeek } = getTimeComponentsInTimezone(now, timezone);
+
   const [startHour, startMinute] = currentGuardRails.tradingWindow.start.split(':').map(Number);
   const [endHour, endMinute] = currentGuardRails.tradingWindow.end.split(':').map(Number);
 
@@ -101,10 +132,9 @@ function isWithinTradingWindow(): { allowed: boolean; reason?: string } {
   const endMinutes = endHour * 60 + endMinute;
 
   // Check if it's a weekday (Mon-Fri)
-  const dayOfWeek = new Date(now.toLocaleString("en-US", { timeZone: currentGuardRails.tradingWindow.timezone })).getDay();
   const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
 
-  console.log(`[TradingWindow] nyTime=${nyTime}, current=${currentMinutes}, start=${startMinutes}, end=${endMinutes}, dayOfWeek=${dayOfWeek}, isWeekday=${isWeekday}`);
+  console.log(`[TradingWindow] timezone=${timezone}, hour=${currentHour}, minute=${currentMinute}, current=${currentMinutes}, start=${startMinutes}, end=${endMinutes}, dayOfWeek=${dayOfWeek}, isWeekday=${isWeekday}`);
 
   if (!isWeekday) {
     return {
@@ -116,7 +146,7 @@ function isWithinTradingWindow(): { allowed: boolean; reason?: string } {
   if (currentMinutes < startMinutes || currentMinutes >= endMinutes) {
     return {
       allowed: false,
-      reason: `Trading only allowed between ${currentGuardRails.tradingWindow.start} and ${currentGuardRails.tradingWindow.end} ${currentGuardRails.tradingWindow.timezone}`
+      reason: `Trading only allowed between ${currentGuardRails.tradingWindow.start} and ${currentGuardRails.tradingWindow.end} ${timezone}`
     };
   }
 
@@ -364,11 +394,20 @@ router.get('/analyze', requireAuth, async (req, res) => {
       });
     }
 
-    // Generic error
+    // Generic error - detect "Service Unavailable" type errors
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    const isServiceUnavailable = errorMessage.includes('Service Unavailable') ||
+                                  errorMessage.includes('503') ||
+                                  errorMessage.includes('ECONNREFUSED') ||
+                                  errorMessage.includes('timeout');
+
     res.status(500).json({
       error: 'Failed to run analysis',
-      reason: error instanceof Error ? error.message : 'Unknown error',
-      failedStep: null
+      reason: isServiceUnavailable
+        ? 'IBKR service temporarily unavailable - please retry in a moment'
+        : errorMessage,
+      failedStep: null,
+      retryable: isServiceUnavailable
     });
   }
 });

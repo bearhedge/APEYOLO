@@ -13,6 +13,22 @@ import { CookieJar } from 'tough-cookie';
 import { randomUUID } from "crypto";
 import { webcrypto as nodeWebcrypto } from 'node:crypto';
 import { storage } from "../storage";
+import type { AxiosResponse } from 'axios';
+
+/**
+ * Check if an Axios response contains valid JSON data.
+ * Returns false if the response body is HTML (e.g., "Service Unavailable").
+ */
+function isValidJsonResponse(response: AxiosResponse): boolean {
+  const contentType = response.headers['content-type'] || '';
+  // If content-type indicates HTML, it's not JSON
+  if (contentType.includes('text/html')) return false;
+  // If data is a string starting with '<', it's likely HTML
+  if (typeof response.data === 'string' && response.data.trim().startsWith('<')) return false;
+  // If data is null/undefined but status is 503/502/504, it's an error
+  if (response.data == null && (response.status === 503 || response.status === 502 || response.status === 504)) return false;
+  return true;
+}
 
 // Ensure WebCrypto is available for `jose` in Node (required for RS256, etc.)
 // In some environments, globalThis.crypto is not defined by default.
@@ -117,7 +133,7 @@ class IbkrClient {
       jar: this.jar,
       withCredentials: true,
       validateStatus: () => true,
-      timeout: 60000,  // 60 second timeout for large historical data requests
+      timeout: 30000,  // 30 second timeout (reduced from 60s for faster failure)
       headers: { 'User-Agent': 'apeyolo/1.0' },
     }));
   }
@@ -1391,6 +1407,12 @@ class IbkrClient {
 
           try {
             const snap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${conidStr}&fields=${fields}`);
+            // Check if response is valid JSON (not HTML error page)
+            if (!isValidJsonResponse(snap)) {
+              const preview = String(snap.data).slice(0, 100);
+              console.error(`[IBKR][getOptionChainWithStrikes][${reqId}] Non-JSON response (status=${snap.status}): ${preview}`);
+              continue; // Skip this batch
+            }
             if (snap.status === 200 && Array.isArray(snap.data)) {
               for (const item of snap.data) {
                 const conid = item.conid || item.conidEx;

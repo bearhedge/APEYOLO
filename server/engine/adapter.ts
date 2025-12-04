@@ -460,31 +460,64 @@ function buildTradeProposal(
 }
 
 /**
+ * Get time components reliably in ET timezone using Intl.DateTimeFormat.formatToParts()
+ * This works correctly regardless of the server's local timezone
+ */
+function getETTimeComponents(date: Date = new Date()): { hour: number; minute: number; dayOfWeek: number } {
+  const formatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric',
+    minute: 'numeric',
+    weekday: 'short',
+    hour12: false
+  });
+
+  const parts = formatter.formatToParts(date);
+  let hour = 0, minute = 0, dayOfWeek = 0;
+
+  for (const part of parts) {
+    if (part.type === 'hour') hour = parseInt(part.value, 10);
+    if (part.type === 'minute') minute = parseInt(part.value, 10);
+    if (part.type === 'weekday') {
+      const dayMap: Record<string, number> = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+      dayOfWeek = dayMap[part.value] ?? 0;
+    }
+  }
+
+  // Handle midnight edge case (hour12: false returns '24' for midnight in some locales)
+  if (hour === 24) hour = 0;
+
+  return { hour, minute, dayOfWeek };
+}
+
+/**
  * Get trading window status
  */
 function getTradingWindowStatus(): TradingWindowStatus {
   const now = new Date();
-  const et = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
 
-  const hour = et.getHours();
-  const minute = et.getMinutes();
+  // Get time components reliably in ET timezone
+  const { hour, minute, dayOfWeek } = getETTimeComponents(now);
   const currentMinutes = hour * 60 + minute;
 
   const windowStart = 11 * 60; // 11:00 AM
   const windowEnd = 13 * 60;   // 1:00 PM
 
-  const dayOfWeek = et.getDay();
   const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
 
   const isOpen = isWeekday && currentMinutes >= windowStart && currentMinutes < windowEnd;
 
+  // Format current time string
+  const timeStr = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true
+  }).format(now);
+
   return {
     isOpen,
-    currentTimeEt: et.toLocaleTimeString('en-US', {
-      timeZone: 'America/New_York',
-      hour: '2-digit',
-      minute: '2-digit',
-    }),
+    currentTimeEt: timeStr,
     windowStart: '11:00 AM ET',
     windowEnd: '1:00 PM ET',
     reason: isOpen

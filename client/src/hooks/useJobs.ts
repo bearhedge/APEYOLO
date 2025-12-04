@@ -48,7 +48,9 @@ export interface MarketStatus {
 export interface MarketEvent {
   date: string;
   event: string;
-  type: 'holiday' | 'early_close';
+  type: 'holiday' | 'early_close' | 'economic';
+  impactLevel?: 'low' | 'medium' | 'high' | 'critical';
+  time?: string;
 }
 
 export interface MarketCalendar {

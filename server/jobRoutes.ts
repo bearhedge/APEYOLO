@@ -25,6 +25,16 @@ import {
   getETDateString,
 } from './services/marketCalendar';
 import { getLatestSnapshot, getSnapshotHistory } from './services/jobs/optionChainCapture';
+import { getUpcomingEconomicEvents, isFREDConfigured } from './services/fredApi';
+
+// Unified event type for the calendar API
+interface CalendarEvent {
+  date: string;
+  event: string;
+  type: 'holiday' | 'early_close' | 'economic';
+  impactLevel?: 'low' | 'medium' | 'high' | 'critical';
+  time?: string;
+}
 
 const router = Router();
 
@@ -63,6 +73,9 @@ router.get('/history', async (req: Request, res: Response) => {
 
 /**
  * GET /api/jobs/calendar - Get market calendar and status
+ *
+ * Returns market status, market holidays/early close days, and economic events
+ * merged into a unified upcomingEvents array sorted by date.
  */
 router.get('/calendar', async (req: Request, res: Response) => {
   try {
@@ -71,7 +84,37 @@ router.get('/calendar', async (req: Request, res: Response) => {
 
     const marketStatus = getMarketStatus(now);
     const calendar = getMarketCalendar(now, days);
-    const upcomingEvents = getUpcomingMarketEvents(60);
+
+    // Get market events (holidays, early close days)
+    const marketEvents = getUpcomingMarketEvents(60);
+
+    // Convert market events to unified format
+    const unifiedMarketEvents: CalendarEvent[] = marketEvents.map((event) => ({
+      date: event.date,
+      event: event.event,
+      type: event.type,
+    }));
+
+    // Get economic events from database (if FRED is configured)
+    let economicEvents: CalendarEvent[] = [];
+    try {
+      const dbEconomicEvents = await getUpcomingEconomicEvents(60);
+      economicEvents = dbEconomicEvents.map((event) => ({
+        date: event.eventDate,
+        event: event.eventName,
+        type: 'economic' as const,
+        impactLevel: event.impactLevel as 'low' | 'medium' | 'high' | 'critical',
+        time: event.eventTime || undefined,
+      }));
+    } catch (err) {
+      // If database query fails, continue without economic events
+      console.warn('[JobRoutes] Could not fetch economic events:', err);
+    }
+
+    // Merge and sort all events by date
+    const upcomingEvents = [...unifiedMarketEvents, ...economicEvents].sort(
+      (a, b) => a.date.localeCompare(b.date)
+    );
 
     res.json({
       ok: true,
@@ -79,6 +122,7 @@ router.get('/calendar', async (req: Request, res: Response) => {
       marketStatus,
       upcomingEvents,
       calendar,
+      fredConfigured: isFREDConfigured(),
     });
   } catch (error: any) {
     console.error('[JobRoutes] Error getting calendar:', error);
@@ -228,6 +272,9 @@ export async function initializeJobsSystem(): Promise<void> {
   // Register job handlers
   const { initializeOptionChainCaptureJob } = await import('./services/jobs/optionChainCapture');
   initializeOptionChainCaptureJob();
+
+  const { initializeEconomicCalendarRefreshJob } = await import('./services/jobs/economicCalendarRefresh');
+  initializeEconomicCalendarRefreshJob();
 
   // Seed default jobs in database
   await seedDefaultJobs();

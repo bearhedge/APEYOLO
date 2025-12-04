@@ -313,6 +313,14 @@ export async function seedDefaultJobs(): Promise<void> {
       schedule: '55 15 * * 1-5', // 3:55 PM ET Mon-Fri
       config: { symbol: 'SPY' },
     },
+    {
+      id: 'economic-calendar-refresh',
+      name: 'Economic Calendar Refresh',
+      description: 'Refresh macroeconomic events (FOMC, CPI, NFP, GDP) from FRED API',
+      type: 'economic-calendar-refresh',
+      schedule: '0 23 * * 0', // 11 PM ET Sunday
+      config: { daysAhead: 90 },
+    },
   ];
 
   for (const jobDef of defaultJobs) {
