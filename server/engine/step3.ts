@@ -35,12 +35,22 @@ export interface StrikeSelection {
 }
 
 /**
- * Target delta range for option selection
- * 0.15-0.20 provides ~80-85% probability of expiring worthless
+ * Target delta ranges for option selection
+ * For selling premium, we want strikes that are OTM but not too far
+ *
+ * PUTs have NEGATIVE delta (e.g., -0.30)
+ * CALLs have POSITIVE delta (e.g., +0.30)
+ *
+ * Target ~0.30 delta = ~70% probability of expiring worthless
+ * This gives decent premium while maintaining safety margin
  */
-const TARGET_DELTA_MIN = 0.15;
-const TARGET_DELTA_MAX = 0.20;
-const TARGET_DELTA_IDEAL = 0.18;
+const PUT_DELTA_TARGET = { min: -0.35, max: -0.25, ideal: -0.30 };
+const CALL_DELTA_TARGET = { min: 0.25, max: 0.35, ideal: 0.30 };
+
+// Legacy constants for backward compatibility (absolute values)
+const TARGET_DELTA_MIN = 0.25;
+const TARGET_DELTA_MAX = 0.35;
+const TARGET_DELTA_IDEAL = 0.30;
 
 /**
  * Generate mock option chain for testing
@@ -100,33 +110,52 @@ function getMockOptionChain(underlyingPrice: number, direction: 'PUT' | 'CALL'):
 
 /**
  * Find the best strike that matches our delta target
- * @param strikes - Available strikes
- * @param targetDelta - Target delta value
+ * IMPORTANT: Uses SIGNED deltas - PUTs have negative delta, CALLs have positive
+ *
+ * @param strikes - Available strikes with signed deltas
+ * @param direction - 'PUT' or 'CALL' to select appropriate delta range
  * @returns Best matching strike
  */
-function findBestStrike(strikes: Strike[], targetDelta: number = TARGET_DELTA_IDEAL): Strike | null {
-  // Filter strikes within our delta range
-  const validStrikes = strikes.filter(s =>
-    s.delta >= TARGET_DELTA_MIN &&
-    s.delta <= TARGET_DELTA_MAX
-  );
+function findBestStrike(strikes: Strike[], direction: 'PUT' | 'CALL'): Strike | null {
+  // Get the appropriate delta range based on direction
+  const deltaTarget = direction === 'PUT' ? PUT_DELTA_TARGET : CALL_DELTA_TARGET;
+
+  // For PUTs: delta should be negative (e.g., -0.35 to -0.25)
+  // For CALLs: delta should be positive (e.g., 0.25 to 0.35)
+  const validStrikes = strikes.filter(s => {
+    if (direction === 'PUT') {
+      // PUT deltas are negative, filter by range (min is more negative, max is less negative)
+      return s.delta >= deltaTarget.min && s.delta <= deltaTarget.max;
+    } else {
+      // CALL deltas are positive
+      return s.delta >= deltaTarget.min && s.delta <= deltaTarget.max;
+    }
+  });
+
+  console.log(`[Step3] findBestStrike(${direction}): ${strikes.length} total strikes, ${validStrikes.length} in target range [${deltaTarget.min}, ${deltaTarget.max}]`);
 
   if (validStrikes.length === 0) {
-    // If no strikes in range, find closest one
+    // If no strikes in range, find closest one to ideal
+    console.log(`[Step3] No strikes in target range, finding closest to ideal ${deltaTarget.ideal}`);
+    if (strikes.length === 0) return null;
+
     const closest = strikes.reduce((prev, curr) => {
-      const prevDiff = Math.abs(prev.delta - targetDelta);
-      const currDiff = Math.abs(curr.delta - targetDelta);
+      const prevDiff = Math.abs(prev.delta - deltaTarget.ideal);
+      const currDiff = Math.abs(curr.delta - deltaTarget.ideal);
       return currDiff < prevDiff ? curr : prev;
     });
+    console.log(`[Step3] Closest strike: $${closest.strike} with delta ${closest.delta}`);
     return closest;
   }
 
   // Find strike closest to ideal delta
-  return validStrikes.reduce((prev, curr) => {
-    const prevDiff = Math.abs(prev.delta - targetDelta);
-    const currDiff = Math.abs(curr.delta - targetDelta);
+  const best = validStrikes.reduce((prev, curr) => {
+    const prevDiff = Math.abs(prev.delta - deltaTarget.ideal);
+    const currDiff = Math.abs(curr.delta - deltaTarget.ideal);
     return currDiff < prevDiff ? curr : prev;
   });
+  console.log(`[Step3] Best strike in range: $${best.strike} with delta ${best.delta}`);
+  return best;
 }
 
 /**
@@ -190,7 +219,7 @@ function convertCachedToStrikes(
   const strikes: Strike[] = sourceStrikes.map(opt => ({
     strike: opt.strike,
     expiration,
-    delta: Math.abs(opt.delta ?? 0), // Use absolute delta for comparison
+    delta: opt.delta ?? 0, // KEEP original signed delta from IBKR (negative for PUT, positive for CALL)
     bid: opt.bid,
     ask: opt.ask,
     gamma: opt.gamma,
@@ -268,7 +297,7 @@ async function fetchFullOptionChain(symbol: string): Promise<FullOptionChainResu
     const putStrikes: Strike[] = chainData.puts.map(opt => ({
       strike: opt.strike,
       expiration,
-      delta: Math.abs(opt.delta), // Use absolute delta for comparison
+      delta: opt.delta, // KEEP original signed delta (negative for PUTs)
       bid: opt.bid,
       ask: opt.ask,
       gamma: opt.gamma,
@@ -281,7 +310,7 @@ async function fetchFullOptionChain(symbol: string): Promise<FullOptionChainResu
     const callStrikes: Strike[] = chainData.calls.map(opt => ({
       strike: opt.strike,
       expiration,
-      delta: Math.abs(opt.delta),
+      delta: opt.delta, // KEEP original signed delta (positive for CALLs)
       bid: opt.bid,
       ask: opt.ask,
       gamma: opt.gamma,
@@ -370,16 +399,16 @@ export async function selectStrikes(
     if (fullChain.vix) console.log(`[Step3] VIX from chain: ${fullChain.vix}`);
     if (fullChain.expectedMove) console.log(`[Step3] Expected move: $${fullChain.expectedMove.toFixed(2)}`);
 
-    // Select PUT strike from real data
+    // Select PUT strike from real data (PUTs have NEGATIVE delta)
     if (direction === 'PUT' || direction === 'STRANGLE') {
       if (fullChain.putStrikes.length > 0) {
-        const putStrike = findBestStrike(fullChain.putStrikes);
+        const putStrike = findBestStrike(fullChain.putStrikes, 'PUT');
         if (putStrike) {
           selection.putStrike = putStrike;
           console.log(`[Step3] Selected PUT: $${putStrike.strike} (delta: ${putStrike.delta.toFixed(3)}, bid: $${putStrike.bid.toFixed(2)}, ask: $${putStrike.ask.toFixed(2)})`);
           selection.reasoning += `PUT (IBKR ${dataSource}): Strike $${putStrike.strike} with delta ${putStrike.delta.toFixed(3)}. `;
         } else {
-          console.error(`[Step3] Failed to find PUT strike matching delta target ${TARGET_DELTA_IDEAL}`);
+          console.error(`[Step3] Failed to find PUT strike matching delta target ${PUT_DELTA_TARGET.ideal}`);
         }
       } else {
         console.error(`[Step3] No PUT strikes in option chain`);
@@ -387,16 +416,16 @@ export async function selectStrikes(
       }
     }
 
-    // Select CALL strike from real data
+    // Select CALL strike from real data (CALLs have POSITIVE delta)
     if (direction === 'CALL' || direction === 'STRANGLE') {
       if (fullChain.callStrikes.length > 0) {
-        const callStrike = findBestStrike(fullChain.callStrikes);
+        const callStrike = findBestStrike(fullChain.callStrikes, 'CALL');
         if (callStrike) {
           selection.callStrike = callStrike;
           console.log(`[Step3] Selected CALL: $${callStrike.strike} (delta: ${callStrike.delta.toFixed(3)}, bid: $${callStrike.bid.toFixed(2)}, ask: $${callStrike.ask.toFixed(2)})`);
           selection.reasoning += `CALL (IBKR ${dataSource}): Strike $${callStrike.strike} with delta ${callStrike.delta.toFixed(3)}. `;
         } else {
-          console.error(`[Step3] Failed to find CALL strike matching delta target ${TARGET_DELTA_IDEAL}`);
+          console.error(`[Step3] Failed to find CALL strike matching delta target ${CALL_DELTA_TARGET.ideal}`);
         }
       } else {
         console.error(`[Step3] No CALL strikes in option chain`);
@@ -458,6 +487,14 @@ export async function selectStrikes(
   // Calculate totals
   selection.expectedPremium = calculateExpectedPremium(selection.putStrike, selection.callStrike);
   selection.marginRequired = calculateMarginRequirement(selection.putStrike, selection.callStrike);
+
+  // CRITICAL: Validate premium - if $0, warn that bid/ask data is unavailable (market likely closed)
+  if (selection.expectedPremium <= 0) {
+    console.warn(`[Step3] WARNING: Expected premium is $0 - bid/ask data unavailable (market may be closed)`);
+    console.warn(`[Step3] PUT bid/ask: ${selection.putStrike?.bid ?? 'N/A'}/${selection.putStrike?.ask ?? 'N/A'}`);
+    console.warn(`[Step3] CALL bid/ask: ${selection.callStrike?.bid ?? 'N/A'}/${selection.callStrike?.ask ?? 'N/A'}`);
+    selection.reasoning += `⚠️ WARNING: Premium is $0 - market may be closed, bid/ask unavailable. `;
+  }
 
   // Add summary to reasoning
   const sourceLabel = dataSource === 'mock' ? 'MOCK estimates' : `IBKR ${dataSource}`;

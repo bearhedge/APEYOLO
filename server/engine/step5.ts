@@ -34,21 +34,48 @@ export interface PositionMonitor {
 const STOP_LOSS_MULTIPLIER = 2.0; // 200% of premium
 
 /**
+ * Minimum stop loss values when premium is $0 (market closed)
+ * These prevent having no stop loss at all
+ */
+const MIN_STOP_LOSS_PRICE = 0.50;     // At least $0.50 per share stop loss price
+const MIN_STOP_LOSS_AMOUNT = 100;      // At least $100 total stop loss amount
+
+/**
  * Calculate stop loss levels based on premium received
+ * IMPORTANT: Now includes minimum stop loss to protect against $0 premium scenarios
+ *
  * @param premiumReceived - Premium collected per contract
  * @param contracts - Number of contracts
+ * @param marginRequired - Optional: margin required for position (for backup calculation)
  * @returns Stop loss price and amount
  */
-function calculateStopLoss(premiumReceived: number, contracts: number): {
+function calculateStopLoss(premiumReceived: number, contracts: number, marginRequired?: number): {
   price: number;
   amount: number;
 } {
-  // Per contract calculation
-  const stopLossPrice = premiumReceived * (1 + STOP_LOSS_MULTIPLIER);
+  // Per contract calculation - with minimum floor
+  let stopLossPrice = premiumReceived * (1 + STOP_LOSS_MULTIPLIER);
+  if (stopLossPrice <= 0 || !isFinite(stopLossPrice)) {
+    stopLossPrice = MIN_STOP_LOSS_PRICE;
+    console.warn(`[Step5] Premium is $0, using minimum stop loss price: $${MIN_STOP_LOSS_PRICE}`);
+  }
 
-  // Total position calculation
+  // Total position calculation - with minimum floor
   const totalPremium = premiumReceived * contracts * 100; // Convert to dollars
-  const stopLossAmount = totalPremium * STOP_LOSS_MULTIPLIER; // Loss amount that triggers exit
+  let stopLossAmount = totalPremium * STOP_LOSS_MULTIPLIER; // Loss amount that triggers exit
+
+  // If premium-based stop loss is zero, use margin-based or minimum
+  if (stopLossAmount <= 0 || !isFinite(stopLossAmount)) {
+    if (marginRequired && marginRequired > 0) {
+      // Use 10% of margin as stop loss when no premium data
+      stopLossAmount = marginRequired * 0.10;
+      console.warn(`[Step5] Premium is $0, using margin-based stop loss: $${stopLossAmount.toFixed(2)} (10% of margin)`);
+    } else {
+      // Fallback to absolute minimum
+      stopLossAmount = MIN_STOP_LOSS_AMOUNT * contracts;
+      console.warn(`[Step5] Premium is $0, using minimum stop loss amount: $${stopLossAmount.toFixed(2)}`);
+    }
+  }
 
   return {
     price: stopLossPrice,
@@ -96,11 +123,18 @@ export async function defineExitRules(
   // Calculate premium per contract (average if strangle)
   const premiumPerContract = strikeSelection.expectedPremium / 100; // Convert to per-share price
 
-  // Calculate stop loss levels
-  const stopLoss = calculateStopLoss(premiumPerContract, positionSize.contracts);
+  // Calculate stop loss levels (pass margin for backup calculation when premium is $0)
+  const stopLoss = calculateStopLoss(
+    premiumPerContract,
+    positionSize.contracts,
+    strikeSelection.marginRequired
+  );
 
   // Build reasoning
   let reasoning = `Stop loss set at ${STOP_LOSS_MULTIPLIER * 100}% of premium. `;
+  if (strikeSelection.expectedPremium <= 0) {
+    reasoning = `⚠️ Premium is $0 (market may be closed). Using minimum stop loss. `;
+  }
   reasoning += `Premium collected: $${strikeSelection.expectedPremium} per contract. `;
   reasoning += `Stop loss triggers if option price reaches $${stopLoss.price.toFixed(2)} `;
   reasoning += `(total loss of $${stopLoss.amount.toFixed(2)}). `;

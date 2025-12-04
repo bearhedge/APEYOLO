@@ -295,8 +295,15 @@ export async function setJobEnabled(jobId: string, enabled: boolean): Promise<Jo
 
 /**
  * Seed default jobs if they don't exist
+ * IMPORTANT: Guards against null db when DATABASE_URL is not set
  */
 export async function seedDefaultJobs(): Promise<void> {
+  // Guard: Skip if database is not configured
+  if (!db) {
+    console.log('[JobExecutor] Database not configured - skipping job seeding');
+    return;
+  }
+
   const defaultJobs: Array<{
     id: string;
     name: string;
