@@ -22,6 +22,7 @@ import authRoutes from "./auth.js";
 import ibkrRoutes from "./ibkrRoutes.js";
 import engineRoutes from "./engineRoutes.js";
 import marketRoutes from "./marketRoutes.js";
+import jobRoutes, { initializeJobsSystem } from "./jobRoutes.js";
 
 // Helper function to get session from request
 async function getSessionFromRequest(req: any) {
@@ -53,6 +54,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Register Market data routes
   app.use('/api/market', marketRoutes);
+
+  // Register Jobs routes
+  app.use('/api/jobs', jobRoutes);
+
+  // Initialize jobs system (register handlers, seed default jobs)
+  await initializeJobsSystem();
 
   const httpServer = createServer(app);
 

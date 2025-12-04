@@ -252,6 +252,95 @@ export const insertPaperTradeSchema = createInsertSchema(paperTrades).omit({
 export type PaperTrade = typeof paperTrades.$inferSelect;
 export type InsertPaperTrade = z.infer<typeof insertPaperTradeSchema>;
 
+// ==================== JOBS SYSTEM ====================
+// Scheduled jobs with Cloud Scheduler integration
+
+// Job definitions - what jobs exist and their schedules
+export const jobs = pgTable("jobs", {
+  id: text("id").primaryKey(), // 'market-close-options', 'daily-data-ingest'
+  name: text("name").notNull(),
+  description: text("description"),
+  type: text("type").notNull(), // 'option-chain-capture', 'data-ingestion'
+  schedule: text("schedule").notNull(), // Cron expression: "55 15 * * 1-5" (3:55 PM ET)
+  timezone: text("timezone").notNull().default("America/New_York"),
+  enabled: boolean("enabled").notNull().default(true),
+  config: jsonb("config"), // Job-specific configuration (e.g., { symbol: 'SPY' })
+  lastRunAt: timestamp("last_run_at"),
+  lastRunStatus: text("last_run_status"), // 'success' | 'failed' | 'skipped'
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+// Job execution history - every run is logged
+export const jobRuns = pgTable("job_runs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  jobId: text("job_id").notNull().references(() => jobs.id, { onDelete: "cascade" }),
+  status: text("status").notNull(), // 'pending', 'running', 'success', 'failed', 'skipped'
+  triggeredBy: text("triggered_by").notNull().default("scheduler"), // 'scheduler' | 'manual'
+  startedAt: timestamp("started_at").notNull().defaultNow(),
+  endedAt: timestamp("ended_at"),
+  durationMs: integer("duration_ms"),
+  result: jsonb("result"), // Success data or error details
+  error: text("error"), // Error message if failed
+  marketDay: text("market_day"), // YYYY-MM-DD for idempotency check
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  index("job_runs_job_id_idx").on(table.jobId),
+  index("job_runs_started_at_idx").on(table.startedAt),
+  index("job_runs_market_day_idx").on(table.jobId, table.marketDay),
+]);
+
+// Option chain snapshots captured by jobs
+export const optionChainSnapshots = pgTable("option_chain_snapshots", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  jobRunId: varchar("job_run_id").references(() => jobRuns.id, { onDelete: "set null" }),
+  symbol: varchar("symbol", { length: 10 }).notNull(),
+  capturedAt: timestamp("captured_at").notNull().defaultNow(),
+  marketDay: text("market_day").notNull(), // YYYY-MM-DD
+  underlyingPrice: decimal("underlying_price", { precision: 10, scale: 2 }),
+  vix: decimal("vix", { precision: 6, scale: 2 }),
+  expiration: text("expiration"), // Expiration date captured
+  chainData: jsonb("chain_data"), // Full { puts: [], calls: [] } arrays
+  metadata: jsonb("metadata"), // Additional context (market regime, etc.)
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  index("option_chain_snapshots_symbol_idx").on(table.symbol),
+  index("option_chain_snapshots_market_day_idx").on(table.symbol, table.marketDay),
+  index("option_chain_snapshots_captured_at_idx").on(table.capturedAt),
+]);
+
+// Insert schemas for jobs
+export const insertJobSchema = createInsertSchema(jobs).omit({
+  createdAt: true,
+  updatedAt: true,
+  lastRunAt: true,
+  lastRunStatus: true,
+});
+
+export const insertJobRunSchema = createInsertSchema(jobRuns).omit({
+  id: true,
+  createdAt: true,
+  startedAt: true,
+  endedAt: true,
+  durationMs: true,
+});
+
+export const insertOptionChainSnapshotSchema = createInsertSchema(optionChainSnapshots).omit({
+  id: true,
+  createdAt: true,
+  capturedAt: true,
+});
+
+// Types for jobs
+export type Job = typeof jobs.$inferSelect;
+export type InsertJob = z.infer<typeof insertJobSchema>;
+export type JobRun = typeof jobRuns.$inferSelect;
+export type InsertJobRun = z.infer<typeof insertJobRunSchema>;
+export type OptionChainSnapshot = typeof optionChainSnapshots.$inferSelect;
+export type InsertOptionChainSnapshot = z.infer<typeof insertOptionChainSnapshotSchema>;
+
+// ==================== END JOBS SYSTEM ====================
+
 // Option chain types
 export type OptionData = {
   strike: number;
