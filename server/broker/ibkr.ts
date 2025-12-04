@@ -838,6 +838,28 @@ class IbkrClient {
   }
 
   async resolveConid(symbol: string): Promise<number | null> {
+    // Known conids for common symbols (instant resolution, no API call needed)
+    // This prevents timeouts during off-hours when IBKR returns 503 errors
+    const knownConids: Record<string, number> = {
+      'SPY': 756733,
+      'QQQ': 320227571,
+      'IWM': 9579976,
+      'DIA': 37018770,
+      'VIX': 13455763,
+      'AAPL': 265598,
+      'MSFT': 272093,
+      'AMZN': 3691937,
+      'NVDA': 4815747,
+      'TSLA': 76792991,
+    };
+
+    // Use known conid if available (instant, no API call)
+    const upperSymbol = symbol.toUpperCase();
+    if (knownConids[upperSymbol]) {
+      console.log(`[IBKR][resolveConid] Using cached conid=${knownConids[upperSymbol]} for ${upperSymbol}`);
+      return knownConids[upperSymbol];
+    }
+
     await this.ensureAccountSelected();
     const url = `/v1/api/iserver/secdef/search`;
 
