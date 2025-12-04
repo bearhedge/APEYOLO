@@ -53,7 +53,7 @@ export function Engine() {
   } = useEngine();
 
   // Unified broker status hook - same source as Settings page
-  const { connected: brokerConnectedHook, isConnecting } = useBrokerStatus();
+  const { connected: brokerConnectedHook, isConnecting, environment } = useBrokerStatus();
 
   // Use hook value if available, otherwise fall back to useEngine value
   const brokerConnectedFinal = brokerConnectedHook ?? brokerConnected;
@@ -139,7 +139,9 @@ export function Engine() {
 
       // Update the connection status entry (not create a new one)
       updateOperationLog('Checking connection', 'success',
-        brokerConnectedFinal ? 'Connected to paper trading account' : 'Using mock data (IBKR disconnected)');
+        brokerConnectedFinal
+          ? `Connected to ${environment === 'live' ? 'LIVE' : 'paper'} trading account`
+          : 'Using mock data (IBKR disconnected)');
 
       addOperationLog('MARKET', 'Fetching SPY price...', 'pending');
       await new Promise(r => setTimeout(r, 100));

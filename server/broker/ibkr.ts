@@ -141,16 +141,47 @@ class IbkrClient {
   private async ensureAccountSelected(): Promise<void> {
     const acct = this.accountId || process.env.IBKR_ACCOUNT_ID || "";
     if (!acct || this.accountSelected) return;
-    // CP endpoint - use cookie auth only, no Authorization header
-    const resp = await this.http.post('/v1/api/iserver/account', { acctId: acct }, {
-      headers: { 'Content-Type': 'application/json' },
-    });
-    console.log(`[IBKR][ensureAccountSelected] status=${resp.status} acctId=${acct}`);
-    if (resp.status >= 200 && resp.status < 300) {
-      this.accountSelected = true;
-      // Brief delay to let account selection take effect
-      await this.sleep(500);
+
+    // CRITICAL: Call /portfolio/subaccounts first to prime the session for market data
+    // (Required by IBKR before iserver endpoints will work - fixes "Please query /accounts first" error)
+    try {
+      const subacctResp = await this.http.get('/v1/api/portfolio/subaccounts');
+      console.log(`[IBKR][ensureAccountSelected] subaccounts status=${subacctResp.status}`);
+    } catch (err: any) {
+      console.warn(`[IBKR][ensureAccountSelected] subaccounts call failed (non-fatal):`, err.message);
     }
+
+    // Then try account selection (may return 401 for OAuth live accounts, which is OK)
+    try {
+      const resp = await this.http.post('/v1/api/iserver/account', { acctId: acct }, {
+        headers: { 'Content-Type': 'application/json' },
+      });
+      console.log(`[IBKR][ensureAccountSelected] account select status=${resp.status} acctId=${acct}`);
+      if (resp.status >= 200 && resp.status < 300) {
+        await this.sleep(500);
+      }
+    } catch (err: any) {
+      // 401 is expected for OAuth live accounts - the subaccounts call is what matters
+      console.log(`[IBKR][ensureAccountSelected] account select failed (expected for OAuth): ${err.message}`);
+    }
+
+    // Mark as selected regardless - the subaccounts call primed the session
+    this.accountSelected = true;
+  }
+
+  /**
+   * Convert YYYYMM to IBKR month format (MMMy)
+   * IBKR expects: JAN25, FEB25, ..., DEC25
+   * Input: 202512 or 20251204
+   * Output: DEC25
+   */
+  private formatMonthForIBKR(yyyymm: string): string {
+    const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN',
+                        'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+    const year = yyyymm.slice(0, 4);
+    const month = parseInt(yyyymm.slice(4, 6), 10);
+    const yearShort = year.slice(2); // 2025 -> 25
+    return `${monthNames[month - 1]}${yearShort}`; // DEC25
   }
 
   private now() {
@@ -1017,8 +1048,9 @@ class IbkrClient {
 
     try {
       // Step 1: Get available strikes from IBKR
-      const strikesUrl = `/v1/api/iserver/secdef/strikes?conid=${underlyingConid}&sectype=OPT&month=${expirationMonth}`;
-      console.log(`[IBKR][getOptionChain][${reqId}] Fetching strikes: ${strikesUrl}`);
+      const ibkrMonth = this.formatMonthForIBKR(expirationMonth);
+      const strikesUrl = `/v1/api/iserver/secdef/strikes?conid=${underlyingConid}&sectype=OPT&month=${ibkrMonth}`;
+      console.log(`[IBKR][getOptionChain][${reqId}] Fetching strikes: ${strikesUrl} (converted ${expirationMonth} -> ${ibkrMonth})`);
 
       const strikesResp = await this.http.get(strikesUrl);
       if (strikesResp.status !== 200 || !strikesResp.data) {
@@ -1245,8 +1277,11 @@ class IbkrClient {
 
     try {
       // Get available strikes
-      const strikesUrl = `/v1/api/iserver/secdef/strikes?conid=${underlyingConid}&sectype=OPT&month=${expirationMonth}`;
+      const ibkrMonth = this.formatMonthForIBKR(expirationMonth);
+      const strikesUrl = `/v1/api/iserver/secdef/strikes?conid=${underlyingConid}&sectype=OPT&month=${ibkrMonth}`;
+      console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Strikes URL: ${strikesUrl} (converted ${expirationMonth} -> ${ibkrMonth})`);
       const strikesResp = await this.http.get(strikesUrl);
+      console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Strikes raw response: ${JSON.stringify(strikesResp.data).slice(0, 500)}`);
 
       if (strikesResp.status !== 200) {
         console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] Failed to get strikes`);
@@ -1291,7 +1326,7 @@ class IbkrClient {
         const secdefPayload = {
           conid: underlyingConid,
           sectype: 'OPT',
-          month: expirationMonth,
+          month: ibkrMonth, // Use MMMy format (DEC25, not 202512)
           exchange: 'SMART',
           strike: allStrikes.join(';'),
           right: 'P;C', // Both puts and calls
@@ -1907,7 +1942,7 @@ class IbkrClient {
         secType: 'OPT',
         strike: strike.toString(),
         right: right,
-        month: expiration.slice(0, 6), // YYYYMM for month filter
+        month: this.formatMonthForIBKR(expiration.slice(0, 6)), // MMMy format (DEC25, not 202512)
       });
 
       const resp = await this.http.get(`${searchUrl}?${params.toString()}`);
@@ -1937,7 +1972,7 @@ class IbkrClient {
       const strikesParams = new URLSearchParams({
         conid: underlyingConid.toString(),
         sectype: 'OPT',
-        month: expiration.slice(0, 6),
+        month: this.formatMonthForIBKR(expiration.slice(0, 6)), // MMMy format
       });
 
       const strikesResp = await this.http.get(`${strikesUrl}?${strikesParams.toString()}`);
@@ -1954,7 +1989,7 @@ class IbkrClient {
           const infoParams = new URLSearchParams({
             conid: underlyingConid.toString(),
             sectype: 'OPT',
-            month: expiration.slice(0, 6),
+            month: this.formatMonthForIBKR(expiration.slice(0, 6)), // MMMy format
             strike: strike.toString(),
             right: right,
           });
