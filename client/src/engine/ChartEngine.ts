@@ -220,7 +220,7 @@ function createCoordinateSystem(
 
   // Apply min/max bounds for usability
   const MIN_CANDLE_WIDTH = 2;   // Minimum for visibility
-  const MAX_CANDLE_WIDTH = 20;  // Maximum for aesthetics
+  const MAX_CANDLE_WIDTH = 50;  // Allow larger candles when zoomed in
   const SPACING_RATIO = 0.2;    // 20% spacing between candles
 
   const boundedTotalWidth = Math.max(

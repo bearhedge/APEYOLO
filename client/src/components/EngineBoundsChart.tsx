@@ -10,7 +10,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { DeterministicChart, type DeterministicChartRef, type MarketStatusInfo, type TimeRange, type BarInterval } from './DeterministicChart';
 import { useChartBounds } from '@/hooks/useChartBounds';
 import { useWebSocket } from '@/hooks/use-websocket';
-import { RefreshCw, TrendingUp, TrendingDown, Target, AlertTriangle, Clock, ChevronDown } from 'lucide-react';
+import { RefreshCw, TrendingUp, TrendingDown, Target, AlertTriangle, Clock, ChevronDown, ZoomIn, ZoomOut, RotateCcw } from 'lucide-react';
 
 // Local Bar type to avoid circular imports
 interface Bar {
@@ -157,6 +157,19 @@ export function EngineBoundsChart({
     setHoveredBar(bar);
   }, []);
 
+  // Zoom control handlers
+  const handleZoomIn = useCallback(() => {
+    chartRef.current?.zoomIn();
+  }, []);
+
+  const handleZoomOut = useCallback(() => {
+    chartRef.current?.zoomOut();
+  }, []);
+
+  const handleResetZoom = useCallback(() => {
+    chartRef.current?.resetZoom();
+  }, []);
+
   // Refresh bounds and notify parent
   const handleRefreshBounds = useCallback(async () => {
     await refreshBounds();
@@ -287,6 +300,31 @@ export function EngineBoundsChart({
 
         {/* Right side controls */}
         <div className="flex items-center gap-3">
+          {/* Zoom controls */}
+          <div className="flex items-center gap-1 border-r border-white/10 pr-3">
+            <button
+              onClick={handleZoomIn}
+              className="flex items-center justify-center w-7 h-7 bg-gray-800 text-gray-400 rounded hover:bg-gray-700 hover:text-white transition"
+              title="Zoom in (pinch outward on trackpad)"
+            >
+              <ZoomIn className="w-4 h-4" />
+            </button>
+            <button
+              onClick={handleZoomOut}
+              className="flex items-center justify-center w-7 h-7 bg-gray-800 text-gray-400 rounded hover:bg-gray-700 hover:text-white transition"
+              title="Zoom out (pinch inward on trackpad)"
+            >
+              <ZoomOut className="w-4 h-4" />
+            </button>
+            <button
+              onClick={handleResetZoom}
+              className="flex items-center justify-center w-7 h-7 bg-gray-800 text-gray-400 rounded hover:bg-gray-700 hover:text-white transition"
+              title="Reset zoom and pan"
+            >
+              <RotateCcw className="w-4 h-4" />
+            </button>
+          </div>
+
           {/* Refresh bounds button */}
           <button
             onClick={handleRefreshBounds}

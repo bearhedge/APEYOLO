@@ -145,6 +145,41 @@ class IbkrClient {
     return new Promise((r) => setTimeout(r, ms));
   }
 
+  /**
+   * Get historical option price for off-hours fallback
+   * Returns the last traded price from historical data when live snapshot is unavailable
+   */
+  private async getOptionHistoricalPrice(conid: number): Promise<{ close: number; timestamp: number } | null> {
+    try {
+      const histResp = await this.http.get(
+        `/v1/api/iserver/marketdata/history?conid=${conid}&period=1d&bar=5mins&outsideRth=true`
+      );
+      if (histResp.status === 200 && Array.isArray(histResp.data?.data) && histResp.data.data.length > 0) {
+        const lastBar = histResp.data.data[histResp.data.data.length - 1];
+        if (lastBar?.c > 0) {
+          return { close: lastBar.c, timestamp: lastBar.t || Date.now() };
+        }
+      }
+    } catch (err) {
+      // Silently fail - historical data not critical
+    }
+    return null;
+  }
+
+  /**
+   * Estimate delta from moneyness for off-hours (when live Greeks unavailable)
+   * Uses simplified 0DTE formula: delta decays faster for near-term options
+   */
+  private estimateDeltaFromMoneyness(strike: number, underlying: number, type: 'PUT' | 'CALL'): number {
+    const moneyness = (strike - underlying) / underlying;
+    // For 0DTE, delta decays ~3x faster than 30 DTE, so use multiplier 15
+    if (type === 'PUT') {
+      return -Math.max(0.05, Math.min(0.45, 0.5 + moneyness * 15));
+    } else {
+      return Math.max(0.05, Math.min(0.45, 0.5 - moneyness * 15));
+    }
+  }
+
   private async signClientAssertion(): Promise<string> {
     const clientId = process.env.IBKR_CLIENT_ID;
     const clientKeyId = process.env.IBKR_CLIENT_KEY_ID; // kid
@@ -1051,10 +1086,14 @@ class IbkrClient {
     strikeRangeHigh: number;
     puts: Array<{ strike: number; bid: number; ask: number; delta: number; gamma?: number; theta?: number; vega?: number; iv?: number; openInterest?: number; conid?: number; last?: number }>;
     calls: Array<{ strike: number; bid: number; ask: number; delta: number; gamma?: number; theta?: number; vega?: number; iv?: number; openInterest?: number; conid?: number; last?: number }>;
+    isHistorical?: boolean;
   }> {
     await this.ensureReady();
     const reqId = randomUUID().slice(0, 8);
     console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Starting for ${symbol}`);
+
+    // Track if we're using historical fallback (market closed)
+    let isHistorical = false;
 
     // Get underlying price
     let underlyingPrice = 0;
@@ -1142,13 +1181,14 @@ class IbkrClient {
     // For N days: expected_move = spot * (VIX / 100) * sqrt(N / 252)
     const daysToExpiry = 1; // 0DTE = 1 day
     const expectedMove = underlyingPrice * (vix / 100) * Math.sqrt(daysToExpiry / 252);
-    const strikeRangeLow = Math.floor(underlyingPrice - expectedMove * 2); // 2σ range
-    const strikeRangeHigh = Math.ceil(underlyingPrice + expectedMove * 2);
+    // Use 3σ range to include target delta 0.15-0.20 strikes (further OTM)
+    const strikeRangeLow = Math.floor(underlyingPrice - expectedMove * 3);
+    const strikeRangeHigh = Math.ceil(underlyingPrice + expectedMove * 3);
     console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Expected move: $${expectedMove.toFixed(2)}, Strike range: $${strikeRangeLow} - $${strikeRangeHigh}`);
 
     if (!underlyingConid) {
       console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] No underlying conid`);
-      return { underlyingPrice: 0, vix, expectedMove: 0, strikeRangeLow: 0, strikeRangeHigh: 0, puts: [], calls: [] };
+      return { underlyingPrice: 0, vix, expectedMove: 0, strikeRangeLow: 0, strikeRangeHigh: 0, puts: [], calls: [], isHistorical: false };
     }
 
     // Log warning but continue even if price is 0 - we can still try to get option data
@@ -1172,7 +1212,7 @@ class IbkrClient {
 
       if (strikesResp.status !== 200) {
         console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] Failed to get strikes`);
-        return { underlyingPrice, vix, expectedMove, strikeRangeLow, strikeRangeHigh, puts: [], calls: [] };
+        return { underlyingPrice, vix, expectedMove, strikeRangeLow, strikeRangeHigh, puts: [], calls: [], isHistorical: false };
       }
 
       const strikesData = strikesResp.data as { call?: number[]; put?: number[] };
@@ -1298,12 +1338,31 @@ class IbkrClient {
       }>();
 
       if (allConids.length > 0) {
-        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Fetching market data + Greeks for ${allConids.length} options...`);
-
-        // Batch in groups of 20 to avoid API limits
-        // Request additional fields: 7308=delta, 7309=gamma, 7310=theta, 7633=vega, 7283=IV, 7311=OI
+        // Request fields: 7308=delta, 7309=gamma, 7310=theta, 7633=vega, 7283=IV, 7311=OI
         const fields = '31,84,86,7308,7309,7310,7633,7283,7311';
 
+        // Phase 2a: PRIME all option conids (first request starts IBKR subscription)
+        // IBKR requires a "pre-flight" request before data becomes available
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Priming ${allConids.length} option conids...`);
+        for (let i = 0; i < allConids.length; i += 20) {
+          const batch = allConids.slice(i, i + 20);
+          const conidStr = batch.join(',');
+          try {
+            await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${conidStr}&fields=${fields}`);
+          } catch (err) {
+            // Ignore priming errors - we'll retry in the fetch phase
+          }
+          if (i + 20 < allConids.length) {
+            await new Promise(r => setTimeout(r, 50));
+          }
+        }
+
+        // Wait for IBKR to start streaming data after priming
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Waiting 750ms for IBKR to prime data stream...`);
+        await new Promise(r => setTimeout(r, 750));
+
+        // Phase 2b: FETCH real data (second request gets actual values)
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Fetching market data + Greeks for ${allConids.length} options...`);
         for (let i = 0; i < allConids.length; i += 20) {
           const batch = allConids.slice(i, i + 20);
           const conidStr = batch.join(',');
@@ -1342,7 +1401,58 @@ class IbkrClient {
           }
         }
 
-        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Got market data for ${marketDataMap.size} options`);
+        // Count how many got real delta vs empty
+        let realDeltaCount = 0;
+        let emptyDeltaCount = 0;
+        for (const data of marketDataMap.values()) {
+          if (data.delta != null) realDeltaCount++;
+          else emptyDeltaCount++;
+        }
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Got market data for ${marketDataMap.size} options (${realDeltaCount} with real delta, ${emptyDeltaCount} empty)`);
+
+        // Phase 2c: OFF-HOURS FALLBACK - If snapshot returned no data (market closed), use historical prices
+        // Check if most options have no bid/ask data (indicates market is closed)
+        let emptyPriceCount = 0;
+        for (const data of marketDataMap.values()) {
+          if (data.bid === 0 && data.ask === 0 && data.last === 0) emptyPriceCount++;
+        }
+        const isOffHours = emptyPriceCount > marketDataMap.size * 0.8; // >80% empty = market closed
+
+        if (isOffHours && allConids.length > 0) {
+          isHistorical = true; // Mark as historical data for UI indicator
+          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] OFF-HOURS DETECTED (${emptyPriceCount}/${marketDataMap.size} empty). Fetching historical prices...`);
+
+          // Fetch historical data for conids that have no price
+          let histFetchCount = 0;
+          for (const conid of allConids) {
+            const existing = marketDataMap.get(conid);
+            // Skip if we already have price data
+            if (existing && (existing.bid > 0 || existing.ask > 0 || existing.last > 0)) continue;
+
+            const histPrice = await this.getOptionHistoricalPrice(conid);
+            if (histPrice) {
+              histFetchCount++;
+              // Update the map with historical data + synthetic bid/ask spread (±2%)
+              marketDataMap.set(conid, {
+                bid: histPrice.close * 0.98,
+                ask: histPrice.close * 1.02,
+                last: histPrice.close,
+                delta: undefined, // Will be estimated in Phase 3
+                gamma: undefined,
+                theta: undefined,
+                vega: undefined,
+                iv: undefined,
+                openInterest: undefined,
+              });
+            }
+
+            // Rate limit: small delay every 5 history requests
+            if (histFetchCount % 5 === 0) {
+              await new Promise(r => setTimeout(r, 100));
+            }
+          }
+          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] OFF-HOURS: Got historical prices for ${histFetchCount} options`);
+        }
       }
 
       // Phase 3: Build puts array with REAL data (including Greeks, OI, IV)
@@ -1351,7 +1461,13 @@ class IbkrClient {
         const marketData = conid ? marketDataMap.get(conid) : undefined;
         const moneyness = (underlyingPrice - strike) / underlyingPrice;
         // Use real delta from IBKR if available, otherwise estimate from moneyness
-        const estimatedDelta = -Math.max(0.05, 0.5 - moneyness * 5);
+        // For 0DTE, delta decays ~3x faster than 30 DTE, so use multiplier 15 (was 5)
+        const estimatedDelta = -Math.max(0.05, Math.min(0.45, 0.5 - moneyness * 15));
+
+        // Log when using estimated delta (IBKR returned empty)
+        if (marketData?.delta == null && conid) {
+          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] PUT $${strike}: Using estimated delta ${estimatedDelta.toFixed(3)} (IBKR returned empty)`);
+        }
 
         puts.push({
           strike,
@@ -1374,7 +1490,13 @@ class IbkrClient {
         const marketData = conid ? marketDataMap.get(conid) : undefined;
         const moneyness = (strike - underlyingPrice) / underlyingPrice;
         // Use real delta from IBKR if available, otherwise estimate from moneyness
-        const estimatedDelta = Math.max(0.05, 0.5 - moneyness * 5);
+        // For 0DTE, delta decays ~3x faster than 30 DTE, so use multiplier 15 (was 5)
+        const estimatedDelta = Math.max(0.05, Math.min(0.45, 0.5 - moneyness * 15));
+
+        // Log when using estimated delta (IBKR returned empty)
+        if (marketData?.delta == null && conid) {
+          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] CALL $${strike}: Using estimated delta ${estimatedDelta.toFixed(3)} (IBKR returned empty)`);
+        }
 
         calls.push({
           strike,
@@ -1397,7 +1519,7 @@ class IbkrClient {
       console.error(`[IBKR][getOptionChainWithStrikes][${reqId}] Error:`, err);
     }
 
-    return { underlyingPrice, vix, expectedMove, strikeRangeLow, strikeRangeHigh, puts, calls };
+    return { underlyingPrice, vix, expectedMove, strikeRangeLow, strikeRangeHigh, puts, calls, isHistorical };
   }
 
   /**

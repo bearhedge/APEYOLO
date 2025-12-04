@@ -59,6 +59,10 @@ interface DeterministicChartProps {
 export interface DeterministicChartRef {
   updateWithTick: (price: number, timestamp: number) => void;
   getMarketStatus: () => MarketStatusInfo | null;
+  zoomIn: () => void;
+  zoomOut: () => void;
+  resetZoom: () => void;
+  getZoomLevel: () => number;
 }
 
 interface ChartState {
@@ -85,6 +89,13 @@ interface ChartDataResponse {
   bars: Bar[];
   marketStatus?: MarketStatusInfo;
 }
+
+// ============================================
+// Zoom Constants
+// ============================================
+
+const MIN_ZOOM = 0.2;  // Show minimum ~20% of default bars (zoomed in)
+const MAX_ZOOM = 3.0;  // Show up to 3x default bars (zoomed out)
 
 // ============================================
 // Data Fetching
@@ -252,7 +263,42 @@ export const DeterministicChart = forwardRef<DeterministicChartRef, Deterministi
     marketStatus: null,
   });
 
-  // Expose updateWithTick method via ref
+  const [viewport, setViewport] = useState<Viewport>({ startIndex: 0, endIndex: 0 });
+  const [crosshair, setCrosshair] = useState<{ x: number; y: number } | null>(null);
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState<{ x: number; offset: number } | null>(null);
+  const [viewOffset, setViewOffset] = useState(0);
+  const [renderError, setRenderError] = useState<string | null>(null);
+
+  // Zoom level: 1.0 = default, <1 = zoomed in (fewer bars), >1 = zoomed out (more bars)
+  const [zoomLevel, setZoomLevel] = useState(1.0);
+
+  // Merged config
+  const mergedConfig = useMemo(() => ({
+    ...DEFAULT_CONFIG,
+    width,
+    height,
+    ...config,
+  }), [width, height, config]);
+
+  // Calculate base visible bars (default at zoom 1.0)
+  const baseVisibleBars = useMemo(() => {
+    const chartWidth = mergedConfig.width - mergedConfig.paddingLeft - mergedConfig.paddingRight;
+    const candleTotal = mergedConfig.candleWidth + mergedConfig.candleSpacing;
+    return Math.floor(chartWidth / candleTotal);
+  }, [mergedConfig]);
+
+  // Calculate actual visible bars based on zoom level
+  // zoomLevel < 1 = zoomed in = fewer bars = larger candles
+  // zoomLevel > 1 = zoomed out = more bars = smaller candles
+  const visibleBars = useMemo(() => {
+    const zoomed = Math.floor(baseVisibleBars * zoomLevel);
+    // Minimum 5 bars, maximum is all available bars
+    return Math.max(5, Math.min(state.bars.length, zoomed));
+  }, [baseVisibleBars, zoomLevel, state.bars.length]);
+
+  // Expose chart control methods via ref
+  // IMPORTANT: This must be after baseVisibleBars and visibleBars definitions
   useImperativeHandle(ref, () => ({
     updateWithTick: (price: number, timestamp: number) => {
       if (price <= 0 || state.bars.length === 0) return;
@@ -304,29 +350,40 @@ export const DeterministicChart = forwardRef<DeterministicChartRef, Deterministi
       });
     },
     getMarketStatus: () => state.marketStatus,
-  }), [state.bars, state.marketStatus, timeframe]);
+    zoomIn: () => {
+      // Zoom in = fewer bars visible = larger candles
+      const newZoom = Math.max(MIN_ZOOM, zoomLevel - 0.2);
+      setZoomLevel(newZoom);
 
-  const [viewport, setViewport] = useState<Viewport>({ startIndex: 0, endIndex: 0 });
-  const [crosshair, setCrosshair] = useState<{ x: number; y: number } | null>(null);
-  const [isDragging, setIsDragging] = useState(false);
-  const [dragStart, setDragStart] = useState<{ x: number; offset: number } | null>(null);
-  const [viewOffset, setViewOffset] = useState(0);
-  const [renderError, setRenderError] = useState<string | null>(null);
+      // Adjust viewOffset to keep center stable (same logic as wheel handler)
+      const newVisibleBars = Math.max(5, Math.floor(baseVisibleBars * newZoom));
+      const currentCenterIndex = state.bars.length - 1 - viewOffset - Math.floor(visibleBars / 2);
+      const newOffset = Math.max(
+        0,
+        Math.min(state.bars.length - newVisibleBars, state.bars.length - 1 - currentCenterIndex - Math.floor(newVisibleBars / 2))
+      );
+      setViewOffset(newOffset);
+    },
+    zoomOut: () => {
+      // Zoom out = more bars visible = smaller candles
+      const newZoom = Math.min(MAX_ZOOM, zoomLevel + 0.2);
+      setZoomLevel(newZoom);
 
-  // Merged config
-  const mergedConfig = useMemo(() => ({
-    ...DEFAULT_CONFIG,
-    width,
-    height,
-    ...config,
-  }), [width, height, config]);
-
-  // Calculate visible bars based on config
-  const visibleBars = useMemo(() => {
-    const chartWidth = mergedConfig.width - mergedConfig.paddingLeft - mergedConfig.paddingRight;
-    const candleTotal = mergedConfig.candleWidth + mergedConfig.candleSpacing;
-    return Math.floor(chartWidth / candleTotal);
-  }, [mergedConfig]);
+      // Adjust viewOffset to keep center stable
+      const newVisibleBars = Math.max(5, Math.floor(baseVisibleBars * newZoom));
+      const currentCenterIndex = state.bars.length - 1 - viewOffset - Math.floor(visibleBars / 2);
+      const newOffset = Math.max(
+        0,
+        Math.min(state.bars.length - newVisibleBars, state.bars.length - 1 - currentCenterIndex - Math.floor(newVisibleBars / 2))
+      );
+      setViewOffset(newOffset);
+    },
+    resetZoom: () => {
+      setZoomLevel(1.0);
+      setViewOffset(0);
+    },
+    getZoomLevel: () => zoomLevel,
+  }), [state.bars, state.marketStatus, timeframe, zoomLevel, viewOffset, visibleBars, baseVisibleBars]);
 
   // CRITICAL: Clear engine when loading starts (canvas will be unmounted)
   // This ensures a fresh engine is created when the new canvas mounts
@@ -408,8 +465,9 @@ export const DeterministicChart = forwardRef<DeterministicChartRef, Deterministi
           marketStatus: marketStatus || null,
         });
 
-        // Reset viewport to show most recent bars
+        // Reset viewport and zoom to show most recent bars at default zoom
         setViewOffset(0);
+        setZoomLevel(1.0);
       } catch (err: any) {
         if (cancelled) return;
         setState(prev => ({
@@ -538,14 +596,35 @@ export const DeterministicChart = forwardRef<DeterministicChartRef, Deterministi
   const handleWheel = useCallback((e: React.WheelEvent<HTMLCanvasElement>) => {
     e.preventDefault();
 
-    // Zoom in/out by changing visible bars
-    const delta = e.deltaY > 0 ? 10 : -10;
-    const newOffset = Math.max(
-      0,
-      Math.min(state.bars.length - visibleBars, viewOffset + delta)
-    );
-    setViewOffset(newOffset);
-  }, [state.bars.length, visibleBars, viewOffset]);
+    // Detect pinch gesture on trackpad (ctrlKey is set during pinch-to-zoom)
+    const isPinch = e.ctrlKey;
+
+    if (isPinch) {
+      // PINCH ZOOM: deltaY > 0 = pinch inward = zoom out (see more bars)
+      //             deltaY < 0 = pinch outward = zoom in (see fewer bars, larger candles)
+      const zoomDelta = e.deltaY > 0 ? 0.1 : -0.1;
+      const newZoom = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, zoomLevel + zoomDelta));
+      setZoomLevel(newZoom);
+
+      // Adjust viewOffset to keep center position stable during zoom
+      const newVisibleBars = Math.floor(baseVisibleBars * newZoom);
+      const currentCenterIndex = state.bars.length - 1 - viewOffset - Math.floor(visibleBars / 2);
+      const newOffset = Math.max(
+        0,
+        Math.min(state.bars.length - newVisibleBars, state.bars.length - 1 - currentCenterIndex - Math.floor(newVisibleBars / 2))
+      );
+      setViewOffset(newOffset);
+    } else {
+      // SCROLL/PAN: deltaY > 0 = scroll down = pan right (see older data)
+      //             deltaY < 0 = scroll up = pan left (see newer data)
+      const panDelta = e.deltaY > 0 ? 5 : -5;
+      const newOffset = Math.max(
+        0,
+        Math.min(state.bars.length - visibleBars, viewOffset + panDelta)
+      );
+      setViewOffset(newOffset);
+    }
+  }, [state.bars.length, visibleBars, viewOffset, zoomLevel, baseVisibleBars]);
 
   // Loading state
   if (state.loading) {

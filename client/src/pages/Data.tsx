@@ -86,6 +86,7 @@ interface CachedChain {
   underlyingPrice: number;
   lastUpdate: string;
   expirations?: string[];
+  isHistorical?: boolean;
 }
 
 interface MarketData {
@@ -538,13 +539,21 @@ export function Data() {
 
               {/* Data Source Indicator */}
               <div className={`text-xs px-2 py-1 rounded ${
-                isLiveStreaming
-                  ? 'bg-green-500/30 text-green-400 border border-green-500/50'
-                  : displayChain?.cached
-                    ? 'bg-green-500/20 text-green-400'
-                    : 'bg-yellow-500/20 text-yellow-400'
+                displayChain?.isHistorical
+                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                  : isLiveStreaming
+                    ? 'bg-green-500/30 text-green-400 border border-green-500/50'
+                    : displayChain?.cached
+                      ? 'bg-green-500/20 text-green-400'
+                      : 'bg-yellow-500/20 text-yellow-400'
               }`}>
-                {isLiveStreaming ? '⚡ Live WebSocket' : displayChain?.cached ? 'WebSocket Cache' : 'HTTP Snapshot'}
+                {displayChain?.isHistorical
+                  ? '📜 Last Traded (Market Closed)'
+                  : isLiveStreaming
+                    ? '⚡ Live WebSocket'
+                    : displayChain?.cached
+                      ? 'WebSocket Cache'
+                      : 'HTTP Snapshot'}
               </div>
 
               {/* Last Update */}

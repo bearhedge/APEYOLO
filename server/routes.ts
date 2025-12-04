@@ -472,6 +472,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         expiration: expiration || 'next trading day',
         puts: data.puts,
         calls: data.calls,
+        isHistorical: data.isHistorical || false,
         summary: {
           putCount: data.puts.length,
           callCount: data.calls.length,
