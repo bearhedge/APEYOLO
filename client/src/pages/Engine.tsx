@@ -458,15 +458,6 @@ export function Engine() {
           </div>
         )}
 
-        {/* No Trade Decision */}
-        {analysis && !analysis.canTrade && (
-          <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
-            <h3 className="text-lg font-semibold mb-4">Trading Decision</h3>
-            <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-4">
-              <p className="text-red-400">{analysis.reason}</p>
-            </div>
-          </div>
-        )}
 
         {/* Guard Rails Configuration */}
         {status?.guardRails && Object.keys(status.guardRails).length > 0 && (

@@ -235,7 +235,17 @@ function SummarySection({ summary }: { summary: EnhancedEngineLog['summary'] }) 
     'INSUFFICIENT FUNDS': 'text-amber-400',
     'OUTSIDE WINDOW': 'text-amber-400',
     'NOT READY': 'text-red-400',
+    'ANALYSIS INCOMPLETE': 'text-red-400',
   };
+
+  // Handle dynamic "FAILED AT STEP X" status
+  const getStatusColor = (status: string) => {
+    if (status.startsWith('FAILED AT')) return 'text-red-400';
+    return statusColors[status] || 'text-zinc-100';
+  };
+
+  // Check if status indicates a failure/warning state
+  const isNotReady = summary.status !== 'READY';
 
   return (
     <div className="border-t border-zinc-700 pt-4 mt-4">
@@ -263,9 +273,16 @@ function SummarySection({ summary }: { summary: EnhancedEngineLog['summary'] }) 
         </div>
         <div className="flex justify-between">
           <span className="text-zinc-500">Status</span>
-          <span className={statusColors[summary.status] || 'text-zinc-100'}>{summary.status}</span>
+          <span className={getStatusColor(summary.status)}>{summary.status}</span>
         </div>
       </div>
+
+      {/* Reason message when not ready */}
+      {isNotReady && summary.reason && (
+        <div className="mt-4 p-3 bg-zinc-900 border border-zinc-700 rounded">
+          <div className="text-zinc-400 text-sm">{summary.reason}</div>
+        </div>
+      )}
     </div>
   );
 }
@@ -322,9 +339,9 @@ export default function EngineLog({ log, isRunning = false, className = '' }: En
   if (!log) return null;
 
   return (
-    <div className={`bg-zinc-950 border border-zinc-800 rounded-lg overflow-hidden font-mono ${className}`}>
-      {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
+    <div className={`bg-zinc-950 border border-zinc-800 rounded-lg flex flex-col font-mono ${className}`}>
+      {/* Header - fixed */}
+      <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800 flex-shrink-0">
         <div className="flex items-center gap-3">
           <span className="text-sm font-semibold text-zinc-100 uppercase tracking-wider">Engine Log</span>
           {isRunning && (
@@ -344,8 +361,8 @@ export default function EngineLog({ log, isRunning = false, className = '' }: En
         </div>
       </div>
 
-      {/* Content */}
-      <div className="p-4">
+      {/* Content - scrollable */}
+      <div className="p-4 overflow-y-auto flex-1">
         {/* Timeline */}
         <TimelineBar steps={log.steps} />
 

@@ -172,7 +172,8 @@ export class TradingEngine {
         contracts: 0,
         premium: 0,
         stopLoss: 'N/A',
-        status: `FAILED AT STEP ${failedStep.step}`
+        status: `FAILED AT STEP ${failedStep.step}`,
+        reason: failedStep.error
       }
     };
   }
@@ -517,7 +518,8 @@ export class TradingEngine {
         contracts: positionSize.contracts,
         premium: strikes.expectedPremium,
         stopLoss: `$${exitRules.stopLossPrice} ($${exitRules.stopLossAmount} max)`,
-        status: fullyReady ? 'READY' : !hasSufficientFunds ? 'INSUFFICIENT FUNDS' : !withinTradingWindow ? 'OUTSIDE WINDOW' : 'NOT READY'
+        status: fullyReady ? 'READY' : !hasSufficientFunds ? 'INSUFFICIENT FUNDS' : !withinTradingWindow ? 'OUTSIDE WINDOW' : 'NOT READY',
+        reason: fullyReady ? undefined : finalReason
       }
     };
 

@@ -72,5 +72,6 @@ export interface EnhancedEngineLog {
     premium: number;
     stopLoss: string;
     status: string;
+    reason?: string;  // Explanation when status is not READY
   };
 }

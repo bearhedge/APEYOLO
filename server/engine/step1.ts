@@ -231,8 +231,8 @@ export async function analyzeMarketRegime(useRealData: boolean = true): Promise<
       question: 'Is VIX acceptable?',
       answer: vixLevel
         ? (vixAcceptable
-            ? `YES (${vixLevel.toFixed(2)} - ${volRegime} regime)`
-            : `NO (${vixLevel.toFixed(2)} - EXTREME volatility)`)
+            ? `YES (${vixLevel.toFixed(2)} - ${volRegime} regime, from Yahoo Finance)`
+            : `NO (${vixLevel.toFixed(2)} - EXTREME volatility, from Yahoo Finance)`)
         : 'N/A (VIX data unavailable)'
     },
     {
@@ -270,11 +270,6 @@ export async function analyzeMarketRegime(useRealData: boolean = true): Promise<
       label: 'Trading Window',
       value: withinTradingWindow ? 'OPEN' : 'CLOSED',
       status: withinTradingWindow ? 'normal' : 'warning'
-    },
-    {
-      label: 'Confidence',
-      value: `${(Math.min(Math.max(confidence, 0), 1) * 100).toFixed(0)}%`,
-      status: confidence >= 0.7 ? 'normal' : confidence >= 0.5 ? 'warning' : 'critical'
     }
   ];
 
