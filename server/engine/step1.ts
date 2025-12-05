@@ -8,6 +8,7 @@
 
 import { getVIXData } from '../services/marketDataService.js';
 import { getOptionChainWithStrikes } from '../broker/ibkr';
+import type { StepReasoning, StepMetric } from '../../shared/types/engineLog';
 
 export interface MarketRegime {
   shouldTrade: boolean;
@@ -26,6 +27,9 @@ export interface MarketRegime {
     spyChange?: number;
     trend?: string;
   };
+  // Enhanced logging
+  reasoning?: StepReasoning[];
+  metrics?: StepMetric[];
 }
 
 /**
@@ -215,6 +219,65 @@ export async function analyzeMarketRegime(useRealData: boolean = true): Promise<
     reason = `Market conditions favorable. VIX: ${volRegime || 'N/A'} (${vixLevel?.toFixed(2) || 'N/A'})`;
   }
 
+  // Build reasoning Q&A pairs
+  const reasoning: StepReasoning[] = [
+    {
+      question: 'Is market open?',
+      answer: withinTradingWindow
+        ? `YES (${currentTimeStr} ET - within 11AM-1PM window)`
+        : `NO (${currentTimeStr} ET - outside 11AM-1PM window)`
+    },
+    {
+      question: 'Is VIX acceptable?',
+      answer: vixLevel
+        ? (vixAcceptable
+            ? `YES (${vixLevel.toFixed(2)} - ${volRegime} regime)`
+            : `NO (${vixLevel.toFixed(2)} - EXTREME volatility)`)
+        : 'N/A (VIX data unavailable)'
+    },
+    {
+      question: 'SPY price available?',
+      answer: spyPrice
+        ? `YES ($${spyPrice.toFixed(2)} from IBKR)`
+        : 'NO (Failed to fetch SPY price)'
+    },
+    {
+      question: 'Can we execute trades?',
+      answer: canExecute
+        ? 'YES (all conditions met)'
+        : `NO (${!vixAcceptable ? 'VIX too high' : 'outside trading window'})`
+    }
+  ];
+
+  // Build metrics
+  const metrics: StepMetric[] = [
+    {
+      label: 'VIX Level',
+      value: vixLevel?.toFixed(2) || 'N/A',
+      status: volRegime === 'EXTREME' ? 'critical' : volRegime === 'HIGH' ? 'warning' : 'normal'
+    },
+    {
+      label: 'Volatility Regime',
+      value: volRegime || 'N/A',
+      status: volRegime === 'EXTREME' ? 'critical' : volRegime === 'HIGH' ? 'warning' : 'normal'
+    },
+    {
+      label: 'SPY Price',
+      value: spyPrice ? `$${spyPrice.toFixed(2)}` : 'N/A',
+      status: spyPrice ? 'normal' : 'warning'
+    },
+    {
+      label: 'Trading Window',
+      value: withinTradingWindow ? 'OPEN' : 'CLOSED',
+      status: withinTradingWindow ? 'normal' : 'warning'
+    },
+    {
+      label: 'Confidence',
+      value: `${(Math.min(Math.max(confidence, 0), 1) * 100).toFixed(0)}%`,
+      status: confidence >= 0.7 ? 'normal' : confidence >= 0.5 ? 'warning' : 'critical'
+    }
+  ];
+
   return {
     shouldTrade,
     withinTradingWindow,
@@ -231,7 +294,9 @@ export async function analyzeMarketRegime(useRealData: boolean = true): Promise<
       spyPrice,
       spyChange,
       trend: trend
-    }
+    },
+    reasoning,
+    metrics
   };
 }
 

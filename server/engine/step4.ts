@@ -9,6 +9,7 @@
  */
 
 import { StrikeSelection } from './step3';
+import type { StepReasoning, StepMetric } from '../../shared/types/engineLog';
 
 export type RiskProfile = 'CONSERVATIVE' | 'BALANCED' | 'AGGRESSIVE';
 
@@ -19,6 +20,9 @@ export interface PositionSize {
   buyingPowerUsed: number;
   buyingPowerRemaining: number;
   reasoning: string;
+  // Enhanced logging
+  stepReasoning?: StepReasoning[];
+  stepMetrics?: StepMetric[];
 }
 
 export interface AccountInfo {
@@ -149,13 +153,75 @@ export async function calculatePositionSize(
     reasoning += 'WARNING: Insufficient buying power for even 1 contract.';
   }
 
+  // Build enhanced reasoning Q&A
+  const utilizationPct = (profile.buyingPowerUtilization * 100).toFixed(0);
+  const usedPct = ((buyingPowerUsed / accountInfo.buyingPower) * 100).toFixed(1);
+  const limitedBy = maxContracts === profile.maxContracts ? 'risk profile limit' : 'available buying power';
+
+  const stepReasoning: StepReasoning[] = [
+    {
+      question: 'What risk profile?',
+      answer: `${riskProfile} (max ${profile.maxContracts} contracts, ${utilizationPct}% BP)`
+    },
+    {
+      question: 'Margin calculation?',
+      answer: `${marginRate}% of $${(strikeSelection.putStrike?.strike || strikeSelection.callStrike?.strike || 0) * 100} notional = $${marginPerContract.toFixed(0)}/contract`
+    },
+    {
+      question: 'How many contracts?',
+      answer: contracts > 0
+        ? `${contracts} contracts (limited by ${limitedBy})`
+        : 'ZERO - insufficient buying power'
+    },
+    {
+      question: 'Buying power usage?',
+      answer: `$${buyingPowerUsed.toFixed(0)} of $${accountInfo.buyingPower.toFixed(0)} (${usedPct}%)`
+    }
+  ];
+
+  // Build enhanced metrics
+  const stepMetrics: StepMetric[] = [
+    {
+      label: 'Contracts',
+      value: contracts,
+      status: contracts > 0 ? 'normal' : 'critical'
+    },
+    {
+      label: 'Margin/Contract',
+      value: `$${marginPerContract.toFixed(0)}`,
+      status: 'normal'
+    },
+    {
+      label: 'Total Margin',
+      value: `$${totalMarginRequired.toFixed(0)}`,
+      status: 'normal'
+    },
+    {
+      label: 'BP Used',
+      value: `${usedPct}%`,
+      status: parseFloat(usedPct) > 80 ? 'warning' : 'normal'
+    },
+    {
+      label: 'BP Remaining',
+      value: `$${buyingPowerRemaining.toFixed(0)}`,
+      status: buyingPowerRemaining < marginPerContract ? 'warning' : 'normal'
+    },
+    {
+      label: 'Risk Profile',
+      value: riskProfile,
+      status: riskProfile === 'AGGRESSIVE' ? 'warning' : 'normal'
+    }
+  ];
+
   return {
     contracts,
     marginPerContract: Number(marginPerContract.toFixed(2)),
     totalMarginRequired: Number(totalMarginRequired.toFixed(2)),
     buyingPowerUsed: Number(buyingPowerUsed.toFixed(2)),
     buyingPowerRemaining: Number(buyingPowerRemaining.toFixed(2)),
-    reasoning
+    reasoning,
+    stepReasoning,
+    stepMetrics
   };
 }
 

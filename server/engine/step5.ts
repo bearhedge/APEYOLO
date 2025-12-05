@@ -10,6 +10,7 @@
 
 import { StrikeSelection } from './step3';
 import { PositionSize } from './step4';
+import type { StepReasoning, StepMetric } from '../../shared/types/engineLog';
 
 export interface ExitRules {
   stopLossPrice: number;      // Price at which to exit with loss
@@ -17,6 +18,9 @@ export interface ExitRules {
   takeProfitPrice: number | null;  // Price for take profit (null = let expire)
   maxHoldingTime: number;     // Maximum time to hold (in hours)
   reasoning: string;
+  // Enhanced logging
+  stepReasoning?: StepReasoning[];
+  stepMetrics?: StepMetric[];
 }
 
 export interface PositionMonitor {
@@ -132,8 +136,9 @@ export async function defineExitRules(
 
   // Build reasoning
   let reasoning = `Stop loss set at ${STOP_LOSS_MULTIPLIER * 100}% of premium. `;
-  if (strikeSelection.expectedPremium <= 0) {
-    reasoning = `⚠️ Premium is $0 (market may be closed). Using minimum stop loss. `;
+  const hasPremiumData = strikeSelection.expectedPremium > 0;
+  if (!hasPremiumData) {
+    reasoning = `Premium is $0 (market may be closed). Using minimum stop loss. `;
   }
   reasoning += `Premium collected: $${strikeSelection.expectedPremium} per contract. `;
   reasoning += `Stop loss triggers if option price reaches $${stopLoss.price.toFixed(2)} `;
@@ -141,12 +146,75 @@ export async function defineExitRules(
   reasoning += `No take profit - options ideally expire worthless. `;
   reasoning += `Will close if ITM near expiration to avoid assignment.`;
 
+  // Build enhanced reasoning Q&A
+  const stopLossMultiplierPct = (STOP_LOSS_MULTIPLIER * 100).toFixed(0);
+  const maxLossPerContract = stopLoss.amount / positionSize.contracts;
+
+  const stepReasoning: StepReasoning[] = [
+    {
+      question: 'What is the stop loss rule?',
+      answer: `${stopLossMultiplierPct}% of premium received (option tripling in value)`
+    },
+    {
+      question: 'When do we exit?',
+      answer: `If option price reaches $${stopLoss.price.toFixed(2)} per share`
+    },
+    {
+      question: 'Maximum loss?',
+      answer: `$${stopLoss.amount.toFixed(2)} total ($${maxLossPerContract.toFixed(2)}/contract)`
+    },
+    {
+      question: 'Take profit strategy?',
+      answer: 'Let expire worthless (collect full premium)'
+    },
+    {
+      question: 'Time-based exit?',
+      answer: 'Close if ITM within 2 hours of expiry to avoid assignment'
+    }
+  ];
+
+  // Build enhanced metrics
+  const stepMetrics: StepMetric[] = [
+    {
+      label: 'Stop Loss Price',
+      value: `$${stopLoss.price.toFixed(2)}`,
+      status: 'normal'
+    },
+    {
+      label: 'Max Loss Total',
+      value: `$${stopLoss.amount.toFixed(2)}`,
+      status: stopLoss.amount > 500 ? 'warning' : 'normal'
+    },
+    {
+      label: 'Max Loss/Contract',
+      value: `$${maxLossPerContract.toFixed(2)}`,
+      status: 'normal'
+    },
+    {
+      label: 'Take Profit',
+      value: 'Let Expire',
+      status: 'normal'
+    },
+    {
+      label: 'Max Hold Time',
+      value: '24 hours',
+      status: 'normal'
+    },
+    {
+      label: 'Premium Data',
+      value: hasPremiumData ? 'Available' : 'Unavailable',
+      status: hasPremiumData ? 'normal' : 'warning'
+    }
+  ];
+
   return {
     stopLossPrice: Number(stopLoss.price.toFixed(2)),
     stopLossAmount: Number(stopLoss.amount.toFixed(2)),
     takeProfitPrice: null, // Let expire
     maxHoldingTime: 24, // Maximum 24 hours for 0DTE
-    reasoning
+    reasoning,
+    stepReasoning,
+    stepMetrics
   };
 }
 

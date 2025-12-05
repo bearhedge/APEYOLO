@@ -1,10 +1,42 @@
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Settings, LogOut, Zap, XCircle, RefreshCw } from "lucide-react";
+import { Settings, LogOut, Zap, XCircle, RefreshCw, Clock } from "lucide-react";
 import type { AccountInfo } from "@/lib/types";
 import { useBrokerStatus } from "@/hooks/useBrokerStatus";
 
+/**
+ * Get current time in Eastern Time
+ */
+function useEasternTime() {
+  const [time, setTime] = useState(() => {
+    return new Date().toLocaleTimeString('en-US', {
+      timeZone: 'America/New_York',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: true,
+    });
+  });
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setTime(new Date().toLocaleTimeString('en-US', {
+        timeZone: 'America/New_York',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: true,
+      }));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
+  return time;
+}
+
 export default function AppHeader() {
   const queryClient = useQueryClient();
+  const easternTime = useEasternTime();
 
   const { data: account } = useQuery<AccountInfo>({
     queryKey: ['/api/account'],
@@ -44,6 +76,13 @@ export default function AppHeader() {
         <div className="text-sm text-muted-foreground">Professional Trading Platform</div>
       </div>
       <div className="flex items-center space-x-4">
+        {/* Eastern Time */}
+        <div className="text-sm flex items-center gap-1.5" data-testid="eastern-time">
+          <Clock className="h-3.5 w-3.5 text-zinc-400" />
+          <span className="font-mono text-zinc-300">{easternTime}</span>
+          <span className="text-zinc-500 text-xs">ET</span>
+        </div>
+
         {/* IBKR Status - synced with Engine and Settings */}
         <div className="text-sm flex items-center gap-1.5" data-testid="ibkr-status">
           {isConnecting ? (

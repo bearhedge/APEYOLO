@@ -51,33 +51,51 @@ function ImpactBadge({ level }: { level?: 'low' | 'medium' | 'high' | 'critical'
 }
 
 // ============================================
-// Market Status Card
+// Event Type Badge Component
 // ============================================
 
-function MarketStatusCard({
-  marketStatus,
-  today,
+function EventTypeBadge({ type }: { type: 'holiday' | 'early_close' | 'economic' }) {
+  const styles: Record<string, { bg: string; text: string; label: string }> = {
+    holiday: { bg: 'bg-red-500/20', text: 'text-red-400', label: 'Holiday' },
+    early_close: { bg: 'bg-yellow-500/20', text: 'text-yellow-400', label: 'Early Close' },
+    economic: { bg: 'bg-blue-500/20', text: 'text-blue-400', label: 'Economic' },
+  };
+
+  const style = styles[type] || styles.economic;
+
+  return (
+    <span className={cn(
+      'px-1.5 py-0.5 text-[10px] font-medium rounded uppercase tracking-wider',
+      style.bg,
+      style.text
+    )}>
+      {style.label}
+    </span>
+  );
+}
+
+// ============================================
+// Market Events Card
+// ============================================
+
+function MarketEventsCard({
   upcomingEvents,
+  today,
 }: {
-  marketStatus: { isOpen: boolean; currentTimeET: string; marketCloseET: string; reason: string } | null;
-  today: string;
   upcomingEvents: MarketEvent[];
+  today: string;
 }) {
-  if (!marketStatus) {
+  if (upcomingEvents.length === 0) {
     return (
-      <div className="bg-charcoal rounded-2xl p-6 border border-white/10 animate-pulse">
-        <div className="h-6 bg-white/10 rounded w-1/3 mb-4" />
-        <div className="h-4 bg-white/10 rounded w-2/3" />
+      <div className="bg-charcoal rounded-2xl p-6 border border-white/10">
+        <h2 className="text-lg font-semibold mb-4">Market Events</h2>
+        <p className="text-silver text-sm">No upcoming market events</p>
       </div>
     );
   }
 
-  // Separate market events from economic events
-  const marketEvents = upcomingEvents.filter(e => e.type === 'holiday' || e.type === 'early_close');
-  const economicEvents = upcomingEvents.filter(e => e.type === 'economic');
-
   // Check if there's a high-impact event today
-  const todayHighImpactEvents = economicEvents.filter(
+  const todayHighImpactEvents = upcomingEvents.filter(
     e => e.date === today && (e.impactLevel === 'critical' || e.impactLevel === 'high')
   );
 
@@ -86,7 +104,7 @@ function MarketStatusCard({
       {/* High-impact event alert banner */}
       {todayHighImpactEvents.length > 0 && (
         <div className="bg-orange-500/10 border border-orange-500/30 rounded-lg p-3 mb-4 flex items-center gap-2">
-          <span className="text-orange-400 text-lg">&#9888;</span>
+          <span className="text-orange-400 text-lg">!</span>
           <div>
             <p className="text-orange-400 font-medium text-sm">High-Impact Event Today</p>
             <p className="text-orange-300/80 text-xs">
@@ -97,72 +115,21 @@ function MarketStatusCard({
         </div>
       )}
 
-      <div className="flex items-start justify-between mb-4">
-        <div>
-          <h2 className="text-lg font-semibold">Market Status</h2>
-          <p className="text-silver text-sm">{today}</p>
-        </div>
-        <div className={cn(
-          'px-3 py-1 rounded-full text-sm font-medium',
-          marketStatus.isOpen
-            ? 'bg-green-500/20 text-green-400'
-            : 'bg-red-500/20 text-red-400'
-        )}>
-          {marketStatus.isOpen ? 'Market Open' : 'Market Closed'}
-        </div>
-      </div>
+      <h2 className="text-lg font-semibold mb-4">Market Events</h2>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
-        <div>
-          <p className="text-silver text-xs uppercase tracking-wider">Current Time (ET)</p>
-          <p className="text-lg font-mono">{marketStatus.currentTimeET}</p>
-        </div>
-        <div>
-          <p className="text-silver text-xs uppercase tracking-wider">Market Close</p>
-          <p className="text-lg font-mono">{marketStatus.marketCloseET}</p>
-        </div>
-        <div className="col-span-2">
-          <p className="text-silver text-xs uppercase tracking-wider">Status</p>
-          <p className="text-sm">{marketStatus.reason}</p>
-        </div>
-      </div>
-
-      {/* Market Holidays / Early Close */}
-      {marketEvents.length > 0 && (
-        <div className="border-t border-white/10 pt-4 mt-4">
-          <p className="text-silver text-xs uppercase tracking-wider mb-2">Market Closures</p>
-          <div className="space-y-1">
-            {marketEvents.slice(0, 3).map((event, i) => (
-              <p key={i} className="text-sm flex items-center gap-2">
-                <span className={event.type === 'holiday' ? 'text-red-400' : 'text-yellow-400'}>
-                  {event.date}
-                </span>
-                <span className="text-silver">-</span>
-                <span>{event.event}</span>
-              </p>
-            ))}
+      <div className="space-y-2">
+        {upcomingEvents.slice(0, 8).map((event, i) => (
+          <div key={i} className="flex items-center gap-3 text-sm py-1.5 border-b border-white/5 last:border-0">
+            <span className="font-mono text-zinc-400 w-20 flex-shrink-0">{event.date}</span>
+            <EventTypeBadge type={event.type} />
+            <ImpactBadge level={event.impactLevel} />
+            <span className="flex-1 truncate">{event.event}</span>
+            {event.time && (
+              <span className="text-silver text-xs flex-shrink-0">{event.time} ET</span>
+            )}
           </div>
-        </div>
-      )}
-
-      {/* Economic Events */}
-      {economicEvents.length > 0 && (
-        <div className="border-t border-white/10 pt-4 mt-4">
-          <p className="text-silver text-xs uppercase tracking-wider mb-2">Upcoming Economic Events</p>
-          <div className="space-y-2">
-            {economicEvents.slice(0, 6).map((event, i) => (
-              <div key={i} className="flex items-center gap-2 text-sm">
-                <span className="text-electric font-mono w-24">{event.date}</span>
-                <ImpactBadge level={event.impactLevel} />
-                <span className="flex-1">{event.event}</span>
-                {event.time && (
-                  <span className="text-silver text-xs">{event.time} ET</span>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+        ))}
+      </div>
     </div>
   );
 }
@@ -404,7 +371,6 @@ export function Jobs() {
   const {
     jobs,
     history,
-    marketStatus,
     upcomingEvents,
     today,
     isLoading,
@@ -478,11 +444,10 @@ export function Jobs() {
         {/* Content */}
         {!isLoading && (
           <>
-            {/* Market Status Card */}
-            <MarketStatusCard
-              marketStatus={marketStatus}
-              today={today}
+            {/* Market Events Card */}
+            <MarketEventsCard
               upcomingEvents={upcomingEvents}
+              today={today}
             />
 
             {/* Jobs Table */}

@@ -15,28 +15,8 @@ import {
 import { CheckCircle, XCircle, Clock, Zap, AlertTriangle, Play, RefreshCw } from 'lucide-react';
 import { useEngine } from '@/hooks/useEngine';
 import { useBrokerStatus } from '@/hooks/useBrokerStatus';
-import EngineLog, { OperationEntry, LogEntry } from '@/components/EngineLog';
+import EngineLog from '@/components/EngineLog';
 import toast from 'react-hot-toast';
-
-// Session storage helpers for engine logs persistence
-const ENGINE_LOGS_KEY = 'engine_logs';
-
-function getLogsFromSession(): LogEntry[] {
-  try {
-    const stored = sessionStorage.getItem(ENGINE_LOGS_KEY);
-    return stored ? JSON.parse(stored) : [];
-  } catch {
-    return [];
-  }
-}
-
-function persistLogsToSession(logs: LogEntry[]): void {
-  try {
-    sessionStorage.setItem(ENGINE_LOGS_KEY, JSON.stringify(logs));
-  } catch (err) {
-    console.warn('[Engine] Failed to persist logs to sessionStorage:', err);
-  }
-}
 
 export function Engine() {
   const {
@@ -63,51 +43,6 @@ export function Engine() {
   const [optionChainExpanded, setOptionChainExpanded] = useState(true);
   const [riskTier, setRiskTier] = useState<RiskTier>('balanced');
   const [stopMultiplier, setStopMultiplier] = useState<StopMultiplier>(3);
-  const [engineLogs, setEngineLogs] = useState<LogEntry[]>(() => getLogsFromSession());
-
-  // Persist engine logs to sessionStorage when they change
-  useEffect(() => {
-    persistLogsToSession(engineLogs);
-  }, [engineLogs]);
-
-  // Helper to add operation log entries in real-time
-  const addOperationLog = useCallback((
-    category: OperationEntry['category'],
-    message: string,
-    status?: OperationEntry['status'],
-    value?: string | number
-  ) => {
-    const entry: OperationEntry = {
-      type: 'operation',
-      category,
-      message,
-      timestamp: new Date().toISOString(),
-      status,
-      value,
-    };
-    setEngineLogs(prev => [...prev, entry]);
-  }, []);
-
-  // Helper to update existing operation log entry by message pattern
-  const updateOperationLog = useCallback((
-    messagePattern: string,
-    status: OperationEntry['status'],
-    newMessage?: string,
-    value?: string | number
-  ) => {
-    setEngineLogs(prev => prev.map(entry => {
-      if ('type' in entry && entry.type === 'operation' && entry.message.includes(messagePattern)) {
-        return {
-          ...entry,
-          message: newMessage || entry.message,
-          status,
-          value,
-          timestamp: new Date().toISOString()
-        };
-      }
-      return entry;
-    }));
-  }, []);
 
   // Auto-connect to IBKR when page loads (same as Settings page)
   useEffect(() => {
@@ -130,71 +65,21 @@ export function Engine() {
   const handleRunEngine = useCallback(async () => {
     try {
       setIsExecuting(true);
-      setEngineLogs([]); // Clear previous logs
       toast.loading('Running engine analysis...', { id: 'engine-execute' });
 
-      // Real-time operation logs - create pending entries
-      addOperationLog('IBKR', 'Checking connection status...', 'pending');
-      await new Promise(r => setTimeout(r, 100)); // Allow UI to update
-
-      // Update the connection status entry (not create a new one)
-      updateOperationLog('Checking connection', 'success',
-        brokerConnectedFinal
-          ? `Connected to ${environment === 'live' ? 'LIVE' : 'paper'} trading account`
-          : 'Using mock data (IBKR disconnected)');
-
-      addOperationLog('MARKET', 'Fetching SPY price...', 'pending');
-      await new Promise(r => setTimeout(r, 100));
-
-      addOperationLog('MARKET', 'Fetching VIX data...', 'pending');
-      await new Promise(r => setTimeout(r, 100));
-
-      addOperationLog('OPTIONS', 'Loading 0DTE option chain...', 'pending');
-      await new Promise(r => setTimeout(r, 100));
-
-      addOperationLog('ANALYSIS', 'Starting 5-step decision process...', 'pending');
-
-      // Run the actual analysis
+      // Run the actual analysis - enhanced logs come from backend
       const result = await analyzeEngine({ riskTier, stopMultiplier });
 
-      // Update existing pending entries with actual values (not create new ones)
-      if (result.q1MarketRegime?.inputs) {
-        const vix = result.q1MarketRegime.inputs.vixValue;
-        const spy = result.q1MarketRegime.inputs.spyPrice;
-        updateOperationLog('Fetching SPY price', 'success', `SPY price: $${spy?.toFixed(2) || 'N/A'}`);
-        updateOperationLog('Fetching VIX', 'success', `VIX: ${vix?.toFixed(2) || 'N/A'} (${vix < 20 ? 'LOW - safe' : vix < 30 ? 'ELEVATED' : 'HIGH - caution'})`);
-      }
-
-      if (result.q3Strikes?.candidates?.length) {
-        updateOperationLog('Loading 0DTE option chain', 'success', `Found ${result.q3Strikes.candidates.length} strikes for SPY`);
-      }
-
-      updateOperationLog('Starting 5-step decision', 'success', '5-step analysis complete');
-
-      // Store audit logs from the result if available
-      if (result.audit) {
-        setEngineLogs(prev => [
-          ...prev,
-          ...result.audit.map((entry: any) => ({
-            ...entry,
-            timestamp: entry.timestamp || new Date().toISOString()
-          }))
-        ]);
-      }
-
-      // Final decision log
       if (result.canTrade) {
-        addOperationLog('DECISION', 'Trade proposal ready for execution', 'success');
         toast.success('Engine analysis complete - Trade opportunity found!', { id: 'engine-execute' });
 
         // If in auto mode and guard rails passed, execute automatically
-        if (executionMode === 'auto' && result.passedGuardRails) {
+        if (executionMode === 'auto' && result.guardRails?.passed) {
           toast.loading('Auto-executing trade...', { id: 'auto-execute' });
           await executePaperTrade(result.tradeProposal);
           toast.success('Trade executed automatically!', { id: 'auto-execute' });
         }
       } else {
-        addOperationLog('DECISION', `No trade: ${result.reason}`, 'error');
         toast.error(`Cannot trade: ${result.reason}`, { id: 'engine-execute' });
       }
     } catch (err: any) {
@@ -202,50 +87,14 @@ export function Engine() {
 
       // Check if it's a structured engine error with step details
       if (err.isEngineError && err.failedStep) {
-        addOperationLog('ANALYSIS', `Step ${err.failedStep} (${err.stepName}) FAILED`, 'error');
-        addOperationLog('ANALYSIS', `Reason: ${err.reason || err.message}`, 'error');
-
-        // Log audit trail if available
-        if (err.audit && Array.isArray(err.audit)) {
-          err.audit.forEach((entry: any) => {
-            const status = entry.passed ? 'success' : 'error';
-            addOperationLog('ANALYSIS', `Step ${entry.step}: ${entry.name} - ${entry.passed ? 'PASSED' : 'FAILED'}${entry.reason ? ': ' + entry.reason : ''}`, status);
-          });
-        }
-
-        // Check for diagnostics in the error (Step 3 option chain failures)
-        if (err.diagnostics) {
-          const d = err.diagnostics;
-          addOperationLog('DEBUG', `🔍 IBKR Diagnostics (Step 3 Failure)`, 'info');
-          addOperationLog('DEBUG', `├─ Conid: ${d.conid || 'null'}`, 'info');
-          addOperationLog('DEBUG', `├─ Month: ${d.monthFormatted} (from ${d.monthInput})`, 'info');
-          addOperationLog('DEBUG', `├─ Underlying Price: $${d.underlyingPrice}`, d.underlyingPrice > 0 ? 'success' : 'error');
-          addOperationLog('DEBUG', `├─ VIX: ${d.vix}`, 'info');
-          addOperationLog('DEBUG', `├─ Strikes URL: ${d.strikesUrl}`, 'info');
-          addOperationLog('DEBUG', `├─ Strikes Status: ${d.strikesStatus}`, d.strikesStatus === 200 ? 'success' : 'error');
-          addOperationLog('DEBUG', `├─ Puts Found: ${d.putCount}`, d.putCount > 0 ? 'success' : 'error');
-          addOperationLog('DEBUG', `├─ Calls Found: ${d.callCount}`, d.callCount > 0 ? 'success' : 'error');
-          addOperationLog('DEBUG', `├─ Snapshot Raw: ${d.snapshotRaw?.slice(0, 150) || 'empty'}`, 'info');
-          addOperationLog('DEBUG', `└─ Strikes Raw: ${d.strikesRaw?.slice(0, 150) || 'empty'}`, 'info');
-          if (d.error) {
-            addOperationLog('DEBUG', `❌ Error: ${d.error}`, 'error');
-          }
-        }
-
         toast.error(`Step ${err.failedStep} failed: ${err.reason || err.message}`, { id: 'engine-execute' });
       } else {
-        // Parse diagnostics from error message if present
-        const diagMatch = err.message?.match(/Diagnostics: (.+)/);
-        if (diagMatch) {
-          addOperationLog('DEBUG', `🔍 ${err.message}`, 'info');
-        }
-        addOperationLog('ANALYSIS', `Engine analysis failed: ${err.message || 'Unknown error'}`, 'error');
         toast.error('Failed to run engine', { id: 'engine-execute' });
       }
     } finally {
       setIsExecuting(false);
     }
-  }, [analyzeEngine, riskTier, stopMultiplier, executionMode, executePaperTrade, addOperationLog, updateOperationLog, brokerConnectedFinal]);
+  }, [analyzeEngine, riskTier, stopMultiplier, executionMode, executePaperTrade]);
 
   // Handle paper trade execution
   const handleExecuteTrade = useCallback(async () => {
@@ -502,15 +351,12 @@ export function Engine() {
           </div>
         </div>
 
-        {/* Engine Log - Terminal-like execution viewer */}
-        <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
-          <h3 className="text-lg font-semibold mb-4">Engine Log</h3>
-          <EngineLog
-            logs={engineLogs}
-            isRunning={isExecuting}
-            className="max-h-96"
-          />
-        </div>
+        {/* Engine Log - Professional execution viewer with timing and reasoning */}
+        <EngineLog
+          log={analysis?.enhancedLog || null}
+          isRunning={isExecuting}
+          className="max-h-[600px]"
+        />
 
         {/* Current Decision - Trade Proposal */}
         {analysis && analysis.canTrade && analysis.tradeProposal && (

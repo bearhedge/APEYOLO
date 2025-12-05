@@ -6,6 +6,8 @@
  * for the 5-step trading engine decision process.
  */
 
+import type { EnhancedEngineLog } from './engineLog';
+
 // =============================================================================
 // Root Response Type
 // =============================================================================
@@ -29,6 +31,9 @@ export interface EngineAnalyzeResponse {
   guardRails: GuardRailResult;
   tradingWindow: TradingWindowStatus;
   audit: AuditEntry[];
+
+  // Enhanced logging for new UI
+  enhancedLog?: EnhancedEngineLog;
 }
 
 // =============================================================================

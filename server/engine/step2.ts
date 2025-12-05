@@ -11,6 +11,7 @@
 
 import { MarketRegime } from './step1.ts';
 import { fetchHistoricalData, fetchQuote } from '../services/yahooFinanceService.js';
+import type { StepReasoning, StepMetric } from '../../shared/types/engineLog';
 
 export type TradeDirection = 'PUT' | 'CALL' | 'STRANGLE';
 
@@ -30,6 +31,9 @@ export interface DirectionDecision {
     maFast?: number;
     maSlow?: number;
   };
+  // Enhanced logging
+  stepReasoning?: StepReasoning[];
+  stepMetrics?: StepMetric[];
 }
 
 /**
@@ -152,7 +156,15 @@ export async function selectDirection(
     return {
       direction: mockDirection,
       confidence: 0.8,
-      reasoning: 'Using mock direction for testing'
+      reasoning: 'Using mock direction for testing',
+      stepReasoning: [
+        { question: 'Data source?', answer: 'MOCK (testing mode)' },
+        { question: 'What strategy?', answer: `SELL ${mockDirection}` }
+      ],
+      stepMetrics: [
+        { label: 'Mode', value: 'Testing', status: 'warning' },
+        { label: 'Confidence', value: '80%', status: 'normal' }
+      ]
     };
   }
 
@@ -169,7 +181,17 @@ export async function selectDirection(
         trend: 'SIDEWAYS',
         momentum: 0,
         strength: 0
-      }
+      },
+      stepReasoning: [
+        { question: 'SPY data available?', answer: 'NO (fetch failed or insufficient bars)' },
+        { question: 'What strategy?', answer: 'SELL STRANGLE (safe default for unknown trend)' },
+        { question: 'Why STRANGLE?', answer: 'Neutral strategy profits from time decay regardless of direction' }
+      ],
+      stepMetrics: [
+        { label: 'Data Status', value: 'UNAVAILABLE', status: 'critical' },
+        { label: 'Confidence', value: '50%', status: 'warning' },
+        { label: 'Fallback', value: 'Active', status: 'warning' }
+      ]
     };
   }
 
@@ -202,6 +224,68 @@ export async function selectDirection(
 
   console.log(`[Step2] Direction: ${direction} (${trend}) - Confidence: ${(confidence * 100).toFixed(0)}%`);
 
+  // Build enhanced reasoning Q&A
+  const maDiff = maFast - maSlow;
+  const maDiffStr = maDiff >= 0 ? `+$${maDiff.toFixed(2)}` : `-$${Math.abs(maDiff).toFixed(2)}`;
+  const strengthLabel = Math.abs(momentum) > 0.3 ? 'STRONG' : Math.abs(momentum) > 0.15 ? 'MODERATE' : 'WEAK';
+
+  const stepReasoning: StepReasoning[] = [
+    {
+      question: 'What is market trend?',
+      answer: trend === 'UP'
+        ? `BULLISH (MA${MA_FAST_PERIOD} > MA${MA_SLOW_PERIOD})`
+        : trend === 'DOWN'
+          ? `BEARISH (MA${MA_FAST_PERIOD} < MA${MA_SLOW_PERIOD})`
+          : 'SIDEWAYS (mixed signals)'
+    },
+    {
+      question: 'How strong is the trend?',
+      answer: `${strengthLabel} (${maDiffStr} MA difference)`
+    },
+    {
+      question: 'What strategy?',
+      answer: direction === 'PUT'
+        ? 'SELL PUT (bullish - profit if SPY stays above strike)'
+        : direction === 'CALL'
+          ? 'SELL CALL (bearish - profit if SPY stays below strike)'
+          : 'SELL STRANGLE (neutral - profit from time decay)'
+    }
+  ];
+
+  // Build enhanced metrics
+  const stepMetrics: StepMetric[] = [
+    {
+      label: `MA${MA_FAST_PERIOD} (Fast)`,
+      value: `$${maFast.toFixed(2)}`,
+      status: 'normal'
+    },
+    {
+      label: `MA${MA_SLOW_PERIOD} (Slow)`,
+      value: `$${maSlow.toFixed(2)}`,
+      status: 'normal'
+    },
+    {
+      label: 'SPY Price',
+      value: `$${price.toFixed(2)}`,
+      status: 'normal'
+    },
+    {
+      label: 'Momentum',
+      value: `${(momentum * 100).toFixed(1)}%`,
+      status: Math.abs(momentum) > 0.3 ? 'normal' : Math.abs(momentum) > 0.15 ? 'normal' : 'warning'
+    },
+    {
+      label: 'Confidence',
+      value: `${(confidence * 100).toFixed(0)}%`,
+      status: confidence >= 0.7 ? 'normal' : confidence >= 0.5 ? 'warning' : 'critical'
+    },
+    {
+      label: 'Data Points',
+      value: `${MA_SLOW_PERIOD}+ bars`,
+      status: 'normal'
+    }
+  ];
+
   return {
     direction,
     confidence,
@@ -213,7 +297,9 @@ export async function selectDirection(
       spyPrice: price,
       maFast,
       maSlow
-    }
+    },
+    stepReasoning,
+    stepMetrics
   };
 }
 

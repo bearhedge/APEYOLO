@@ -1,227 +1,223 @@
 /**
- * EngineLog - Terminal-like component for displaying engine execution logs
- * Shows step-by-step operations, computations, and values during engine execution
- *
- * Supports two entry types:
- * 1. Operation entries - Real-time IBKR/market data operations (connection, fetching)
- * 2. Step entries - 5-step analysis process results
+ * EngineLog - Professional engine execution log display
+ * Clean, monochromatic, terminal-style design
+ * Shows Q&A reasoning, metrics, timing, and nearby strikes table
  */
 
-import { useEffect, useRef, useState } from 'react';
-import { ChevronDown, ChevronRight, Terminal, Loader2, Zap, TrendingUp, BarChart3, LineChart, Settings2 } from 'lucide-react';
-
-// Step analysis entry (from backend)
-interface AuditEntry {
-  step: number;
-  name: string;
-  timestamp: string;
-  input: Record<string, any>;
-  output: Record<string, any>;
-  passed: boolean;
-  reason?: string;
-}
-
-// Operation log entry (real-time operations)
-export interface OperationEntry {
-  type: 'operation';
-  category: 'IBKR' | 'MARKET' | 'OPTIONS' | 'ANALYSIS' | 'DECISION' | 'DEBUG';
-  message: string;
-  timestamp: string;
-  status?: 'pending' | 'success' | 'error' | 'info';
-  value?: string | number;
-}
-
-// Union type for all log entries
-export type LogEntry = AuditEntry | OperationEntry;
-
-// Type guard to check if entry is an operation
-function isOperationEntry(entry: LogEntry): entry is OperationEntry {
-  return 'type' in entry && entry.type === 'operation';
-}
+import { useState } from 'react';
+import { ChevronDown, ChevronRight } from 'lucide-react';
+import type { EnhancedEngineLog, EnhancedStepLog, StepReasoning, StepMetric, NearbyStrike } from '@shared/types/engineLog';
 
 interface EngineLogProps {
-  logs: LogEntry[];
+  log: EnhancedEngineLog | null;
   isRunning?: boolean;
   className?: string;
 }
 
 /**
- * Format a value for display in the log
+ * Format milliseconds to human-readable duration
  */
-function formatValue(value: any): string {
-  if (value === null || value === undefined) return 'null';
-  if (typeof value === 'number') {
-    // Format numbers nicely
-    if (Number.isInteger(value)) return value.toLocaleString();
-    return value.toFixed(4);
+function formatDuration(ms: number): string {
+  if (ms >= 1000) {
+    return `${(ms / 1000).toFixed(2)}s`;
   }
-  if (typeof value === 'boolean') return value ? 'true' : 'false';
-  if (typeof value === 'string') return value;
-  if (Array.isArray(value)) return `[${value.length} items]`;
-  if (typeof value === 'object') {
-    // For nested objects, show key count
-    const keys = Object.keys(value);
-    if (keys.length <= 3) {
-      return JSON.stringify(value);
-    }
-    return `{${keys.length} fields}`;
-  }
-  return String(value);
+  return `${ms}ms`;
 }
 
 /**
- * Format timestamp for display
+ * Timeline bar showing proportional step durations
  */
-function formatTimestamp(isoString: string): string {
-  const date = new Date(isoString);
-  return date.toLocaleTimeString('en-US', {
-    hour12: false,
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }) + '.' + date.getMilliseconds().toString().padStart(3, '0');
-}
-
-/**
- * Render a tree of key-value pairs
- */
-function renderTree(data: Record<string, any>, prefix = '  ', isLast = true): JSX.Element[] {
-  const entries = Object.entries(data);
-  return entries.map(([key, value], index) => {
-    const isLastItem = index === entries.length - 1;
-    const connector = isLastItem ? '└─' : '├─';
-
-    // Skip internal fields
-    if (key.startsWith('_')) return null;
-
-    return (
-      <div key={key} className="text-gray-400">
-        <span className="text-gray-600">{prefix}{connector}</span>
-        <span className="text-cyan-400"> {key}:</span>
-        <span className="text-gray-300"> {formatValue(value)}</span>
-      </div>
-    );
-  }).filter(Boolean) as JSX.Element[];
-}
-
-/**
- * Category icons and colors for operation entries
- */
-const categoryConfig: Record<OperationEntry['category'], { icon: React.ReactNode; color: string }> = {
-  IBKR: { icon: <Zap className="w-3 h-3" />, color: 'text-blue-400' },
-  MARKET: { icon: <TrendingUp className="w-3 h-3" />, color: 'text-green-400' },
-  OPTIONS: { icon: <BarChart3 className="w-3 h-3" />, color: 'text-yellow-400' },
-  ANALYSIS: { icon: <LineChart className="w-3 h-3" />, color: 'text-purple-400' },
-  DECISION: { icon: <Settings2 className="w-3 h-3" />, color: 'text-cyan-400' },
-  DEBUG: { icon: <Terminal className="w-3 h-3" />, color: 'text-orange-400' },
-};
-
-/**
- * Operation log entry component (for real-time IBKR operations)
- */
-function OperationLogEntry({ entry }: { entry: OperationEntry }) {
-  const config = categoryConfig[entry.category];
-  const statusIcon = entry.status === 'pending' ? (
-    <Loader2 className="w-3 h-3 animate-spin text-yellow-400" />
-  ) : entry.status === 'error' ? (
-    <span className="text-red-400">✗</span>
-  ) : entry.status === 'success' ? (
-    <span className="text-green-400">✓</span>
-  ) : null;
+function TimelineBar({ steps }: { steps: EnhancedStepLog[] }) {
+  const totalMs = steps.reduce((sum, s) => sum + s.durationMs, 0);
+  if (totalMs === 0) return null;
 
   return (
-    <div className="font-mono text-sm flex items-center px-2 py-1 hover:bg-gray-900/30 rounded">
-      <span className="text-gray-500">[{formatTimestamp(entry.timestamp)}]</span>
-      <span className={`mx-2 ${config.color} flex items-center gap-1`}>
-        {config.icon}
-        <span className="font-bold">[{entry.category}]</span>
-      </span>
-      <span className="text-gray-300">{entry.message}</span>
-      {entry.value !== undefined && (
-        <span className="ml-2 text-cyan-400 font-bold">{entry.value}</span>
-      )}
-      {statusIcon && <span className="ml-auto">{statusIcon}</span>}
+    <div className="mb-6">
+      <div className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">Timeline</div>
+      <div className="flex h-2 rounded overflow-hidden bg-zinc-800">
+        {steps.map((step, i) => {
+          const widthPct = (step.durationMs / totalMs) * 100;
+          return (
+            <div
+              key={step.step}
+              className={`${step.isSlowest ? 'bg-amber-600' : 'bg-zinc-600'} transition-all`}
+              style={{ width: `${widthPct}%` }}
+              title={`Step ${step.step}: ${formatDuration(step.durationMs)}`}
+            />
+          );
+        })}
+      </div>
+      <div className="flex justify-between mt-1">
+        {steps.map((step) => (
+          <div
+            key={step.step}
+            className={`text-xs ${step.isSlowest ? 'text-amber-400' : 'text-zinc-500'}`}
+          >
+            S{step.step}
+            {step.isSlowest && ' *'}
+          </div>
+        ))}
+      </div>
+      <div className="flex justify-between">
+        {steps.map((step) => (
+          <div
+            key={step.step}
+            className={`text-xs ${step.isSlowest ? 'text-amber-400' : 'text-zinc-600'}`}
+          >
+            {formatDuration(step.durationMs)}
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
 
 /**
- * Single step log entry component (for 5-step analysis)
+ * Reasoning section - Q&A format
  */
-function StepLogEntry({ entry, isExpanded, onToggle }: {
-  entry: AuditEntry;
-  isExpanded: boolean;
-  onToggle: () => void;
-}) {
-  const stepColors: Record<number, string> = {
-    1: 'text-blue-400',
-    2: 'text-purple-400',
-    3: 'text-yellow-400',
-    4: 'text-green-400',
-    5: 'text-orange-400',
-  };
+function ReasoningSection({ reasoning }: { reasoning: StepReasoning[] }) {
+  if (!reasoning || reasoning.length === 0) return null;
 
-  const stepIcons: Record<number, string> = {
-    1: '📊',
-    2: '🎯',
-    3: '🎲',
-    4: '📏',
-    5: '🚪',
+  return (
+    <div className="mt-3">
+      <div className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">Reasoning</div>
+      <div className="space-y-1 font-mono text-sm">
+        {reasoning.map((r, i) => (
+          <div key={i} className="flex">
+            <span className="text-zinc-500 min-w-[200px]">{r.question}</span>
+            <span className="text-zinc-100">{r.answer}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Metrics section - key values with status
+ */
+function MetricsSection({ metrics }: { metrics: StepMetric[] }) {
+  if (!metrics || metrics.length === 0) return null;
+
+  const statusColors = {
+    normal: 'text-zinc-100',
+    warning: 'text-amber-400',
+    critical: 'text-red-400',
   };
 
   return (
-    <div className="font-mono text-sm">
-      {/* Header line */}
+    <div className="mt-3">
+      <div className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">Metrics</div>
+      <div className="grid grid-cols-2 gap-x-8 gap-y-1 font-mono text-sm">
+        {metrics.map((m, i) => (
+          <div key={i} className="flex justify-between">
+            <span className="text-zinc-500">{m.label}</span>
+            <span className={statusColors[m.status || 'normal']}>
+              {m.value}{m.unit && ` ${m.unit}`}
+            </span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Nearby strikes table - Step 3 specific
+ */
+function NearbyStrikesTable({ strikes }: { strikes: NearbyStrike[] }) {
+  if (!strikes || strikes.length === 0) return null;
+
+  return (
+    <div className="mt-4">
+      <div className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">Nearby Strikes</div>
+      <div className="overflow-x-auto">
+        <table className="w-full font-mono text-sm">
+          <thead>
+            <tr className="text-zinc-500 text-xs uppercase">
+              <th className="text-left py-1 pr-4">Strike</th>
+              <th className="text-right py-1 px-4">Delta</th>
+              <th className="text-right py-1 px-4">Bid</th>
+              <th className="text-right py-1 px-4">Ask</th>
+              <th className="text-right py-1 pl-4">Spread</th>
+            </tr>
+          </thead>
+          <tbody>
+            {strikes.map((s, i) => (
+              <tr
+                key={i}
+                className={`${s.selected ? 'bg-zinc-800 text-emerald-400' : 'text-zinc-300'} border-t border-zinc-800`}
+              >
+                <td className="py-1 pr-4">
+                  ${s.strike}{s.optionType === 'PUT' ? 'P' : 'C'}
+                  {s.selected && ' *'}
+                </td>
+                <td className="text-right py-1 px-4">{s.delta.toFixed(2)}</td>
+                <td className="text-right py-1 px-4">${s.bid.toFixed(2)}</td>
+                <td className="text-right py-1 px-4">${s.ask.toFixed(2)}</td>
+                <td className="text-right py-1 pl-4">${s.spread.toFixed(2)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Single step row - collapsible
+ */
+function StepRow({ step, isExpanded, onToggle }: {
+  step: EnhancedStepLog;
+  isExpanded: boolean;
+  onToggle: () => void;
+}) {
+  const statusColors = {
+    passed: 'text-emerald-400',
+    failed: 'text-red-400',
+    skipped: 'text-zinc-500',
+  };
+
+  return (
+    <div className="border-b border-zinc-800 last:border-b-0">
+      {/* Collapsed header */}
       <div
-        className="flex items-center cursor-pointer hover:bg-gray-900/50 px-2 py-1 rounded"
+        className="flex items-center justify-between py-3 px-4 cursor-pointer hover:bg-zinc-800/50 transition-colors"
         onClick={onToggle}
       >
-        {isExpanded ? (
-          <ChevronDown className="w-3 h-3 text-gray-500 mr-1 flex-shrink-0" />
-        ) : (
-          <ChevronRight className="w-3 h-3 text-gray-500 mr-1 flex-shrink-0" />
-        )}
-        <span className="text-gray-500">[{formatTimestamp(entry.timestamp)}]</span>
-        <span className="mx-2">{stepIcons[entry.step] || '📌'}</span>
-        <span className={`font-bold ${stepColors[entry.step] || 'text-white'}`}>
-          STEP {entry.step}
-        </span>
-        <span className="text-gray-400 mx-2">-</span>
-        <span className="text-white">{entry.name}</span>
-        <span className="ml-auto">
-          {entry.passed ? (
-            <span className="text-green-400">✅ PASS</span>
+        <div className="flex items-center gap-3">
+          {isExpanded ? (
+            <ChevronDown className="w-4 h-4 text-zinc-500" />
           ) : (
-            <span className="text-red-400">❌ FAIL</span>
+            <ChevronRight className="w-4 h-4 text-zinc-500" />
           )}
-        </span>
+          <span className="text-zinc-500 font-medium">STEP {step.step}</span>
+          <span className="text-zinc-100">{step.name}</span>
+        </div>
+        <div className="flex items-center gap-4">
+          <span className={`font-medium ${statusColors[step.status]}`}>
+            {step.status.toUpperCase()}
+          </span>
+          <span className={`text-sm ${step.isSlowest ? 'text-amber-400' : 'text-zinc-500'}`}>
+            {formatDuration(step.durationMs)}
+            {step.isSlowest && ' *'}
+          </span>
+        </div>
       </div>
 
-      {/* Expanded details */}
+      {/* Expanded content */}
       {isExpanded && (
-        <div className="ml-6 pl-4 border-l border-gray-700 mb-2">
-          {/* Reason */}
-          {entry.reason && (
-            <div className="text-gray-400 mb-1">
-              <span className="text-gray-600">  └─</span>
-              <span className="text-cyan-400"> reason:</span>
-              <span className="text-gray-300"> {entry.reason}</span>
-            </div>
-          )}
-
-          {/* Output values */}
-          {entry.output && Object.keys(entry.output).length > 0 && (
-            <div className="mt-1">
-              <div className="text-gray-500 text-xs uppercase tracking-wider mb-1">Output:</div>
-              {renderTree(entry.output)}
-            </div>
-          )}
-
-          {/* Input values (collapsed by default) */}
-          {entry.input && Object.keys(entry.input).length > 0 && (
-            <div className="mt-2 opacity-60">
-              <div className="text-gray-600 text-xs uppercase tracking-wider mb-1">Input:</div>
-              {renderTree(entry.input)}
+        <div className="px-4 pb-4 pt-0 ml-7 border-l border-zinc-800">
+          <ReasoningSection reasoning={step.reasoning} />
+          <MetricsSection metrics={step.metrics} />
+          {step.nearbyStrikes && <NearbyStrikesTable strikes={step.nearbyStrikes} />}
+          {step.error && (
+            <div className="mt-3 p-3 bg-red-950/30 border border-red-900 rounded">
+              <div className="text-red-400 font-medium">{step.error.message}</div>
+              {step.error.suggestion && (
+                <div className="text-zinc-400 text-sm mt-1">{step.error.suggestion}</div>
+              )}
             </div>
           )}
         </div>
@@ -231,18 +227,54 @@ function StepLogEntry({ entry, isExpanded, onToggle }: {
 }
 
 /**
+ * Summary section at the bottom
+ */
+function SummarySection({ summary }: { summary: EnhancedEngineLog['summary'] }) {
+  const statusColors: Record<string, string> = {
+    READY: 'text-emerald-400',
+    'INSUFFICIENT FUNDS': 'text-amber-400',
+    'OUTSIDE WINDOW': 'text-amber-400',
+    'NOT READY': 'text-red-400',
+  };
+
+  return (
+    <div className="border-t border-zinc-700 pt-4 mt-4">
+      <div className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-3">Summary</div>
+      <div className="grid grid-cols-2 gap-x-8 gap-y-2 font-mono text-sm">
+        <div className="flex justify-between">
+          <span className="text-zinc-500">Strategy</span>
+          <span className="text-zinc-100">{summary.strategy}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-zinc-500">Strike</span>
+          <span className="text-zinc-100">{summary.strike}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-zinc-500">Contracts</span>
+          <span className="text-zinc-100">{summary.contracts}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-zinc-500">Premium</span>
+          <span className="text-zinc-100">${summary.premium.toFixed(2)}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-zinc-500">Stop Loss</span>
+          <span className="text-zinc-100">{summary.stopLoss}</span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-zinc-500">Status</span>
+          <span className={statusColors[summary.status] || 'text-zinc-100'}>{summary.status}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
  * Main EngineLog component
  */
-export default function EngineLog({ logs, isRunning = false, className = '' }: EngineLogProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set([1, 2, 3, 4, 5])); // All expanded by default
-
-  // Auto-scroll to bottom when new logs arrive
-  useEffect(() => {
-    if (containerRef.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight;
-    }
-  }, [logs]);
+export default function EngineLog({ log, isRunning = false, className = '' }: EngineLogProps) {
+  const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set([1, 2, 3, 4, 5]));
 
   const toggleStep = (step: number) => {
     setExpandedSteps(prev => {
@@ -264,95 +296,74 @@ export default function EngineLog({ logs, isRunning = false, className = '' }: E
     }
   };
 
+  // Empty state
+  if (!log && !isRunning) {
+    return (
+      <div className={`bg-zinc-950 border border-zinc-800 rounded-lg p-8 ${className}`}>
+        <div className="text-zinc-500 text-sm text-center font-mono">
+          Click "Run Engine" to see execution logs
+        </div>
+      </div>
+    );
+  }
+
+  // Loading state
+  if (isRunning && !log) {
+    return (
+      <div className={`bg-zinc-950 border border-zinc-800 rounded-lg p-8 ${className}`}>
+        <div className="text-zinc-400 text-sm text-center font-mono flex items-center justify-center gap-2">
+          <div className="w-2 h-2 bg-amber-400 rounded-full animate-pulse" />
+          Running engine analysis...
+        </div>
+      </div>
+    );
+  }
+
+  if (!log) return null;
+
   return (
-    <div className={`bg-[#0a0a0a] border border-gray-800 rounded-lg overflow-hidden ${className}`}>
+    <div className={`bg-zinc-950 border border-zinc-800 rounded-lg overflow-hidden font-mono ${className}`}>
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-2 bg-gray-900/50 border-b border-gray-800">
-        <div className="flex items-center gap-2">
-          <Terminal className="w-4 h-4 text-gray-400" />
-          <span className="text-sm font-medium text-gray-300">Engine Log</span>
+      <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-800">
+        <div className="flex items-center gap-3">
+          <span className="text-sm font-semibold text-zinc-100 uppercase tracking-wider">Engine Log</span>
           {isRunning && (
-            <span className="flex items-center gap-1 text-xs text-yellow-400">
-              <Loader2 className="w-3 h-3 animate-spin" />
-              Running...
-            </span>
+            <div className="w-2 h-2 bg-amber-400 rounded-full animate-pulse" />
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-4">
           <button
             onClick={toggleAll}
-            className="text-xs text-gray-500 hover:text-gray-300 transition-colors"
+            className="text-xs text-zinc-500 hover:text-zinc-300 transition-colors"
           >
             {expandedSteps.size === 5 ? 'Collapse All' : 'Expand All'}
           </button>
-          <span className="text-xs text-gray-600">
-            {logs.length} step{logs.length !== 1 ? 's' : ''}
+          <span className="text-sm text-zinc-400">
+            {formatDuration(log.totalDurationMs)}
           </span>
         </div>
       </div>
 
-      {/* Log content */}
-      <div
-        ref={containerRef}
-        className="p-4 max-h-80 overflow-y-auto scrollbar-thin scrollbar-thumb-gray-700 scrollbar-track-transparent"
-      >
-        {logs.length === 0 ? (
-          <div className="text-gray-500 text-sm text-center py-8">
-            {isRunning ? (
-              <span className="flex items-center justify-center gap-2">
-                <Loader2 className="w-4 h-4 animate-spin" />
-                Waiting for engine execution...
-              </span>
-            ) : (
-              'Click "Run Engine" to see execution logs'
-            )}
-          </div>
-        ) : (
-          <div className="space-y-1">
-            {logs.map((entry, index) => {
-              // Render operation entries (real-time IBKR operations)
-              if (isOperationEntry(entry)) {
-                return (
-                  <OperationLogEntry
-                    key={`op-${index}`}
-                    entry={entry}
-                  />
-                );
-              }
-              // Render step entries (5-step analysis)
-              return (
-                <StepLogEntry
-                  key={`step-${entry.step}-${index}`}
-                  entry={entry}
-                  isExpanded={expandedSteps.has(entry.step)}
-                  onToggle={() => toggleStep(entry.step)}
-                />
-              );
-            })}
-          </div>
-        )}
-      </div>
+      {/* Content */}
+      <div className="p-4">
+        {/* Timeline */}
+        <TimelineBar steps={log.steps} />
 
-      {/* Footer with summary */}
-      {logs.length > 0 && (
-        <div className="px-4 py-2 bg-gray-900/30 border-t border-gray-800 text-xs">
-          <div className="flex items-center justify-between text-gray-500">
-            <span>
-              {(() => {
-                const stepLogs = logs.filter((l): l is AuditEntry => !isOperationEntry(l));
-                const opLogs = logs.filter(isOperationEntry);
-                if (stepLogs.length > 0) {
-                  return `${stepLogs.filter(l => l.passed).length}/${stepLogs.length} steps passed`;
-                }
-                return `${opLogs.length} operations`;
-              })()}
-            </span>
-            <span>
-              {logs.length > 0 && formatTimestamp(logs[logs.length - 1].timestamp)}
-            </span>
-          </div>
+        {/* Steps */}
+        <div className="border border-zinc-800 rounded divide-y divide-zinc-800">
+          {log.steps.map((step) => (
+            <StepRow
+              key={step.step}
+              step={step}
+              isExpanded={expandedSteps.has(step.step)}
+              onToggle={() => toggleStep(step.step)}
+            />
+          ))}
         </div>
-      )}
+
+        {/* Summary */}
+        <SummarySection summary={log.summary} />
+      </div>
     </div>
   );
 }

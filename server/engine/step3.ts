@@ -8,6 +8,7 @@
 import { TradeDirection } from './step2';
 import { getOptionChainWithStrikes } from '../broker/ibkr';
 import { getOptionChainStreamer, CachedOptionChain } from '../broker/optionChainStreamer';
+import type { StepReasoning, StepMetric, NearbyStrike } from '../../shared/types/engineLog';
 
 export interface Strike {
   strike: number;
@@ -32,6 +33,10 @@ export interface StrikeSelection {
     puts: Array<{ strike: number; bid: number; ask: number; delta: number; oi?: number }>;
     calls: Array<{ strike: number; bid: number; ask: number; delta: number; oi?: number }>;
   };
+  // Enhanced logging for UI
+  stepReasoning?: StepReasoning[];
+  stepMetrics?: StepMetric[];
+  enhancedNearbyStrikes?: NearbyStrike[];  // Flat array for UI table display
 }
 
 /**
@@ -543,6 +548,121 @@ export async function selectStrikes(
   const sourceLabel = dataSource === 'mock' ? 'MOCK estimates' : `IBKR ${dataSource}`;
   selection.reasoning += `Data source: ${sourceLabel}. Underlying: $${actualUnderlyingPrice.toFixed(2)}. `;
   selection.reasoning += `Expected premium: $${selection.expectedPremium}, Margin required: $${selection.marginRequired}`;
+
+  // Build enhanced reasoning Q&A
+  const selectedStrike = selection.putStrike || selection.callStrike;
+  const selectedType = selection.putStrike ? 'PUT' : 'CALL';
+  const targetDelta = selectedType === 'PUT' ? PUT_DELTA_TARGET : CALL_DELTA_TARGET;
+
+  selection.stepReasoning = [
+    {
+      question: 'What delta are we targeting?',
+      answer: `~${Math.abs(targetDelta.ideal).toFixed(2)} (${Math.abs(targetDelta.min).toFixed(2)}-${Math.abs(targetDelta.max).toFixed(2)} range)`
+    },
+    {
+      question: 'Why this delta?',
+      answer: '~70% probability OTM - good premium with safety margin'
+    },
+    {
+      question: 'Which strike selected?',
+      answer: selectedStrike
+        ? `$${selectedStrike.strike} ${selectedType} (delta: ${selectedStrike.delta.toFixed(3)})`
+        : 'None selected'
+    },
+    {
+      question: 'Data source?',
+      answer: dataSource === 'websocket'
+        ? 'IBKR WebSocket (real-time)'
+        : dataSource === 'http'
+          ? 'IBKR HTTP (snapshot)'
+          : 'Mock data (testing)'
+    },
+    {
+      question: 'Premium acceptable?',
+      answer: selection.expectedPremium > 0
+        ? `YES ($${selection.expectedPremium.toFixed(2)} per contract)`
+        : 'NO ($0 - market may be closed)'
+    }
+  ];
+
+  // Build enhanced metrics
+  selection.stepMetrics = [
+    {
+      label: 'Selected Strike',
+      value: selectedStrike ? `$${selectedStrike.strike}` : 'N/A',
+      status: selectedStrike ? 'normal' : 'critical'
+    },
+    {
+      label: 'Delta',
+      value: selectedStrike ? selectedStrike.delta.toFixed(3) : 'N/A',
+      status: selectedStrike
+        ? (Math.abs(selectedStrike.delta) >= Math.abs(targetDelta.min) &&
+           Math.abs(selectedStrike.delta) <= Math.abs(targetDelta.max)
+            ? 'normal'
+            : 'warning')
+        : 'critical'
+    },
+    {
+      label: 'Bid/Ask',
+      value: selectedStrike
+        ? `$${selectedStrike.bid.toFixed(2)}/$${selectedStrike.ask.toFixed(2)}`
+        : 'N/A',
+      status: selectedStrike && selectedStrike.bid > 0 ? 'normal' : 'warning'
+    },
+    {
+      label: 'Spread',
+      value: selectedStrike
+        ? `$${(selectedStrike.ask - selectedStrike.bid).toFixed(2)}`
+        : 'N/A',
+      status: selectedStrike && (selectedStrike.ask - selectedStrike.bid) <= 0.05 ? 'normal' : 'warning'
+    },
+    {
+      label: 'Premium',
+      value: `$${selection.expectedPremium.toFixed(2)}`,
+      status: selection.expectedPremium > 0 ? 'normal' : 'critical'
+    },
+    {
+      label: 'Margin Req',
+      value: `$${selection.marginRequired.toFixed(0)}`,
+      status: 'normal'
+    }
+  ];
+
+  // Build enhanced nearby strikes table for UI
+  // Combine puts and calls into a flat array, marking the selected one
+  const enhancedNearbyStrikes: NearbyStrike[] = [];
+
+  if (selection.nearbyStrikes?.puts) {
+    for (const s of selection.nearbyStrikes.puts) {
+      enhancedNearbyStrikes.push({
+        strike: s.strike,
+        optionType: 'PUT',
+        delta: s.delta,
+        bid: s.bid,
+        ask: s.ask,
+        spread: Number((s.ask - s.bid).toFixed(2)),
+        selected: selection.putStrike?.strike === s.strike
+      });
+    }
+  }
+
+  if (selection.nearbyStrikes?.calls) {
+    for (const s of selection.nearbyStrikes.calls) {
+      enhancedNearbyStrikes.push({
+        strike: s.strike,
+        optionType: 'CALL',
+        delta: s.delta,
+        bid: s.bid,
+        ask: s.ask,
+        spread: Number((s.ask - s.bid).toFixed(2)),
+        selected: selection.callStrike?.strike === s.strike
+      });
+    }
+  }
+
+  if (enhancedNearbyStrikes.length > 0) {
+    selection.enhancedNearbyStrikes = enhancedNearbyStrikes;
+  }
 
   console.log(`[Step3] Strike Selection COMPLETE`);
   console.log(`[Step3] Expected premium: $${selection.expectedPremium}, Margin: $${selection.marginRequired}`);

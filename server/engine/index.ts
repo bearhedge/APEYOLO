@@ -16,6 +16,7 @@ import { selectStrikes, StrikeSelection } from './step3.ts';
 import { calculatePositionSize, PositionSize, RiskProfile, AccountInfo } from './step4.ts';
 import { defineExitRules, ExitRules } from './step5.ts';
 import type { OptionChainDiagnostics } from '../../shared/types/engine';
+import type { EnhancedEngineLog, EnhancedStepLog, StepReasoning, StepMetric } from '../../shared/types/engineLog';
 
 /**
  * Custom error class for engine failures with step context
@@ -52,6 +53,8 @@ export interface TradingDecision {
   exitRules?: ExitRules;
   executionReady: boolean;
   audit: AuditEntry[];
+  // Enhanced logging for UI
+  enhancedLog?: EnhancedEngineLog;
 }
 
 /**
@@ -275,6 +278,109 @@ export class TradingEngine {
       finalReason = 'Insufficient buying power for position';
     }
 
+    // Build enhanced log for UI
+    const totalDurationMs = Date.now() - step1Start + (step2Start - step1Start);
+    const step1Duration = step2Start - step1Start;
+    const step2Duration = step3Start - step2Start;
+    const step3Duration = step4Start - step3Start;
+    const step4Duration = step5Start - step4Start;
+    const step5Duration = Date.now() - step5Start;
+    const durations = [step1Duration, step2Duration, step3Duration, step4Duration, step5Duration];
+    const maxDuration = Math.max(...durations);
+
+    const enhancedSteps: EnhancedStepLog[] = [
+      {
+        step: 1,
+        name: 'Market Regime Check',
+        status: step1Passed ? 'passed' : 'failed',
+        durationMs: step1Duration,
+        isSlowest: step1Duration === maxDuration,
+        reasoning: marketRegime.reasoning || [
+          { question: 'VIX acceptable?', answer: marketRegime.shouldTrade ? 'YES' : 'NO' },
+          { question: 'Trading window?', answer: withinTradingWindow ? 'OPEN' : 'CLOSED' }
+        ],
+        metrics: marketRegime.metrics || [
+          { label: 'VIX', value: marketRegime.metadata?.vix?.toFixed(2) || 'N/A', status: 'normal' },
+          { label: 'SPY', value: marketRegime.metadata?.spyPrice ? `$${marketRegime.metadata.spyPrice.toFixed(2)}` : 'N/A', status: 'normal' }
+        ]
+      },
+      {
+        step: 2,
+        name: 'Direction Selection',
+        status: 'passed',
+        durationMs: step2Duration,
+        isSlowest: step2Duration === maxDuration,
+        reasoning: direction.stepReasoning || [
+          { question: 'Trend?', answer: direction.signals?.trend || 'SIDEWAYS' },
+          { question: 'Strategy?', answer: `SELL ${direction.direction}` }
+        ],
+        metrics: direction.stepMetrics || [
+          { label: 'Direction', value: direction.direction, status: 'normal' },
+          { label: 'Confidence', value: `${(direction.confidence * 100).toFixed(0)}%`, status: 'normal' }
+        ]
+      },
+      {
+        step: 3,
+        name: 'Strike Selection',
+        status: 'passed',
+        durationMs: step3Duration,
+        isSlowest: step3Duration === maxDuration,
+        reasoning: strikes.stepReasoning || [
+          { question: 'Strike?', answer: strikes.putStrike ? `$${strikes.putStrike.strike} PUT` : strikes.callStrike ? `$${strikes.callStrike.strike} CALL` : 'N/A' }
+        ],
+        metrics: strikes.stepMetrics || [
+          { label: 'Premium', value: `$${strikes.expectedPremium.toFixed(2)}`, status: 'normal' }
+        ],
+        nearbyStrikes: strikes.enhancedNearbyStrikes
+      },
+      {
+        step: 4,
+        name: 'Position Sizing',
+        status: positionSize.contracts > 0 ? 'passed' : 'failed',
+        durationMs: step4Duration,
+        isSlowest: step4Duration === maxDuration,
+        reasoning: positionSize.stepReasoning || [
+          { question: 'Contracts?', answer: `${positionSize.contracts}` }
+        ],
+        metrics: positionSize.stepMetrics || [
+          { label: 'Contracts', value: positionSize.contracts, status: positionSize.contracts > 0 ? 'normal' : 'critical' },
+          { label: 'Margin', value: `$${positionSize.totalMarginRequired.toFixed(0)}`, status: 'normal' }
+        ]
+      },
+      {
+        step: 5,
+        name: 'Exit Rules',
+        status: 'passed',
+        durationMs: step5Duration,
+        isSlowest: step5Duration === maxDuration,
+        reasoning: exitRules.stepReasoning || [
+          { question: 'Stop loss?', answer: `$${exitRules.stopLossPrice}` }
+        ],
+        metrics: exitRules.stepMetrics || [
+          { label: 'Stop Loss', value: `$${exitRules.stopLossAmount.toFixed(2)}`, status: 'normal' }
+        ]
+      }
+    ];
+
+    // Build summary for UI
+    const selectedStrike = strikes.putStrike || strikes.callStrike;
+    const strikeLabel = selectedStrike
+      ? `SPY $${selectedStrike.strike}${strikes.putStrike ? 'P' : 'C'} 0DTE`
+      : 'N/A';
+
+    const enhancedLog: EnhancedEngineLog = {
+      totalDurationMs: step1Duration + step2Duration + step3Duration + step4Duration + step5Duration,
+      steps: enhancedSteps,
+      summary: {
+        strategy: `SELL ${direction.direction}`,
+        strike: strikeLabel,
+        contracts: positionSize.contracts,
+        premium: strikes.expectedPremium,
+        stopLoss: `$${exitRules.stopLossPrice} ($${exitRules.stopLossAmount} max)`,
+        status: fullyReady ? 'READY' : !hasSufficientFunds ? 'INSUFFICIENT FUNDS' : !withinTradingWindow ? 'OUTSIDE WINDOW' : 'NOT READY'
+      }
+    };
+
     return {
       timestamp: new Date(),
       canTrade: fullyReady,
@@ -287,7 +393,8 @@ export class TradingEngine {
       positionSize,
       exitRules,
       executionReady: fullyReady,
-      audit: this.audit
+      audit: this.audit,
+      enhancedLog
     };
   }
 

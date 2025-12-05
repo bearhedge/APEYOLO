@@ -611,5 +611,8 @@ export function adaptTradingDecision(
     guardRails,
     tradingWindow,
     audit: adaptAudit(decision.audit),
+
+    // Include enhanced logging for new UI
+    enhancedLog: decision.enhancedLog,
   };
 }
