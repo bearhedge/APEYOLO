@@ -75,6 +75,44 @@ function EventTypeBadge({ type }: { type: 'holiday' | 'early_close' | 'economic'
 }
 
 // ============================================
+// Parse cron expression to human-readable format
+// ============================================
+
+function parseCronToHuman(cron: string): string {
+  const parts = cron.split(' ');
+  if (parts.length !== 5) return cron;
+
+  const [minute, hour, dayOfMonth, month, dayOfWeek] = parts;
+
+  // Handle common patterns
+  if (dayOfWeek === '1-5' && dayOfMonth === '*' && month === '*') {
+    // Weekday schedule
+    const hourNum = parseInt(hour);
+    const minuteNum = parseInt(minute);
+    const ampm = hourNum >= 12 ? 'PM' : 'AM';
+    const hour12 = hourNum === 0 ? 12 : hourNum > 12 ? hourNum - 12 : hourNum;
+    const minuteStr = minuteNum.toString().padStart(2, '0');
+    return `Weekdays ${hour12}:${minuteStr} ${ampm} ET`;
+  }
+
+  if (dayOfWeek === '*' && dayOfMonth !== '*') {
+    // Specific day of month
+    return `Day ${dayOfMonth} at ${hour}:${minute.padStart(2, '0')}`;
+  }
+
+  // Default: show hour:minute
+  const hourNum = parseInt(hour);
+  const minuteNum = parseInt(minute);
+  if (!isNaN(hourNum) && !isNaN(minuteNum)) {
+    const ampm = hourNum >= 12 ? 'PM' : 'AM';
+    const hour12 = hourNum === 0 ? 12 : hourNum > 12 ? hourNum - 12 : hourNum;
+    return `${hour12}:${minuteNum.toString().padStart(2, '0')} ${ampm} ET`;
+  }
+
+  return cron;
+}
+
+// ============================================
 // Market Events Card
 // ============================================
 
@@ -119,10 +157,14 @@ function MarketEventsCard({
 
       <div className="space-y-2">
         {upcomingEvents.slice(0, 8).map((event, i) => (
-          <div key={i} className="flex items-center gap-3 text-sm py-1.5 border-b border-white/5 last:border-0">
-            <span className="font-mono text-zinc-400 w-20 flex-shrink-0">{event.date}</span>
-            <EventTypeBadge type={event.type} />
-            <ImpactBadge level={event.impactLevel} />
+          <div key={i} className="flex items-center gap-4 text-sm py-1.5 border-b border-white/5 last:border-0">
+            <span className="font-mono text-zinc-400 w-24 flex-shrink-0">{event.date}</span>
+            <span className="w-20 flex-shrink-0">
+              <EventTypeBadge type={event.type} />
+            </span>
+            <span className="w-16 flex-shrink-0">
+              <ImpactBadge level={event.impactLevel} />
+            </span>
             <span className="flex-1 truncate">{event.event}</span>
             {event.time && (
               <span className="text-silver text-xs flex-shrink-0">{event.time} ET</span>
@@ -152,12 +194,11 @@ function JobsTable({
   isToggling: boolean;
 }) {
   const [runningJobId, setRunningJobId] = useState<string | null>(null);
-  const [forceRun, setForceRun] = useState(false);
 
   const handleRun = async (jobId: string) => {
     setRunningJobId(jobId);
     try {
-      await onRun(jobId, { forceRun, skipMarketCheck: forceRun });
+      await onRun(jobId);
     } finally {
       setRunningJobId(null);
     }
@@ -177,18 +218,7 @@ function JobsTable({
 
   return (
     <div className="bg-charcoal rounded-2xl p-6 border border-white/10">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold">Scheduled Jobs</h2>
-        <label className="flex items-center gap-2 text-sm text-silver">
-          <input
-            type="checkbox"
-            checked={forceRun}
-            onChange={(e) => setForceRun(e.target.checked)}
-            className="rounded border-white/20 bg-white/5"
-          />
-          Force run (skip checks)
-        </label>
-      </div>
+      <h2 className="text-lg font-semibold mb-4">Scheduled Jobs</h2>
 
       <div className="overflow-x-auto">
         <table className="w-full text-sm">
@@ -212,10 +242,10 @@ function JobsTable({
                   </div>
                 </td>
                 <td className="py-3 px-2">
-                  <code className="text-xs bg-white/10 px-2 py-1 rounded">
-                    {job.schedule}
-                  </code>
-                  <p className="text-silver text-xs mt-1">{job.timezone}</p>
+                  <p className="text-sm font-medium">
+                    {parseCronToHuman(job.schedule)}
+                  </p>
+                  <code className="text-xs text-zinc-500">{job.schedule}</code>
                 </td>
                 <td className="py-3 px-2">
                   {job.lastRunAt ? (
@@ -379,7 +409,6 @@ export function Jobs() {
     toggleJob,
     isRunning,
     isToggling,
-    refetch,
   } = useJobs();
 
   const handleRun = async (jobId: string, options?: { forceRun?: boolean; skipMarketCheck?: boolean }) => {
@@ -403,17 +432,9 @@ export function Jobs() {
       <LeftNav />
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
         {/* Header */}
-        <div className="flex items-center justify-between mb-6">
-          <div>
-            <h1 className="text-3xl font-bold tracking-wide">Jobs</h1>
-            <p className="text-silver text-sm mt-1">Scheduled tasks and execution pipeline</p>
-          </div>
-          <button
-            onClick={refetch}
-            className="px-4 py-2 bg-white/10 hover:bg-white/20 rounded-lg text-sm font-medium transition-colors"
-          >
-            Refresh
-          </button>
+        <div className="mb-6">
+          <h1 className="text-3xl font-bold tracking-wide">Jobs</h1>
+          <p className="text-silver text-sm mt-1">Scheduled tasks and execution pipeline</p>
         </div>
 
         {/* Error State */}
