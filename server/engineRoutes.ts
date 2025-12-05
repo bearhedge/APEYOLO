@@ -399,12 +399,15 @@ router.get('/analyze', requireAuth, async (req, res) => {
     // Check if it's an EngineError with step context
     if (error instanceof EngineError) {
       console.error(`[Engine/analyze] EngineError at Step ${error.step} (${error.stepName}): ${error.reason}`);
+      console.log(`[Engine/analyze] Returning partial enhancedLog: ${error.enhancedLog ? 'yes' : 'no'}`);
       return res.status(500).json({
         error: 'Engine analysis failed',
         failedStep: error.step,
         stepName: error.stepName,
         reason: error.reason,
         diagnostics: error.diagnostics || null,
+        // Include partial enhancedLog so UI can display completed steps + failure
+        enhancedLog: error.enhancedLog || null,
         audit: error.audit.map(entry => ({
           step: entry.step,
           name: entry.name,

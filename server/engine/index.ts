@@ -20,20 +20,24 @@ import type { EnhancedEngineLog, EnhancedStepLog, StepReasoning, StepMetric } fr
 
 /**
  * Custom error class for engine failures with step context
+ * Includes partial enhancedLog for UI display even on failure
  */
 export class EngineError extends Error {
   public diagnostics?: OptionChainDiagnostics;
+  public enhancedLog?: EnhancedEngineLog;
 
   constructor(
     public step: number,
     public stepName: string,
     public reason: string,
     public audit: AuditEntry[],
-    diagnostics?: OptionChainDiagnostics
+    diagnostics?: OptionChainDiagnostics,
+    enhancedLog?: EnhancedEngineLog
   ) {
     super(`[Step ${step}] ${stepName} failed: ${reason}`);
     this.name = 'EngineError';
     this.diagnostics = diagnostics;
+    this.enhancedLog = enhancedLog;
   }
 }
 
@@ -112,6 +116,87 @@ export class TradingEngine {
   }
 
   /**
+   * Build partial enhancedLog for error responses
+   * Includes completed steps + the failed step
+   */
+  private buildPartialEnhancedLog(
+    completedSteps: EnhancedStepLog[],
+    failedStep: { step: number; name: string; error: string; durationMs: number },
+    totalDurationMs: number
+  ): EnhancedEngineLog {
+    const durations = [...completedSteps.map(s => s.durationMs), failedStep.durationMs];
+    const maxDuration = Math.max(...durations);
+
+    // Mark slowest step
+    const stepsWithSlowest = completedSteps.map(s => ({
+      ...s,
+      isSlowest: s.durationMs === maxDuration
+    }));
+
+    // Add failed step
+    const failedStepLog: EnhancedStepLog = {
+      step: failedStep.step,
+      name: failedStep.name,
+      status: 'failed' as const,
+      durationMs: failedStep.durationMs,
+      isSlowest: failedStep.durationMs === maxDuration,
+      reasoning: [{ question: 'Error', answer: failedStep.error }],
+      metrics: [],
+      error: {
+        message: failedStep.error,
+        suggestion: this.getErrorSuggestion(failedStep.step, failedStep.error)
+      }
+    };
+
+    // Add remaining steps as skipped
+    const stepNames = ['Market Regime Check', 'Direction Selection', 'Strike Selection', 'Position Sizing', 'Exit Rules'];
+    const skippedSteps: EnhancedStepLog[] = [];
+    for (let i = failedStep.step; i < 5; i++) {
+      skippedSteps.push({
+        step: i + 1,
+        name: stepNames[i],
+        status: 'skipped' as const,
+        durationMs: 0,
+        isSlowest: false,
+        reasoning: [{ question: 'Status', answer: 'Skipped due to previous step failure' }],
+        metrics: []
+      });
+    }
+
+    return {
+      totalDurationMs,
+      steps: [...stepsWithSlowest, failedStepLog, ...skippedSteps],
+      summary: {
+        strategy: 'ANALYSIS INCOMPLETE',
+        strike: 'N/A',
+        contracts: 0,
+        premium: 0,
+        stopLoss: 'N/A',
+        status: `FAILED AT STEP ${failedStep.step}`
+      }
+    };
+  }
+
+  /**
+   * Get helpful suggestion based on error type
+   */
+  private getErrorSuggestion(step: number, error: string): string {
+    if (error.includes('Option chain unavailable') || error.includes('puts=0, calls=0')) {
+      return 'Market is closed or option chain data is not available. Try again during regular trading hours (9:30 AM - 4:00 PM ET).';
+    }
+    if (error.includes('No SPY price')) {
+      return 'Unable to fetch SPY price from IBKR. Check broker connection.';
+    }
+    if (error.includes('VIX')) {
+      return 'VIX data unavailable. Check market data subscription.';
+    }
+    if (error.includes('margin') || error.includes('buying power')) {
+      return 'Insufficient funds for this position. Consider reducing position size.';
+    }
+    return `Step ${step} encountered an error. Check logs for details.`;
+  }
+
+  /**
    * Execute the complete 5-step trading decision process
    * @param accountInfo - Current account information
    * @returns Complete trading decision with audit trail
@@ -125,18 +210,29 @@ export class TradingEngine {
     // Reset audit trail
     this.audit = [];
 
+    // Track step timings for enhanced log
+    const engineStartTime = Date.now();
+    const completedSteps: EnhancedStepLog[] = [];
+    let stepStartTime = Date.now();
+
     // Step 1: Market Regime Check
     let marketRegime: MarketRegime;
-    let step1Start = Date.now();
+    stepStartTime = Date.now();
     console.log('\n[Engine] Step 1 START: Market Regime Check');
     try {
       marketRegime = await analyzeMarketRegime();
-      console.log(`[Engine] Step 1 COMPLETE (${Date.now() - step1Start}ms)`);
+      console.log(`[Engine] Step 1 COMPLETE (${Date.now() - stepStartTime}ms)`);
       console.log(`[Engine] Step 1 Result: VIX=${marketRegime.metadata?.vix?.toFixed(2) || 'N/A'}, SPY=$${marketRegime.metadata?.spyPrice?.toFixed(2) || 'N/A'}`);
     } catch (error: any) {
-      console.error(`[Engine] Step 1 FAILED (${Date.now() - step1Start}ms): ${error.message}`);
+      const stepDuration = Date.now() - stepStartTime;
+      console.error(`[Engine] Step 1 FAILED (${stepDuration}ms): ${error.message}`);
       this.addAudit(1, 'Market Regime Check', {}, { error: error.message }, false, error.message);
-      throw new EngineError(1, 'Market Regime Check', error.message, this.audit);
+      const partialLog = this.buildPartialEnhancedLog(
+        completedSteps,
+        { step: 1, name: 'Market Regime Check', error: error.message, durationMs: stepDuration },
+        Date.now() - engineStartTime
+      );
+      throw new EngineError(1, 'Market Regime Check', error.message, this.audit, undefined, partialLog);
     }
 
     const withinTradingWindow = marketRegime.withinTradingWindow;
@@ -145,6 +241,24 @@ export class TradingEngine {
     // Determine step 1 result for audit (pass if VIX is acceptable, regardless of trading window)
     const step1Passed = marketRegime.shouldTrade;
     this.addAudit(1, 'Market Regime Check', {}, marketRegime, step1Passed, marketRegime.reason);
+
+    // Add Step 1 to completed steps for enhanced log
+    const step1Duration = Date.now() - stepStartTime;
+    completedSteps.push({
+      step: 1,
+      name: 'Market Regime Check',
+      status: step1Passed ? 'passed' : 'failed',
+      durationMs: step1Duration,
+      isSlowest: false, // Will be recalculated at the end
+      reasoning: marketRegime.reasoning || [
+        { question: 'VIX acceptable?', answer: marketRegime.shouldTrade ? `YES (${marketRegime.metadata?.vix?.toFixed(2) || 'N/A'})` : `NO (${marketRegime.metadata?.vix?.toFixed(2) || 'N/A'})` },
+        { question: 'Trading window?', answer: withinTradingWindow ? 'OPEN' : 'CLOSED' }
+      ],
+      metrics: marketRegime.metrics || [
+        { label: 'VIX', value: marketRegime.metadata?.vix?.toFixed(2) || 'N/A', status: 'normal' as const },
+        { label: 'SPY', value: marketRegime.metadata?.spyPrice ? `$${marketRegime.metadata.spyPrice.toFixed(2)}` : 'N/A', status: 'normal' as const }
+      ]
+    });
 
     if (canExecute) {
       console.log(`  Result: ✅ CAN TRADE`);
@@ -160,24 +274,49 @@ export class TradingEngine {
 
     // Step 2: Direction Selection
     let direction: DirectionDecision;
-    let step2Start = Date.now();
+    stepStartTime = Date.now();
     console.log('\n[Engine] Step 2 START: Direction Selection');
     try {
       direction = await selectDirection(marketRegime);
-      console.log(`[Engine] Step 2 COMPLETE (${Date.now() - step2Start}ms)`);
+      console.log(`[Engine] Step 2 COMPLETE (${Date.now() - stepStartTime}ms)`);
     } catch (error: any) {
-      console.error(`[Engine] Step 2 FAILED (${Date.now() - step2Start}ms): ${error.message}`);
+      const stepDuration = Date.now() - stepStartTime;
+      console.error(`[Engine] Step 2 FAILED (${stepDuration}ms): ${error.message}`);
       this.addAudit(2, 'Direction Selection', { marketRegime }, { error: error.message }, false, error.message);
-      throw new EngineError(2, 'Direction Selection', error.message, this.audit);
+      const partialLog = this.buildPartialEnhancedLog(
+        completedSteps,
+        { step: 2, name: 'Direction Selection', error: error.message, durationMs: stepDuration },
+        Date.now() - engineStartTime
+      );
+      throw new EngineError(2, 'Direction Selection', error.message, this.audit, undefined, partialLog);
     }
     this.addAudit(2, 'Direction Selection', { marketRegime }, direction, true, direction.reasoning);
+
+    // Add Step 2 to completed steps
+    const step2Duration = Date.now() - stepStartTime;
+    completedSteps.push({
+      step: 2,
+      name: 'Direction Selection',
+      status: 'passed',
+      durationMs: step2Duration,
+      isSlowest: false,
+      reasoning: direction.stepReasoning || [
+        { question: 'Trend?', answer: direction.signals?.trend || 'SIDEWAYS' },
+        { question: 'Strategy?', answer: `SELL ${direction.direction}` }
+      ],
+      metrics: direction.stepMetrics || [
+        { label: 'Direction', value: direction.direction, status: 'normal' as const },
+        { label: 'Confidence', value: `${(direction.confidence * 100).toFixed(0)}%`, status: 'normal' as const }
+      ]
+    });
+
     console.log(`  Direction: ${direction.direction}`);
     console.log(`  Confidence: ${(direction.confidence * 100).toFixed(0)}%`);
     console.log(`  Reasoning: ${direction.reasoning}`);
 
     // Step 3: Strike Selection
     let strikes: StrikeSelection;
-    let step3Start = Date.now();
+    stepStartTime = Date.now();
     console.log('\n[Engine] Step 3 START: Strike Selection');
 
     // Use REAL SPY price from Step 1 (IBKR only - no fallbacks)
@@ -185,26 +324,55 @@ export class TradingEngine {
     console.log(`[Engine] Step 3: SPY price from Step 1 = $${underlyingPrice}`);
 
     if (!underlyingPrice || underlyingPrice <= 0) {
+      const stepDuration = Date.now() - stepStartTime;
       const errorMsg = '[IBKR] No SPY price available from Step 1 - cannot proceed without real IBKR data';
       console.error(`[Engine] Step 3 FAILED: ${errorMsg}`);
       this.addAudit(3, 'Strike Selection', { underlyingPrice }, { error: errorMsg }, false, errorMsg);
-      throw new EngineError(3, 'Strike Selection', errorMsg, this.audit);
+      const partialLog = this.buildPartialEnhancedLog(
+        completedSteps,
+        { step: 3, name: 'Strike Selection', error: errorMsg, durationMs: stepDuration },
+        Date.now() - engineStartTime
+      );
+      throw new EngineError(3, 'Strike Selection', errorMsg, this.audit, undefined, partialLog);
     }
 
     try {
       strikes = await selectStrikes(direction.direction, underlyingPrice);
-      console.log(`[Engine] Step 3 COMPLETE (${Date.now() - step3Start}ms)`);
+      console.log(`[Engine] Step 3 COMPLETE (${Date.now() - stepStartTime}ms)`);
     } catch (error: any) {
-      console.error(`[Engine] Step 3 FAILED (${Date.now() - step3Start}ms): ${error.message}`);
+      const stepDuration = Date.now() - stepStartTime;
+      console.error(`[Engine] Step 3 FAILED (${stepDuration}ms): ${error.message}`);
       // Extract diagnostics if present (from option chain errors)
       const diagnostics = error.diagnostics as OptionChainDiagnostics | undefined;
       if (diagnostics) {
         console.log(`[Engine] Step 3 Diagnostics: conid=${diagnostics.conid}, month=${diagnostics.monthFormatted}, underlyingPrice=${diagnostics.underlyingPrice}`);
       }
       this.addAudit(3, 'Strike Selection', { direction: direction.direction, underlyingPrice }, { error: error.message, diagnostics }, false, error.message);
-      throw new EngineError(3, 'Strike Selection', error.message, this.audit, diagnostics);
+      const partialLog = this.buildPartialEnhancedLog(
+        completedSteps,
+        { step: 3, name: 'Strike Selection', error: error.message, durationMs: stepDuration },
+        Date.now() - engineStartTime
+      );
+      throw new EngineError(3, 'Strike Selection', error.message, this.audit, diagnostics, partialLog);
     }
     this.addAudit(3, 'Strike Selection', { direction: direction.direction, underlyingPrice }, strikes, true, strikes.reasoning);
+
+    // Add Step 3 to completed steps
+    const step3Duration = Date.now() - stepStartTime;
+    completedSteps.push({
+      step: 3,
+      name: 'Strike Selection',
+      status: 'passed',
+      durationMs: step3Duration,
+      isSlowest: false,
+      reasoning: strikes.stepReasoning || [
+        { question: 'Strike?', answer: strikes.putStrike ? `$${strikes.putStrike.strike} PUT` : strikes.callStrike ? `$${strikes.callStrike.strike} CALL` : 'N/A' }
+      ],
+      metrics: strikes.stepMetrics || [
+        { label: 'Premium', value: `$${strikes.expectedPremium.toFixed(2)}`, status: 'normal' as const }
+      ],
+      nearbyStrikes: strikes.enhancedNearbyStrikes
+    });
 
     if (strikes.putStrike) {
       console.log(`  PUT Strike: $${strikes.putStrike.strike} (delta: ${strikes.putStrike.delta})`);
@@ -216,17 +384,40 @@ export class TradingEngine {
 
     // Step 4: Position Sizing
     let positionSize: PositionSize;
-    let step4Start = Date.now();
+    stepStartTime = Date.now();
     console.log('\n[Engine] Step 4 START: Position Sizing');
     try {
       positionSize = await calculatePositionSize(strikes, accountInfo, this.config.riskProfile);
-      console.log(`[Engine] Step 4 COMPLETE (${Date.now() - step4Start}ms)`);
+      console.log(`[Engine] Step 4 COMPLETE (${Date.now() - stepStartTime}ms)`);
     } catch (error: any) {
-      console.error(`[Engine] Step 4 FAILED (${Date.now() - step4Start}ms): ${error.message}`);
+      const stepDuration = Date.now() - stepStartTime;
+      console.error(`[Engine] Step 4 FAILED (${stepDuration}ms): ${error.message}`);
       this.addAudit(4, 'Position Sizing', { strikes, accountInfo, riskProfile: this.config.riskProfile }, { error: error.message }, false, error.message);
-      throw new EngineError(4, 'Position Sizing', error.message, this.audit);
+      const partialLog = this.buildPartialEnhancedLog(
+        completedSteps,
+        { step: 4, name: 'Position Sizing', error: error.message, durationMs: stepDuration },
+        Date.now() - engineStartTime
+      );
+      throw new EngineError(4, 'Position Sizing', error.message, this.audit, undefined, partialLog);
     }
     this.addAudit(4, 'Position Sizing', { strikes, accountInfo, riskProfile: this.config.riskProfile }, positionSize, positionSize.contracts > 0, positionSize.reasoning);
+
+    // Add Step 4 to completed steps
+    const step4Duration = Date.now() - stepStartTime;
+    completedSteps.push({
+      step: 4,
+      name: 'Position Sizing',
+      status: positionSize.contracts > 0 ? 'passed' : 'failed',
+      durationMs: step4Duration,
+      isSlowest: false,
+      reasoning: positionSize.stepReasoning || [
+        { question: 'Contracts?', answer: `${positionSize.contracts}` }
+      ],
+      metrics: positionSize.stepMetrics || [
+        { label: 'Contracts', value: positionSize.contracts, status: positionSize.contracts > 0 ? 'normal' as const : 'critical' as const },
+        { label: 'Margin', value: `$${positionSize.totalMarginRequired.toFixed(0)}`, status: 'normal' as const }
+      ]
+    });
 
     console.log(`  Risk Profile: ${this.config.riskProfile}`);
     console.log(`  Contracts: ${positionSize.contracts}`);
@@ -241,17 +432,39 @@ export class TradingEngine {
 
     // Step 5: Exit Rules
     let exitRules: ExitRules;
-    let step5Start = Date.now();
+    stepStartTime = Date.now();
     console.log('\n[Engine] Step 5 START: Exit Rules');
     try {
       exitRules = await defineExitRules(strikes, positionSize);
-      console.log(`[Engine] Step 5 COMPLETE (${Date.now() - step5Start}ms)`);
+      console.log(`[Engine] Step 5 COMPLETE (${Date.now() - stepStartTime}ms)`);
     } catch (error: any) {
-      console.error(`[Engine] Step 5 FAILED (${Date.now() - step5Start}ms): ${error.message}`);
+      const stepDuration = Date.now() - stepStartTime;
+      console.error(`[Engine] Step 5 FAILED (${stepDuration}ms): ${error.message}`);
       this.addAudit(5, 'Exit Rules', { strikes, positionSize }, { error: error.message }, false, error.message);
-      throw new EngineError(5, 'Exit Rules', error.message, this.audit);
+      const partialLog = this.buildPartialEnhancedLog(
+        completedSteps,
+        { step: 5, name: 'Exit Rules', error: error.message, durationMs: stepDuration },
+        Date.now() - engineStartTime
+      );
+      throw new EngineError(5, 'Exit Rules', error.message, this.audit, undefined, partialLog);
     }
     this.addAudit(5, 'Exit Rules', { strikes, positionSize }, exitRules, true, exitRules.reasoning);
+
+    // Add Step 5 to completed steps
+    const step5Duration = Date.now() - stepStartTime;
+    completedSteps.push({
+      step: 5,
+      name: 'Exit Rules',
+      status: 'passed',
+      durationMs: step5Duration,
+      isSlowest: false,
+      reasoning: exitRules.stepReasoning || [
+        { question: 'Stop loss?', answer: `$${exitRules.stopLossPrice}` }
+      ],
+      metrics: exitRules.stepMetrics || [
+        { label: 'Stop Loss', value: `$${exitRules.stopLossAmount.toFixed(2)}`, status: 'normal' as const }
+      ]
+    });
 
     console.log(`  Stop Loss: $${exitRules.stopLossPrice} per share ($${exitRules.stopLossAmount} total)`);
     console.log(`  Take Profit: ${exitRules.takeProfitPrice || 'None (let expire)'}`);
@@ -278,89 +491,16 @@ export class TradingEngine {
       finalReason = 'Insufficient buying power for position';
     }
 
-    // Build enhanced log for UI
-    const totalDurationMs = Date.now() - step1Start + (step2Start - step1Start);
-    const step1Duration = step2Start - step1Start;
-    const step2Duration = step3Start - step2Start;
-    const step3Duration = step4Start - step3Start;
-    const step4Duration = step5Start - step4Start;
-    const step5Duration = Date.now() - step5Start;
-    const durations = [step1Duration, step2Duration, step3Duration, step4Duration, step5Duration];
+    // Build enhanced log for UI using incrementally collected steps
+    const totalDurationMs = Date.now() - engineStartTime;
+    const durations = completedSteps.map(s => s.durationMs);
     const maxDuration = Math.max(...durations);
 
-    const enhancedSteps: EnhancedStepLog[] = [
-      {
-        step: 1,
-        name: 'Market Regime Check',
-        status: step1Passed ? 'passed' : 'failed',
-        durationMs: step1Duration,
-        isSlowest: step1Duration === maxDuration,
-        reasoning: marketRegime.reasoning || [
-          { question: 'VIX acceptable?', answer: marketRegime.shouldTrade ? 'YES' : 'NO' },
-          { question: 'Trading window?', answer: withinTradingWindow ? 'OPEN' : 'CLOSED' }
-        ],
-        metrics: marketRegime.metrics || [
-          { label: 'VIX', value: marketRegime.metadata?.vix?.toFixed(2) || 'N/A', status: 'normal' },
-          { label: 'SPY', value: marketRegime.metadata?.spyPrice ? `$${marketRegime.metadata.spyPrice.toFixed(2)}` : 'N/A', status: 'normal' }
-        ]
-      },
-      {
-        step: 2,
-        name: 'Direction Selection',
-        status: 'passed',
-        durationMs: step2Duration,
-        isSlowest: step2Duration === maxDuration,
-        reasoning: direction.stepReasoning || [
-          { question: 'Trend?', answer: direction.signals?.trend || 'SIDEWAYS' },
-          { question: 'Strategy?', answer: `SELL ${direction.direction}` }
-        ],
-        metrics: direction.stepMetrics || [
-          { label: 'Direction', value: direction.direction, status: 'normal' },
-          { label: 'Confidence', value: `${(direction.confidence * 100).toFixed(0)}%`, status: 'normal' }
-        ]
-      },
-      {
-        step: 3,
-        name: 'Strike Selection',
-        status: 'passed',
-        durationMs: step3Duration,
-        isSlowest: step3Duration === maxDuration,
-        reasoning: strikes.stepReasoning || [
-          { question: 'Strike?', answer: strikes.putStrike ? `$${strikes.putStrike.strike} PUT` : strikes.callStrike ? `$${strikes.callStrike.strike} CALL` : 'N/A' }
-        ],
-        metrics: strikes.stepMetrics || [
-          { label: 'Premium', value: `$${strikes.expectedPremium.toFixed(2)}`, status: 'normal' }
-        ],
-        nearbyStrikes: strikes.enhancedNearbyStrikes
-      },
-      {
-        step: 4,
-        name: 'Position Sizing',
-        status: positionSize.contracts > 0 ? 'passed' : 'failed',
-        durationMs: step4Duration,
-        isSlowest: step4Duration === maxDuration,
-        reasoning: positionSize.stepReasoning || [
-          { question: 'Contracts?', answer: `${positionSize.contracts}` }
-        ],
-        metrics: positionSize.stepMetrics || [
-          { label: 'Contracts', value: positionSize.contracts, status: positionSize.contracts > 0 ? 'normal' : 'critical' },
-          { label: 'Margin', value: `$${positionSize.totalMarginRequired.toFixed(0)}`, status: 'normal' }
-        ]
-      },
-      {
-        step: 5,
-        name: 'Exit Rules',
-        status: 'passed',
-        durationMs: step5Duration,
-        isSlowest: step5Duration === maxDuration,
-        reasoning: exitRules.stepReasoning || [
-          { question: 'Stop loss?', answer: `$${exitRules.stopLossPrice}` }
-        ],
-        metrics: exitRules.stepMetrics || [
-          { label: 'Stop Loss', value: `$${exitRules.stopLossAmount.toFixed(2)}`, status: 'normal' }
-        ]
-      }
-    ];
+    // Mark slowest step
+    const enhancedSteps = completedSteps.map(step => ({
+      ...step,
+      isSlowest: step.durationMs === maxDuration
+    }));
 
     // Build summary for UI
     const selectedStrike = strikes.putStrike || strikes.callStrike;
@@ -369,7 +509,7 @@ export class TradingEngine {
       : 'N/A';
 
     const enhancedLog: EnhancedEngineLog = {
-      totalDurationMs: step1Duration + step2Duration + step3Duration + step4Duration + step5Duration,
+      totalDurationMs,
       steps: enhancedSteps,
       summary: {
         strategy: `SELL ${direction.direction}`,

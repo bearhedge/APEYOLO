@@ -268,6 +268,7 @@ export function useEngine() {
   }, []);
 
   // NEW: Run analysis using the standardized endpoint (returns EngineAnalyzeResponse)
+  // When analysis fails, if partial enhancedLog is available, still display it
   const analyzeEngine = useCallback(async (options?: AnalyzeOptions): Promise<EngineAnalyzeResponse> => {
     setLoading(true);
     setError(null);
@@ -290,7 +291,21 @@ export function useEngine() {
         err.reason = errorData.reason;
         err.audit = errorData.audit;
         err.diagnostics = errorData.diagnostics; // IBKR diagnostic data for Step 3 failures
+        err.enhancedLog = errorData.enhancedLog; // Partial log showing completed steps + failure
         err.isEngineError = true;
+
+        // If we have a partial enhancedLog, still update analysis to show UI
+        if (errorData.enhancedLog) {
+          console.log('[Engine] Error response contains partial enhancedLog - displaying');
+          // Create a partial analysis response for the UI
+          const partialAnalysis: Partial<EngineAnalyzeResponse> = {
+            enhancedLog: errorData.enhancedLog,
+            canTrade: false,
+            // Signal this is an error state
+          };
+          setAnalysis(partialAnalysis as EngineAnalyzeResponse);
+        }
+
         throw err;
       }
 
