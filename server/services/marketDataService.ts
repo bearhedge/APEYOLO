@@ -4,8 +4,7 @@
  */
 
 import { getBroker, getBrokerWithStatus } from "../broker/index";
-import { ensureIbkrReady } from "../broker/ibkr";
-import { fetchVIXData as fetchYahooVIX, fetchHistoricalData } from "./yahooFinanceService";
+import { ensureIbkrReady, ibkrBroker } from "../broker/ibkr";
 
 export interface MarketData {
   symbol: string;
@@ -155,33 +154,54 @@ export async function getMarketData(symbol: string): Promise<MarketData> {
 }
 
 /**
- * Get VIX data (volatility index) - Uses Yahoo Finance for real data
+ * Get VIX data (volatility index) - Uses IBKR for real data
+ * Consistent with SPY data source
  */
 export async function getVIXData(): Promise<VIXData> {
   const cacheKey = 'vix:data';
   const cached = cache.get(cacheKey);
   if (cached) return cached;
 
+  const broker = getBroker();
+
+  // Use mock data if not connected to IBKR
+  if (broker.status.provider === 'mock') {
+    const vixData: VIXData = {
+      value: 15.30 + (Math.random() - 0.5) * 0.5,
+      change: (Math.random() - 0.5) * 0.5,
+      changePercent: (Math.random() - 0.5) * 2,
+      high: 16.00,
+      low: 14.50,
+      timestamp: new Date()
+    };
+    console.log(`[MarketData] Using MOCK VIX: ${vixData.value.toFixed(2)}`);
+    cache.set(cacheKey, vixData);
+    return vixData;
+  }
+
   try {
-    // Fetch real VIX data from Yahoo Finance
-    const yahooVix = await fetchYahooVIX();
+    // Ensure IBKR is ready
+    await ensureIbkrReady();
+
+    // Fetch VIX from IBKR using the same getMarketData function as SPY
+    const vixMarketData = await broker.api.getMarketData('VIX');
 
     const vixData: VIXData = {
-      value: yahooVix.current,
-      change: yahooVix.change,
-      changePercent: yahooVix.changePercent,
-      high: yahooVix.high,
-      low: yahooVix.low,
-      timestamp: yahooVix.lastUpdate
+      value: vixMarketData.price,
+      change: vixMarketData.change,
+      changePercent: vixMarketData.changePercent,
+      high: vixMarketData.price * 1.02, // IBKR snapshot doesn't provide high/low
+      low: vixMarketData.price * 0.98,
+      timestamp: new Date()
     };
 
-    console.log(`[MarketData] Real VIX fetched: ${vixData.value.toFixed(2)} (${vixData.changePercent > 0 ? '+' : ''}${vixData.changePercent.toFixed(2)}%)`);
+    console.log(`[MarketData] IBKR VIX fetched: ${vixData.value.toFixed(2)} (${vixData.changePercent > 0 ? '+' : ''}${vixData.changePercent.toFixed(2)}%)`);
     cache.set(cacheKey, vixData);
     return vixData;
   } catch (error) {
-    console.error('[MarketData] Error fetching VIX from Yahoo Finance, using fallback:', error);
+    console.error('[MarketData] Error fetching VIX from IBKR, using fallback:', error);
 
-    // Fallback to mock data if Yahoo Finance fails
+    // Fallback to default VIX if IBKR fails
     const vixData: VIXData = {
       value: 17.50,
       change: 0,

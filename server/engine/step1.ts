@@ -231,8 +231,8 @@ export async function analyzeMarketRegime(useRealData: boolean = true): Promise<
       question: 'Is VIX acceptable?',
       answer: vixLevel
         ? (vixAcceptable
-            ? `YES (${vixLevel.toFixed(2)} - ${volRegime} regime, from Yahoo Finance)`
-            : `NO (${vixLevel.toFixed(2)} - EXTREME volatility, from Yahoo Finance)`)
+            ? `YES (${vixLevel.toFixed(2)} - ${volRegime} regime, from IBKR)`
+            : `NO (${vixLevel.toFixed(2)} - EXTREME volatility, from IBKR)`)
         : 'N/A (VIX data unavailable)'
     },
     {
