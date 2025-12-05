@@ -67,6 +67,18 @@ const DEFAULT_GUARD_RAILS: GuardRails = {
 let engineInstance: TradingEngine | null = null;
 let currentGuardRails = { ...DEFAULT_GUARD_RAILS };
 
+// Engine timeout to prevent hanging (60 seconds)
+const ENGINE_TIMEOUT_MS = 60000;
+
+/**
+ * Create a timeout promise for wrapping async operations
+ */
+function createTimeoutPromise(ms: number, operation: string): Promise<never> {
+  return new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`${operation} timed out after ${ms / 1000} seconds`)), ms)
+  );
+}
+
 // Engine configuration schema
 const engineConfigSchema = z.object({
   riskProfile: z.enum(['CONSERVATIVE', 'BALANCED', 'AGGRESSIVE']).optional(),
@@ -209,13 +221,16 @@ router.post('/execute', requireAuth, async (req, res) => {
       engineInstance['config'].underlyingPrice = spyPrice;
     }
 
-    // Execute the 5-step decision process
-    const decision = await engineInstance.executeTradingDecision({
-      buyingPower: account.buyingPower,
-      cashBalance: account.totalCash,
-      totalValue: account.netLiquidation,
-      openPositions: 0 // TODO: Get actual open positions count
-    });
+    // Execute the 5-step decision process with timeout protection
+    const decision = await Promise.race([
+      engineInstance.executeTradingDecision({
+        buyingPower: account.buyingPower,
+        cashBalance: account.totalCash,
+        totalValue: account.netLiquidation,
+        openPositions: 0 // TODO: Get actual open positions count
+      }),
+      createTimeoutPromise(ENGINE_TIMEOUT_MS, 'Engine execution')
+    ]);
 
     // Apply guard rails validation
     let guardRailViolations = [];
@@ -262,6 +277,7 @@ router.post('/execute', requireAuth, async (req, res) => {
         failedStep: error.step,
         stepName: error.stepName,
         reason: error.reason,
+        diagnostics: error.diagnostics || null,
         audit: error.audit.map(entry => ({
           step: entry.step,
           name: entry.name,
@@ -333,13 +349,16 @@ router.get('/analyze', requireAuth, async (req, res) => {
       engineInstance['config'].underlyingPrice = spyPrice;
     }
 
-    // Execute the 5-step decision process
-    const decision = await engineInstance.executeTradingDecision({
-      buyingPower: account.buyingPower,
-      cashBalance: account.totalCash,
-      totalValue: account.netLiquidation,
-      openPositions: 0
-    });
+    // Execute the 5-step decision process with timeout protection
+    const decision = await Promise.race([
+      engineInstance.executeTradingDecision({
+        buyingPower: account.buyingPower,
+        cashBalance: account.totalCash,
+        totalValue: account.netLiquidation,
+        openPositions: 0
+      }),
+      createTimeoutPromise(ENGINE_TIMEOUT_MS, 'Engine analysis')
+    ]);
 
     // Apply guard rails validation
     const guardRailViolations: string[] = [];
@@ -385,6 +404,7 @@ router.get('/analyze', requireAuth, async (req, res) => {
         failedStep: error.step,
         stepName: error.stepName,
         reason: error.reason,
+        diagnostics: error.diagnostics || null,
         audit: error.audit.map(entry => ({
           step: entry.step,
           name: entry.name,

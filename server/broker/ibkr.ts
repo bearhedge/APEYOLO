@@ -1158,11 +1158,59 @@ class IbkrClient {
     puts: Array<{ strike: number; bid: number; ask: number; delta: number; gamma?: number; theta?: number; vega?: number; iv?: number; openInterest?: number; conid?: number; last?: number }>;
     calls: Array<{ strike: number; bid: number; ask: number; delta: number; gamma?: number; theta?: number; vega?: number; iv?: number; openInterest?: number; conid?: number; last?: number }>;
     isHistorical?: boolean;
+    diagnostics?: {
+      conid: number | null;
+      symbol: string;
+      monthInput: string;
+      monthFormatted: string;
+      strikesUrl: string;
+      strikesStatus: number;
+      strikesRaw: string;
+      snapshotRaw: string;
+      putCount: number;
+      callCount: number;
+      underlyingPrice: number;
+      vix: number;
+      timestamp: string;
+      error?: string;
+    };
   }> {
     await this.ensureReady();
     await this.ensureAccountSelected(); // CRITICAL: Prime session for option data
     const reqId = randomUUID().slice(0, 8);
     console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Starting for ${symbol}`);
+
+    // Initialize diagnostics object
+    const diagnostics: {
+      conid: number | null;
+      symbol: string;
+      monthInput: string;
+      monthFormatted: string;
+      strikesUrl: string;
+      strikesStatus: number;
+      strikesRaw: string;
+      snapshotRaw: string;
+      putCount: number;
+      callCount: number;
+      underlyingPrice: number;
+      vix: number;
+      timestamp: string;
+      error?: string;
+    } = {
+      conid: null,
+      symbol,
+      monthInput: '',
+      monthFormatted: '',
+      strikesUrl: '',
+      strikesStatus: 0,
+      strikesRaw: '',
+      snapshotRaw: '',
+      putCount: 0,
+      callCount: 0,
+      underlyingPrice: 0,
+      vix: 15,
+      timestamp: new Date().toISOString(),
+    };
 
     // Track if we're using historical fallback (market closed)
     let isHistorical = false;
@@ -1187,12 +1235,29 @@ class IbkrClient {
         console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Using known conid fallback for ${symbol}`);
         underlyingConid = knownConids[symbol.toUpperCase()];
       }
+      diagnostics.conid = underlyingConid;
+
       if (underlyingConid) {
         const snap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${underlyingConid}`);
+        // Capture raw snapshot response for diagnostics
+        diagnostics.snapshotRaw = JSON.stringify(snap.data).slice(0, 500);
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Snapshot raw: ${diagnostics.snapshotRaw}`);
+
         if (snap.status === 200) {
           const data = (snap.data as any[]) || [];
-          // Try field 31 (last), then 84 (bid) as fallback
-          const last = data?.[0]?.["31"] ?? data?.[0]?.["84"] ?? data?.[0]?.last;
+          const snapData = data?.[0];
+          // Check which price fields are present
+          const has31 = snapData?.["31"] != null;
+          const has84 = snapData?.["84"] != null;
+          const has86 = snapData?.["86"] != null;
+          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Price fields: 31(last)=${has31 ? snapData["31"] : 'MISSING'}, 84(bid)=${has84 ? snapData["84"] : 'MISSING'}, 86(ask)=${has86 ? snapData["86"] : 'MISSING'}`);
+
+          if (!has31 && !has84 && !has86) {
+            console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] ⚠️ NO PRICE DATA IN SNAPSHOT - Session may not have market data permissions or market is closed`);
+          }
+
+          // Try field 31 (last), then 84 (bid), then 86 (ask) as fallback
+          const last = snapData?.["31"] ?? snapData?.["84"] ?? snapData?.["86"] ?? snapData?.last;
           if (last != null) underlyingPrice = Number(last);
         }
 
@@ -1201,9 +1266,12 @@ class IbkrClient {
           console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Retrying snapshot for underlying...`);
           await new Promise(r => setTimeout(r, 500));
           const retry = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${underlyingConid}`);
+          diagnostics.snapshotRaw = JSON.stringify(retry.data).slice(0, 500);
+          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Retry snapshot raw: ${diagnostics.snapshotRaw}`);
+
           if (retry.status === 200) {
             const data = (retry.data as any[]) || [];
-            const last = data?.[0]?.["31"] ?? data?.[0]?.["84"] ?? data?.[0]?.last;
+            const last = data?.[0]?.["31"] ?? data?.[0]?.["84"] ?? data?.[0]?.["86"] ?? data?.[0]?.last;
             if (last != null) underlyingPrice = Number(last);
           }
         }
@@ -1258,9 +1326,14 @@ class IbkrClient {
     const strikeRangeHigh = Math.ceil(underlyingPrice + expectedMove * 3);
     console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Expected move: $${expectedMove.toFixed(2)}, Strike range: $${strikeRangeLow} - $${strikeRangeHigh}`);
 
+    // Update diagnostics with VIX and price
+    diagnostics.underlyingPrice = underlyingPrice;
+    diagnostics.vix = vix;
+
     if (!underlyingConid) {
+      diagnostics.error = 'No underlying conid found';
       console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] No underlying conid`);
-      return { underlyingPrice: 0, vix, expectedMove: 0, strikeRangeLow: 0, strikeRangeHigh: 0, puts: [], calls: [], isHistorical: false };
+      return { underlyingPrice: 0, vix, expectedMove: 0, strikeRangeLow: 0, strikeRangeHigh: 0, puts: [], calls: [], isHistorical: false, diagnostics };
     }
 
     // Log warning but continue even if price is 0 - we can still try to get option data
@@ -1272,6 +1345,7 @@ class IbkrClient {
     const today = new Date();
     const targetExpiration = expiration || this.getNextTradingDay(today);
     const expirationMonth = targetExpiration.slice(0, 6);
+    diagnostics.monthInput = expirationMonth;
     console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Target expiration: ${targetExpiration}`);
 
     const puts: Array<{ strike: number; bid: number; ask: number; delta: number; gamma?: number; theta?: number; vega?: number; iv?: number; openInterest?: number; conid?: number; last?: number }> = [];
@@ -1280,19 +1354,26 @@ class IbkrClient {
     try {
       // Get available strikes
       const ibkrMonth = this.formatMonthForIBKR(expirationMonth);
+      diagnostics.monthFormatted = ibkrMonth;
       const strikesUrl = `/v1/api/iserver/secdef/strikes?conid=${underlyingConid}&sectype=OPT&month=${ibkrMonth}`;
+      diagnostics.strikesUrl = strikesUrl;
       console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Strikes URL: ${strikesUrl} (converted ${expirationMonth} -> ${ibkrMonth})`);
       const strikesResp = await this.http.get(strikesUrl);
-      console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Strikes raw response: ${JSON.stringify(strikesResp.data).slice(0, 500)}`);
+      diagnostics.strikesStatus = strikesResp.status;
+      diagnostics.strikesRaw = JSON.stringify(strikesResp.data).slice(0, 500);
+      console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Strikes raw response: ${diagnostics.strikesRaw}`);
 
       if (strikesResp.status !== 200) {
+        diagnostics.error = `Strikes API returned status ${strikesResp.status}`;
         console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] Failed to get strikes`);
-        return { underlyingPrice, vix, expectedMove, strikeRangeLow, strikeRangeHigh, puts: [], calls: [], isHistorical: false };
+        return { underlyingPrice, vix, expectedMove, strikeRangeLow, strikeRangeHigh, puts: [], calls: [], isHistorical: false, diagnostics };
       }
 
       const strikesData = strikesResp.data as { call?: number[]; put?: number[] };
       const putStrikes = strikesData.put || [];
       const callStrikes = strikesData.call || [];
+      diagnostics.putCount = putStrikes.length;
+      diagnostics.callCount = callStrikes.length;
 
       // If we don't have underlying price, use mid-point of strikes as estimate
       if (underlyingPrice === 0 && putStrikes.length > 0 && callStrikes.length > 0) {
@@ -1597,10 +1678,16 @@ class IbkrClient {
       console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Resolved ${puts.length} puts, ${calls.length} calls with REAL market data + Greeks`);
 
     } catch (err) {
+      diagnostics.error = err instanceof Error ? err.message : String(err);
       console.error(`[IBKR][getOptionChainWithStrikes][${reqId}] Error:`, err);
     }
 
-    return { underlyingPrice, vix, expectedMove, strikeRangeLow, strikeRangeHigh, puts, calls, isHistorical };
+    // Final update to diagnostics
+    diagnostics.putCount = puts.length;
+    diagnostics.callCount = calls.length;
+    diagnostics.underlyingPrice = underlyingPrice;
+
+    return { underlyingPrice, vix, expectedMove, strikeRangeLow, strikeRangeHigh, puts, calls, isHistorical, diagnostics };
   }
 
   /**

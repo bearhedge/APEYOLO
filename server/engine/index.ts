@@ -15,19 +15,24 @@ import { selectDirection, DirectionDecision } from './step2.ts';
 import { selectStrikes, StrikeSelection } from './step3.ts';
 import { calculatePositionSize, PositionSize, RiskProfile, AccountInfo } from './step4.ts';
 import { defineExitRules, ExitRules } from './step5.ts';
+import type { OptionChainDiagnostics } from '../../shared/types/engine';
 
 /**
  * Custom error class for engine failures with step context
  */
 export class EngineError extends Error {
+  public diagnostics?: OptionChainDiagnostics;
+
   constructor(
     public step: number,
     public stepName: string,
     public reason: string,
-    public audit: AuditEntry[]
+    public audit: AuditEntry[],
+    diagnostics?: OptionChainDiagnostics
   ) {
     super(`[Step ${step}] ${stepName} failed: ${reason}`);
     this.name = 'EngineError';
+    this.diagnostics = diagnostics;
   }
 }
 
@@ -188,8 +193,13 @@ export class TradingEngine {
       console.log(`[Engine] Step 3 COMPLETE (${Date.now() - step3Start}ms)`);
     } catch (error: any) {
       console.error(`[Engine] Step 3 FAILED (${Date.now() - step3Start}ms): ${error.message}`);
-      this.addAudit(3, 'Strike Selection', { direction: direction.direction, underlyingPrice }, { error: error.message }, false, error.message);
-      throw new EngineError(3, 'Strike Selection', error.message, this.audit);
+      // Extract diagnostics if present (from option chain errors)
+      const diagnostics = error.diagnostics as OptionChainDiagnostics | undefined;
+      if (diagnostics) {
+        console.log(`[Engine] Step 3 Diagnostics: conid=${diagnostics.conid}, month=${diagnostics.monthFormatted}, underlyingPrice=${diagnostics.underlyingPrice}`);
+      }
+      this.addAudit(3, 'Strike Selection', { direction: direction.direction, underlyingPrice }, { error: error.message, diagnostics }, false, error.message);
+      throw new EngineError(3, 'Strike Selection', error.message, this.audit, diagnostics);
     }
     this.addAudit(3, 'Strike Selection', { direction: direction.direction, underlyingPrice }, strikes, true, strikes.reasoning);
 

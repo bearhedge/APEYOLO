@@ -213,8 +213,32 @@ export function Engine() {
           });
         }
 
+        // Check for diagnostics in the error (Step 3 option chain failures)
+        if (err.diagnostics) {
+          const d = err.diagnostics;
+          addOperationLog('DEBUG', `🔍 IBKR Diagnostics (Step 3 Failure)`, 'info');
+          addOperationLog('DEBUG', `├─ Conid: ${d.conid || 'null'}`, 'info');
+          addOperationLog('DEBUG', `├─ Month: ${d.monthFormatted} (from ${d.monthInput})`, 'info');
+          addOperationLog('DEBUG', `├─ Underlying Price: $${d.underlyingPrice}`, d.underlyingPrice > 0 ? 'success' : 'error');
+          addOperationLog('DEBUG', `├─ VIX: ${d.vix}`, 'info');
+          addOperationLog('DEBUG', `├─ Strikes URL: ${d.strikesUrl}`, 'info');
+          addOperationLog('DEBUG', `├─ Strikes Status: ${d.strikesStatus}`, d.strikesStatus === 200 ? 'success' : 'error');
+          addOperationLog('DEBUG', `├─ Puts Found: ${d.putCount}`, d.putCount > 0 ? 'success' : 'error');
+          addOperationLog('DEBUG', `├─ Calls Found: ${d.callCount}`, d.callCount > 0 ? 'success' : 'error');
+          addOperationLog('DEBUG', `├─ Snapshot Raw: ${d.snapshotRaw?.slice(0, 150) || 'empty'}`, 'info');
+          addOperationLog('DEBUG', `└─ Strikes Raw: ${d.strikesRaw?.slice(0, 150) || 'empty'}`, 'info');
+          if (d.error) {
+            addOperationLog('DEBUG', `❌ Error: ${d.error}`, 'error');
+          }
+        }
+
         toast.error(`Step ${err.failedStep} failed: ${err.reason || err.message}`, { id: 'engine-execute' });
       } else {
+        // Parse diagnostics from error message if present
+        const diagMatch = err.message?.match(/Diagnostics: (.+)/);
+        if (diagMatch) {
+          addOperationLog('DEBUG', `🔍 ${err.message}`, 'info');
+        }
         addOperationLog('ANALYSIS', `Engine analysis failed: ${err.message || 'Unknown error'}`, 'error');
         toast.error('Failed to run engine', { id: 'engine-execute' });
       }

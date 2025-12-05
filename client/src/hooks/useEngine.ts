@@ -289,6 +289,7 @@ export function useEngine() {
         err.stepName = errorData.stepName;
         err.reason = errorData.reason;
         err.audit = errorData.audit;
+        err.diagnostics = errorData.diagnostics; // IBKR diagnostic data for Step 3 failures
         err.isEngineError = true;
         throw err;
       }

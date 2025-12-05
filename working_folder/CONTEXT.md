@@ -4,29 +4,88 @@
 
 ---
 
-## CURRENT OBJECTIVE (2025-12-03)
+## CURRENT OBJECTIVE (2025-12-04)
 
-### Priority 1: Engine Trade Execution (ACTIVE)
+### Priority 1: Live Account Switch (ACTIVE)
 
-**Goal**: Run engine Steps 1-5 and execute smart 0DTE options trades via IBKR.
+**Goal**: Switch from paper to live IBKR account to get real market data.
 
-**Status**:
-- ✅ IBKR connected to paper trading
-- ✅ All 5 engine steps complete
-- ✅ NAV showing in header
-- 🔧 Option chain data quality issues (see below)
+**Decision**: Skip paper account subscription, use live account directly.
 
-**Known Issues Found** (from engine test output):
-1. **SPY Price = $0.00 in Step 1** - Price fetch timing issue
-2. **CALL uses mock data** - PUT uses IBKR but CALL falls back to mock
-3. **PUT bid/ask = 0** - Greeks present but prices missing
-4. **CALL delta too high** - Mock delta 0.394 (should be 0.15-0.20)
-5. **Inconsistent SPY price** - Step 2 shows $680.71, Step 3 shows $445
+**Rationale**:
+- Live account already has Options L1 subscription (real bid/ask)
+- Paper account only provides Greeks (delta), not bid/ask quotes
+- $30k capital limits position to 1-2 contracts (natural safety guard)
 
-**Files to Fix**:
-- `server/engine/step3.ts` - Fix CALL chain fetch
-- `server/engine/step1.ts` - Fix SPY price capture
-- `server/broker/ibkr.ts` - Verify bid/ask prices return
+---
+
+### WORKFLOW: Live Account Transition
+
+**Step 1: Switch Gateway (Manual - 5 min)**
+```
+1. Stop IBKR Client Portal Gateway
+2. Restart gateway application
+3. Login with LIVE account credentials (Uxxxxxxx)
+4. Gateway URL unchanged: localhost:5000
+```
+
+**Step 2: Verify Data (Data page test)**
+```
+1. Navigate to Data page in UI
+2. Fetch SPY option chain
+3. VERIFY: bid > $0, ask > $0
+4. If still $0 → IBKR priming issue, need code fix
+```
+
+**Step 3: Run Engine (If Step 2 passes)**
+```
+Engine Flow: Step1 → Step2 → Step3 → Step4 → Step5
+
+Position Sizing with $30k:
+- BALANCED profile: 70% utilization = $21k available
+- SPY naked PUT margin: ~$12,312/contract
+- Max contracts: 1 contract
+- Premium collected: ~$50-100 (0DTE SPY PUT)
+```
+
+---
+
+### Risk Assessment (CONFIRMED ACCEPTABLE)
+
+| Metric | Value |
+|--------|-------|
+| Capital | $30,000 |
+| Max contracts | 1-2 |
+| Notional exposure | ~$68,400 (1 contract) |
+| Realistic max loss | $1,000-2,000 (3% SPY crash) |
+| Probability | Very low |
+
+---
+
+### Issues Fixed (from previous session)
+
+| Issue | Status |
+|-------|--------|
+| Delta sign destroyed by Math.abs() | ✅ FIXED |
+| Target delta 0.15-0.20 too far OTM | ✅ FIXED (now 0.25-0.35) |
+| Stop loss = $0 when premium = $0 | ✅ FIXED (minimum floor) |
+| Strike selection wrong (698 vs 675) | ✅ FIXED |
+
+### Remaining Issues (deferred until data works)
+
+| Issue | Priority | Fix |
+|-------|----------|-----|
+| Guard rail MAX_DELTA=0.30 | HIGH | Change to 0.35 |
+| Fallback checks HTTP not content | HIGH | Check response body |
+| No theoretical premium fallback | MEDIUM | Add Black-Scholes |
+
+---
+
+### Files Previously Modified
+
+- `server/engine/step3.ts` - Delta sign handling, target ranges
+- `server/engine/step5.ts` - Stop loss minimum floor
+- `server/services/jobExecutor.ts` - Database guard
 
 ---
 
@@ -496,4 +555,4 @@ GROUP BY interval ORDER BY interval;"
 
 ---
 
-**Last Updated**: 2025-12-03 (Session: Zoom/Pan fix deployed)
+**Last Updated**: 2025-12-04 (Session: Live account switch workflow confirmed)

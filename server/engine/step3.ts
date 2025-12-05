@@ -245,6 +245,22 @@ interface FullOptionChainResult {
   vix?: number;
   expectedMove?: number;
   source: 'websocket' | 'http' | 'mock';
+  diagnostics?: {
+    conid: number | null;
+    symbol: string;
+    monthInput: string;
+    monthFormatted: string;
+    strikesUrl: string;
+    strikesStatus: number;
+    strikesRaw: string;
+    snapshotRaw: string;
+    putCount: number;
+    callCount: number;
+    underlyingPrice: number;
+    vix: number;
+    timestamp: string;
+    error?: string;
+  };
 }
 
 /**
@@ -289,9 +305,22 @@ async function fetchFullOptionChain(symbol: string): Promise<FullOptionChainResu
     console.log(`[Step3] WebSocket cache unavailable, fetching HTTP snapshot for ${symbol}...`);
     const chainData = await getOptionChainWithStrikes(symbol);
 
-    if (!chainData || chainData.underlyingPrice === 0) {
+    // Always capture diagnostics for debugging
+    const diagnostics = chainData?.diagnostics;
+
+    if (!chainData || (chainData.underlyingPrice === 0 && chainData.puts.length === 0 && chainData.calls.length === 0)) {
       console.log('[Step3] No real option chain data available from IBKR');
-      return null;
+      console.log('[Step3] Diagnostics:', JSON.stringify(diagnostics, null, 2));
+      // Return result with diagnostics even when empty for debugging
+      return {
+        putStrikes: [],
+        callStrikes: [],
+        underlyingPrice: chainData?.underlyingPrice || 0,
+        vix: chainData?.vix,
+        expectedMove: chainData?.expectedMove,
+        source: 'http',
+        diagnostics,
+      };
     }
 
     const putStrikes: Strike[] = chainData.puts.map(opt => ({
@@ -327,7 +356,8 @@ async function fetchFullOptionChain(symbol: string): Promise<FullOptionChainResu
       underlyingPrice: chainData.underlyingPrice,
       vix: chainData.vix,
       expectedMove: chainData.expectedMove,
-      source: 'http'
+      source: 'http',
+      diagnostics,
     };
   } catch (err) {
     console.error('[Step3] Error fetching real option chain:', err);
@@ -478,10 +508,23 @@ export async function selectStrikes(
     }
 
   } else {
-    // IBKR completely unavailable - throw error, no mock fallback
+    // IBKR completely unavailable - throw error with diagnostics for debugging
     console.error(`[Step3] Option chain returned NULL or EMPTY from fetchFullOptionChain`);
     console.error(`[Step3] fullChain: ${JSON.stringify(fullChain)}`);
-    throw new Error('[IBKR] Option chain unavailable - cannot proceed without real IBKR data');
+
+    // Create a detailed error with diagnostics attached
+    const diagnostics = fullChain?.diagnostics;
+    const errorMessage = diagnostics
+      ? `[IBKR] Option chain unavailable. Diagnostics: conid=${diagnostics.conid}, month=${diagnostics.monthFormatted}, puts=${diagnostics.putCount}, calls=${diagnostics.callCount}, price=$${diagnostics.underlyingPrice}, snapshot=${diagnostics.snapshotRaw?.slice(0, 100)}, strikes=${diagnostics.strikesRaw?.slice(0, 100)}`
+      : '[IBKR] Option chain unavailable - cannot proceed without real IBKR data';
+
+    const error = new Error(errorMessage) as Error & {
+      diagnostics?: typeof diagnostics;
+      isOptionChainError?: boolean;
+    };
+    error.diagnostics = diagnostics;
+    error.isOptionChainError = true;
+    throw error;
   }
 
   // Calculate totals

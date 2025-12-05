@@ -317,3 +317,23 @@ export interface AnalyzeOptions {
   deltaMin?: number;
   deltaMax?: number;
 }
+
+// =============================================================================
+// Option Chain Diagnostics (for debugging IBKR connectivity)
+// =============================================================================
+
+export interface OptionChainDiagnostics {
+  conid: number | null;
+  symbol: string;
+  monthInput: string;       // e.g., "202512"
+  monthFormatted: string;   // e.g., "DEC25"
+  strikesUrl: string;
+  strikesStatus: number;
+  strikesRaw: string;       // First 500 chars of raw response
+  putCount: number;
+  callCount: number;
+  underlyingPrice: number;
+  vix: number;
+  error?: string;
+  timestamp: string;
+}

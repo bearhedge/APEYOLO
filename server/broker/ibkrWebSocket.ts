@@ -96,8 +96,9 @@ export class IbkrWebSocketManager {
 
   /**
    * Connect to IBKR WebSocket
+   * @param timeoutMs - Connection timeout in milliseconds (default: 10 seconds)
    */
-  async connect(): Promise<void> {
+  async connect(timeoutMs: number = 10000): Promise<void> {
     if (this.isConnecting || this.isConnected) {
       console.log('[IbkrWS] Already connected or connecting');
       return;
@@ -106,6 +107,16 @@ export class IbkrWebSocketManager {
     this.isConnecting = true;
 
     return new Promise((resolve, reject) => {
+      // Set up connection timeout to prevent hanging indefinitely
+      const connectionTimeout = setTimeout(() => {
+        this.isConnecting = false;
+        if (this.ws) {
+          this.ws.terminate();
+          this.ws = null;
+        }
+        reject(new Error(`WebSocket connection timeout after ${timeoutMs}ms`));
+      }, timeoutMs);
+
       try {
         console.log('[IbkrWS] Connecting to IBKR WebSocket...');
 
@@ -117,6 +128,7 @@ export class IbkrWebSocketManager {
         });
 
         this.ws.on('open', () => {
+          clearTimeout(connectionTimeout);
           console.log('[IbkrWS] Connected to IBKR WebSocket');
           this.isConnected = true;
           this.isConnecting = false;
@@ -137,6 +149,7 @@ export class IbkrWebSocketManager {
         });
 
         this.ws.on('error', (error) => {
+          clearTimeout(connectionTimeout);
           console.error('[IbkrWS] WebSocket error:', error.message);
           this.isConnecting = false;
           if (!this.isConnected) {
@@ -145,6 +158,7 @@ export class IbkrWebSocketManager {
         });
 
         this.ws.on('close', (code, reason) => {
+          clearTimeout(connectionTimeout);
           console.log(`[IbkrWS] Connection closed: ${code} - ${reason.toString()}`);
           this.isConnected = false;
           this.isConnecting = false;
@@ -155,6 +169,7 @@ export class IbkrWebSocketManager {
         });
 
       } catch (error) {
+        clearTimeout(connectionTimeout);
         this.isConnecting = false;
         reject(error);
       }

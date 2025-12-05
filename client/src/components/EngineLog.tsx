@@ -24,10 +24,10 @@ interface AuditEntry {
 // Operation log entry (real-time operations)
 export interface OperationEntry {
   type: 'operation';
-  category: 'IBKR' | 'MARKET' | 'OPTIONS' | 'ANALYSIS' | 'DECISION';
+  category: 'IBKR' | 'MARKET' | 'OPTIONS' | 'ANALYSIS' | 'DECISION' | 'DEBUG';
   message: string;
   timestamp: string;
-  status?: 'pending' | 'success' | 'error';
+  status?: 'pending' | 'success' | 'error' | 'info';
   value?: string | number;
 }
 
@@ -113,6 +113,7 @@ const categoryConfig: Record<OperationEntry['category'], { icon: React.ReactNode
   OPTIONS: { icon: <BarChart3 className="w-3 h-3" />, color: 'text-yellow-400' },
   ANALYSIS: { icon: <LineChart className="w-3 h-3" />, color: 'text-purple-400' },
   DECISION: { icon: <Settings2 className="w-3 h-3" />, color: 'text-cyan-400' },
+  DEBUG: { icon: <Terminal className="w-3 h-3" />, color: 'text-orange-400' },
 };
 
 /**

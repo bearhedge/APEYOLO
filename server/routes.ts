@@ -184,12 +184,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/account', async (req, res) => {
     try {
       if (broker.status.provider === 'ibkr') {
+        console.log('[API] /api/account: Ensuring IBKR ready...');
         await ensureIbkrReady();
+        console.log('[API] /api/account: IBKR ready, fetching account...');
       }
       const account = await broker.api.getAccount();
+      console.log('[API] /api/account: Success, portfolioValue=', account?.portfolioValue, 'netLiq=', account?.netLiquidation);
       res.json(account);
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to fetch account info' });
+    } catch (error: any) {
+      console.error('[API] /api/account: FAILED -', error?.message || error);
+      res.status(500).json({ error: 'Failed to fetch account info', message: error?.message });
     }
   });
 

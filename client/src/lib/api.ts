@@ -39,10 +39,11 @@ function getMockData(endpoint: string): unknown {
 
   if (endpoint === '/api/account') {
     return {
-      nav: 250000,
+      portfolioValue: 250000,    // Match real API field name
+      netLiquidation: 250000,    // Fallback field name
       buyingPower: 180000,
       marginUsed: 45,
-      cash: 125000,
+      totalCash: 125000,         // Match real API field name
     };
   }
 
