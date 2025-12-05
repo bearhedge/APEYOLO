@@ -153,8 +153,8 @@ export const CandlestickChart = forwardRef<CandlestickChartRef, CandlestickChart
         { credentials: 'include' }
       );
       if (!res.ok) {
-        console.warn('Market history API not available, using mock data');
-        return generateMockData(timeframe);
+        console.error(`Market history API failed: ${res.status} ${res.statusText}`);
+        return []; // Return empty array - no mock data
       }
       const response: HistoryResponse = await res.json();
       return convertToChartFormat(response.data);
@@ -163,34 +163,6 @@ export const CandlestickChart = forwardRef<CandlestickChartRef, CandlestickChart
     staleTime: 60000, // Consider data stale after 1 minute
   });
 
-  // Generate mock data for testing (will be replaced by real API)
-  function generateMockData(tf: Timeframe): OHLCBar[] {
-    const bars: OHLCBar[] = [];
-    const now = Math.floor(Date.now() / 1000);
-    const intervalSeconds = tf === '1m' ? 60 : tf === '5m' ? 300 : tf === '15m' ? 900 : tf === '1h' ? 3600 : 86400;
-    const numBars = tf === '1m' ? 390 : tf === '5m' ? 78 * 5 : tf === '15m' ? 26 * 10 : tf === '1h' ? 7 * 30 : 252;
-
-    let price = 600; // Base SPY price
-    for (let i = numBars; i >= 0; i--) {
-      const time = now - (i * intervalSeconds);
-      const change = (Math.random() - 0.5) * 2;
-      const open = price;
-      const close = price + change;
-      const high = Math.max(open, close) + Math.random() * 0.5;
-      const low = Math.min(open, close) - Math.random() * 0.5;
-      price = close;
-
-      bars.push({
-        time,
-        open,
-        high,
-        low,
-        close,
-        volume: Math.floor(Math.random() * 1000000) + 500000,
-      });
-    }
-    return bars;
-  }
 
   // Initialize chart
   useEffect(() => {
