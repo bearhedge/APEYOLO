@@ -18,12 +18,11 @@ function Navigation() {
   const [location] = useLocation();
   const isOnboarding = location.startsWith('/onboarding');
 
-  const { data: account, isLoading: accountLoading } = useQuery({
+  const { data: account } = useQuery({
     queryKey: ['/api/account'],
     queryFn: getAccount,
     enabled: location !== '/' && !isOnboarding,
     refetchInterval: 10000, // Refresh every 10s for live NAV (matches IBKR status polling)
-    staleTime: 0, // Always refetch - don't cache 0 values from IBKR warmup
   });
 
   const { data: diagData } = useQuery({
@@ -81,7 +80,7 @@ function Navigation() {
             <div className="flex items-center gap-2" data-testid="nav-display">
               <span className="text-sm text-silver">NAV</span>
               <span className="text-sm font-medium tabular-nums">
-                ${accountLoading ? '...' : nav > 0 ? nav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '--'}
+                ${nav > 0 ? nav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : '--'}
               </span>
             </div>
 

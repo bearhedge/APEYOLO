@@ -523,15 +523,16 @@ export class OptionChainStreamer {
   }
 
   private nyTimeToUtc(year: number, month: number, day: number, hour: number, minute: number): Date {
-    // Create ISO 8601 date string with proper timezone offset
+    // Create a date string and parse it in NY timezone
     const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}T${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}:00`;
+    const nyDate = new Date(dateStr + ' GMT-0500'); // EST, adjust for DST if needed
 
     // Simple DST check (second Sunday in March to first Sunday in November)
     const isDst = this.isDaylightSavingTime(year, month, day);
-    // Use ISO 8601 offset format (not "GMT-0500" which is invalid)
-    const offset = isDst ? '-04:00' : '-05:00';
-
-    return new Date(dateStr + offset);
+    if (isDst) {
+      return new Date(dateStr + ' GMT-0400'); // EDT
+    }
+    return new Date(dateStr + ' GMT-0500'); // EST
   }
 
   private isDaylightSavingTime(year: number, month: number, day: number): boolean {
