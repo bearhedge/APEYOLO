@@ -6,8 +6,9 @@
  * Checks: Trading hours, VIX levels, market trend, volatility regime
  */
 
-import { getVIXData } from '../services/marketDataService.js';
+import { getVIXData, getMarketData } from '../services/marketDataService.js';
 import { getOptionChainWithStrikes } from '../broker/ibkr';
+import { pool } from '../db';
 import type { StepReasoning, StepMetric } from '../../shared/types/engineLog';
 
 export interface MarketRegime {
@@ -143,6 +144,7 @@ export async function analyzeMarketRegime(useRealData: boolean = true): Promise<
   let vixChange: number | undefined;
   let spyPrice: number | undefined;
   let spyChange: number | undefined;
+  let spySource = 'IBKR';  // Track data source for UI
 
   if (useRealData) {
     // Fetch VIX data (with fallback to mock)
@@ -157,23 +159,68 @@ export async function analyzeMarketRegime(useRealData: boolean = true): Promise<
       // VIX has fallback in marketDataService, so this is unlikely
     }
 
-    // Fetch SPY data using getOptionChainWithStrikes (has proper retry + historical fallback)
-    console.log('[Step1] Fetching SPY price from IBKR via option chain...');
+    // Fetch SPY price with fallback chain:
+    // 1. Option chain underlying price (best - includes VIX)
+    // 2. Direct IBKR snapshot API
+    // 3. Database (last known close price)
+    console.log('[Step1] Fetching SPY price...');
+
+    // Try 1: Option chain (includes VIX for strike calculation)
     try {
+      console.log('[Step1] Trying option chain for SPY price...');
       const chainData = await getOptionChainWithStrikes('SPY');
-      spyPrice = chainData.underlyingPrice;
-      // Note: getOptionChainWithStrikes doesn't return changePercent, set to 0
-      spyChange = 0;
-
-      if (!spyPrice || spyPrice === 0) {
-        throw new Error('Option chain returned $0 underlying price');
+      if (chainData.underlyingPrice && chainData.underlyingPrice > 0) {
+        spyPrice = chainData.underlyingPrice;
+        spyChange = 0;
+        console.log(`[Step1] SPY from option chain: $${spyPrice.toFixed(2)}`);
       }
-
-      console.log(`[Step1] SPY: $${spyPrice.toFixed(2)} (VIX from chain: ${chainData.vix})`);
     } catch (error: any) {
-      console.error(`[Step1] SPY price fetch FAILED: ${error.message}`);
-      throw new Error(`[Step1] Cannot get SPY price: ${error.message}`);
+      console.warn(`[Step1] Option chain failed: ${error.message}`);
     }
+
+    // Try 2: Direct IBKR snapshot API
+    if (!spyPrice || spyPrice === 0) {
+      try {
+        console.log('[Step1] Trying direct IBKR snapshot for SPY...');
+        const marketData = await getMarketData('SPY');
+        if (marketData.price > 0) {
+          spyPrice = marketData.price;
+          spyChange = marketData.changePercent;
+          console.log(`[Step1] SPY from IBKR snapshot: $${spyPrice.toFixed(2)}`);
+        }
+      } catch (error: any) {
+        console.warn(`[Step1] IBKR snapshot failed: ${error.message}`);
+      }
+    }
+
+    // Try 3: Database fallback (last known price)
+    if (!spyPrice || spyPrice === 0) {
+      try {
+        console.log('[Step1] Trying database for last known SPY price...');
+        const result = await pool.query(`
+          SELECT close, timestamp
+          FROM market_data
+          WHERE symbol = 'SPY'
+          ORDER BY timestamp DESC
+          LIMIT 1
+        `);
+        if (result.rows.length > 0 && result.rows[0].close) {
+          spyPrice = parseFloat(result.rows[0].close);
+          spyChange = 0;
+          spySource = 'Database (last known)';
+          console.log(`[Step1] SPY from database: $${spyPrice.toFixed(2)} (as of ${result.rows[0].timestamp})`);
+        }
+      } catch (error: any) {
+        console.warn(`[Step1] Database fallback failed: ${error.message}`);
+      }
+    }
+
+    // Final check - if still no price, throw error
+    if (!spyPrice || spyPrice === 0) {
+      throw new Error('[Step1] Cannot get SPY price from any source (option chain, IBKR snapshot, or database)');
+    }
+
+    console.log(`[Step1] Final SPY: $${spyPrice.toFixed(2)} (source: ${spySource})`);
   }
 
   // Step 3: Check VIX (if available) - determine if market conditions allow trading
@@ -238,7 +285,7 @@ export async function analyzeMarketRegime(useRealData: boolean = true): Promise<
     {
       question: 'SPY price available?',
       answer: spyPrice
-        ? `YES ($${spyPrice.toFixed(2)} from IBKR)`
+        ? `YES ($${spyPrice.toFixed(2)} from ${spySource})`
         : 'NO (Failed to fetch SPY price)'
     },
     {
