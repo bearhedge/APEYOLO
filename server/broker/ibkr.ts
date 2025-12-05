@@ -671,6 +671,9 @@ class IbkrClient {
       // Establish gateway connection for trading
       await this.establishGateway();
 
+      // Prime market data subscriptions (IBKR requires first call to "subscribe")
+      await this.primeMarketData();
+
       this.lastInitTimeMs = Date.now();
       return;
     } catch (err: any) {
@@ -710,6 +713,40 @@ class IbkrClient {
       }
 
       throw err;
+    }
+  }
+
+  /**
+   * Prime market data subscriptions for SPY and VIX
+   * IBKR requires first call to "subscribe", subsequent calls return actual data
+   */
+  private async primeMarketData(): Promise<void> {
+    const reqId = randomUUID().slice(0, 8);
+    console.log(`[IBKR][primeMarketData][${reqId}] Priming market data subscriptions...`);
+
+    try {
+      const conids = [756733, 13455763]; // SPY, VIX
+      const fields = '31,84,86'; // last, bid, ask
+
+      // First call - subscribes to market data (returns minimal data)
+      console.log(`[IBKR][primeMarketData][${reqId}] First call to subscribe...`);
+      await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${conids.join(',')}&fields=${fields}`);
+
+      // Wait for IBKR to initialize subscription
+      await this.sleep(1500);
+
+      // Second call - should have actual data
+      console.log(`[IBKR][primeMarketData][${reqId}] Second call for data...`);
+      const response = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${conids.join(',')}&fields=${fields}`);
+
+      // Log what we got
+      const spyData = response.data?.find((d: any) => d.conid === 756733);
+      const vixData = response.data?.find((d: any) => d.conid === 13455763);
+      console.log(`[IBKR][primeMarketData][${reqId}] SPY: price=${spyData?.['31'] || 0}, bid=${spyData?.['84'] || 0}, ask=${spyData?.['86'] || 0}`);
+      console.log(`[IBKR][primeMarketData][${reqId}] VIX: price=${vixData?.['31'] || 0}`);
+    } catch (err: any) {
+      console.warn(`[IBKR][primeMarketData][${reqId}] Warning: ${err.message}`);
+      // Don't throw - this is a best-effort optimization
     }
   }
 
@@ -1050,9 +1087,27 @@ class IbkrClient {
     try {
       // Step 1: Get available strikes from IBKR
       const ibkrMonth = this.formatMonthForIBKR(expirationMonth);
-      const strikesUrl = `/v1/api/iserver/secdef/strikes?conid=${underlyingConid}&sectype=OPT&month=${ibkrMonth}`;
-      console.log(`[IBKR][getOptionChain][${reqId}] Fetching strikes: ${strikesUrl} (converted ${expirationMonth} -> ${ibkrMonth})`);
 
+      // MANDATORY FIRST STEP: Call /secdef/search to activate options data
+      // Per IBKR docs: "you must request the secdef/search endpoint... before requesting strikes"
+      // Source: https://www.interactivebrokers.com/campus/ibkr-quant-news/handling-options-chains/
+      const searchUrl = `/v1/api/iserver/secdef/search?symbol=${symbol}&secType=OPT`;
+      console.log(`[IBKR][getOptionChain][${reqId}] Step 1a: Calling /secdef/search (REQUIRED)...`);
+      try {
+        const searchResp = await this.http.get(searchUrl);
+        console.log(`[IBKR][getOptionChain][${reqId}] /secdef/search response:`, JSON.stringify(searchResp.data).slice(0, 300));
+        await this.sleep(500);
+      } catch (err: any) {
+        console.warn(`[IBKR][getOptionChain][${reqId}] /secdef/search warning: ${err.message}`);
+      }
+
+      // NOW call /secdef/strikes (will work after search)
+      const strikesUrl = `/v1/api/iserver/secdef/strikes?conid=${underlyingConid}&sectype=OPT&month=${ibkrMonth}`;
+      console.log(`[IBKR][getOptionChain][${reqId}] Step 1b: Fetching strikes: ${strikesUrl}`);
+
+      // Prime the endpoint first (IBKR requires first call to subscribe)
+      await this.http.get(strikesUrl);
+      await this.sleep(1500);
       const strikesResp = await this.http.get(strikesUrl);
       if (strikesResp.status !== 200 || !strikesResp.data) {
         console.warn(`[IBKR][getOptionChain][${reqId}] Failed to get strikes: status=${strikesResp.status}`);
@@ -1355,10 +1410,52 @@ class IbkrClient {
       // Get available strikes
       const ibkrMonth = this.formatMonthForIBKR(expirationMonth);
       diagnostics.monthFormatted = ibkrMonth;
+
+      // MANDATORY FIRST STEP: Call /secdef/search to activate options data
+      // Per IBKR docs: "The typical reason that empty strikes may be retrieved is because
+      // the underlying contract was NOT first requested through the /secdef/search endpoint."
+      // "Regardless of whether you have the contract ID beforehand or not, these endpoints MUST be called first."
+      // Source: https://www.interactivebrokers.com/campus/ibkr-quant-news/handling-options-chains/
+      const searchUrl = `/v1/api/iserver/secdef/search?symbol=${symbol}&secType=OPT`;
+      console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Step 1: Calling /secdef/search (REQUIRED per IBKR docs)...`);
+      try {
+        const searchResp = await this.http.get(searchUrl);
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] /secdef/search response:`, JSON.stringify(searchResp.data).slice(0, 300));
+        await this.sleep(500); // Brief wait for IBKR to register the search
+      } catch (err: any) {
+        console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] /secdef/search warning: ${err.message}`);
+      }
+
+      // NOW we can call /secdef/strikes (it will work after search)
+      // NOTE: Official IBKR examples do NOT use exchange=SMART
       const strikesUrl = `/v1/api/iserver/secdef/strikes?conid=${underlyingConid}&sectype=OPT&month=${ibkrMonth}`;
       diagnostics.strikesUrl = strikesUrl;
-      console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Strikes URL: ${strikesUrl} (converted ${expirationMonth} -> ${ibkrMonth})`);
-      const strikesResp = await this.http.get(strikesUrl);
+      console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Step 2: Calling /secdef/strikes: ${strikesUrl}`);
+
+      // Prime strikes endpoint - first call may still need to subscribe
+      console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Priming strikes endpoint...`);
+      try {
+        await this.http.get(strikesUrl);
+        await this.sleep(1500);
+      } catch (err: any) {
+        console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] Strikes prime warning: ${err.message}`);
+      }
+
+      // Fetch strikes with aggressive retry (3 attempts with exponential backoff)
+      let strikesResp = await this.http.get(strikesUrl);
+      let strikesData = strikesResp.data as { call?: number[]; put?: number[] };
+
+      // Retry up to 3 times with increasing delays if empty
+      const retryDelays = [2000, 3000, 5000];
+      for (let attempt = 0; attempt < retryDelays.length; attempt++) {
+        if (strikesResp.status === 200 && strikesData.call?.length && strikesData.put?.length) {
+          break; // Got data, exit retry loop
+        }
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Attempt ${attempt + 1} returned empty, retrying after ${retryDelays[attempt]}ms...`);
+        await this.sleep(retryDelays[attempt]);
+        strikesResp = await this.http.get(strikesUrl);
+        strikesData = strikesResp.data as { call?: number[]; put?: number[] };
+      }
       diagnostics.strikesStatus = strikesResp.status;
       diagnostics.strikesRaw = JSON.stringify(strikesResp.data).slice(0, 500);
       console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Strikes raw response: ${diagnostics.strikesRaw}`);
@@ -1369,7 +1466,8 @@ class IbkrClient {
         return { underlyingPrice, vix, expectedMove, strikeRangeLow, strikeRangeHigh, puts: [], calls: [], isHistorical: false, diagnostics };
       }
 
-      const strikesData = strikesResp.data as { call?: number[]; put?: number[] };
+      // Reassign after potential retry
+      strikesData = strikesResp.data as { call?: number[]; put?: number[] };
       const putStrikes = strikesData.put || [];
       const callStrikes = strikesData.call || [];
       diagnostics.putCount = putStrikes.length;
@@ -1394,96 +1492,67 @@ class IbkrClient {
 
       console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Processing ${otmPuts.length} OTM puts, ${otmCalls.length} OTM calls (within 2σ range)`);
 
-      // Phase 1: Resolve all option conids using BULK /trsrv/secdef endpoint
-      // This is MUCH faster and avoids rate limits on /secdef/search
+      // Phase 1: Resolve all option conids using individual /secdef/info requests
+      // NOTE: /trsrv/secdef doesn't support searching by strike - it's only for known conids
+      // So we must use individual resolution with rate limiting
       const putConidMap = new Map<number, number>(); // strike -> conid
       const callConidMap = new Map<number, number>();
 
       try {
-        // Use /trsrv/secdef to get all option conids in ONE request
-        const secdefUrl = `/v1/api/trsrv/secdef`;
-        const allStrikes = [...new Set([...otmPuts, ...otmCalls])].sort((a, b) => a - b);
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Resolving option conids individually (${otmPuts.length} puts, ${otmCalls.length} calls)...`);
 
-        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Fetching option conids via /trsrv/secdef for ${allStrikes.length} strikes...`);
-
-        const secdefPayload = {
-          conid: underlyingConid,
-          sectype: 'OPT',
-          month: ibkrMonth, // Use MMMy format (DEC25, not 202512)
-          exchange: 'SMART',
-          strike: allStrikes.join(';'),
-          right: 'P;C', // Both puts and calls
+        const resolveWithTimeout = async (strike: number, optType: 'PUT' | 'CALL') => {
+          try {
+            // CRITICAL FIX: Timeout must RESOLVE to null, not REJECT
+            // When timeout rejects, the catch swallows it and returns null immediately,
+            // but resolveOptionConid() continues running. If it later succeeds,
+            // its result is discarded because Promise.race already settled.
+            // By resolving to null instead, we cleanly handle slow responses.
+            const conid = await Promise.race([
+              this.resolveOptionConid(symbol, targetExpiration, optType, strike),
+              new Promise<number | null>((resolve) => setTimeout(() => {
+                console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Timeout: ${optType} strike ${strike} took >15s`);
+                resolve(null);
+              }, 15000)) // 15s timeout - IBKR can be slow
+            ]);
+            if (conid) return { strike, conid };
+          } catch (err) {
+            // Only catches actual errors from resolveOptionConid, not timeouts
+            console.error(`[IBKR][getOptionChainWithStrikes][${reqId}] Error resolving ${optType} strike ${strike}:`, err);
+          }
+          return null;
         };
 
-        const secdefResp = await this.http.post(secdefUrl, secdefPayload);
+        // Process SEQUENTIALLY to avoid IBKR rate limits (503 errors)
+        const batchSize = 1; // One at a time - IBKR is very strict
+        const allStrikesWithType = [
+          ...otmPuts.map(s => ({ strike: s, type: 'PUT' as const })),
+          ...otmCalls.map(s => ({ strike: s, type: 'CALL' as const })),
+        ];
 
-        if (secdefResp.status === 200 && secdefResp.data) {
-          // Response is array of option contracts with conids
-          const contracts = Array.isArray(secdefResp.data) ? secdefResp.data : [secdefResp.data];
+        for (let i = 0; i < allStrikesWithType.length; i += batchSize) {
+          const batch = allStrikesWithType.slice(i, i + batchSize);
+          const results = await Promise.all(batch.map(({ strike, type }) => resolveWithTimeout(strike, type)));
 
-          for (const contract of contracts) {
-            if (!contract.conid || !contract.strike) continue;
-
-            const conid = Number(contract.conid);
-            const strike = Number(contract.strike);
-            const right = contract.right?.toUpperCase() || contract.putOrCall;
-
-            if (right === 'P' || right === 'PUT') {
-              if (otmPuts.includes(strike)) {
-                putConidMap.set(strike, conid);
-              }
-            } else if (right === 'C' || right === 'CALL') {
-              if (otmCalls.includes(strike)) {
-                callConidMap.set(strike, conid);
-              }
+          for (let j = 0; j < results.length; j++) {
+            const result = results[j];
+            if (result) {
+              if (batch[j].type === 'PUT') putConidMap.set(result.strike, result.conid);
+              else callConidMap.set(result.strike, result.conid);
             }
           }
 
-          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Bulk resolved ${putConidMap.size} puts, ${callConidMap.size} calls`);
-        } else {
-          console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] /trsrv/secdef failed: status=${secdefResp.status}`);
-
-          // Fallback to individual resolution if bulk fails (slower but works)
-          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Falling back to individual conid resolution...`);
-          const resolveWithTimeout = async (strike: number, optType: 'PUT' | 'CALL') => {
-            try {
-              const conid = await Promise.race([
-                this.resolveOptionConid(symbol, targetExpiration, optType, strike),
-                new Promise<null>((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000))
-              ]);
-              if (conid) return { strike, conid };
-            } catch { }
-            return null;
-          };
-
-          // Process in small batches with delays
-          const batchSize = 5;
-          const allStrikesWithType = [
-            ...otmPuts.map(s => ({ strike: s, type: 'PUT' as const })),
-            ...otmCalls.map(s => ({ strike: s, type: 'CALL' as const })),
-          ];
-
-          for (let i = 0; i < allStrikesWithType.length; i += batchSize) {
-            const batch = allStrikesWithType.slice(i, i + batchSize);
-            const results = await Promise.all(batch.map(({ strike, type }) => resolveWithTimeout(strike, type)));
-
-            for (let j = 0; j < results.length; j++) {
-              const result = results[j];
-              if (result) {
-                if (batch[j].type === 'PUT') putConidMap.set(result.strike, result.conid);
-                else callConidMap.set(result.strike, result.conid);
-              }
-            }
-
-            // Add delay between batches to avoid rate limits
-            if (i + batchSize < allStrikesWithType.length) {
-              await new Promise(r => setTimeout(r, 300));
-            }
+          // INCREASED delay between batches to avoid 503 rate limits
+          if (i + batchSize < allStrikesWithType.length) {
+            await new Promise(r => setTimeout(r, 800)); // 800ms between batches
           }
         }
       } catch (err) {
         console.error(`[IBKR][getOptionChainWithStrikes][${reqId}] Error resolving option conids:`, err);
       }
+
+      // DIAGNOSTIC: Log conid resolution results
+      console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Conid resolution complete: putConidMap=${putConidMap.size}, callConidMap=${callConidMap.size}`);
 
       // Phase 2: Batch fetch market data for all option conids (including Greeks, OI, IV)
       const allConids = [...Array.from(putConidMap.values()), ...Array.from(callConidMap.values())];
@@ -1514,8 +1583,9 @@ class IbkrClient {
         }
 
         // Wait for IBKR to start streaming data after priming
-        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Waiting 750ms for IBKR to prime data stream...`);
-        await new Promise(r => setTimeout(r, 750));
+        // Increased from 750ms to 1500ms for more reliable data
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Waiting 1500ms for IBKR to prime data stream...`);
+        await new Promise(r => setTimeout(r, 1500));
 
         // Phase 2b: FETCH real data (second request gets actual values)
         console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Fetching market data + Greeks for ${allConids.length} options...`);
@@ -1532,6 +1602,10 @@ class IbkrClient {
               continue; // Skip this batch
             }
             if (snap.status === 200 && Array.isArray(snap.data)) {
+              // DIAGNOSTIC: Log first snapshot raw response to verify field presence
+              if (i === 0 && snap.data.length > 0) {
+                console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] FIRST SNAPSHOT RAW:`, JSON.stringify(snap.data[0]).slice(0, 400));
+              }
               for (const item of snap.data) {
                 const conid = item.conid || item.conidEx;
                 if (conid) {
@@ -1563,14 +1637,72 @@ class IbkrClient {
           }
         }
 
-        // Count how many got real delta vs empty
+        // Count how many got real data
         let realDeltaCount = 0;
         let emptyDeltaCount = 0;
+        let emptyBidAskCount = 0;
         for (const data of marketDataMap.values()) {
           if (data.delta != null) realDeltaCount++;
           else emptyDeltaCount++;
+          if (data.bid === 0 && data.ask === 0) emptyBidAskCount++;
         }
-        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Got market data for ${marketDataMap.size} options (${realDeltaCount} with real delta, ${emptyDeltaCount} empty)`);
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Got market data for ${marketDataMap.size} options (${realDeltaCount} with delta, ${emptyBidAskCount} with empty bid/ask)`);
+
+        // Phase 2b-RETRY: If >50% have empty bid/ask, retry after longer delay
+        if (emptyBidAskCount > marketDataMap.size * 0.5 && marketDataMap.size > 0) {
+          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] RETRY: ${emptyBidAskCount}/${marketDataMap.size} have empty bid/ask. Waiting 2000ms and retrying...`);
+          await new Promise(r => setTimeout(r, 2000));
+
+          // Re-fetch all batches
+          for (let i = 0; i < allConids.length; i += 20) {
+            const batch = allConids.slice(i, i + 20);
+            const conidStr = batch.join(',');
+
+            try {
+              const snap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${conidStr}&fields=${fields}`);
+              if (snap.status === 200 && Array.isArray(snap.data)) {
+                for (const item of snap.data) {
+                  const conid = item.conid || item.conidEx;
+                  if (conid) {
+                    const existing = marketDataMap.get(conid);
+                    // Only update if we got better data (non-zero bid/ask)
+                    const newBid = Number(item["84"]) || Number(item.bid) || 0;
+                    const newAsk = Number(item["86"]) || Number(item.ask) || 0;
+                    if (newBid > 0 || newAsk > 0 || !existing) {
+                      marketDataMap.set(conid, {
+                        bid: newBid,
+                        ask: newAsk,
+                        last: Number(item["31"]) || Number(item.last) || existing?.last || 0,
+                        delta: item["7308"] != null ? Number(item["7308"]) : existing?.delta,
+                        gamma: item["7309"] != null ? Number(item["7309"]) : existing?.gamma,
+                        theta: item["7310"] != null ? Number(item["7310"]) : existing?.theta,
+                        vega: item["7633"] != null ? Number(item["7633"]) : existing?.vega,
+                        iv: item["7283"] != null ? Number(item["7283"]) : existing?.iv,
+                        openInterest: item["7311"] != null ? Number(item["7311"]) : existing?.openInterest,
+                      });
+                    }
+                  }
+                }
+              }
+            } catch (err) {
+              console.error(`[IBKR][getOptionChainWithStrikes][${reqId}] Retry batch error:`, err);
+            }
+
+            if (i + 20 < allConids.length) {
+              await new Promise(r => setTimeout(r, 100));
+            }
+          }
+
+          // Recount after retry
+          emptyBidAskCount = 0;
+          for (const data of marketDataMap.values()) {
+            if (data.bid === 0 && data.ask === 0) emptyBidAskCount++;
+          }
+          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] After retry: ${emptyBidAskCount}/${marketDataMap.size} still have empty bid/ask`);
+        }
+
+        // DIAGNOSTIC: Log marketDataMap stats after Phase 2b
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] marketDataMap populated: ${marketDataMap.size} entries`);
 
         // Phase 2c: OFF-HOURS FALLBACK - If snapshot returned no data (market closed), use historical prices
         // Check if most options have no bid/ask data (indicates market is closed)
@@ -1617,26 +1749,20 @@ class IbkrClient {
         }
       }
 
-      // Phase 3: Build puts array with REAL data (including Greeks, OI, IV)
+      // Phase 3: Build puts array - include ALL options even without delta
+      // Show actual IBKR data where available, 0 values indicate missing data
       for (const strike of otmPuts) {
         const conid = putConidMap.get(strike);
         const marketData = conid ? marketDataMap.get(conid) : undefined;
-        const moneyness = (underlyingPrice - strike) / underlyingPrice;
-        // Use real delta from IBKR if available, otherwise estimate from moneyness
-        // For 0DTE, delta decays ~3x faster than 30 DTE, so use multiplier 15 (was 5)
-        const estimatedDelta = -Math.max(0.05, Math.min(0.45, 0.5 - moneyness * 15));
 
-        // Log when using estimated delta (IBKR returned empty)
-        if (marketData?.delta == null && conid) {
-          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] PUT $${strike}: Using estimated delta ${estimatedDelta.toFixed(3)} (IBKR returned empty)`);
-        }
-
+        // Include options even without delta - user needs to see what's available
+        // Missing delta will show as 0, bid/ask $0 indicates no market data
         puts.push({
           strike,
           bid: marketData?.bid || 0,
           ask: marketData?.ask || 0,
           last: marketData?.last,
-          delta: marketData?.delta ?? estimatedDelta,
+          delta: marketData?.delta || 0,
           gamma: marketData?.gamma,
           theta: marketData?.theta,
           vega: marketData?.vega,
@@ -1646,26 +1772,17 @@ class IbkrClient {
         });
       }
 
-      // Phase 3: Build calls array with REAL data (including Greeks, OI, IV)
+      // Phase 3: Build calls array - include ALL options even without delta
       for (const strike of otmCalls) {
         const conid = callConidMap.get(strike);
         const marketData = conid ? marketDataMap.get(conid) : undefined;
-        const moneyness = (strike - underlyingPrice) / underlyingPrice;
-        // Use real delta from IBKR if available, otherwise estimate from moneyness
-        // For 0DTE, delta decays ~3x faster than 30 DTE, so use multiplier 15 (was 5)
-        const estimatedDelta = Math.max(0.05, Math.min(0.45, 0.5 - moneyness * 15));
-
-        // Log when using estimated delta (IBKR returned empty)
-        if (marketData?.delta == null && conid) {
-          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] CALL $${strike}: Using estimated delta ${estimatedDelta.toFixed(3)} (IBKR returned empty)`);
-        }
 
         calls.push({
           strike,
           bid: marketData?.bid || 0,
           ask: marketData?.ask || 0,
           last: marketData?.last,
-          delta: marketData?.delta ?? estimatedDelta,
+          delta: marketData?.delta || 0,
           gamma: marketData?.gamma,
           theta: marketData?.theta,
           vega: marketData?.vega,
@@ -2039,27 +2156,36 @@ class IbkrClient {
       console.log(`[IBKR][resolveOptionConid][${reqId}] Search response: status=${resp.status} body=${bodySnippet}`);
 
       if (resp.status === 200 && Array.isArray(resp.data)) {
-        // Look for exact match on strike and right
+        // Look for exact match on strike, right, AND expiration date
         for (const contract of resp.data) {
           const cStrike = parseFloat(contract.strike || '0');
           const cRight = contract.right || '';
+          const cMaturity = contract.maturityDate || '';
 
-          // Match within 0.01 tolerance for floating point
-          if (Math.abs(cStrike - strike) < 0.01 && cRight.toUpperCase() === right) {
+          // Match within 0.01 tolerance for floating point, AND verify maturity date matches
+          const strikeMatch = Math.abs(cStrike - strike) < 0.01;
+          const rightMatch = cRight.toUpperCase() === right;
+          const maturityMatch = cMaturity === expiration;
+
+          if (strikeMatch && rightMatch && maturityMatch) {
             const conid = parseInt(contract.conid, 10);
-            console.log(`[IBKR][resolveOptionConid][${reqId}] Found match: conid=${conid}, strike=${cStrike}, right=${cRight}`);
+            console.log(`[IBKR][resolveOptionConid][${reqId}] Found match: conid=${conid}, strike=${cStrike}, right=${cRight}, maturity=${cMaturity}`);
             return conid;
+          } else if (strikeMatch && rightMatch && !maturityMatch) {
+            // Log near-misses to diagnose maturity format issues
+            console.log(`[IBKR][resolveOptionConid][${reqId}] Maturity mismatch: got '${cMaturity}', want '${expiration}' (strike=${cStrike}, right=${cRight})`);
           }
         }
 
-        // If no exact match, log available contracts for debugging
-        console.log(`[IBKR][resolveOptionConid][${reqId}] No exact match found. Available: ${resp.data.slice(0, 5).map((c: any) => `${c.strike}${c.right}(${c.conid})`).join(', ')}`);
+        // If no exact match, log available contracts for debugging (show maturity dates!)
+        console.log(`[IBKR][resolveOptionConid][${reqId}] No exact match found. Available: ${resp.data.slice(0, 5).map((c: any) => `${c.strike}${c.right}@${c.maturityDate}(${c.conid})`).join(', ')}`);
       }
 
       // Alternative: Try the strikes endpoint to get available options
       const strikesUrl = `/v1/api/iserver/secdef/strikes`;
       const strikesParams = new URLSearchParams({
         conid: underlyingConid.toString(),
+        exchange: 'SMART',
         sectype: 'OPT',
         month: this.formatMonthForIBKR(expiration.slice(0, 6)), // MMMy format
       });
@@ -2088,11 +2214,18 @@ class IbkrClient {
 
           if (infoResp.status === 200 && Array.isArray(infoResp.data)) {
             for (const opt of infoResp.data) {
-              if (opt.conid) {
-                console.log(`[IBKR][resolveOptionConid][${reqId}] Found via info: conid=${opt.conid}`);
+              // CRITICAL: Filter by maturity date to get today's 0DTE, not expired options
+              const optMaturity = opt.maturityDate || '';
+              if (opt.conid && optMaturity === expiration) {
+                console.log(`[IBKR][resolveOptionConid][${reqId}] Found via info: conid=${opt.conid}, maturity=${optMaturity}`);
                 return parseInt(opt.conid, 10);
+              } else if (opt.conid && optMaturity !== expiration) {
+                // Log maturity mismatch for diagnostics
+                console.log(`[IBKR][resolveOptionConid][${reqId}] Info maturity mismatch: got '${optMaturity}', want '${expiration}' (conid=${opt.conid})`);
               }
             }
+            // Log what maturities we found if no match
+            console.log(`[IBKR][resolveOptionConid][${reqId}] Info returned maturities: ${infoResp.data.slice(0, 5).map((o: any) => o.maturityDate).join(', ')} - looking for ${expiration}`);
           }
         }
       }
