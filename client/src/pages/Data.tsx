@@ -3,8 +3,28 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { LeftNav } from '@/components/LeftNav';
 import { EngineBoundsChart } from '@/components/EngineBoundsChart';
 import { useWebSocket } from '@/hooks/use-websocket';
-import { Search, RefreshCw, TrendingUp, TrendingDown, Activity, ChevronDown, Calendar, Wifi, WifiOff } from 'lucide-react';
+import { Search, RefreshCw, TrendingUp, TrendingDown, Activity, ChevronDown, Calendar, Wifi, WifiOff, Database } from 'lucide-react';
 import toast from 'react-hot-toast';
+
+// Stored snapshot type from job system
+interface StoredSnapshot {
+  id: string;
+  symbol: string;
+  capturedAt: string;
+  marketDay: string;
+  underlyingPrice: string;
+  vix: string | null;
+  expiration: string | null;
+  chainData: {
+    puts: OptionStrike[];
+    calls: OptionStrike[];
+  };
+  metadata: {
+    capturedAt: string;
+    marketStatus?: string;
+    source?: string;
+  };
+}
 
 // Check if US market is currently open (9:30 AM - 4:00 PM ET, Mon-Fri)
 function isUSMarketOpen(): boolean {
@@ -129,6 +149,9 @@ export function Data() {
   const [liveUnderlyingPrice, setLiveUnderlyingPrice] = useState<number | null>(null);
   const [wsUpdateCount, setWsUpdateCount] = useState(0);
 
+  // Chart ref for live tick updates
+  const chartRef = useRef<{ updateWithTick: (price: number, timestamp: number) => void } | null>(null);
+
   // Note: DeterministicChart handles its own data fetching from IBKR
 
   // ========================================
@@ -226,6 +249,26 @@ export function Data() {
     },
     staleTime: 60000, // Consider data stale after 1 minute
     enabled: !!activeTicker,
+  });
+
+  // Check market status outside of query
+  const isMarketCurrentlyClosed = !isUSMarketOpen();
+
+  // Fetch stored snapshot from job system when market is closed
+  // This shows the last captured option chain data
+  const { data: storedSnapshot, isLoading: snapshotLoading } = useQuery<{ ok: boolean; snapshot: StoredSnapshot }>({
+    queryKey: ['/api/jobs/snapshots', activeTicker, 'latest'],
+    queryFn: async () => {
+      const res = await fetch(`/api/jobs/snapshots/${activeTicker}/latest`, { credentials: 'include' });
+      if (!res.ok) {
+        if (res.status === 404) return { ok: false, snapshot: null as any };
+        throw new Error('Failed to fetch stored snapshot');
+      }
+      return res.json();
+    },
+    // Only fetch when market is closed - use stored data from job captures
+    enabled: !!activeTicker && isMarketCurrentlyClosed,
+    staleTime: 300000, // 5 minutes - stored data doesn't change often
   });
 
   // ========================================
@@ -380,9 +423,36 @@ export function Data() {
   // Display price: use IBKR price if valid, otherwise fallback to last close
   const displayPrice = ibkrPrice > 0 ? ibkrPrice : (lastClosePrice || 0);
 
-  // Use live WebSocket data when available, fallback to HTTP
-  const underlyingPrice = liveUnderlyingPrice || optionChain?.underlyingPrice || marketData?.price || 0;
-  const displayChain = liveOptionChain || optionChain;
+  // Check if we have stored snapshot data from job system
+  const hasStoredSnapshot = storedSnapshot?.ok && storedSnapshot.snapshot?.chainData;
+  const snapshotData = hasStoredSnapshot ? storedSnapshot.snapshot : null;
+
+  // Use live WebSocket data when available, fallback to HTTP, then stored snapshot when market closed
+  const underlyingPrice = liveUnderlyingPrice
+    || optionChain?.underlyingPrice
+    || (isMarketClosed && snapshotData ? parseFloat(snapshotData.underlyingPrice) : 0)
+    || marketData?.price
+    || 0;
+
+  // Determine which option chain to display:
+  // 1. Live WebSocket data (when streaming)
+  // 2. HTTP cached chain (when market open)
+  // 3. Stored snapshot from job (when market closed)
+  const displayChain: CachedChain | null = liveOptionChain
+    || optionChain
+    || (isMarketClosed && snapshotData ? {
+        cached: false,
+        symbol: snapshotData.symbol,
+        puts: snapshotData.chainData.puts || [],
+        calls: snapshotData.chainData.calls || [],
+        underlyingPrice: parseFloat(snapshotData.underlyingPrice),
+        lastUpdate: snapshotData.capturedAt,
+        expirations: snapshotData.expiration ? [snapshotData.expiration] : [],
+        isHistorical: true // Mark as stored/historical data
+      } : null);
+
+  // Track if showing stored snapshot
+  const isShowingStoredSnapshot = isMarketClosed && hasStoredSnapshot && !liveOptionChain && !optionChain?.cached;
 
   // Sort options by strike - use live chain when available
   const sortedPuts = [...(displayChain?.puts || [])].sort((a, b) => b.strike - a.strike);
@@ -557,16 +627,23 @@ export function Data() {
               )}
 
               {/* Data Source Indicator */}
-              <div className={`text-xs px-2 py-1 rounded ${
-                displayChain?.isHistorical
-                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
-                  : isLiveStreaming
-                    ? 'bg-green-500/30 text-green-400 border border-green-500/50'
-                    : displayChain?.cached
-                      ? 'bg-green-500/20 text-green-400'
-                      : 'bg-yellow-500/20 text-yellow-400'
+              <div className={`flex items-center gap-1.5 text-xs px-2 py-1 rounded ${
+                isShowingStoredSnapshot
+                  ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                  : displayChain?.isHistorical
+                    ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30'
+                    : isLiveStreaming
+                      ? 'bg-green-500/30 text-green-400 border border-green-500/50'
+                      : displayChain?.cached
+                        ? 'bg-green-500/20 text-green-400'
+                        : 'bg-yellow-500/20 text-yellow-400'
               }`}>
-                {displayChain?.isHistorical
+                {isShowingStoredSnapshot ? (
+                  <>
+                    <Database className="w-3 h-3" />
+                    <span>Stored Snapshot ({snapshotData?.marketDay})</span>
+                  </>
+                ) : displayChain?.isHistorical
                   ? '📜 Last Traded (Market Closed)'
                   : isLiveStreaming
                     ? '⚡ Live WebSocket'
@@ -584,10 +661,12 @@ export function Data() {
             </div>
           </div>
 
-          {chainLoading ? (
+          {(chainLoading || (isMarketClosed && snapshotLoading)) ? (
             <div className="flex items-center justify-center py-12">
               <RefreshCw className="w-6 h-6 animate-spin text-silver" />
-              <span className="ml-2 text-silver">Loading option chain...</span>
+              <span className="ml-2 text-silver">
+                {snapshotLoading ? 'Loading stored snapshot...' : 'Loading option chain...'}
+              </span>
             </div>
           ) : (
             <div className="grid grid-cols-2 gap-6">
