@@ -4,34 +4,74 @@ import { Settings, LogOut, Zap, XCircle, RefreshCw, Clock } from "lucide-react";
 import type { AccountInfo } from "@/lib/types";
 import { useBrokerStatus } from "@/hooks/useBrokerStatus";
 
+type MarketStatus = 'WEEKEND' | 'PRE-MARKET' | 'TRADING' | 'AFTER-HOURS' | 'CLOSED';
+
 /**
- * Get current time in Eastern Time
+ * Get market status based on current Eastern time
+ */
+function getMarketStatus(now: Date): { status: MarketStatus; label: string } {
+  // Get Eastern time components
+  const etString = now.toLocaleString('en-US', { timeZone: 'America/New_York' });
+  const etDate = new Date(etString);
+  const dayOfWeek = etDate.getDay(); // 0 = Sunday, 6 = Saturday
+  const hour = etDate.getHours();
+  const minute = etDate.getMinutes();
+  const timeInMinutes = hour * 60 + minute;
+
+  // Weekend check
+  if (dayOfWeek === 0 || dayOfWeek === 6) {
+    return { status: 'WEEKEND', label: 'Weekend' };
+  }
+
+  // Market hours: 9:30 AM - 4:00 PM ET
+  const marketOpen = 9 * 60 + 30;   // 9:30 AM = 570 minutes
+  const marketClose = 16 * 60;       // 4:00 PM = 960 minutes
+
+  if (timeInMinutes < marketOpen) {
+    return { status: 'PRE-MARKET', label: 'Pre-Market' };
+  } else if (timeInMinutes >= marketOpen && timeInMinutes < marketClose) {
+    return { status: 'TRADING', label: 'Market Open' };
+  } else {
+    return { status: 'AFTER-HOURS', label: 'After Hours' };
+  }
+}
+
+/**
+ * Get current time in Eastern Time with market status
  */
 function useEasternTime() {
-  const [time, setTime] = useState(() => {
-    return new Date().toLocaleTimeString('en-US', {
-      timeZone: 'America/New_York',
-      hour: '2-digit',
-      minute: '2-digit',
-      second: '2-digit',
-      hour12: true,
-    });
-  });
-
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setTime(new Date().toLocaleTimeString('en-US', {
+  const [state, setState] = useState(() => {
+    const now = new Date();
+    return {
+      time: now.toLocaleTimeString('en-US', {
         timeZone: 'America/New_York',
         hour: '2-digit',
         minute: '2-digit',
         second: '2-digit',
         hour12: true,
-      }));
+      }),
+      marketStatus: getMarketStatus(now),
+    };
+  });
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = new Date();
+      setState({
+        time: now.toLocaleTimeString('en-US', {
+          timeZone: 'America/New_York',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: true,
+        }),
+        marketStatus: getMarketStatus(now),
+      });
     }, 1000);
     return () => clearInterval(interval);
   }, []);
 
-  return time;
+  return state;
 }
 
 export default function AppHeader() {
@@ -76,11 +116,22 @@ export default function AppHeader() {
         <div className="text-sm text-muted-foreground">Professional Trading Platform</div>
       </div>
       <div className="flex items-center space-x-4">
-        {/* Eastern Time */}
-        <div className="text-sm flex items-center gap-1.5" data-testid="eastern-time">
+        {/* Eastern Time + Market Status */}
+        <div className="text-sm flex items-center gap-2" data-testid="eastern-time">
           <Clock className="h-3.5 w-3.5 text-zinc-400" />
-          <span className="font-mono text-zinc-300">{easternTime}</span>
+          <span className="font-mono text-zinc-300">{easternTime.time}</span>
           <span className="text-zinc-500 text-xs">ET</span>
+          <span className={`text-xs font-medium px-1.5 py-0.5 rounded ${
+            easternTime.marketStatus.status === 'TRADING'
+              ? 'bg-green-500/20 text-green-400'
+              : easternTime.marketStatus.status === 'PRE-MARKET'
+              ? 'bg-yellow-500/20 text-yellow-400'
+              : easternTime.marketStatus.status === 'AFTER-HOURS'
+              ? 'bg-orange-500/20 text-orange-400'
+              : 'bg-zinc-500/20 text-zinc-400'
+          }`}>
+            {easternTime.marketStatus.label}
+          </span>
         </div>
 
         {/* IBKR Status - synced with Engine and Settings */}

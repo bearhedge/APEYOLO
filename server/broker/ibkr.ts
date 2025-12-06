@@ -1376,10 +1376,14 @@ class IbkrClient {
     // For N days: expected_move = spot * (VIX / 100) * sqrt(N / 252)
     const daysToExpiry = 1; // 0DTE = 1 day
     const expectedMove = underlyingPrice * (vix / 100) * Math.sqrt(daysToExpiry / 252);
-    // Use 3σ range to include target delta 0.15-0.20 strikes (further OTM)
-    const strikeRangeLow = Math.floor(underlyingPrice - expectedMove * 3);
-    const strikeRangeHigh = Math.ceil(underlyingPrice + expectedMove * 3);
-    console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Expected move: $${expectedMove.toFixed(2)}, Strike range: $${strikeRangeLow} - $${strikeRangeHigh}`);
+    // Use 4σ range OR minimum $20 to capture 0.20-0.40 delta range (dynamic based on VIX)
+    // Previously 3σ was too narrow in low-VIX environments
+    const minRange = 20; // At least $20 each direction to ensure sufficient strikes
+    const calculatedRange = expectedMove * 4;
+    const range = Math.max(calculatedRange, minRange);
+    const strikeRangeLow = Math.floor(underlyingPrice - range);
+    const strikeRangeHigh = Math.ceil(underlyingPrice + range);
+    console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Expected move: $${expectedMove.toFixed(2)}, Range: $${range.toFixed(2)} (4σ=${calculatedRange.toFixed(2)}, min=$${minRange}), Strike range: $${strikeRangeLow} - $${strikeRangeHigh}`);
 
     // Update diagnostics with VIX and price
     diagnostics.underlyingPrice = underlyingPrice;
@@ -1503,21 +1507,12 @@ class IbkrClient {
 
         const resolveWithTimeout = async (strike: number, optType: 'PUT' | 'CALL') => {
           try {
-            // CRITICAL FIX: Timeout must RESOLVE to null, not REJECT
-            // When timeout rejects, the catch swallows it and returns null immediately,
-            // but resolveOptionConid() continues running. If it later succeeds,
-            // its result is discarded because Promise.race already settled.
-            // By resolving to null instead, we cleanly handle slow responses.
-            const conid = await Promise.race([
-              this.resolveOptionConid(symbol, targetExpiration, optType, strike),
-              new Promise<number | null>((resolve) => setTimeout(() => {
-                console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Timeout: ${optType} strike ${strike} took >15s`);
-                resolve(null);
-              }, 15000)) // 15s timeout - IBKR can be slow
-            ]);
+            // No timeout - IBKR IS returning data, we just need to wait
+            // Sequential processing of 20+ strikes takes 60-90s total,
+            // but each individual request succeeds within a few seconds
+            const conid = await this.resolveOptionConid(symbol, targetExpiration, optType, strike);
             if (conid) return { strike, conid };
           } catch (err) {
-            // Only catches actual errors from resolveOptionConid, not timeouts
             console.error(`[IBKR][getOptionChainWithStrikes][${reqId}] Error resolving ${optType} strike ${strike}:`, err);
           }
           return null;
@@ -2401,6 +2396,202 @@ class IbkrClient {
     }
   }
 
+  /**
+   * Place an option order with attached stop loss (bracket order)
+   * Used for SELL orders with protective stop - critical for 0DTE risk management
+   */
+  async placeOptionOrderWithStop(params: {
+    symbol: string;
+    optionType: 'PUT' | 'CALL';
+    strike: number;
+    expiration: string; // YYYYMMDD format
+    side: 'SELL'; // Primary is always SELL for premium collection
+    quantity: number;
+    limitPrice: number; // Entry price (bid)
+    stopPrice: number; // Stop loss trigger price (e.g., 3x premium)
+  }): Promise<{ primaryOrderId?: string; stopOrderId?: string; status: string; raw?: any }> {
+    await this.ensureReady();
+    await this.ensureAccountSelected();
+
+    const accountId = this.accountId || process.env.IBKR_ACCOUNT_ID || "";
+    const reqId = randomUUID();
+
+    console.log(`[IBKR][placeOptionOrderWithStop][${reqId}] Starting BRACKET: ${params.side} ${params.quantity} ${params.symbol} ${params.strike}${params.optionType === 'PUT' ? 'P' : 'C'} ${params.expiration} @ LMT $${params.limitPrice} | STOP @ $${params.stopPrice}`);
+
+    if (!params.symbol || !accountId || !params.quantity || params.quantity <= 0) {
+      console.error(`[IBKR][placeOptionOrderWithStop][${reqId}] Invalid params`);
+      return { status: "rejected_400" };
+    }
+
+    if (!params.limitPrice || !params.stopPrice) {
+      console.error(`[IBKR][placeOptionOrderWithStop][${reqId}] Both limitPrice and stopPrice required for bracket order`);
+      return { status: "rejected_missing_prices" };
+    }
+
+    // Resolve the option contract conid
+    const optionConid = await this.resolveOptionConid(
+      params.symbol,
+      params.expiration,
+      params.optionType,
+      params.strike
+    );
+
+    if (!optionConid) {
+      const errorMsg = `Cannot resolve option conid for ${params.symbol} ${params.strike}${params.optionType === 'PUT' ? 'P' : 'C'} ${params.expiration}`;
+      console.error(`[IBKR][placeOptionOrderWithStop][${reqId}] ${errorMsg}`);
+      await storage.createAuditLog({
+        eventType: "IBKR_BRACKET_ORDER",
+        details: `FAILED: ${errorMsg}`,
+        status: "FAILED"
+      });
+      return { status: "rejected_no_option_conid" };
+    }
+
+    console.log(`[IBKR][placeOptionOrderWithStop][${reqId}] Resolved option conid: ${optionConid}`);
+
+    // Generate client order ID for linking parent and child
+    const parentCOID = `SELL_${reqId.slice(0, 8)}`;
+    const stopCOID = `STOP_${reqId.slice(0, 8)}`;
+
+    // Build the primary SELL order (parent)
+    const primaryOrder: any = {
+      acctId: accountId,
+      conid: optionConid,
+      orderType: 'LMT',
+      side: 'SELL',
+      tif: 'DAY',
+      quantity: Math.floor(params.quantity),
+      price: params.limitPrice,
+      cOID: parentCOID,
+    };
+
+    // Build the stop loss BUY order (child) - triggers when price hits stop
+    // Note: For short options, stop loss is a BUY order to close the position
+    const stopOrder: any = {
+      acctId: accountId,
+      conid: optionConid,
+      orderType: 'STP', // Stop order
+      side: 'BUY', // Buy to close the short position
+      tif: 'DAY',
+      quantity: Math.floor(params.quantity),
+      price: params.stopPrice, // Stop trigger price
+      parentId: parentCOID, // Link to parent order
+      cOID: stopCOID,
+    };
+
+    const body = { orders: [primaryOrder, stopOrder] };
+    const url = `/v1/api/iserver/account/${encodeURIComponent(accountId)}/orders`;
+
+    console.log(`[IBKR][placeOptionOrderWithStop][${reqId}] Submitting bracket order to ${url}:`, JSON.stringify(body));
+
+    try {
+      const resp = await this.http.post(url, body, { headers: { 'Content-Type': 'application/json' } });
+      const raw = resp.data;
+
+      console.log(`[IBKR][placeOptionOrderWithStop][${reqId}] Response: status=${resp.status} data=${JSON.stringify(raw).slice(0, 800)}`);
+
+      // Handle order confirmation prompts (IBKR may require confirmation for each order)
+      let confirmedRaw = raw;
+      if (Array.isArray(raw) && raw[0]?.id && raw[0]?.message) {
+        // This is a confirmation request - need to reply
+        const confirmId = raw[0].id;
+        console.log(`[IBKR][placeOptionOrderWithStop][${reqId}] Order requires confirmation (id=${confirmId}): ${raw[0].message}`);
+
+        const confirmUrl = `/v1/api/iserver/reply/${confirmId}`;
+        const confirmResp = await this.http.post(confirmUrl, { confirmed: true });
+        console.log(`[IBKR][placeOptionOrderWithStop][${reqId}] Confirmation response: status=${confirmResp.status} data=${JSON.stringify(confirmResp.data).slice(0, 500)}`);
+
+        if (confirmResp.status >= 200 && confirmResp.status < 300) {
+          confirmedRaw = confirmResp.data;
+
+          // May need additional confirmations for the second order
+          if (Array.isArray(confirmedRaw) && confirmedRaw[0]?.id && confirmedRaw[0]?.message) {
+            const confirmId2 = confirmedRaw[0].id;
+            console.log(`[IBKR][placeOptionOrderWithStop][${reqId}] Second confirmation needed (id=${confirmId2}): ${confirmedRaw[0].message}`);
+
+            const confirmResp2 = await this.http.post(`/v1/api/iserver/reply/${confirmId2}`, { confirmed: true });
+            console.log(`[IBKR][placeOptionOrderWithStop][${reqId}] Second confirmation response: status=${confirmResp2.status}`);
+
+            if (confirmResp2.status >= 200 && confirmResp2.status < 300) {
+              confirmedRaw = confirmResp2.data;
+            }
+          }
+        }
+      }
+
+      // Parse order IDs from response
+      // Response format can vary - might be array of order results
+      let primaryOrderId: string | undefined;
+      let stopOrderId: string | undefined;
+
+      if (Array.isArray(confirmedRaw)) {
+        for (const item of confirmedRaw) {
+          if (item.order_id) {
+            // First order_id is primary, second is stop
+            if (!primaryOrderId) {
+              primaryOrderId = String(item.order_id);
+            } else if (!stopOrderId) {
+              stopOrderId = String(item.order_id);
+            }
+          }
+        }
+      } else if (confirmedRaw?.order_id) {
+        primaryOrderId = String(confirmedRaw.order_id);
+      }
+
+      const optionSymbol = `${params.symbol}${params.expiration}${params.optionType === 'PUT' ? 'P' : 'C'}${params.strike}`;
+
+      if (resp.status >= 200 && resp.status < 300) {
+        // Store primary order
+        await storage.createOrder({
+          ibkrOrderId: primaryOrderId || null,
+          symbol: optionSymbol,
+          side: 'SELL',
+          quantity: params.quantity,
+          orderType: 'LMT',
+          limitPrice: String(params.limitPrice),
+          status: 'submitted',
+        });
+
+        // Store stop order (linked)
+        if (stopOrderId) {
+          await storage.createOrder({
+            ibkrOrderId: stopOrderId,
+            symbol: optionSymbol,
+            side: 'BUY',
+            quantity: params.quantity,
+            orderType: 'STP',
+            limitPrice: String(params.stopPrice),
+            status: 'submitted',
+          });
+        }
+
+        await storage.createAuditLog({
+          eventType: "IBKR_BRACKET_ORDER",
+          details: `OK BRACKET ${params.quantity} ${optionSymbol} | SELL @ $${params.limitPrice} (id=${primaryOrderId || 'n/a'}) | STOP @ $${params.stopPrice} (id=${stopOrderId || 'n/a'})`,
+          status: "SUCCESS"
+        });
+
+        return { primaryOrderId, stopOrderId, status: "submitted", raw: confirmedRaw };
+      } else {
+        await storage.createAuditLog({
+          eventType: "IBKR_BRACKET_ORDER",
+          details: `FAILED http=${resp.status} ${optionSymbol}`,
+          status: "FAILED"
+        });
+        return { status: `rejected_${resp.status}`, raw };
+      }
+    } catch (err) {
+      console.error(`[IBKR][placeOptionOrderWithStop][${reqId}] Error:`, err);
+      await storage.createAuditLog({
+        eventType: "IBKR_BRACKET_ORDER",
+        details: `ERROR: ${err.message || 'Unknown error'}`,
+        status: "FAILED"
+      });
+      return { status: "error", raw: { error: err.message } };
+    }
+  }
+
   async getOpenOrders(): Promise<any[]> {
     await this.ensureReady();
 
@@ -2736,6 +2927,30 @@ export async function placePaperOptionOrder(params: {
     quantity: params.quantity,
     orderType: params.orderType || 'MKT',
     limitPrice: params.limitPrice,
+  });
+}
+
+// Utility for placing option orders with stop loss (bracket order)
+// Used for LIVE trading with automatic stop loss protection
+export async function placeOptionOrderWithStop(params: {
+  symbol: string;
+  optionType: 'PUT' | 'CALL';
+  strike: number;
+  expiration: string; // YYYYMMDD format
+  quantity: number;
+  limitPrice: number;
+  stopPrice: number;
+}) {
+  if (!activeClient) throw new Error('IBKR client not initialized');
+  return activeClient.placeOptionOrderWithStop({
+    symbol: params.symbol,
+    optionType: params.optionType,
+    strike: params.strike,
+    expiration: params.expiration,
+    side: 'SELL', // Always SELL for premium collection
+    quantity: params.quantity,
+    limitPrice: params.limitPrice,
+    stopPrice: params.stopPrice,
   });
 }
 

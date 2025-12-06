@@ -6,7 +6,7 @@
 import { Router } from "express";
 import { TradingEngine, EngineError } from "./engine/index";
 import { getBroker, getBrokerWithStatus } from "./broker/index";
-import { ensureIbkrReady, placePaperOptionOrder, getIbkrDiagnostics } from "./broker/ibkr";
+import { ensureIbkrReady, placePaperOptionOrder, placeOptionOrderWithStop, getIbkrDiagnostics } from "./broker/ibkr";
 import { storage } from "./storage";
 import { engineScheduler, SchedulerConfig } from "./services/engineScheduler";
 import { requireAuth } from "./auth";
@@ -47,7 +47,7 @@ export interface GuardRails {
 
 // Default Guard Rails
 const DEFAULT_GUARD_RAILS: GuardRails = {
-  maxDelta: 0.30,
+  maxDelta: 0.35, // Aligned with step3 target range [0.25, 0.35]
   minDelta: 0.05,
   maxPositionsPerDay: 10,
   maxContractsPerTrade: 5,
@@ -128,8 +128,35 @@ function getTimeComponentsInTimezone(
   return { hour, minute, dayOfWeek };
 }
 
-// Check if we're within trading window
-function isWithinTradingWindow(): { allowed: boolean; reason?: string } {
+// Context types for trading window
+type TradingContext = 'WEEKEND' | 'PRE_WINDOW' | 'TRADING' | 'POST_WINDOW';
+
+interface TradingWindowResult {
+  allowed: boolean;
+  reason?: string;
+  context: TradingContext;
+  minutesRemaining?: number;
+  nextSession?: string;
+}
+
+// Format time for display (e.g., "11:00 AM")
+function formatTime(hour: number, minute: number): string {
+  const h = hour % 12 || 12;
+  const m = minute.toString().padStart(2, '0');
+  const ampm = hour < 12 ? 'AM' : 'PM';
+  return `${h}:${m} ${ampm}`;
+}
+
+// Get next trading day
+function getNextTradingDay(dayOfWeek: number): string {
+  if (dayOfWeek === 5) return 'Mon'; // Friday → Monday
+  if (dayOfWeek === 6) return 'Mon'; // Saturday → Monday
+  if (dayOfWeek === 0) return 'Mon'; // Sunday → Monday
+  return 'Tomorrow';
+}
+
+// Check if we're within trading window with smart context messages
+function isWithinTradingWindow(): TradingWindowResult {
   const now = new Date();
   const timezone = currentGuardRails.tradingWindow.timezone;
 
@@ -145,24 +172,65 @@ function isWithinTradingWindow(): { allowed: boolean; reason?: string } {
 
   // Check if it's a weekday (Mon-Fri)
   const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
+  const startTimeStr = formatTime(startHour, startMinute);
+  const endTimeStr = formatTime(endHour, endMinute);
 
-  console.log(`[TradingWindow] timezone=${timezone}, hour=${currentHour}, minute=${currentMinute}, current=${currentMinutes}, start=${startMinutes}, end=${endMinutes}, dayOfWeek=${dayOfWeek}, isWeekday=${isWeekday}`);
-
+  // Weekend
   if (!isWeekday) {
+    const nextDay = getNextTradingDay(dayOfWeek);
     return {
       allowed: false,
-      reason: `Trading only allowed on weekdays (Mon-Fri)`
+      context: 'WEEKEND',
+      reason: `Weekend - Next session: ${nextDay} ${startTimeStr} ET`,
+      nextSession: `${nextDay} ${startTimeStr} ET`
     };
   }
 
-  if (currentMinutes < startMinutes || currentMinutes >= endMinutes) {
+  // Before trading window
+  if (currentMinutes < startMinutes) {
+    const minsUntil = startMinutes - currentMinutes;
+    if (minsUntil <= 60) {
+      return {
+        allowed: false,
+        context: 'PRE_WINDOW',
+        reason: `Pre-market - Trading begins in ${minsUntil} min`,
+        nextSession: `Today ${startTimeStr} ET`
+      };
+    }
     return {
       allowed: false,
-      reason: `Trading only allowed between ${currentGuardRails.tradingWindow.start} and ${currentGuardRails.tradingWindow.end} ${timezone}`
+      context: 'PRE_WINDOW',
+      reason: `Pre-market - Trading begins at ${startTimeStr} ET`,
+      nextSession: `Today ${startTimeStr} ET`
     };
   }
 
-  return { allowed: true };
+  // After trading window
+  if (currentMinutes >= endMinutes) {
+    const nextDay = dayOfWeek === 5 ? 'Mon' : 'Tomorrow';
+    return {
+      allowed: false,
+      context: 'POST_WINDOW',
+      reason: `Session closed - Next: ${nextDay} ${startTimeStr} ET`,
+      nextSession: `${nextDay} ${startTimeStr} ET`
+    };
+  }
+
+  // Within trading window
+  const minsRemaining = endMinutes - currentMinutes;
+  let reason = `Trading active - ${minsRemaining} min remaining`;
+  if (minsRemaining <= 5) {
+    reason = `Last call - ${minsRemaining} min remaining`;
+  } else if (minsRemaining <= 15) {
+    reason = `Closing soon - ${minsRemaining} min remaining`;
+  }
+
+  return {
+    allowed: true,
+    context: 'TRADING',
+    reason,
+    minutesRemaining: minsRemaining
+  };
 }
 
 
@@ -435,7 +503,7 @@ router.get('/analyze', requireAuth, async (req, res) => {
   }
 });
 
-// POST /api/engine/execute-paper - Execute paper trade and record to database
+// POST /api/engine/execute-trade - Execute LIVE trade with bracket orders (SELL + STOP)
 router.post('/execute-paper', requireAuth, async (req, res) => {
   try {
     const { tradeProposal } = req.body as { tradeProposal: TradeProposal };
@@ -457,7 +525,7 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
     const broker = getBroker();
     const ibkrOrderIds: string[] = [];
 
-    // Place orders with IBKR if connected
+    // Place BRACKET orders with IBKR for LIVE trading
     if (broker.status.provider === 'ibkr') {
       try {
         await ensureIbkrReady();
@@ -465,26 +533,34 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
         const today = new Date();
         const expiration = today.toISOString().slice(0, 10).replace(/-/g, '');
 
+        // Stop loss price from proposal (3x premium by default)
+        const stopPrice = tradeProposal.stopLossPrice;
+
         for (const leg of tradeProposal.legs) {
-          const orderResult = await placePaperOptionOrder({
+          // Calculate per-leg stop price if not available at proposal level
+          const legStopPrice = stopPrice || (leg.premium * 3);
+
+          const orderResult = await placeOptionOrderWithStop({
             symbol: tradeProposal.symbol,
             optionType: leg.optionType,
             strike: leg.strike,
             expiration,
-            side: 'SELL',
             quantity: tradeProposal.contracts,
-            orderType: 'LMT',
             limitPrice: leg.premium,
+            stopPrice: legStopPrice,
           });
 
-          if (orderResult.id) {
-            ibkrOrderIds.push(orderResult.id);
+          if (orderResult.primaryOrderId) {
+            ibkrOrderIds.push(orderResult.primaryOrderId);
+          }
+          if (orderResult.stopOrderId) {
+            ibkrOrderIds.push(orderResult.stopOrderId);
           }
 
-          console.log(`[Engine/execute-paper] ${leg.optionType} order placed:`, orderResult);
+          console.log(`[Engine/execute] ${leg.optionType} BRACKET order: SELL @ $${leg.premium}, STOP @ $${legStopPrice}`, orderResult);
         }
       } catch (orderErr) {
-        console.error('[Engine/execute-paper] IBKR order error:', orderErr);
+        console.error('[Engine/execute] IBKR bracket order error:', orderErr);
       }
     }
 
@@ -554,13 +630,13 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
       success: true,
       tradeId: paperTrade.id,
       message: broker.status.provider === 'ibkr' && ibkrOrderIds.length > 0
-        ? `Paper trade recorded with ${ibkrOrderIds.length} IBKR order(s)`
-        : 'Paper trade recorded (simulation mode)',
+        ? `LIVE bracket orders submitted: ${ibkrOrderIds.length} order(s) (SELL + STOP)`
+        : 'Trade recorded (simulation mode - IBKR not connected)',
       ibkrOrderIds: ibkrOrderIds.length > 0 ? ibkrOrderIds : undefined,
     });
   } catch (error) {
-    console.error('[Engine/execute-paper] Error:', error);
-    res.status(500).json({ error: 'Failed to execute paper trade' });
+    console.error('[Engine/execute] Error:', error);
+    res.status(500).json({ error: 'Failed to execute trade' });
   }
 });
 
@@ -622,31 +698,32 @@ router.post('/execute-trade', requireAuth, async (req, res) => {
     const expiration = today.toISOString().slice(0, 10).replace(/-/g, '');
     const expirationDate = new Date(today.setHours(16, 0, 0, 0)); // 4 PM ET close
 
-    // Execute PUT order if present
+    // Execute PUT order if present (with stop loss for LIVE trading)
     if (decision.strikes?.putStrike && decision.positionSize?.contracts > 0) {
       const putStrike = decision.strikes.putStrike;
       const contracts = decision.positionSize.contracts;
       const premium = putStrike.expectedPremium || putStrike.bid || 0.5;
+      // Stop loss: default 3x premium if not specified
+      const stopPrice = decision.exitRules?.stopLoss || (premium * 3);
 
-      let orderResult = { id: undefined as string | undefined, status: 'mock' };
+      let orderResult: { primaryOrderId?: string; stopOrderId?: string; status: string } = { status: 'mock' };
 
-      // Place real order if using IBKR
+      // Place bracket order (SELL + STOP) with IBKR for LIVE trading
       if (broker.status.provider === 'ibkr') {
         try {
-          orderResult = await placePaperOptionOrder({
+          orderResult = await placeOptionOrderWithStop({
             symbol: 'SPY',
             optionType: 'PUT',
             strike: putStrike.strike,
             expiration,
-            side: 'SELL',
             quantity: contracts,
-            orderType: 'LMT',
             limitPrice: premium,
+            stopPrice: stopPrice,
           });
-          console.log(`[Engine] PUT order placed: ${JSON.stringify(orderResult)}`);
+          console.log(`[Engine] PUT bracket order placed: SELL @ $${premium}, STOP @ $${stopPrice}`, JSON.stringify(orderResult));
         } catch (orderErr) {
-          console.error('[Engine] PUT order failed:', orderErr);
-          orderResult = { id: undefined, status: 'failed' };
+          console.error('[Engine] PUT bracket order failed:', orderErr);
+          orderResult = { status: 'failed' };
         }
       }
 
@@ -659,9 +736,9 @@ router.post('/execute-trade', requireAuth, async (req, res) => {
         action: 'SELL',
         orderType: 'LIMIT',
         limitPrice: premium,
-        stopLoss: decision.exitRules?.stopLoss,
-        status: orderResult.status === 'submitted' || orderResult.status === 'filled' ? 'SUBMITTED' : 'PENDING',
-        orderId: orderResult.id,
+        stopLoss: stopPrice,
+        status: orderResult.status === 'submitted' ? 'SUBMITTED' : 'PENDING',
+        orderId: orderResult.primaryOrderId,
         ibkrStatus: orderResult.status,
       });
 
@@ -675,7 +752,7 @@ router.post('/execute-trade', requireAuth, async (req, res) => {
           expiration: expirationDate,
           quantity: contracts,
           credit: (premium * contracts * 100).toString(), // Total credit in dollars
-          status: orderResult.id ? 'pending' : 'mock',
+          status: orderResult.primaryOrderId ? 'pending' : 'mock',
         });
         savedTrades.push(trade);
         console.log(`[Engine] PUT trade saved: ${trade.id}`);
@@ -684,31 +761,32 @@ router.post('/execute-trade', requireAuth, async (req, res) => {
       }
     }
 
-    // Execute CALL order if present
+    // Execute CALL order if present (with stop loss for LIVE trading)
     if (decision.strikes?.callStrike && decision.positionSize?.contracts > 0) {
       const callStrike = decision.strikes.callStrike;
       const contracts = decision.positionSize.contracts;
       const premium = callStrike.expectedPremium || callStrike.bid || 0.5;
+      // Stop loss: default 3x premium if not specified
+      const stopPrice = decision.exitRules?.stopLoss || (premium * 3);
 
-      let orderResult = { id: undefined as string | undefined, status: 'mock' };
+      let orderResult: { primaryOrderId?: string; stopOrderId?: string; status: string } = { status: 'mock' };
 
-      // Place real order if using IBKR
+      // Place bracket order (SELL + STOP) with IBKR for LIVE trading
       if (broker.status.provider === 'ibkr') {
         try {
-          orderResult = await placePaperOptionOrder({
+          orderResult = await placeOptionOrderWithStop({
             symbol: 'SPY',
             optionType: 'CALL',
             strike: callStrike.strike,
             expiration,
-            side: 'SELL',
             quantity: contracts,
-            orderType: 'LMT',
             limitPrice: premium,
+            stopPrice: stopPrice,
           });
-          console.log(`[Engine] CALL order placed: ${JSON.stringify(orderResult)}`);
+          console.log(`[Engine] CALL bracket order placed: SELL @ $${premium}, STOP @ $${stopPrice}`, JSON.stringify(orderResult));
         } catch (orderErr) {
-          console.error('[Engine] CALL order failed:', orderErr);
-          orderResult = { id: undefined, status: 'failed' };
+          console.error('[Engine] CALL bracket order failed:', orderErr);
+          orderResult = { status: 'failed' };
         }
       }
 
@@ -721,9 +799,9 @@ router.post('/execute-trade', requireAuth, async (req, res) => {
         action: 'SELL',
         orderType: 'LIMIT',
         limitPrice: premium,
-        stopLoss: decision.exitRules?.stopLoss,
-        status: orderResult.status === 'submitted' || orderResult.status === 'filled' ? 'SUBMITTED' : 'PENDING',
-        orderId: orderResult.id,
+        stopLoss: stopPrice,
+        status: orderResult.status === 'submitted' ? 'SUBMITTED' : 'PENDING',
+        orderId: orderResult.primaryOrderId,
         ibkrStatus: orderResult.status,
       });
 
@@ -737,7 +815,7 @@ router.post('/execute-trade', requireAuth, async (req, res) => {
           expiration: expirationDate,
           quantity: contracts,
           credit: (premium * contracts * 100).toString(), // Total credit in dollars
-          status: orderResult.id ? 'pending' : 'mock',
+          status: orderResult.primaryOrderId ? 'pending' : 'mock',
         });
         savedTrades.push(trade);
         console.log(`[Engine] CALL trade saved: ${trade.id}`);
@@ -767,7 +845,7 @@ router.post('/execute-trade', requireAuth, async (req, res) => {
       orders,
       savedTrades: savedTrades.map(t => ({ id: t.id, symbol: t.symbol, strategy: t.strategy })),
       message: broker.status.provider === 'ibkr'
-        ? `${orders.length} order(s) submitted to IBKR paper account`
+        ? `${orders.length} bracket order(s) submitted to IBKR LIVE account (SELL + STOP)`
         : 'Mock orders created (IBKR not connected)',
     });
   } catch (error) {
@@ -893,6 +971,88 @@ router.post('/scheduler/run-once', requireAuth, async (_req, res) => {
   } catch (error) {
     console.error('[Engine] Scheduler run-once error:', error);
     res.status(500).json({ error: 'Failed to run analysis' });
+  }
+});
+
+// GET /api/engine/test-strikes - Simple test endpoint: ATM ± range for given expiration
+router.get('/test-strikes', requireAuth, async (req, res) => {
+  try {
+    const symbol = (req.query.symbol as string) || 'SPY';
+    const expiration = (req.query.exp as string) || new Date().toISOString().slice(0, 10).replace(/-/g, '');
+    const range = parseInt(req.query.range as string) || 5;
+
+    console.log(`[Engine/test-strikes] ${symbol} exp=${expiration} range=±${range}`);
+
+    await ensureIbkrReady();
+    const broker = getBroker();
+
+    // Get underlying price
+    const marketData = await broker.getMarketData(symbol);
+    const underlyingPrice = marketData.price || marketData.last || 0;
+    const atmStrike = Math.round(underlyingPrice);
+
+    console.log(`[Engine/test-strikes] Underlying: $${underlyingPrice}, ATM: $${atmStrike}`);
+
+    // Get option chain
+    const chain = await broker.getOptionChain(symbol, expiration);
+
+    // Filter to ATM ± range
+    const strikes: number[] = [];
+    for (let i = -range; i <= range; i++) {
+      strikes.push(atmStrike + i);
+    }
+
+    const puts: any[] = [];
+    const calls: any[] = [];
+
+    for (const strike of strikes) {
+      const put = chain.puts?.find((p: any) => Math.abs(p.strike - strike) < 0.5);
+      const call = chain.calls?.find((c: any) => Math.abs(c.strike - strike) < 0.5);
+
+      if (put) {
+        puts.push({
+          strike: put.strike,
+          bid: put.bid ?? 0,
+          ask: put.ask ?? 0,
+          last: put.last ?? 0,
+          delta: put.delta ?? 0,
+          iv: put.iv ?? 0,
+        });
+      }
+
+      if (call) {
+        calls.push({
+          strike: call.strike,
+          bid: call.bid ?? 0,
+          ask: call.ask ?? 0,
+          last: call.last ?? 0,
+          delta: call.delta ?? 0,
+          iv: call.iv ?? 0,
+        });
+      }
+    }
+
+    res.json({
+      symbol,
+      expiration,
+      underlyingPrice,
+      atmStrike,
+      range,
+      strikesRequested: strikes,
+      puts,
+      calls,
+      summary: {
+        putsFound: puts.length,
+        callsFound: calls.length,
+        totalInChain: {
+          puts: chain.puts?.length || 0,
+          calls: chain.calls?.length || 0,
+        }
+      }
+    });
+  } catch (error) {
+    console.error('[Engine/test-strikes] Error:', error);
+    res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
   }
 });
 

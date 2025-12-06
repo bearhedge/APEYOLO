@@ -180,12 +180,12 @@ export function Engine() {
 
     try {
       setIsExecuting(true);
-      toast.loading('Executing paper trade...', { id: 'paper-execute' });
+      toast.loading('Executing bracket order (SELL + STOP)...', { id: 'execute' });
       const result = await executePaperTrade(analysis.tradeProposal);
-      toast.success(`Paper trade executed! ID: ${result.tradeId}`, { id: 'paper-execute' });
+      toast.success(`Trade executed! ${result.message || 'ID: ' + result.tradeId}`, { id: 'execute' });
     } catch (err) {
-      console.error('[Engine] Execute paper trade error:', err);
-      toast.error('Failed to execute paper trade', { id: 'paper-execute' });
+      console.error('[Engine] Execute trade error:', err);
+      toast.error('Failed to execute trade', { id: 'execute' });
     } finally {
       setIsExecuting(false);
     }
@@ -221,7 +221,7 @@ export function Engine() {
             <div>
               <h1 className="text-3xl font-bold tracking-wide">Engine</h1>
               <p className="text-silver text-sm mt-1">
-                {brokerConnectedFinal ? 'IBKR Paper Trading' : 'Mock Trading'} - Automated 0DTE Options
+                {brokerConnectedFinal ? 'IBKR Live Trading' : 'Simulation Mode'} - 0DTE Options with Stop Loss
               </p>
             </div>
 
@@ -486,10 +486,26 @@ export function Engine() {
           className="max-h-[600px]"
         />
 
-        {/* Current Decision - Trade Proposal */}
+        {/* Trade Summary - Clean Professional View */}
         {analysis && analysis.canTrade && analysis.tradeProposal && (
           <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
-            <h3 className="text-lg font-semibold mb-4">Trade Proposal</h3>
+            {/* Header */}
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h3 className="text-lg font-semibold">
+                  {analysis.tradeProposal.strategy === 'STRANGLE' ? 'SELL STRANGLE' :
+                   analysis.tradeProposal.strategy === 'PUT' ? 'SELL PUT' : 'SELL CALL'}
+                </h3>
+                <p className="text-sm text-silver">SPY 0DTE</p>
+              </div>
+              <span className={`text-xs font-medium px-2 py-1 rounded ${
+                analysis.tradeProposal.bias === 'NEUTRAL' ? 'bg-blue-500/20 text-blue-400' :
+                analysis.tradeProposal.bias === 'BULL' ? 'bg-green-500/20 text-green-400' :
+                'bg-red-500/20 text-red-400'
+              }`}>
+                {analysis.tradeProposal.bias}
+              </span>
+            </div>
 
             {/* Guard Rail Violations */}
             {analysis.guardRails?.violations && analysis.guardRails.violations.length > 0 && (
@@ -503,86 +519,69 @@ export function Engine() {
               </div>
             )}
 
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div>
-                <p className="text-xs text-silver mb-1">Strategy</p>
-                <p className="font-medium">{analysis.tradeProposal.strategy} ({analysis.tradeProposal.bias})</p>
+            {/* Strike Selection */}
+            <div className="mb-4 p-3 bg-black/20 rounded-lg">
+              <div className="flex items-center gap-4 text-sm">
+                {analysis.tradeProposal.legs.map((leg, i) => (
+                  <span key={i} className={`font-mono font-medium ${leg.optionType === 'PUT' ? 'text-red-400' : 'text-green-400'}`}>
+                    ${leg.strike} {leg.optionType}
+                  </span>
+                ))}
+                <span className="text-silver">•</span>
+                <span className="font-mono">{analysis.tradeProposal.contracts} contracts</span>
               </div>
-              <div>
-                <p className="text-xs text-silver mb-1">Strikes</p>
-                <p className="font-medium">
-                  {analysis.tradeProposal.legs.map((leg, i) => (
-                    <span key={i}>
-                      {i > 0 && ' / '}
-                      {leg.strike}{leg.optionType === 'PUT' ? 'P' : 'C'}
-                    </span>
-                  ))}
-                </p>
-              </div>
-              <div>
-                <p className="text-xs text-silver mb-1">Premium</p>
-                <p className="font-medium">
+            </div>
+
+            {/* Key Metrics - 2x2 Grid */}
+            <div className="grid grid-cols-2 gap-4 mb-4">
+              <div className="p-3 bg-black/20 rounded-lg">
+                <p className="text-xs text-silver mb-1">Max Profit (Premium)</p>
+                <p className="text-lg font-semibold text-green-400">
                   ${analysis.tradeProposal.entryPremiumTotal.toFixed(0)}
                 </p>
               </div>
-              <div>
-                <p className="text-xs text-silver mb-1">Margin</p>
-                <p className="font-medium">
-                  ${analysis.tradeProposal.marginRequired.toFixed(0)}
+              <div className="p-3 bg-black/20 rounded-lg">
+                <p className="text-xs text-silver mb-1">Max Loss (at Stop)</p>
+                <p className="text-lg font-semibold text-red-400">
+                  ${analysis.tradeProposal.maxLoss.toFixed(0)}
                 </p>
               </div>
-            </div>
-
-            {/* Position Details */}
-            <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-4">
-              <div>
-                <p className="text-xs text-silver mb-1">Contracts</p>
-                <p className="font-medium">{analysis.tradeProposal.contracts}</p>
+              <div className="p-3 bg-black/20 rounded-lg">
+                <p className="text-xs text-silver mb-1">Probability OTM</p>
+                <p className="text-lg font-semibold">
+                  {(() => {
+                    const avgDelta = analysis.tradeProposal.legs.reduce((sum, leg) => sum + Math.abs(leg.delta), 0) / analysis.tradeProposal.legs.length;
+                    return `${((1 - avgDelta) * 100).toFixed(0)}%`;
+                  })()}
+                </p>
               </div>
-              <div>
-                <p className="text-xs text-silver mb-1">Max Loss</p>
-                <p className="font-medium text-red-400">${analysis.tradeProposal.maxLoss.toFixed(0)}</p>
-              </div>
-              <div>
+              <div className="p-3 bg-black/20 rounded-lg">
                 <p className="text-xs text-silver mb-1">Stop Loss</p>
-                <p className="font-medium">${analysis.tradeProposal.stopLossPrice.toFixed(2)}</p>
-              </div>
-              <div>
-                <p className="text-xs text-silver mb-1">Time Stop</p>
-                <p className="font-medium">{analysis.tradeProposal.timeStop}</p>
-              </div>
-            </div>
-
-            {/* Trading Window Warning */}
-            {!analysis.tradingWindow?.isOpen && (
-              <div className="mt-4 p-3 bg-yellow-500/10 border border-yellow-500/20 rounded-lg">
-                <p className="text-sm text-yellow-400">
-                  {analysis.tradingWindow?.reason || 'Trading window is closed. Execution disabled.'}
+                <p className="text-lg font-semibold">
+                  ${analysis.tradeProposal.stopLossPrice.toFixed(2)} <span className="text-xs text-silver">(3x)</span>
                 </p>
               </div>
-            )}
-
-            {/* Execute Buttons */}
-            <div className="mt-6 flex gap-3">
-              <button
-                onClick={handleExecuteTrade}
-                disabled={
-                  !analysis.executionReady ||
-                  isExecuting ||
-                  !analysis.guardRails?.passed
-                  // Trading window check removed for paper trading testing
-                }
-                className="px-6 py-2 bg-green-600 text-white rounded-lg font-medium hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition"
-              >
-                {!analysis.tradingWindow?.isOpen ? 'Execute (Paper - Window Closed)' : 'Execute Paper Trade'}
-              </button>
-              <button
-                onClick={() => toast.info('Trade skipped')}
-                className="px-6 py-2 border border-white/20 rounded-lg hover:bg-white/5 transition"
-              >
-                Skip Today
-              </button>
             </div>
+
+            {/* Risk/Reward Summary */}
+            <div className="mb-4 text-sm text-silver">
+              Risk/Reward: <span className="font-mono text-white">
+                {(analysis.tradeProposal.maxLoss / analysis.tradeProposal.entryPremiumTotal).toFixed(1)}:1
+              </span>
+            </div>
+
+            {/* Execute Button */}
+            <button
+              onClick={handleExecuteTrade}
+              disabled={
+                !analysis.executionReady ||
+                isExecuting ||
+                !analysis.guardRails?.passed
+              }
+              className="w-full py-3 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition text-lg"
+            >
+              {isExecuting ? 'Executing...' : 'Execute'}
+            </button>
           </div>
         )}
 
