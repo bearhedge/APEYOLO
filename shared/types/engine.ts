@@ -21,6 +21,9 @@ export interface EngineAnalyzeResponse {
   executionReady: boolean;
   reason?: string;
 
+  // Risk Assessment - VIX-based dynamic delta & position sizing
+  riskAssessment?: RiskAssessment;
+
   q1MarketRegime: Q1MarketRegime;
   q2Direction: Q2Direction;
   q3Strikes: Q3Strikes;
@@ -41,6 +44,20 @@ export interface EngineAnalyzeResponse {
 // =============================================================================
 
 export type VolatilityRegime = 'LOW' | 'NORMAL' | 'HIGH' | 'EXTREME';
+
+// =============================================================================
+// Risk Assessment - Dynamic Delta & Position Sizing based on VIX
+// =============================================================================
+
+export type RiskRegime = 'LOW' | 'NORMAL' | 'ELEVATED' | 'HIGH' | 'EXTREME';
+
+export interface RiskAssessment {
+  vixLevel: number;
+  riskRegime: RiskRegime;
+  targetDelta: number;      // Dynamic delta based on VIX (0.20-0.40)
+  contracts: number;        // Position size (0-3) based on risk regime
+  reasoning: string;
+}
 
 export interface Q1MarketRegime {
   regimeLabel: VolatilityRegime;
@@ -124,6 +141,117 @@ export interface StrikeCandidate extends SelectedStrike {
   isSelected: boolean;
 }
 
+// =============================================================================
+// Smart Strike Selection - Quality Filtering & Scoring
+// =============================================================================
+
+/**
+ * Quality rating for a strike (1-5 stars)
+ * Based on probability, liquidity, and yield metrics
+ */
+export type QualityRating = 1 | 2 | 3 | 4 | 5;
+
+/**
+ * Rejection reason when a strike doesn't pass filters
+ */
+export interface StrikeRejection {
+  strike: number;
+  optionType: 'PUT' | 'CALL';
+  reason: 'DELTA_OUT_OF_RANGE' | 'BID_TOO_LOW' | 'SPREAD_TOO_WIDE' | 'YIELD_TOO_LOW' | 'ILLIQUID' | 'PREMIUM_TOO_LOW';
+  details: string;
+}
+
+/**
+ * Smart strike candidate with quality scoring and yield metrics
+ * These are the "elite strikes" that pass all filters
+ */
+export interface SmartStrikeCandidate {
+  strike: number;
+  optionType: 'PUT' | 'CALL';
+
+  // Pricing
+  bid: number;
+  ask: number;
+  spread: number;         // ask - bid
+
+  // Greeks
+  delta: number;
+  gamma?: number;
+  theta?: number;
+  vega?: number;
+  iv?: number;            // Implied Volatility
+
+  // Liquidity
+  openInterest: number;
+  volume?: number;
+
+  // Smart Metrics
+  yield: number;          // premium / underlying price (e.g., 0.055 = 0.055%)
+  yieldPct: string;       // Formatted "0.055%"
+
+  // Quality Scoring
+  qualityScore: QualityRating;  // 1-5 stars
+  qualityReasons: string[];     // Why this rating (e.g., "Good delta (0.14)", "Tight spread ($0.03)")
+
+  // Selection
+  isEngineRecommended: boolean;  // Engine's top pick
+  isUserSelected: boolean;       // User's selection (for override)
+}
+
+/**
+ * Smart filtering configuration
+ */
+export interface SmartFilterConfig {
+  // Probability filter
+  deltaMin: number;       // e.g., 0.05
+  deltaMax: number;       // e.g., 0.25
+
+  // Liquidity filter
+  minBid: number;         // e.g., 0.01
+  maxSpread: number;      // e.g., 0.10 for SPY
+  minLiquidity: number;   // OI + Volume threshold
+
+  // Premium-to-Risk filter
+  minYield: number;       // e.g., 0.0003 (0.03%)
+}
+
+// =============================================================================
+// Gated Engine Flow - Interactive Strike Selection
+// =============================================================================
+
+/**
+ * Engine state for gated flow
+ * idle → running_1_2_3 → awaiting_selection → running_4_5 → complete
+ */
+export type EngineFlowState =
+  | 'idle'
+  | 'running_1_2_3'
+  | 'awaiting_selection'
+  | 'running_4_5'
+  | 'complete'
+  | 'error';
+
+/**
+ * User's strike selection for continuing the engine
+ */
+export interface UserStrikeSelection {
+  selectedPutStrike: number | null;
+  selectedCallStrike: number | null;
+}
+
+/**
+ * Engine analyze request with optional user selection (for Steps 4-5)
+ */
+export interface EngineAnalyzeRequest {
+  // Phase 1: Initial analysis (Steps 1-3)
+  riskTier?: 'conservative' | 'balanced' | 'aggressive';
+  stopMultiplier?: 2 | 3 | 4;
+
+  // Phase 2: Continue after user selection (Steps 4-5)
+  userSelection?: UserStrikeSelection;
+  continueFromStep3?: boolean;  // Flag to continue from awaiting_selection
+}
+
 export interface Q3Strikes {
   selectedPut: SelectedStrike | null;
   selectedCall: SelectedStrike | null;
@@ -140,6 +268,17 @@ export interface Q3Strikes {
     symbol: string;
     expiration: string;
   };
+
+  // Smart Strike Selection (Interactive UI)
+  smartCandidates?: {
+    puts: SmartStrikeCandidate[];
+    calls: SmartStrikeCandidate[];
+  };
+  rejectedStrikes?: StrikeRejection[];
+  filterConfig?: SmartFilterConfig;
+
+  // Gated flow state
+  awaitingUserSelection?: boolean;
 
   stepNumber: 3;
   stepName: 'Strikes';

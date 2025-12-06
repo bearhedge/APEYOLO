@@ -9,6 +9,12 @@ import { TradeDirection } from './step2';
 import { getOptionChainWithStrikes } from '../broker/ibkr';
 import { getOptionChainStreamer, CachedOptionChain } from '../broker/optionChainStreamer';
 import type { StepReasoning, StepMetric, NearbyStrike } from '../../shared/types/engineLog';
+import type {
+  SmartStrikeCandidate,
+  StrikeRejection,
+  SmartFilterConfig,
+  QualityRating
+} from '../../shared/types/engine';
 
 export interface Strike {
   strike: number;
@@ -33,22 +39,108 @@ export interface StrikeSelection {
     puts: Array<{ strike: number; bid: number; ask: number; delta: number; oi?: number }>;
     calls: Array<{ strike: number; bid: number; ask: number; delta: number; oi?: number }>;
   };
+  // Risk assessment - dynamic delta and position sizing based on VIX
+  riskAssessment?: RiskAssessment;
   // Enhanced logging for UI
   stepReasoning?: StepReasoning[];
   stepMetrics?: StepMetric[];
   enhancedNearbyStrikes?: NearbyStrike[];  // Flat array for UI table display
+
+  // Smart Strike Selection (Interactive UI)
+  smartCandidates?: {
+    puts: SmartStrikeCandidate[];
+    calls: SmartStrikeCandidate[];
+  };
+  rejectedStrikes?: StrikeRejection[];
+  filterConfig?: SmartFilterConfig;
+  awaitingUserSelection?: boolean;
 }
 
 /**
- * Target delta ranges for option selection
- * For selling premium, we want strikes that are OTM but not too far
- *
- * PUTs have NEGATIVE delta (e.g., -0.30)
- * CALLs have POSITIVE delta (e.g., +0.30)
- *
- * Target ~0.30 delta = ~70% probability of expiring worthless
- * This gives decent premium while maintaining safety margin
+ * Risk Assessment based on VIX levels
+ * Determines target delta and position sizing dynamically
  */
+export type RiskRegime = 'LOW' | 'NORMAL' | 'ELEVATED' | 'HIGH' | 'EXTREME';
+
+export interface RiskAssessment {
+  vixLevel: number;
+  riskRegime: RiskRegime;
+  targetDelta: number;
+  contracts: number;
+  reasoning: string;
+}
+
+/**
+ * Assess risk based on VIX and determine target delta + position size
+ *
+ * VIX < 15:    LOW risk      → 0.40 delta, 3 contracts (aggressive)
+ * VIX 15-20:   NORMAL risk   → 0.35 delta, 3 contracts
+ * VIX 20-25:   ELEVATED risk → 0.30 delta, 2 contracts
+ * VIX 25-35:   HIGH risk     → 0.25 delta, 1 contract (defensive)
+ * VIX >= 35:   EXTREME risk  → 0.20 delta, 0 contracts (sit out)
+ */
+export function assessRisk(vix: number): RiskAssessment {
+  let riskRegime: RiskRegime;
+  let targetDelta: number;
+  let contracts: number;
+  let reasoning: string;
+
+  if (vix < 15) {
+    riskRegime = 'LOW';
+    targetDelta = 0.40;
+    contracts = 3;
+    reasoning = `VIX ${vix.toFixed(1)} < 15: LOW risk → aggressive positioning (0.40 delta, 3 contracts)`;
+  } else if (vix < 20) {
+    riskRegime = 'NORMAL';
+    targetDelta = 0.35;
+    contracts = 3;
+    reasoning = `VIX ${vix.toFixed(1)} in 15-20: NORMAL risk → standard positioning (0.35 delta, 3 contracts)`;
+  } else if (vix < 25) {
+    riskRegime = 'ELEVATED';
+    targetDelta = 0.30;
+    contracts = 2;
+    reasoning = `VIX ${vix.toFixed(1)} in 20-25: ELEVATED risk → cautious positioning (0.30 delta, 2 contracts)`;
+  } else if (vix < 35) {
+    riskRegime = 'HIGH';
+    targetDelta = 0.25;
+    contracts = 1;
+    reasoning = `VIX ${vix.toFixed(1)} in 25-35: HIGH risk → defensive positioning (0.25 delta, 1 contract)`;
+  } else {
+    riskRegime = 'EXTREME';
+    targetDelta = 0.20;
+    contracts = 0;
+    reasoning = `VIX ${vix.toFixed(1)} >= 35: EXTREME risk → NO TRADE (market too volatile)`;
+  }
+
+  return { vixLevel: vix, riskRegime, targetDelta, contracts, reasoning };
+}
+
+/**
+ * Get delta target ranges based on risk assessment
+ * Returns ranges with ±0.05 tolerance around the target
+ */
+function getDeltaTargets(targetDelta: number): {
+  put: { min: number; max: number; ideal: number };
+  call: { min: number; max: number; ideal: number };
+} {
+  return {
+    // PUT deltas are negative
+    put: {
+      min: -(targetDelta + 0.05),  // e.g., -0.45 for 0.40 target
+      max: -(targetDelta - 0.05),  // e.g., -0.35 for 0.40 target
+      ideal: -targetDelta          // e.g., -0.40
+    },
+    // CALL deltas are positive
+    call: {
+      min: targetDelta - 0.05,     // e.g., 0.35 for 0.40 target
+      max: targetDelta + 0.05,     // e.g., 0.45 for 0.40 target
+      ideal: targetDelta           // e.g., 0.40
+    }
+  };
+}
+
+// Default delta targets (used when VIX unavailable - assumes ELEVATED risk)
+const DEFAULT_TARGET_DELTA = 0.30;
 const PUT_DELTA_TARGET = { min: -0.35, max: -0.25, ideal: -0.30 };
 const CALL_DELTA_TARGET = { min: 0.25, max: 0.35, ideal: 0.30 };
 
@@ -119,11 +211,16 @@ function getMockOptionChain(underlyingPrice: number, direction: 'PUT' | 'CALL'):
  *
  * @param strikes - Available strikes with signed deltas
  * @param direction - 'PUT' or 'CALL' to select appropriate delta range
+ * @param customTarget - Optional custom delta target (from risk assessment)
  * @returns Best matching strike
  */
-function findBestStrike(strikes: Strike[], direction: 'PUT' | 'CALL'): Strike | null {
-  // Get the appropriate delta range based on direction
-  const deltaTarget = direction === 'PUT' ? PUT_DELTA_TARGET : CALL_DELTA_TARGET;
+function findBestStrike(
+  strikes: Strike[],
+  direction: 'PUT' | 'CALL',
+  customTarget?: { min: number; max: number; ideal: number }
+): Strike | null {
+  // Use custom target if provided, otherwise fall back to defaults
+  const deltaTarget = customTarget || (direction === 'PUT' ? PUT_DELTA_TARGET : CALL_DELTA_TARGET);
 
   // For PUTs: delta should be negative (e.g., -0.35 to -0.25)
   // For CALLs: delta should be positive (e.g., 0.25 to 0.35)
@@ -137,11 +234,11 @@ function findBestStrike(strikes: Strike[], direction: 'PUT' | 'CALL'): Strike | 
     }
   });
 
-  console.log(`[Step3] findBestStrike(${direction}): ${strikes.length} total strikes, ${validStrikes.length} in target range [${deltaTarget.min}, ${deltaTarget.max}]`);
+  console.log(`[Step3] findBestStrike(${direction}): ${strikes.length} total strikes, ${validStrikes.length} in target range [${deltaTarget.min.toFixed(2)}, ${deltaTarget.max.toFixed(2)}]`);
 
   if (validStrikes.length === 0) {
     // If no strikes in range, find closest one to ideal
-    console.log(`[Step3] No strikes in target range, finding closest to ideal ${deltaTarget.ideal}`);
+    console.log(`[Step3] No strikes in target range, finding closest to ideal ${deltaTarget.ideal.toFixed(2)}`);
     if (strikes.length === 0) return null;
 
     const closest = strikes.reduce((prev, curr) => {
@@ -206,6 +303,204 @@ function calculateMarginRequirement(putStrike?: Strike, callStrike?: Strike): nu
   }
 
   return Number(margin.toFixed(2));
+}
+
+// =============================================================================
+// Smart Strike Filtering & Quality Scoring
+// =============================================================================
+
+// Default smart filter configuration
+const DEFAULT_SMART_FILTER: SmartFilterConfig = {
+  deltaMin: 0.05,         // Minimum delta (exclude ultra-far OTM)
+  deltaMax: 0.25,         // Maximum delta (exclude ATM/ITM)
+  minBid: 0.01,           // Minimum bid price
+  maxSpread: 0.10,        // Maximum bid-ask spread for SPY
+  minLiquidity: 100,      // Minimum OI + Volume
+  minYield: 0.0003,       // Minimum yield 0.03% (premium / underlying)
+};
+
+// ATM range for strike display (±$8 from underlying)
+const ATM_RANGE = 8;
+
+/**
+ * Calculate quality score (1-5 stars) based on strike metrics
+ */
+function calculateQualityScore(
+  strike: Strike,
+  underlyingPrice: number,
+  config: SmartFilterConfig
+): { score: QualityRating; reasons: string[] } {
+  const reasons: string[] = [];
+  let score = 0;
+
+  const absDelta = Math.abs(strike.delta);
+  const spread = strike.ask - strike.bid;
+  const premium = (strike.bid + strike.ask) / 2;
+  const yieldPct = premium / underlyingPrice;
+  const oi = strike.openInterest ?? 0;
+
+  // Delta scoring (sweet spot: 0.10-0.16)
+  if (absDelta >= 0.10 && absDelta <= 0.16) {
+    score += 2;
+    reasons.push(`⭐ Sweet spot delta (${absDelta.toFixed(2)})`);
+  } else if (absDelta >= 0.08 && absDelta <= 0.20) {
+    score += 1;
+    reasons.push(`✓ Good delta (${absDelta.toFixed(2)})`);
+  }
+
+  // Spread scoring (tight = better)
+  if (spread <= 0.03) {
+    score += 2;
+    reasons.push(`⭐ Very tight spread ($${spread.toFixed(2)})`);
+  } else if (spread <= 0.05) {
+    score += 1;
+    reasons.push(`✓ Tight spread ($${spread.toFixed(2)})`);
+  }
+
+  // Yield scoring (higher = better)
+  if (yieldPct >= 0.0005) {  // 0.05%+
+    score += 2;
+    reasons.push(`⭐ Excellent yield (${(yieldPct * 100).toFixed(3)}%)`);
+  } else if (yieldPct >= 0.0003) {  // 0.03%+
+    score += 1;
+    reasons.push(`✓ Good yield (${(yieldPct * 100).toFixed(3)}%)`);
+  }
+
+  // Liquidity scoring (OI)
+  if (oi >= 5000) {
+    score += 1;
+    reasons.push(`✓ High liquidity (${oi.toLocaleString()} OI)`);
+  } else if (oi >= 1000) {
+    reasons.push(`○ Moderate liquidity (${oi.toLocaleString()} OI)`);
+  }
+
+  // Clamp to 1-5
+  const finalScore = Math.max(1, Math.min(5, score)) as QualityRating;
+  return { score: finalScore, reasons };
+}
+
+/**
+ * Filter strikes using smart criteria and return candidates + rejections
+ */
+function filterSmartStrikes(
+  strikes: Strike[],
+  optionType: 'PUT' | 'CALL',
+  underlyingPrice: number,
+  config: SmartFilterConfig,
+  engineRecommendedStrike?: number
+): { candidates: SmartStrikeCandidate[]; rejections: StrikeRejection[] } {
+  const candidates: SmartStrikeCandidate[] = [];
+  const rejections: StrikeRejection[] = [];
+
+  // Get strike range based on ATM (±$8)
+  const atm = Math.round(underlyingPrice);
+  let minStrike: number, maxStrike: number;
+
+  if (optionType === 'PUT') {
+    // PUTs are below ATM
+    minStrike = atm - ATM_RANGE;
+    maxStrike = atm - 1;
+  } else {
+    // CALLs are above ATM
+    minStrike = atm + 1;
+    maxStrike = atm + ATM_RANGE;
+  }
+
+  for (const strike of strikes) {
+    // Skip strikes outside ATM range
+    if (strike.strike < minStrike || strike.strike > maxStrike) {
+      continue;
+    }
+
+    const absDelta = Math.abs(strike.delta);
+    const spread = strike.ask - strike.bid;
+    const premium = (strike.bid + strike.ask) / 2;
+    const yieldValue = premium / underlyingPrice;
+    const oi = strike.openInterest ?? 0;
+
+    // Apply filters
+    let rejected = false;
+    let rejectionReason: StrikeRejection['reason'] | null = null;
+    let rejectionDetails = '';
+
+    // 1. Delta filter
+    if (absDelta < config.deltaMin || absDelta > config.deltaMax) {
+      rejected = true;
+      rejectionReason = 'DELTA_OUT_OF_RANGE';
+      rejectionDetails = `Delta ${absDelta.toFixed(2)} outside range [${config.deltaMin}, ${config.deltaMax}]`;
+    }
+
+    // 2. Bid filter
+    if (!rejected && strike.bid < config.minBid) {
+      rejected = true;
+      rejectionReason = 'BID_TOO_LOW';
+      rejectionDetails = `Bid $${strike.bid.toFixed(2)} < minimum $${config.minBid}`;
+    }
+
+    // 3. Spread filter
+    if (!rejected && spread > config.maxSpread) {
+      rejected = true;
+      rejectionReason = 'SPREAD_TOO_WIDE';
+      rejectionDetails = `Spread $${spread.toFixed(2)} > maximum $${config.maxSpread}`;
+    }
+
+    // 4. Yield filter
+    if (!rejected && yieldValue < config.minYield) {
+      rejected = true;
+      rejectionReason = 'YIELD_TOO_LOW';
+      rejectionDetails = `Yield ${(yieldValue * 100).toFixed(3)}% < minimum ${(config.minYield * 100).toFixed(3)}%`;
+    }
+
+    // 5. Liquidity filter (OI only - volume not available from IBKR)
+    if (!rejected && oi < config.minLiquidity) {
+      rejected = true;
+      rejectionReason = 'ILLIQUID';
+      rejectionDetails = `OI ${oi} < minimum ${config.minLiquidity}`;
+    }
+
+    if (rejected && rejectionReason) {
+      rejections.push({
+        strike: strike.strike,
+        optionType,
+        reason: rejectionReason,
+        details: rejectionDetails
+      });
+    } else {
+      // Calculate quality score
+      const { score, reasons } = calculateQualityScore(strike, underlyingPrice, config);
+
+      candidates.push({
+        strike: strike.strike,
+        optionType,
+        bid: strike.bid,
+        ask: strike.ask,
+        spread,
+        delta: strike.delta,
+        gamma: strike.gamma,
+        theta: strike.theta,
+        vega: strike.vega,
+        iv: strike.impliedVolatility,
+        openInterest: oi,
+        volume: undefined, // Not available from IBKR
+        yield: yieldValue,
+        yieldPct: `${(yieldValue * 100).toFixed(3)}%`,
+        qualityScore: score,
+        qualityReasons: reasons,
+        isEngineRecommended: strike.strike === engineRecommendedStrike,
+        isUserSelected: false
+      });
+    }
+  }
+
+  // Sort by quality score (descending), then by yield
+  candidates.sort((a, b) => {
+    if (b.qualityScore !== a.qualityScore) {
+      return b.qualityScore - a.qualityScore;
+    }
+    return b.yield - a.yield;
+  });
+
+  return { candidates, rejections };
 }
 
 /**
@@ -434,16 +729,34 @@ export async function selectStrikes(
     if (fullChain.vix) console.log(`[Step3] VIX from chain: ${fullChain.vix}`);
     if (fullChain.expectedMove) console.log(`[Step3] Expected move: $${fullChain.expectedMove.toFixed(2)}`);
 
+    // === RISK ASSESSMENT: Dynamic delta and position sizing based on VIX ===
+    const vix = fullChain.vix ?? 20; // Default to 20 (ELEVATED) if VIX unavailable
+    const riskAssessment = assessRisk(vix);
+    selection.riskAssessment = riskAssessment;
+    console.log(`[Step3] RISK ASSESSMENT: ${riskAssessment.reasoning}`);
+
+    // Check for EXTREME regime - do not trade
+    if (riskAssessment.riskRegime === 'EXTREME') {
+      console.warn(`[Step3] EXTREME risk regime (VIX ${vix}) - NO TRADE recommended`);
+      selection.reasoning = `NO TRADE: ${riskAssessment.reasoning}`;
+      // Still return selection with risk assessment but no strikes selected
+      return selection;
+    }
+
+    // Get dynamic delta targets based on risk assessment
+    const dynamicTargets = getDeltaTargets(riskAssessment.targetDelta);
+    console.log(`[Step3] Dynamic delta targets: PUT [${dynamicTargets.put.min.toFixed(2)}, ${dynamicTargets.put.max.toFixed(2)}], CALL [${dynamicTargets.call.min.toFixed(2)}, ${dynamicTargets.call.max.toFixed(2)}]`);
+
     // Select PUT strike from real data (PUTs have NEGATIVE delta)
     if (direction === 'PUT' || direction === 'STRANGLE') {
       if (fullChain.putStrikes.length > 0) {
-        const putStrike = findBestStrike(fullChain.putStrikes, 'PUT');
+        const putStrike = findBestStrike(fullChain.putStrikes, 'PUT', dynamicTargets.put);
         if (putStrike) {
           selection.putStrike = putStrike;
           console.log(`[Step3] Selected PUT: $${putStrike.strike} (delta: ${putStrike.delta.toFixed(3)}, bid: $${putStrike.bid.toFixed(2)}, ask: $${putStrike.ask.toFixed(2)})`);
           selection.reasoning += `PUT (IBKR ${dataSource}): Strike $${putStrike.strike} with delta ${putStrike.delta.toFixed(3)}. `;
         } else {
-          console.error(`[Step3] Failed to find PUT strike matching delta target ${PUT_DELTA_TARGET.ideal}`);
+          console.error(`[Step3] Failed to find PUT strike matching delta target ${dynamicTargets.put.ideal}`);
         }
       } else {
         console.error(`[Step3] No PUT strikes in option chain`);
@@ -454,13 +767,13 @@ export async function selectStrikes(
     // Select CALL strike from real data (CALLs have POSITIVE delta)
     if (direction === 'CALL' || direction === 'STRANGLE') {
       if (fullChain.callStrikes.length > 0) {
-        const callStrike = findBestStrike(fullChain.callStrikes, 'CALL');
+        const callStrike = findBestStrike(fullChain.callStrikes, 'CALL', dynamicTargets.call);
         if (callStrike) {
           selection.callStrike = callStrike;
           console.log(`[Step3] Selected CALL: $${callStrike.strike} (delta: ${callStrike.delta.toFixed(3)}, bid: $${callStrike.bid.toFixed(2)}, ask: $${callStrike.ask.toFixed(2)})`);
           selection.reasoning += `CALL (IBKR ${dataSource}): Strike $${callStrike.strike} with delta ${callStrike.delta.toFixed(3)}. `;
         } else {
-          console.error(`[Step3] Failed to find CALL strike matching delta target ${CALL_DELTA_TARGET.ideal}`);
+          console.error(`[Step3] Failed to find CALL strike matching delta target ${dynamicTargets.call.ideal}`);
         }
       } else {
         console.error(`[Step3] No CALL strikes in option chain`);
@@ -469,48 +782,104 @@ export async function selectStrikes(
     }
 
     // Collect nearby strikes for UI display from the same data source
+    // ALWAYS show BOTH puts AND calls regardless of direction
+    // Use ATM-centered range (±$8 from underlying) for smart filtering
     const nearbyStrikes: {
       puts: Array<{ strike: number; bid: number; ask: number; delta: number; oi?: number }>;
       calls: Array<{ strike: number; bid: number; ask: number; delta: number; oi?: number }>;
     } = { puts: [], calls: [] };
 
-    if (direction === 'PUT' || direction === 'STRANGLE') {
-      const selectedStrike = selection.putStrike?.strike;
-      const sortedPuts = [...fullChain.putStrikes].sort((a, b) => {
-        if (selectedStrike) {
-          return Math.abs(a.strike - selectedStrike) - Math.abs(b.strike - selectedStrike);
-        }
-        return Math.abs(a.strike - actualUnderlyingPrice) - Math.abs(b.strike - actualUnderlyingPrice);
-      });
-      nearbyStrikes.puts = sortedPuts.slice(0, 7).map(s => ({
+    // Define ATM range - show strikes within $8 of underlying price
+    const atm = Math.round(actualUnderlyingPrice);
+    const minStrikeNearby = atm - ATM_RANGE;
+    const maxStrikeNearby = atm + ATM_RANGE;
+    console.log(`[Step3] ATM range: $${minStrikeNearby} - $${maxStrikeNearby} (underlying: $${actualUnderlyingPrice.toFixed(2)}, ATM_RANGE: ${ATM_RANGE})`);
+
+    // ALWAYS populate PUT strikes (below ATM within range)
+    {
+      const atmPuts = fullChain.putStrikes
+        .filter(s => s.strike >= minStrikeNearby && s.strike < actualUnderlyingPrice)
+        .sort((a, b) => b.strike - a.strike) // Highest strikes first (closest to ATM)
+        .slice(0, ATM_RANGE); // Up to 8 strikes below ATM
+
+      nearbyStrikes.puts = atmPuts.map(s => ({
         strike: s.strike,
         bid: s.bid,
         ask: s.ask,
         delta: s.delta,
         oi: s.openInterest
-      })).sort((a, b) => a.strike - b.strike);
+      })).sort((a, b) => a.strike - b.strike); // Sort ascending for display
+      console.log(`[Step3] ATM Puts: ${nearbyStrikes.puts.map(p => `$${p.strike}`).join(', ')}`);
     }
 
-    if (direction === 'CALL' || direction === 'STRANGLE') {
-      const selectedStrike = selection.callStrike?.strike;
-      const sortedCalls = [...fullChain.callStrikes].sort((a, b) => {
-        if (selectedStrike) {
-          return Math.abs(a.strike - selectedStrike) - Math.abs(b.strike - selectedStrike);
-        }
-        return Math.abs(a.strike - actualUnderlyingPrice) - Math.abs(b.strike - actualUnderlyingPrice);
-      });
-      nearbyStrikes.calls = sortedCalls.slice(0, 7).map(s => ({
+    // ALWAYS populate CALL strikes (above ATM within range)
+    {
+      const atmCalls = fullChain.callStrikes
+        .filter(s => s.strike > actualUnderlyingPrice && s.strike <= maxStrikeNearby)
+        .sort((a, b) => a.strike - b.strike) // Lowest strikes first (closest to ATM)
+        .slice(0, ATM_RANGE); // Up to 8 strikes above ATM
+
+      nearbyStrikes.calls = atmCalls.map(s => ({
         strike: s.strike,
         bid: s.bid,
         ask: s.ask,
         delta: s.delta,
         oi: s.openInterest
-      })).sort((a, b) => a.strike - b.strike);
+      })).sort((a, b) => a.strike - b.strike); // Sort ascending for display
+      console.log(`[Step3] ATM Calls: ${nearbyStrikes.calls.map(c => `$${c.strike}`).join(', ')}`);
     }
 
     if (nearbyStrikes.puts.length > 0 || nearbyStrikes.calls.length > 0) {
       selection.nearbyStrikes = nearbyStrikes;
     }
+
+    // === SMART STRIKE FILTERING ===
+    // Apply intelligent filtering for "elite" strikes with quality scoring
+    const smartFilterConfig = DEFAULT_SMART_FILTER;
+    selection.filterConfig = smartFilterConfig;
+
+    // Filter PUTs with smart criteria
+    const smartPuts = filterSmartStrikes(
+      fullChain.putStrikes,
+      'PUT',
+      actualUnderlyingPrice,
+      smartFilterConfig,
+      selection.putStrike?.strike
+    );
+
+    // Filter CALLs with smart criteria
+    const smartCalls = filterSmartStrikes(
+      fullChain.callStrikes,
+      'CALL',
+      actualUnderlyingPrice,
+      smartFilterConfig,
+      selection.callStrike?.strike
+    );
+
+    // Populate smart candidates
+    selection.smartCandidates = {
+      puts: smartPuts.candidates,
+      calls: smartCalls.candidates
+    };
+
+    // Collect all rejections
+    selection.rejectedStrikes = [...smartPuts.rejections, ...smartCalls.rejections];
+
+    console.log(`[Step3] Smart filtering: ${smartPuts.candidates.length} viable PUTs, ${smartCalls.candidates.length} viable CALLs`);
+    console.log(`[Step3] Rejected strikes: ${selection.rejectedStrikes.length}`);
+
+    // Log top candidates
+    if (smartPuts.candidates.length > 0) {
+      const topPut = smartPuts.candidates[0];
+      console.log(`[Step3] Top PUT: $${topPut.strike} (${topPut.qualityScore}⭐, yield: ${topPut.yieldPct}, delta: ${topPut.delta.toFixed(2)})`);
+    }
+    if (smartCalls.candidates.length > 0) {
+      const topCall = smartCalls.candidates[0];
+      console.log(`[Step3] Top CALL: $${topCall.strike} (${topCall.qualityScore}⭐, yield: ${topCall.yieldPct}, delta: ${topCall.delta.toFixed(2)})`);
+    }
+
+    // Set awaiting user selection flag for gated flow
+    selection.awaitingUserSelection = true;
 
   } else {
     // IBKR completely unavailable - throw error with diagnostics for debugging
@@ -552,16 +921,25 @@ export async function selectStrikes(
   // Build enhanced reasoning Q&A
   const selectedStrike = selection.putStrike || selection.callStrike;
   const selectedType = selection.putStrike ? 'PUT' : 'CALL';
-  const targetDelta = selectedType === 'PUT' ? PUT_DELTA_TARGET : CALL_DELTA_TARGET;
+  const riskInfo = selection.riskAssessment;
+  const targetDeltaValue = riskInfo?.targetDelta ?? DEFAULT_TARGET_DELTA;
 
   selection.stepReasoning = [
     {
-      question: 'What delta are we targeting?',
-      answer: `~${Math.abs(targetDelta.ideal).toFixed(2)} (${Math.abs(targetDelta.min).toFixed(2)}-${Math.abs(targetDelta.max).toFixed(2)} range)`
+      question: 'Risk regime?',
+      answer: riskInfo
+        ? `${riskInfo.riskRegime} (VIX: ${riskInfo.vixLevel.toFixed(1)})`
+        : 'UNKNOWN (VIX unavailable)'
     },
     {
-      question: 'Why this delta?',
-      answer: '~70% probability OTM - good premium with safety margin'
+      question: 'What delta are we targeting?',
+      answer: `~${targetDeltaValue.toFixed(2)} delta (based on ${riskInfo?.riskRegime ?? 'default'} risk)`
+    },
+    {
+      question: 'Position size?',
+      answer: riskInfo
+        ? `${riskInfo.contracts} contract(s)`
+        : '1 contract (default)'
     },
     {
       question: 'Which strike selected?',
@@ -586,7 +964,21 @@ export async function selectStrikes(
   ];
 
   // Build enhanced metrics
+  const deltaMin = targetDeltaValue - 0.05;
+  const deltaMax = targetDeltaValue + 0.05;
+
   selection.stepMetrics = [
+    {
+      label: 'Risk Regime',
+      value: riskInfo?.riskRegime ?? 'N/A',
+      status: riskInfo?.riskRegime === 'EXTREME' ? 'critical' :
+              riskInfo?.riskRegime === 'HIGH' ? 'warning' : 'normal'
+    },
+    {
+      label: 'Contracts',
+      value: riskInfo ? `${riskInfo.contracts}` : '1',
+      status: 'normal'
+    },
     {
       label: 'Selected Strike',
       value: selectedStrike ? `$${selectedStrike.strike}` : 'N/A',
@@ -596,8 +988,8 @@ export async function selectStrikes(
       label: 'Delta',
       value: selectedStrike ? selectedStrike.delta.toFixed(3) : 'N/A',
       status: selectedStrike
-        ? (Math.abs(selectedStrike.delta) >= Math.abs(targetDelta.min) &&
-           Math.abs(selectedStrike.delta) <= Math.abs(targetDelta.max)
+        ? (Math.abs(selectedStrike.delta) >= deltaMin &&
+           Math.abs(selectedStrike.delta) <= deltaMax
             ? 'normal'
             : 'warning')
         : 'critical'
