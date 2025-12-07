@@ -2,15 +2,16 @@
  * Step 2: Direction Selection
  * Determines whether to sell PUT, CALL, or STRANGLE (both)
  *
- * Uses moving average crossover strategy on intraday SPY data:
- * - 5-period MA (fast) and 15-period MA (slow) on minute bars
+ * Uses moving average crossover strategy on IBKR 5-minute SPY bars:
+ * - 5-bar MA (fast) = 25 minutes of price action
+ * - 15-bar MA (slow) = 75 minutes of price action
  * - SPY > MA_FAST && MA_FAST > MA_SLOW → BULLISH → Sell PUTs
  * - SPY < MA_FAST && MA_FAST < MA_SLOW → BEARISH → Sell CALLs
  * - Otherwise → NEUTRAL → Sell STRANGLE
  */
 
 import { MarketRegime } from './step1.ts';
-import { fetchHistoricalData, fetchQuote } from '../services/yahooFinanceService.js';
+import { fetchIbkrHistoricalData, type IbkrHistoricalBar, type IbkrHistoricalResponse } from '../broker/ibkr.js';
 import type { StepReasoning, StepMetric } from '../../shared/types/engineLog';
 
 export type TradeDirection = 'PUT' | 'CALL' | 'STRANGLE';
@@ -45,43 +46,55 @@ function calculateSMA(prices: number[], period: number): number | null {
   return slice.reduce((sum, p) => sum + p, 0) / period;
 }
 
+// SPY conid for IBKR
+const SPY_CONID = 756733;
+
 /**
- * Fetch SPY intraday data and calculate MAs
+ * Fetch SPY 5-minute bars from IBKR and calculate MAs
  */
 async function getSPYWithMAs(): Promise<{
   price: number;
   maFast: number;
   maSlow: number;
+  bars: number;
 } | null> {
   try {
-    // Fetch 1-day intraday data (5-min bars)
-    const history = await fetchHistoricalData('SPY', '1D');
+    // Fetch 1-day of 5-minute bars from IBKR
+    console.log('[Step2] Fetching SPY 5-minute bars from IBKR...');
+    const response: IbkrHistoricalResponse = await fetchIbkrHistoricalData(SPY_CONID, {
+      period: '1d',
+      bar: '5mins',
+      outsideRth: false,  // Only regular trading hours
+    });
 
-    if (!history || history.length < MA_SLOW_PERIOD) {
-      console.log(`[Step2] Insufficient SPY history: ${history?.length || 0} bars (need ${MA_SLOW_PERIOD})`);
+    const bars = response.data;
+    if (!bars || bars.length < MA_SLOW_PERIOD) {
+      console.log(`[Step2] Insufficient IBKR SPY history: ${bars?.length || 0} bars (need ${MA_SLOW_PERIOD})`);
       return null;
     }
 
-    // Extract close prices
-    const closes = history.map(bar => bar.close);
+    // Extract close prices from IBKR bars
+    const closes = bars.map(bar => bar.c);
 
-    // Calculate MAs
+    // Calculate MAs on 5-minute bars
+    // MA5 = average of last 5 bars = 25 minutes of price action
+    // MA15 = average of last 15 bars = 75 minutes of price action
     const maFast = calculateSMA(closes, MA_FAST_PERIOD);
     const maSlow = calculateSMA(closes, MA_SLOW_PERIOD);
 
     if (!maFast || !maSlow) {
-      console.log('[Step2] Could not calculate MAs');
+      console.log('[Step2] Could not calculate MAs from IBKR data');
       return null;
     }
 
-    // Get current price (last close or fetch live quote)
+    // Current price is the most recent close
     const currentPrice = closes[closes.length - 1];
 
-    console.log(`[Step2] SPY: $${currentPrice.toFixed(2)}, MA${MA_FAST_PERIOD}: $${maFast.toFixed(2)}, MA${MA_SLOW_PERIOD}: $${maSlow.toFixed(2)}`);
+    console.log(`[Step2] IBKR Data: ${bars.length} bars, SPY: $${currentPrice.toFixed(2)}, MA${MA_FAST_PERIOD}: $${maFast.toFixed(2)}, MA${MA_SLOW_PERIOD}: $${maSlow.toFixed(2)}`);
 
-    return { price: currentPrice, maFast, maSlow };
+    return { price: currentPrice, maFast, maSlow, bars: bars.length };
   } catch (error) {
-    console.error('[Step2] Error fetching SPY data:', error);
+    console.error('[Step2] Error fetching IBKR SPY data:', error);
     return null;
   }
 }
@@ -195,7 +208,7 @@ export async function selectDirection(
     };
   }
 
-  const { price, maFast, maSlow } = spyData;
+  const { price, maFast, maSlow, bars } = spyData;
 
   // Analyze trend based on MA crossover
   const trend = analyzeMAtrend(price, maFast, maSlow);
@@ -280,8 +293,8 @@ export async function selectDirection(
       status: confidence >= 0.7 ? 'normal' : confidence >= 0.5 ? 'warning' : 'critical'
     },
     {
-      label: 'Data Points',
-      value: `${MA_SLOW_PERIOD}+ bars`,
+      label: 'Data Source',
+      value: `IBKR 5-min (${bars} bars)`,
       status: 'normal'
     }
   ];

@@ -1,17 +1,8 @@
 import { useState, useCallback, useEffect } from 'react';
 import { LeftNav } from '@/components/LeftNav';
 import { StatCard } from '@/components/StatCard';
-import { OptionChainViewer } from '@/components/OptionChainViewer';
-import {
-  StepCard,
-  MarketRegimeContent,
-  DirectionContent,
-  StrikeSelectionContent,
-  PositionSizeContent,
-  ExitRulesContent,
-  RiskTier,
-  StopMultiplier
-} from '@/components/StepCard';
+import { EngineStepCard, StepStatus, StepFlowIndicator, StepConnector } from '@/components/EngineStepCard';
+import { Step1Content, Step2Content, Step3Content, Step4Content, Step5Content } from '@/components/EngineStepContents';
 import { StrikeSelector } from '@/components/StrikeSelector';
 import { OptionChainModal } from '@/components/OptionChainModal';
 import { CheckCircle, XCircle, Clock, Zap, AlertTriangle, Play, RefreshCw, Pause } from 'lucide-react';
@@ -20,6 +11,9 @@ import { useBrokerStatus } from '@/hooks/useBrokerStatus';
 import EngineLog from '@/components/EngineLog';
 import toast from 'react-hot-toast';
 import type { EngineFlowState } from '../../../shared/types/engine';
+
+type RiskTier = 'conservative' | 'balanced' | 'aggressive';
+type StopMultiplier = 2 | 3 | 4;
 
 export function Engine() {
   const {
@@ -43,7 +37,6 @@ export function Engine() {
 
   const [executionMode, setExecutionMode] = useState<'manual' | 'auto'>('manual');
   const [isExecuting, setIsExecuting] = useState(false);
-  const [optionChainExpanded, setOptionChainExpanded] = useState(true);
   const [riskTier, setRiskTier] = useState<RiskTier>('balanced');
   const [stopMultiplier, setStopMultiplier] = useState<StopMultiplier>(3);
 
@@ -192,15 +185,106 @@ export function Engine() {
   }, [analysis, executePaperTrade]);
 
   // Helper to derive step status from analysis
-  const getStepStatus = (stepNum: number): 'pending' | 'passed' | 'failed' => {
+  const getStepStatus = (stepNum: number): StepStatus => {
+    // Check if this step is currently running
+    if (engineFlowState === 'running_1_2_3' && stepNum <= 3) return 'running';
+    if (engineFlowState === 'running_4_5' && (stepNum === 4 || stepNum === 5)) return 'running';
+
     if (!analysis) return 'pending';
     switch (stepNum) {
-      case 1: return analysis.q1MarketRegime?.passed ? 'passed' : 'failed';
-      case 2: return analysis.q2Direction?.passed ? 'passed' : 'failed';
-      case 3: return analysis.q3Strikes?.passed ? 'passed' : 'failed';
-      case 4: return analysis.q4Size?.passed ? 'passed' : 'failed';
-      case 5: return analysis.q5Exit?.passed ? 'passed' : 'failed';
+      case 1: return analysis.q1MarketRegime?.passed ? 'passed' : (analysis.q1MarketRegime ? 'failed' : 'pending');
+      case 2: return analysis.q2Direction?.passed ? 'passed' : (analysis.q2Direction ? 'failed' : 'pending');
+      case 3: return analysis.q3Strikes?.passed ? 'passed' : (analysis.q3Strikes ? 'failed' : 'pending');
+      case 4: return analysis.q4Size?.passed ? 'passed' : (analysis.q4Size ? 'failed' : 'pending');
+      case 5: return analysis.q5Exit?.passed ? 'passed' : (analysis.q5Exit ? 'failed' : 'pending');
       default: return 'pending';
+    }
+  };
+
+  // Helper to build summary strings for each step
+  const getStep1Summary = (): string => {
+    if (!analysis?.q1MarketRegime) return 'Awaiting analysis';
+    const vix = analysis.q1MarketRegime.inputs?.vixValue;
+    const spy = analysis.q1MarketRegime.inputs?.spyPrice;
+    const regime = analysis.q1MarketRegime.vixRegime;
+    return `VIX ${vix?.toFixed(1) || '--'} (${regime || '--'}) • SPY $${spy?.toFixed(2) || '--'}`;
+  };
+
+  const getStep2Summary = (): string => {
+    if (!analysis?.q2Direction) return 'Awaiting Step 1';
+    const dir = analysis.q2Direction.recommendedDirection;
+    const trend = analysis.q2Direction.signals?.trend;
+    return `SELL ${dir || '--'} • ${trend || '--'} trend`;
+  };
+
+  const getStep3Summary = (): string => {
+    if (engineFlowState === 'awaiting_selection') return 'Select strikes below';
+    if (!analysis?.q3Strikes) return 'Awaiting Step 2';
+    const putStrike = selectedPutStrike || analysis.q3Strikes.selectedPut?.strike;
+    const callStrike = selectedCallStrike || analysis.q3Strikes.selectedCall?.strike;
+    const parts = [];
+    if (putStrike) parts.push(`$${putStrike}P`);
+    if (callStrike) parts.push(`$${callStrike}C`);
+    return parts.length > 0 ? parts.join(' / ') : 'No strikes selected';
+  };
+
+  const getStep4Summary = (): string => {
+    if (!analysis?.q4Size) return 'Awaiting Step 3';
+    const contracts = analysis.q4Size.recommendedContracts;
+    return `${contracts || '--'} contracts`;
+  };
+
+  const getStep5Summary = (): string => {
+    if (!analysis?.q5Exit) return 'Awaiting Step 4';
+    const stop = analysis.q5Exit.stopLossPrice;
+    return `Stop @ $${stop?.toFixed(2) || '--'} (${stopMultiplier}x)`;
+  };
+
+  // Helper to derive current step from flow state
+  const getCurrentStep = (): number => {
+    if (engineFlowState === 'idle' && !analysis) return 0;
+    if (engineFlowState === 'running_1_2_3') return 2;
+    if (engineFlowState === 'awaiting_selection') return 3;
+    if (engineFlowState === 'running_4_5') return 4;
+    if (engineFlowState === 'complete') return 6; // All complete
+    if (engineFlowState === 'error') return 0;
+    // Calculate from analysis
+    if (!analysis) return 0;
+    if (analysis.q5Exit?.passed) return 6;
+    if (analysis.q4Size?.passed) return 5;
+    if (analysis.q3Strikes?.passed) return 4;
+    if (analysis.q2Direction?.passed) return 3;
+    if (analysis.q1MarketRegime?.passed) return 2;
+    return 1;
+  };
+
+  // Helper for connector status
+  const getConnectorStatus = (afterStep: number): 'pending' | 'active' | 'complete' => {
+    const current = getCurrentStep();
+    if (afterStep < current) return 'complete';
+    if (afterStep === current - 1) return 'active';
+    return 'pending';
+  };
+
+  // Helper for connector output text
+  const getConnectorOutput = (afterStep: number): string => {
+    switch (afterStep) {
+      case 1:
+        if (!analysis?.q1MarketRegime) return 'VIX → Regime';
+        return `${analysis.q1MarketRegime.vixRegime || 'NORMAL'}`;
+      case 2:
+        if (!analysis?.q2Direction) return 'MA → Direction';
+        return `SELL ${analysis.q2Direction.recommendedDirection || 'PUT'}`;
+      case 3:
+        if (!analysis?.q3Strikes) return 'Delta → Strikes';
+        const p = analysis.q3Strikes.selectedPut?.strike;
+        const c = analysis.q3Strikes.selectedCall?.strike;
+        return p && c ? `$${p}P/$${c}C` : p ? `$${p}P` : c ? `$${c}C` : 'strikes';
+      case 4:
+        if (!analysis?.q4Size) return '2% Rule → Size';
+        return `${analysis.q4Size.recommendedContracts || '--'} contracts`;
+      default:
+        return '';
     }
   };
 
@@ -308,56 +392,70 @@ export function Engine() {
             </div>
           </div>
 
-          <div className="space-y-2">
-            {/* Step 1: Market Regime */}
-            <StepCard
-              stepNumber={1}
-              title="Market Regime"
-              status={getStepStatus(1)}
-              summary={analysis?.q1MarketRegime?.inputs?.vixValue != null
-                ? `VIX ${analysis.q1MarketRegime.inputs.vixValue.toFixed(1)} ${analysis.q1MarketRegime.canTrade ? '✓ Safe' : '⚠ Caution'}`
-                : '—'}
-            >
-              <MarketRegimeContent
-                vix={analysis?.q1MarketRegime?.inputs?.vixValue ?? undefined}
-                spyPrice={analysis?.q1MarketRegime?.inputs?.spyPrice ?? undefined}
-                spyChange={analysis?.q1MarketRegime?.inputs?.spyChangePct ?? undefined}
-              />
-            </StepCard>
+          {/* Flow Progress Indicator */}
+          <StepFlowIndicator currentStep={getCurrentStep()} />
 
-            {/* Step 2: Direction */}
-            <StepCard
-              stepNumber={2}
-              title="Direction"
-              status={getStepStatus(2)}
-              summary={analysis?.q2Direction?.recommendedDirection
-                ? `SELL ${analysis.q2Direction.recommendedDirection}`
-                : '—'}
+          <div className="space-y-1">
+            {/* Step 1: Market Regime */}
+            <EngineStepCard
+              step={1}
+              title="Market"
+              status={getStepStatus(1)}
+              summary={getStep1Summary()}
             >
-              <DirectionContent
+              <Step1Content
+                vix={analysis?.q1MarketRegime?.inputs?.vixValue}
+                vixRegime={analysis?.q1MarketRegime?.vixRegime as any}
+                spyPrice={analysis?.q1MarketRegime?.inputs?.spyPrice}
+                spyChangePct={analysis?.q1MarketRegime?.inputs?.spyChangePct}
+                tradingWindow={{
+                  isOpen: status?.tradingWindowOpen ?? false,
+                  reason: status?.tradingWindowReason,
+                }}
+              />
+            </EngineStepCard>
+
+            {/* Connector: Step 1 → Step 2 */}
+            <StepConnector
+              fromStep={1}
+              toStep={2}
+              output={getConnectorOutput(1)}
+              status={getConnectorStatus(1)}
+            />
+
+            {/* Step 2: Trend */}
+            <EngineStepCard
+              step={2}
+              title="Trend"
+              status={getStepStatus(2)}
+              summary={getStep2Summary()}
+            >
+              <Step2Content
                 direction={analysis?.q2Direction?.recommendedDirection}
-                confidence={analysis?.q2Direction?.confidencePct ? analysis.q2Direction.confidencePct / 100 : undefined}
+                trend={analysis?.q2Direction?.signals?.trend}
                 spyPrice={analysis?.q2Direction?.signals?.spyPrice}
                 maFast={analysis?.q2Direction?.signals?.maFast}
                 maSlow={analysis?.q2Direction?.signals?.maSlow}
-                trend={analysis?.q2Direction?.signals?.trend}
                 reasoning={analysis?.q2Direction?.comment}
-                useMiniWidget={true}
+                dataSource="IBKR 5-min bars"
               />
-            </StepCard>
+            </EngineStepCard>
 
-            {/* Step 3: Strike Selection (Interactive) */}
-            <StepCard
-              stepNumber={3}
+            {/* Connector: Step 2 → Step 3 */}
+            <StepConnector
+              fromStep={2}
+              toStep={3}
+              output={getConnectorOutput(2)}
+              status={getConnectorStatus(2)}
+            />
+
+            {/* Step 3: Strikes (Interactive) */}
+            <EngineStepCard
+              step={3}
               title="Strikes"
-              status={engineFlowState === 'awaiting_selection' ? 'pending' : getStepStatus(3)}
-              summary={
-                engineFlowState === 'awaiting_selection'
-                  ? '⏸ Awaiting selection'
-                  : (selectedPutStrike || selectedCallStrike)
-                    ? `${selectedPutStrike ? `${selectedPutStrike}P` : ''}${selectedPutStrike && selectedCallStrike ? ' / ' : ''}${selectedCallStrike ? `${selectedCallStrike}C` : ''}`
-                    : '—'
-              }
+              status={engineFlowState === 'awaiting_selection' ? 'warning' : getStepStatus(3)}
+              summary={getStep3Summary()}
+              defaultExpanded={engineFlowState === 'awaiting_selection'}
             >
               {/* Smart Strike Selector (when awaiting selection) */}
               {engineFlowState === 'awaiting_selection' && analysis?.q3Strikes?.smartCandidates ? (
@@ -383,99 +481,75 @@ export function Engine() {
                   isConfirming={isConfirmingSelection}
                 />
               ) : (
-                <>
-                  {/* Legacy Strike Selection Content (fallback) */}
-                  <StrikeSelectionContent
-                    underlyingPrice={analysis?.q3Strikes?.underlyingPrice}
-                    selectedPutStrike={selectedPutStrike ?? analysis?.q3Strikes?.selectedPut?.strike}
-                    selectedCallStrike={selectedCallStrike ?? analysis?.q3Strikes?.selectedCall?.strike}
-                    putStrikes={analysis?.q3Strikes?.candidates?.filter(c => c.optionType === 'PUT').map(c => ({
-                      strike: c.strike,
-                      bid: c.bid,
-                      ask: c.ask,
-                      delta: c.delta,
-                      oi: c.openInterest
-                    }))}
-                    callStrikes={analysis?.q3Strikes?.candidates?.filter(c => c.optionType === 'CALL').map(c => ({
-                      strike: c.strike,
-                      bid: c.bid,
-                      ask: c.ask,
-                      delta: c.delta,
-                      oi: c.openInterest
-                    }))}
-                    expectedPremium={analysis?.q3Strikes?.expectedPremiumPerContract}
-                  />
-                  {/* Option Chain embedded in Step 3 (legacy) */}
-                  {analysis && (
-                    <div className="mt-4 border-t border-white/10 pt-4">
-                      <OptionChainViewer
-                        underlyingPrice={analysis.q3Strikes?.underlyingPrice || 450}
-                        selectedPutStrike={selectedPutStrike ?? analysis.q3Strikes?.selectedPut?.strike}
-                        selectedCallStrike={selectedCallStrike ?? analysis.q3Strikes?.selectedCall?.strike}
-                        optionChain={{
-                          puts: analysis.q3Strikes?.candidates?.filter(c => c.optionType === 'PUT').map(c => ({
-                            strike: c.strike,
-                            bid: c.bid,
-                            ask: c.ask,
-                            delta: c.delta,
-                            oi: c.openInterest
-                          })) || [],
-                          calls: analysis.q3Strikes?.candidates?.filter(c => c.optionType === 'CALL').map(c => ({
-                            strike: c.strike,
-                            bid: c.bid,
-                            ask: c.ask,
-                            delta: c.delta,
-                            oi: c.openInterest
-                          })) || []
-                        }}
-                        isExpanded={optionChainExpanded}
-                        onToggle={() => setOptionChainExpanded(!optionChainExpanded)}
-                        expiration="0DTE"
-                      />
-                    </div>
-                  )}
-                </>
+                <Step3Content
+                  underlyingPrice={analysis?.q3Strikes?.underlyingPrice}
+                  targetDelta={analysis?.riskAssessment?.targetDelta}
+                  selectedPut={analysis?.q3Strikes?.selectedPut ? {
+                    strike: analysis.q3Strikes.selectedPut.strike,
+                    delta: analysis.q3Strikes.selectedPut.delta,
+                    bid: analysis.q3Strikes.selectedPut.bid,
+                  } : undefined}
+                  selectedCall={analysis?.q3Strikes?.selectedCall ? {
+                    strike: analysis.q3Strikes.selectedCall.strike,
+                    delta: analysis.q3Strikes.selectedCall.delta,
+                    bid: analysis.q3Strikes.selectedCall.bid,
+                  } : undefined}
+                  vixRegime={analysis?.q1MarketRegime?.vixRegime}
+                  expectedPremium={analysis?.q3Strikes?.expectedPremiumPerContract ? analysis.q3Strikes.expectedPremiumPerContract / 100 : undefined}
+                />
               )}
-            </StepCard>
+            </EngineStepCard>
 
-            {/* Step 4: Position Size (CONFIGURABLE) */}
-            <StepCard
-              stepNumber={4}
+            {/* Connector: Step 3 → Step 4 */}
+            <StepConnector
+              fromStep={3}
+              toStep={4}
+              output={getConnectorOutput(3)}
+              status={getConnectorStatus(3)}
+            />
+
+            {/* Step 4: Size (2% Rule) */}
+            <EngineStepCard
+              step={4}
               title="Size"
               status={getStepStatus(4)}
-              summary={analysis?.q4Size?.recommendedContracts
-                ? `${analysis.q4Size.recommendedContracts} contracts`
-                : '—'}
+              summary={getStep4Summary()}
             >
-              <PositionSizeContent
-                buyingPower={analysis?.q4Size?.inputs?.buyingPower}
+              <Step4Content
+                accountValue={analysis?.q4Size?.inputs?.accountValue}
+                maxLossPercent={2}
+                premiumPerContract={analysis?.q3Strikes?.expectedPremiumPerContract ? analysis.q3Strikes.expectedPremiumPerContract / 100 : undefined}
+                stopMultiplier={stopMultiplier}
                 marginPerContract={analysis?.q4Size?.marginPerContract}
-                maxContracts={analysis?.q4Size?.riskLimits?.maxContracts ?? 35}
-                currentContracts={analysis?.q4Size?.recommendedContracts}
-                premium={analysis?.q3Strikes?.expectedPremiumPerContract ? analysis.q3Strikes.expectedPremiumPerContract / 100 : undefined}
-                riskTier={riskTier}
-                onRiskTierChange={setRiskTier}
+                marginSource="IBKR"
+                buyingPower={analysis?.q4Size?.inputs?.buyingPower}
+                recommendedContracts={analysis?.q4Size?.recommendedContracts}
               />
-            </StepCard>
+            </EngineStepCard>
 
-            {/* Step 5: Exit Rules (CONFIGURABLE) */}
-            <StepCard
-              stepNumber={5}
+            {/* Connector: Step 4 → Step 5 */}
+            <StepConnector
+              fromStep={4}
+              toStep={5}
+              output={getConnectorOutput(4)}
+              status={getConnectorStatus(4)}
+            />
+
+            {/* Step 5: Exit */}
+            <EngineStepCard
+              step={5}
               title="Exit"
               status={getStepStatus(5)}
-              summary={analysis?.q5Exit?.stopLossPrice
-                ? `Stop @ $${analysis.q5Exit.stopLossPrice.toFixed(2)} (${stopMultiplier}x)`
-                : '—'}
+              summary={getStep5Summary()}
             >
-              <ExitRulesContent
+              <Step5Content
                 entryPremium={analysis?.q5Exit?.inputs?.entryPremium ? analysis.q5Exit.inputs.entryPremium / 100 : undefined}
-                stopLoss={analysis?.q5Exit?.stopLossPrice}
-                maxLossPerTrade={analysis?.q5Exit?.stopLossAmount}
                 stopMultiplier={stopMultiplier}
-                onStopMultiplierChange={setStopMultiplier}
-                timeStop={analysis?.q5Exit?.timeStopEt?.replace(' ET', '') ?? '3:30 PM'}
+                stopLossPrice={analysis?.q5Exit?.stopLossPrice}
+                contracts={analysis?.q4Size?.recommendedContracts}
+                totalMaxLoss={analysis?.q5Exit?.stopLossAmount}
               />
-            </StepCard>
+            </EngineStepCard>
           </div>
         </div>
 

@@ -1,11 +1,18 @@
 /**
  * Step 4: Position Sizing
- * Determines how many contracts to trade based on buying power and margin requirements
+ * Determines how many contracts to trade using the 2% Max Loss Rule
  *
- * Rules:
- * - 100% buying power utilization maximum
- * - Account for portfolio margin (strangles get ~12% margin, single side ~18%)
- * - Hard limit: 5 contracts maximum
+ * 2% Rule:
+ * - Max risk per trade = X% of account net liquidation value
+ * - Max loss per contract = (stop_multiplier - 1) × premium × 100
+ * - contracts = floor(maxLossAllowed / maxLossPerContract)
+ *
+ * Risk profiles adjust the max loss percentage:
+ * - CONSERVATIVE: 1% max loss
+ * - BALANCED: 2% max loss
+ * - AGGRESSIVE: 3% max loss
+ *
+ * Also validates against margin requirements and buying power
  */
 
 import { StrikeSelection } from './step3';
@@ -13,12 +20,22 @@ import type { StepReasoning, StepMetric } from '../../shared/types/engineLog';
 
 export type RiskProfile = 'CONSERVATIVE' | 'BALANCED' | 'AGGRESSIVE';
 
+// Max loss percentage by risk profile
+const MAX_LOSS_PCT: Record<RiskProfile, number> = {
+  CONSERVATIVE: 0.01,  // 1% max loss
+  BALANCED: 0.02,      // 2% max loss
+  AGGRESSIVE: 0.03,    // 3% max loss
+};
+
 export interface PositionSize {
   contracts: number;
   marginPerContract: number;
   totalMarginRequired: number;
   buyingPowerUsed: number;
   buyingPowerRemaining: number;
+  maxLossPerContract: number;
+  maxLossTotal: number;
+  maxLossAllowed: number;
   reasoning: string;
   // Enhanced logging
   stepReasoning?: StepReasoning[];
@@ -26,40 +43,17 @@ export interface PositionSize {
 }
 
 export interface AccountInfo {
-  cashBalance: number;      // Actual cash in account
+  cashBalance: number;       // Actual cash in account
   buyingPower: number;       // Leveraged buying power (e.g., 6.66x for portfolio margin)
+  netLiquidation?: number;   // Net liquidation value (total account value) - defaults to buyingPower if not provided
   currentPositions: number;  // Number of open positions
 }
 
 /**
- * Risk profile configurations
- * These determine position sizing limits and aggressiveness
- */
-const RISK_PROFILES = {
-  CONSERVATIVE: {
-    maxContracts: 2,
-    buyingPowerUtilization: 0.50, // Use 50% of available buying power
-    description: 'Low risk, maximum 2 contracts, 50% BP usage'
-  },
-  BALANCED: {
-    maxContracts: 3,
-    buyingPowerUtilization: 0.70, // Use 70% of available buying power
-    description: 'Moderate risk, maximum 3 contracts, 70% BP usage'
-  },
-  AGGRESSIVE: {
-    maxContracts: 5,
-    buyingPowerUtilization: 1.00, // Use 100% of available buying power
-    description: 'High risk, maximum 5 contracts, 100% BP usage'
-  }
-};
-
-/**
- * Calculate margin requirement per contract
- * Portfolio margin rules (simplified):
+ * Calculate margin requirement per contract (simplified portfolio margin)
+ * Portfolio margin rules:
  * - Single naked option: ~18% of notional
  * - Strangle (offsetting): ~12% of notional
- * @param strikeSelection - Selected strikes from Step 3
- * @returns Margin required per contract
  */
 function calculateMarginPerContract(strikeSelection: StrikeSelection): number {
   const isStrangle = strikeSelection.putStrike && strikeSelection.callStrike;
@@ -67,11 +61,9 @@ function calculateMarginPerContract(strikeSelection: StrikeSelection): number {
 
   let notionalValue = 0;
 
-  // Calculate based on strike prices
   if (strikeSelection.putStrike) {
     notionalValue += strikeSelection.putStrike.strike * 100;
   }
-
   if (strikeSelection.callStrike) {
     notionalValue += strikeSelection.callStrike.strike * 100;
   }
@@ -85,101 +77,129 @@ function calculateMarginPerContract(strikeSelection: StrikeSelection): number {
 }
 
 /**
- * Calculate maximum contracts based on buying power
- * @param buyingPower - Available buying power
- * @param marginPerContract - Margin required per contract
- * @param riskProfile - Risk profile to apply
- * @returns Maximum number of contracts
+ * Calculate max loss per contract based on stop loss multiplier
+ * @param premiumPerContract - Premium collected per contract (in dollars)
+ * @param stopMultiplier - Stop loss multiplier (e.g., 3 = stop at 3x premium)
+ * @returns Max loss in dollars per contract
  */
-function calculateMaxContracts(
-  buyingPower: number,
-  marginPerContract: number,
-  riskProfile: RiskProfile
-): number {
-  const profile = RISK_PROFILES[riskProfile];
-
-  // Apply buying power utilization limit
-  const availableBuyingPower = buyingPower * profile.buyingPowerUtilization;
-
-  // Calculate theoretical maximum
-  const theoreticalMax = Math.floor(availableBuyingPower / marginPerContract);
-
-  // Apply hard limit from risk profile
-  return Math.min(theoreticalMax, profile.maxContracts);
+function calculateMaxLossPerContract(premiumPerContract: number, stopMultiplier: number): number {
+  // When sold premium rises to stopMultiplier × original premium, we close
+  // Loss = (newPrice - originalPrice) × 100
+  // Loss = ((stopMultiplier - 1) × originalPrice) × 100
+  return (stopMultiplier - 1) * premiumPerContract * 100;
 }
 
 /**
- * Main function: Calculate optimal position size
+ * Calculate position size using the Max Loss Rule
+ * @param netLiquidation - Account net liquidation value
+ * @param maxLossPerContract - Max loss per contract in dollars
+ * @param riskProfile - Risk profile to apply
+ * @returns Number of contracts and max loss allowed
+ */
+function calculateContractsByMaxLoss(
+  netLiquidation: number,
+  maxLossPerContract: number,
+  riskProfile: RiskProfile
+): { contracts: number; maxLossAllowed: number } {
+  const maxLossPct = MAX_LOSS_PCT[riskProfile];
+  const maxLossAllowed = netLiquidation * maxLossPct;
+
+  // Floor to ensure we don't exceed max loss
+  const contracts = Math.max(0, Math.floor(maxLossAllowed / maxLossPerContract));
+
+  return { contracts, maxLossAllowed };
+}
+
+/**
+ * Main function: Calculate optimal position size using 2% max loss rule
  * @param strikeSelection - Selected strikes from Step 3
  * @param accountInfo - Current account information
  * @param riskProfile - Risk profile to use
+ * @param stopMultiplier - Stop loss multiplier (default 3x)
  * @returns Position sizing decision
  */
 export async function calculatePositionSize(
   strikeSelection: StrikeSelection,
   accountInfo: AccountInfo,
-  riskProfile: RiskProfile = 'BALANCED'
+  riskProfile: RiskProfile = 'BALANCED',
+  stopMultiplier: number = 3
 ): Promise<PositionSize> {
-  // Calculate margin per contract
+  // Use netLiquidation if available, otherwise use buyingPower as proxy
+  const netLiq = accountInfo.netLiquidation || accountInfo.buyingPower;
+
+  // Calculate margin per contract (for secondary validation)
   const marginPerContract = calculateMarginPerContract(strikeSelection);
 
-  // Calculate maximum contracts
-  const maxContracts = calculateMaxContracts(
-    accountInfo.buyingPower,
-    marginPerContract,
+  // Calculate expected premium (mid price)
+  const expectedPremium = strikeSelection.expectedPremium || 0;
+  const premiumPerContract = expectedPremium / 100; // Convert from cents to dollars if needed
+
+  // Calculate max loss per contract using stop multiplier
+  const maxLossPerContract = calculateMaxLossPerContract(
+    premiumPerContract > 0 ? premiumPerContract : 0.50, // Default to $0.50 if no premium
+    stopMultiplier
+  );
+
+  // Calculate contracts using max loss rule
+  const { contracts: contractsByLoss, maxLossAllowed } = calculateContractsByMaxLoss(
+    netLiq,
+    maxLossPerContract,
     riskProfile
   );
 
-  // Ensure we have at least 1 contract if we have enough margin
-  const contracts = marginPerContract <= accountInfo.buyingPower ? Math.max(1, maxContracts) : 0;
+  // Also calculate contracts limited by margin/buying power
+  const contractsByMargin = Math.floor(accountInfo.buyingPower / marginPerContract);
+
+  // Take the minimum of both limits (most conservative)
+  const contracts = Math.min(contractsByLoss, contractsByMargin);
 
   // Calculate totals
   const totalMarginRequired = contracts * marginPerContract;
   const buyingPowerUsed = totalMarginRequired;
   const buyingPowerRemaining = accountInfo.buyingPower - buyingPowerUsed;
+  const maxLossTotal = contracts * maxLossPerContract;
+
+  // Determine limiting factor
+  const limitedBy = contractsByLoss <= contractsByMargin ? 'max loss rule' : 'margin/buying power';
+  const maxLossPct = MAX_LOSS_PCT[riskProfile] * 100;
 
   // Build reasoning
-  const profile = RISK_PROFILES[riskProfile];
   const isStrangle = strikeSelection.putStrike && strikeSelection.callStrike;
   const marginRate = isStrangle ? 12 : 18;
 
-  let reasoning = `Risk Profile: ${riskProfile} (${profile.description}). `;
-  reasoning += `Margin rate: ${marginRate}% (${isStrangle ? 'strangle offset' : 'single naked option'}). `;
-  reasoning += `Margin per contract: $${marginPerContract.toFixed(2)}. `;
-  reasoning += `Buying power available: $${accountInfo.buyingPower.toFixed(2)} at ${(profile.buyingPowerUtilization * 100)}% utilization. `;
-  reasoning += `Max contracts: ${maxContracts} (limited by ${maxContracts === profile.maxContracts ? 'risk profile' : 'buying power'}). `;
+  let reasoning = `${maxLossPct}% Max Loss Rule: `;
+  reasoning += `Account: $${netLiq.toLocaleString()}, Max Risk: $${maxLossAllowed.toFixed(0)}. `;
+  reasoning += `Loss/contract @ ${stopMultiplier}x stop: $${maxLossPerContract.toFixed(0)}. `;
+  reasoning += `Result: ${contracts} contracts (${limitedBy}). `;
 
   if (contracts === 0) {
-    reasoning += 'WARNING: Insufficient buying power for even 1 contract.';
+    reasoning += 'WARNING: Max loss per contract exceeds allowed risk.';
   }
 
   // Build enhanced reasoning Q&A
-  const utilizationPct = (profile.buyingPowerUtilization * 100).toFixed(0);
-  const usedPct = ((buyingPowerUsed / accountInfo.buyingPower) * 100).toFixed(1);
-  const limitedBy = maxContracts === profile.maxContracts ? 'risk profile limit' : 'available buying power';
-
   const stepReasoning: StepReasoning[] = [
     {
-      question: 'What risk profile?',
-      answer: `${riskProfile} (max ${profile.maxContracts} contracts, ${utilizationPct}% BP)`
+      question: 'Position sizing method?',
+      answer: `${maxLossPct}% Max Loss Rule (${riskProfile})`
     },
     {
-      question: 'Margin calculation?',
-      answer: `${marginRate}% of $${(strikeSelection.putStrike?.strike || strikeSelection.callStrike?.strike || 0) * 100} notional = $${marginPerContract.toFixed(0)}/contract`
+      question: 'Max loss allowed?',
+      answer: `${maxLossPct}% of $${netLiq.toLocaleString()} = $${maxLossAllowed.toLocaleString()}`
+    },
+    {
+      question: 'Max loss per contract?',
+      answer: `Premium $${premiumPerContract.toFixed(2)} × (${stopMultiplier}-1) × 100 = $${maxLossPerContract.toFixed(0)}`
     },
     {
       question: 'How many contracts?',
       answer: contracts > 0
-        ? `${contracts} contracts (limited by ${limitedBy})`
-        : 'ZERO - insufficient buying power'
-    },
-    {
-      question: 'Buying power usage?',
-      answer: `$${buyingPowerUsed.toFixed(0)} of $${accountInfo.buyingPower.toFixed(0)} (${usedPct}%)`
+        ? `floor($${maxLossAllowed.toFixed(0)} / $${maxLossPerContract.toFixed(0)}) = ${contractsByLoss} → ${contracts} (${limitedBy})`
+        : 'ZERO - risk exceeds allowed limit'
     }
   ];
 
   // Build enhanced metrics
+  const usedPct = ((buyingPowerUsed / accountInfo.buyingPower) * 100).toFixed(1);
   const stepMetrics: StepMetric[] = [
     {
       label: 'Contracts',
@@ -187,29 +207,29 @@ export async function calculatePositionSize(
       status: contracts > 0 ? 'normal' : 'critical'
     },
     {
+      label: 'Max Loss Allowed',
+      value: `$${maxLossAllowed.toLocaleString()}`,
+      status: 'normal'
+    },
+    {
+      label: 'Max Loss/Contract',
+      value: `$${maxLossPerContract.toFixed(0)}`,
+      status: 'normal'
+    },
+    {
+      label: 'Total Max Loss',
+      value: `$${maxLossTotal.toFixed(0)}`,
+      status: maxLossTotal > maxLossAllowed ? 'critical' : 'normal'
+    },
+    {
       label: 'Margin/Contract',
       value: `$${marginPerContract.toFixed(0)}`,
       status: 'normal'
     },
     {
-      label: 'Total Margin',
-      value: `$${totalMarginRequired.toFixed(0)}`,
-      status: 'normal'
-    },
-    {
       label: 'BP Used',
       value: `${usedPct}%`,
-      status: parseFloat(usedPct) > 80 ? 'warning' : 'normal'
-    },
-    {
-      label: 'BP Remaining',
-      value: `$${buyingPowerRemaining.toFixed(0)}`,
-      status: buyingPowerRemaining < marginPerContract ? 'warning' : 'normal'
-    },
-    {
-      label: 'Risk Profile',
-      value: riskProfile,
-      status: riskProfile === 'AGGRESSIVE' ? 'warning' : 'normal'
+      status: parseFloat(usedPct) > 50 ? 'warning' : 'normal'
     }
   ];
 
@@ -219,6 +239,9 @@ export async function calculatePositionSize(
     totalMarginRequired: Number(totalMarginRequired.toFixed(2)),
     buyingPowerUsed: Number(buyingPowerUsed.toFixed(2)),
     buyingPowerRemaining: Number(buyingPowerRemaining.toFixed(2)),
+    maxLossPerContract: Number(maxLossPerContract.toFixed(2)),
+    maxLossTotal: Number(maxLossTotal.toFixed(2)),
+    maxLossAllowed: Number(maxLossAllowed.toFixed(2)),
     reasoning,
     stepReasoning,
     stepMetrics
@@ -229,94 +252,54 @@ export async function calculatePositionSize(
  * Test function to validate Step 4 logic
  */
 export async function testStep4(): Promise<void> {
-  console.log('Testing Step 4: Position Sizing\n');
+  console.log('Testing Step 4: Position Sizing (2% Max Loss Rule)\n');
 
-  // Mock account info (based on user's example: $100K cash, $666K buying power)
+  // Mock account info
   const accountInfo: AccountInfo = {
-    cashBalance: 100000,
-    buyingPower: 666000,
+    cashBalance: 150000,
+    buyingPower: 500000,
+    netLiquidation: 150000,
     currentPositions: 0
   };
 
   console.log('Account Information:');
-  console.log(`  Cash Balance: $${accountInfo.cashBalance.toLocaleString()}`);
+  console.log(`  Net Liquidation: $${accountInfo.netLiquidation?.toLocaleString()}`);
   console.log(`  Buying Power: $${accountInfo.buyingPower.toLocaleString()}`);
-  console.log(`  Leverage: ${(accountInfo.buyingPower / accountInfo.cashBalance).toFixed(2)}x\n`);
+  console.log(`  2% Max Loss = $${((accountInfo.netLiquidation || 0) * 0.02).toLocaleString()}\n`);
 
-  // Mock strike selections
-  const scenarios = [
-    {
-      name: 'PUT Only',
-      selection: {
-        putStrike: { strike: 445, expiration: new Date(), delta: 0.18, bid: 0.50, ask: 0.55 },
-        expectedPremium: 52.50,
-        marginRequired: 8010,
-        reasoning: 'Single PUT'
-      }
-    },
-    {
-      name: 'CALL Only',
-      selection: {
-        callStrike: { strike: 455, expiration: new Date(), delta: 0.18, bid: 0.48, ask: 0.52 },
-        expectedPremium: 50.00,
-        marginRequired: 8190,
-        reasoning: 'Single CALL'
-      }
-    },
-    {
-      name: 'STRANGLE',
-      selection: {
-        putStrike: { strike: 445, expiration: new Date(), delta: 0.18, bid: 0.50, ask: 0.55 },
-        callStrike: { strike: 455, expiration: new Date(), delta: 0.18, bid: 0.48, ask: 0.52 },
-        expectedPremium: 102.50,
-        marginRequired: 5400,
-        reasoning: 'STRANGLE (both sides)'
-      }
-    }
-  ];
-
-  const riskProfiles: RiskProfile[] = ['CONSERVATIVE', 'BALANCED', 'AGGRESSIVE'];
-
-  for (const scenario of scenarios) {
-    console.log(`\n${'='.repeat(60)}`);
-    console.log(`Scenario: ${scenario.name}`);
-    console.log(`${'='.repeat(60)}\n`);
-
-    for (const profile of riskProfiles) {
-      const sizing = await calculatePositionSize(
-        scenario.selection as StrikeSelection,
-        accountInfo,
-        profile
-      );
-
-      console.log(`${profile}:`);
-      console.log(`  Contracts: ${sizing.contracts}`);
-      console.log(`  Margin/Contract: $${sizing.marginPerContract.toLocaleString()}`);
-      console.log(`  Total Margin: $${sizing.totalMarginRequired.toLocaleString()}`);
-      console.log(`  BP Remaining: $${sizing.buyingPowerRemaining.toLocaleString()}`);
-      console.log('');
-    }
-  }
-
-  // Test edge case: Insufficient buying power
-  console.log(`\n${'='.repeat(60)}`);
-  console.log('Edge Case: Insufficient Buying Power');
-  console.log(`${'='.repeat(60)}\n`);
-
-  const poorAccount: AccountInfo = {
-    cashBalance: 1000,
-    buyingPower: 2000,
-    currentPositions: 0
+  // Mock strike selection with premium
+  const strikeSelection = {
+    putStrike: { strike: 585, expiration: new Date(), delta: -0.25, bid: 0.80, ask: 0.90 },
+    callStrike: { strike: 600, expiration: new Date(), delta: 0.25, bid: 0.75, ask: 0.85 },
+    expectedPremium: 85, // $0.85 premium per contract side
+    marginRequired: 7000,
+    reasoning: 'STRANGLE'
   };
 
-  const sizing = await calculatePositionSize(
-    scenarios[2].selection as StrikeSelection,
-    poorAccount,
-    'AGGRESSIVE'
-  );
+  console.log('Strike Selection:');
+  console.log(`  PUT: $${strikeSelection.putStrike.strike}`);
+  console.log(`  CALL: $${strikeSelection.callStrike.strike}`);
+  console.log(`  Expected Premium: $${(strikeSelection.expectedPremium / 100).toFixed(2)}/contract\n`);
 
-  console.log(`Result: ${sizing.contracts} contracts`);
-  console.log(`Reasoning: ${sizing.reasoning}`);
+  const riskProfiles: RiskProfile[] = ['CONSERVATIVE', 'BALANCED', 'AGGRESSIVE'];
+  const stopMultiplier = 3;
+
+  for (const profile of riskProfiles) {
+    const sizing = await calculatePositionSize(
+      strikeSelection as any,
+      accountInfo,
+      profile,
+      stopMultiplier
+    );
+
+    console.log(`${profile} (${MAX_LOSS_PCT[profile] * 100}% max loss):`);
+    console.log(`  Max Loss Allowed: $${sizing.maxLossAllowed.toLocaleString()}`);
+    console.log(`  Max Loss/Contract: $${sizing.maxLossPerContract.toFixed(0)}`);
+    console.log(`  Contracts: ${sizing.contracts}`);
+    console.log(`  Total Max Loss: $${sizing.maxLossTotal.toFixed(0)}`);
+    console.log(`  Margin Required: $${sizing.totalMarginRequired.toLocaleString()}`);
+    console.log('');
+  }
 }
 
 // Test function can be called from a separate test file
