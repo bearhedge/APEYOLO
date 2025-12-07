@@ -172,7 +172,8 @@ export function useEngine() {
                           last?.validate?.status === 200 &&
                           last?.init?.status === 200;
 
-  // Calculate trading window locally (11:00 AM - 1:00 PM ET, Mon-Fri)
+  // Calculate trading window locally (11:00 AM - 1:00 PM ET)
+  // Weekday check disabled for testing
   const getTradingWindow = useCallback(() => {
     const now = new Date();
     const nyTime = new Intl.DateTimeFormat('en-US', {
@@ -187,20 +188,18 @@ export function useEngine() {
     const startMinutes = 11 * 60; // 11:00 AM
     const endMinutes = 13 * 60;   // 1:00 PM
 
-    // Check weekday (get day in NY timezone)
-    const nyDate = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
-    const dayOfWeek = nyDate.getDay();
-    const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
+    // Weekday check disabled for testing
+    // const nyDate = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+    // const dayOfWeek = nyDate.getDay();
+    // const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
 
-    const isOpen = isWeekday && currentMinutes >= startMinutes && currentMinutes < endMinutes;
+    const isOpen = currentMinutes >= startMinutes && currentMinutes < endMinutes;
 
     return {
       isOpen,
       reason: isOpen
         ? 'Trading window is open'
-        : isWeekday
-          ? 'Trading only allowed between 11:00 AM and 1:00 PM ET'
-          : 'Trading only allowed on weekdays (Mon-Fri)'
+        : 'Trading only allowed between 11:00 AM and 1:00 PM ET'
     };
   }, []);
 

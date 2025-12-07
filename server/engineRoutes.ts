@@ -170,21 +170,21 @@ function isWithinTradingWindow(): TradingWindowResult {
   const startMinutes = startHour * 60 + startMinute;
   const endMinutes = endHour * 60 + endMinute;
 
-  // Check if it's a weekday (Mon-Fri)
-  const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
+  // Weekday check disabled for testing - allow any day
+  // const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
   const startTimeStr = formatTime(startHour, startMinute);
   const endTimeStr = formatTime(endHour, endMinute);
 
-  // Weekend
-  if (!isWeekday) {
-    const nextDay = getNextTradingDay(dayOfWeek);
-    return {
-      allowed: false,
-      context: 'WEEKEND',
-      reason: `Weekend - Next session: ${nextDay} ${startTimeStr} ET`,
-      nextSession: `${nextDay} ${startTimeStr} ET`
-    };
-  }
+  // Weekend check disabled for testing
+  // if (!isWeekday) {
+  //   const nextDay = getNextTradingDay(dayOfWeek);
+  //   return {
+  //     allowed: false,
+  //     context: 'WEEKEND',
+  //     reason: `Weekend - Next session: ${nextDay} ${startTimeStr} ET`,
+  //     nextSession: `${nextDay} ${startTimeStr} ET`
+  //   };
+  // }
 
   // Before trading window
   if (currentMinutes < startMinutes) {

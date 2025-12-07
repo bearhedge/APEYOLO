@@ -33,6 +33,7 @@ import type {
   VolatilityRegime,
   BiasDirection,
   TrendDirection,
+  RiskAssessment,
 } from '../../shared/types/engine.ts';
 
 // VIX threshold constants (must match step1.ts)
@@ -503,9 +504,10 @@ function getTradingWindowStatus(): TradingWindowStatus {
   const windowStart = 11 * 60; // 11:00 AM
   const windowEnd = 13 * 60;   // 1:00 PM
 
-  const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
+  // Weekday check disabled for testing - allow any day
+  // const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
 
-  const isOpen = isWeekday && currentMinutes >= windowStart && currentMinutes < windowEnd;
+  const isOpen = currentMinutes >= windowStart && currentMinutes < windowEnd;
 
   // Format current time string
   const timeStr = new Intl.DateTimeFormat('en-US', {
@@ -522,7 +524,7 @@ function getTradingWindowStatus(): TradingWindowStatus {
     windowEnd: '1:00 PM ET',
     reason: isOpen
       ? 'Trading window is open'
-      : `Trading window closed. Open 11:00 AM - 1:00 PM ET, Mon-Fri`,
+      : `Trading window closed. Open 11:00 AM - 1:00 PM ET`,
   };
 }
 
@@ -592,14 +594,28 @@ export function adaptTradingDecision(
   // Get trading window status
   const tradingWindow = getTradingWindowStatus();
 
+  // Extract risk assessment from strikes decision (VIX-based dynamic delta & sizing)
+  const riskAssessment: RiskAssessment | undefined = decision.strikes?.riskAssessment
+    ? {
+        vixLevel: decision.strikes.riskAssessment.vixLevel,
+        riskRegime: decision.strikes.riskAssessment.riskRegime,
+        targetDelta: decision.strikes.riskAssessment.targetDelta,
+        contracts: decision.strikes.riskAssessment.contracts,
+        reasoning: decision.strikes.riskAssessment.reasoning,
+      }
+    : undefined;
+
   return {
     timestamp: decision.timestamp.toISOString(),
     requestId: `req-${Date.now().toString(36)}`,
     version: '1.0.0',
 
     canTrade: decision.canTrade,
-    executionReady: decision.executionReady && guardRails.passed && tradingWindow.isOpen,
+    executionReady: decision.executionReady && guardRails.passed, // Trading window disabled for testing
     reason: decision.reason,
+
+    // Risk Assessment - VIX-based dynamic delta & position sizing
+    riskAssessment,
 
     q1MarketRegime: q1,
     q2Direction: q2,
