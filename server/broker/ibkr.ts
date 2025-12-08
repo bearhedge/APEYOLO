@@ -115,6 +115,9 @@ class IbkrClient {
   private accountSelected = false;
   // MUTEX: Prevent concurrent ensureReady() calls from corrupting session
   private ensureReadyPromise: Promise<void> | null = null;
+  // Option conid cache - persists for current trading day (6 hour TTL)
+  private optionConidCache: Map<string, { conid: number; cachedAt: number }> = new Map();
+  private readonly OPTION_CONID_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
   private last: IbkrDiagnostics = {
     oauth: { status: null, ts: "" },
     sso: { status: null, ts: "" },
@@ -744,6 +747,27 @@ class IbkrClient {
       const vixData = response.data?.find((d: any) => d.conid === 13455763);
       console.log(`[IBKR][primeMarketData][${reqId}] SPY: price=${spyData?.['31'] || 0}, bid=${spyData?.['84'] || 0}, ask=${spyData?.['86'] || 0}`);
       console.log(`[IBKR][primeMarketData][${reqId}] VIX: price=${vixData?.['31'] || 0}`);
+
+      // Prime option chain endpoints for SPY (prevents "no bridge" in Step 3)
+      console.log(`[IBKR][primeMarketData][${reqId}] Priming option chain endpoints...`);
+      try {
+        // Prime /secdef/search for options
+        const searchUrl = `/v1/api/iserver/secdef/search?symbol=SPY&secType=OPT`;
+        await this.http.get(searchUrl);
+        console.log(`[IBKR][primeMarketData][${reqId}] Primed /secdef/search for SPY options`);
+
+        // Get current month code for strikes priming
+        const now = new Date();
+        const monthNames = ['JAN', 'FEB', 'MAR', 'APR', 'MAY', 'JUN', 'JUL', 'AUG', 'SEP', 'OCT', 'NOV', 'DEC'];
+        const monthCode = `${monthNames[now.getMonth()]}${String(now.getFullYear()).slice(2)}`;
+
+        // Prime /secdef/strikes for current month
+        const strikesUrl = `/v1/api/iserver/secdef/strikes?conid=756733&sectype=OPT&month=${monthCode}`;
+        await this.http.get(strikesUrl);
+        console.log(`[IBKR][primeMarketData][${reqId}] Primed /secdef/strikes for ${monthCode}`);
+      } catch (optErr: any) {
+        console.warn(`[IBKR][primeMarketData][${reqId}] Option priming warning (non-fatal): ${optErr.message}`);
+      }
     } catch (err: any) {
       console.warn(`[IBKR][primeMarketData][${reqId}] Warning: ${err.message}`);
       // Don't throw - this is a best-effort optimization
@@ -919,6 +943,26 @@ class IbkrClient {
       // Re-throw to trigger proper error handling
       throw err;
     }
+  }
+
+  /**
+   * HTTP GET wrapper that handles "no bridge" errors by re-establishing gateway and retrying.
+   * Use this for all IBKR API calls that may encounter cold bridge issues.
+   */
+  private async httpGetWithBridgeRetry(url: string, context: string): Promise<AxiosResponse> {
+    let resp = await this.http.get(url);
+
+    if (resp.status === 400) {
+      const body = JSON.stringify(resp.data).slice(0, 300);
+      if (body.includes('no bridge')) {
+        console.log(`[IBKR][${context}] Got "no bridge" error, re-establishing gateway...`);
+        await this.establishGateway();
+        await new Promise(r => setTimeout(r, 2000)); // Wait 2 seconds for gateway to stabilize
+        resp = await this.http.get(url); // Retry once
+        console.log(`[IBKR][${context}] Retry after gateway: status=${resp.status}`);
+      }
+    }
+    return resp;
   }
 
   async resolveConid(symbol: string): Promise<number | null> {
@@ -1293,7 +1337,10 @@ class IbkrClient {
       diagnostics.conid = underlyingConid;
 
       if (underlyingConid) {
-        const snap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${underlyingConid}`);
+        const snap = await this.httpGetWithBridgeRetry(
+          `/v1/api/iserver/marketdata/snapshot?conids=${underlyingConid}`,
+          `getOptionChainWithStrikes:underlying:${reqId}`
+        );
         // Capture raw snapshot response for diagnostics
         diagnostics.snapshotRaw = JSON.stringify(snap.data).slice(0, 500);
         console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Snapshot raw: ${diagnostics.snapshotRaw}`);
@@ -1320,7 +1367,10 @@ class IbkrClient {
         if (underlyingPrice === 0) {
           console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Retrying snapshot for underlying...`);
           await new Promise(r => setTimeout(r, 500));
-          const retry = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${underlyingConid}`);
+          const retry = await this.httpGetWithBridgeRetry(
+            `/v1/api/iserver/marketdata/snapshot?conids=${underlyingConid}`,
+            `getOptionChainWithStrikes:underlying-retry:${reqId}`
+          );
           diagnostics.snapshotRaw = JSON.stringify(retry.data).slice(0, 500);
           console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Retry snapshot raw: ${diagnostics.snapshotRaw}`);
 
@@ -1335,7 +1385,10 @@ class IbkrClient {
         if (underlyingPrice === 0 && underlyingConid) {
           console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Using historical data fallback for price...`);
           try {
-            const histResp = await this.http.get(`/v1/api/iserver/marketdata/history?conid=${underlyingConid}&period=1d&bar=5mins`);
+            const histResp = await this.httpGetWithBridgeRetry(
+              `/v1/api/iserver/marketdata/history?conid=${underlyingConid}&period=1d&bar=5mins`,
+              `getOptionChainWithStrikes:history:${reqId}`
+            );
             if (histResp.status === 200 && Array.isArray(histResp.data?.data) && histResp.data.data.length > 0) {
               const lastBar = histResp.data.data[histResp.data.data.length - 1];
               if (lastBar?.c > 0) {
@@ -1357,7 +1410,10 @@ class IbkrClient {
     try {
       const vixConid = await this.resolveConid('VIX');
       if (vixConid) {
-        const vixSnap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${vixConid}`);
+        const vixSnap = await this.httpGetWithBridgeRetry(
+          `/v1/api/iserver/marketdata/snapshot?conids=${vixConid}`,
+          `getOptionChainWithStrikes:vix:${reqId}`
+        );
         if (vixSnap.status === 200) {
           const vixData = (vixSnap.data as any[]) || [];
           const vixPrice = vixData?.[0]?.["31"] ?? vixData?.[0]?.["84"] ?? vixData?.[0]?.last;
@@ -1423,7 +1479,7 @@ class IbkrClient {
       const searchUrl = `/v1/api/iserver/secdef/search?symbol=${symbol}&secType=OPT`;
       console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Step 1: Calling /secdef/search (REQUIRED per IBKR docs)...`);
       try {
-        const searchResp = await this.http.get(searchUrl);
+        const searchResp = await this.httpGetWithBridgeRetry(searchUrl, `getOptionChainWithStrikes:secdef-search:${reqId}`);
         console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] /secdef/search response:`, JSON.stringify(searchResp.data).slice(0, 300));
         await this.sleep(500); // Brief wait for IBKR to register the search
       } catch (err: any) {
@@ -1439,14 +1495,14 @@ class IbkrClient {
       // Prime strikes endpoint - first call may still need to subscribe
       console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Priming strikes endpoint...`);
       try {
-        await this.http.get(strikesUrl);
+        await this.httpGetWithBridgeRetry(strikesUrl, `getOptionChainWithStrikes:strikes-prime:${reqId}`);
         await this.sleep(1500);
       } catch (err: any) {
         console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] Strikes prime warning: ${err.message}`);
       }
 
-      // Fetch strikes with aggressive retry (3 attempts with exponential backoff)
-      let strikesResp = await this.http.get(strikesUrl);
+      // Fetch strikes with bridge retry
+      let strikesResp = await this.httpGetWithBridgeRetry(strikesUrl, `getOptionChainWithStrikes:strikes-fetch:${reqId}`);
       let strikesData = strikesResp.data as { call?: number[]; put?: number[] };
 
       // Retry up to 3 times with increasing delays if empty
@@ -1568,7 +1624,10 @@ class IbkrClient {
           const batch = allConids.slice(i, i + 20);
           const conidStr = batch.join(',');
           try {
-            await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${conidStr}&fields=${fields}`);
+            await this.httpGetWithBridgeRetry(
+              `/v1/api/iserver/marketdata/snapshot?conids=${conidStr}&fields=${fields}`,
+              `getOptionChainWithStrikes:opt-prime-${i}:${reqId}`
+            );
           } catch (err) {
             // Ignore priming errors - we'll retry in the fetch phase
           }
@@ -1589,7 +1648,10 @@ class IbkrClient {
           const conidStr = batch.join(',');
 
           try {
-            const snap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${conidStr}&fields=${fields}`);
+            const snap = await this.httpGetWithBridgeRetry(
+              `/v1/api/iserver/marketdata/snapshot?conids=${conidStr}&fields=${fields}`,
+              `getOptionChainWithStrikes:opt-fetch-${i}:${reqId}`
+            );
             // Check if response is valid JSON (not HTML error page)
             if (!isValidJsonResponse(snap)) {
               const preview = String(snap.data).slice(0, 100);
@@ -1654,7 +1716,10 @@ class IbkrClient {
             const conidStr = batch.join(',');
 
             try {
-              const snap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${conidStr}&fields=${fields}`);
+              const snap = await this.httpGetWithBridgeRetry(
+                `/v1/api/iserver/marketdata/snapshot?conids=${conidStr}&fields=${fields}`,
+                `getOptionChainWithStrikes:opt-refetch-${i}:${reqId}`
+              );
               if (snap.status === 200 && Array.isArray(snap.data)) {
                 for (const item of snap.data) {
                   const conid = item.conid || item.conidEx;
@@ -2121,6 +2186,16 @@ class IbkrClient {
     optionType: 'PUT' | 'CALL',
     strike: number
   ): Promise<number | null> {
+    const right = optionType === 'CALL' ? 'C' : 'P';
+    const cacheKey = `${underlying}_${expiration}_${right}_${strike}`;
+
+    // Check cache first
+    const cached = this.optionConidCache.get(cacheKey);
+    if (cached && Date.now() - cached.cachedAt < this.OPTION_CONID_CACHE_TTL_MS) {
+      console.log(`[IBKR][resolveOptionConid] Cache hit: ${cacheKey} -> ${cached.conid}`);
+      return cached.conid;
+    }
+
     await this.ensureAccountSelected();
 
     // First get the underlying conid
@@ -2130,7 +2205,6 @@ class IbkrClient {
       return null;
     }
 
-    const right = optionType === 'CALL' ? 'C' : 'P';
     const reqId = randomUUID();
 
     console.log(`[IBKR][resolveOptionConid][${reqId}] Searching: underlying=${underlying}(${underlyingConid}), exp=${expiration}, right=${right}, strike=${strike}`);
@@ -2146,7 +2220,7 @@ class IbkrClient {
         month: this.formatMonthForIBKR(expiration.slice(0, 6)), // MMMy format (DEC25, not 202512)
       });
 
-      const resp = await this.http.get(`${searchUrl}?${params.toString()}`);
+      const resp = await this.httpGetWithBridgeRetry(`${searchUrl}?${params.toString()}`, `resolveOptionConid:search:${reqId}`);
       const bodySnippet = JSON.stringify(resp.data || {}).slice(0, 500);
       console.log(`[IBKR][resolveOptionConid][${reqId}] Search response: status=${resp.status} body=${bodySnippet}`);
 
@@ -2165,6 +2239,8 @@ class IbkrClient {
           if (strikeMatch && rightMatch && maturityMatch) {
             const conid = parseInt(contract.conid, 10);
             console.log(`[IBKR][resolveOptionConid][${reqId}] Found match: conid=${conid}, strike=${cStrike}, right=${cRight}, maturity=${cMaturity}`);
+            // Cache the result
+            this.optionConidCache.set(cacheKey, { conid, cachedAt: Date.now() });
             return conid;
           } else if (strikeMatch && rightMatch && !maturityMatch) {
             // Log near-misses to diagnose maturity format issues
@@ -2185,7 +2261,7 @@ class IbkrClient {
         month: this.formatMonthForIBKR(expiration.slice(0, 6)), // MMMy format
       });
 
-      const strikesResp = await this.http.get(`${strikesUrl}?${strikesParams.toString()}`);
+      const strikesResp = await this.httpGetWithBridgeRetry(`${strikesUrl}?${strikesParams.toString()}`, `resolveOptionConid:strikes:${reqId}`);
       console.log(`[IBKR][resolveOptionConid][${reqId}] Strikes response: status=${strikesResp.status}`);
 
       if (strikesResp.status === 200 && strikesResp.data) {
@@ -2204,7 +2280,7 @@ class IbkrClient {
             right: right,
           });
 
-          const infoResp = await this.http.get(`${infoUrl}?${infoParams.toString()}`);
+          const infoResp = await this.httpGetWithBridgeRetry(`${infoUrl}?${infoParams.toString()}`, `resolveOptionConid:info:${reqId}`);
           console.log(`[IBKR][resolveOptionConid][${reqId}] Info response: status=${infoResp.status} body=${JSON.stringify(infoResp.data).slice(0, 300)}`);
 
           if (infoResp.status === 200 && Array.isArray(infoResp.data)) {
@@ -2212,8 +2288,11 @@ class IbkrClient {
               // CRITICAL: Filter by maturity date to get today's 0DTE, not expired options
               const optMaturity = opt.maturityDate || '';
               if (opt.conid && optMaturity === expiration) {
-                console.log(`[IBKR][resolveOptionConid][${reqId}] Found via info: conid=${opt.conid}, maturity=${optMaturity}`);
-                return parseInt(opt.conid, 10);
+                const foundConid = parseInt(opt.conid, 10);
+                console.log(`[IBKR][resolveOptionConid][${reqId}] Found via info: conid=${foundConid}, maturity=${optMaturity}`);
+                // Cache the result
+                this.optionConidCache.set(cacheKey, { conid: foundConid, cachedAt: Date.now() });
+                return foundConid;
               } else if (opt.conid && optMaturity !== expiration) {
                 // Log maturity mismatch for diagnostics
                 console.log(`[IBKR][resolveOptionConid][${reqId}] Info maturity mismatch: got '${optMaturity}', want '${expiration}' (conid=${opt.conid})`);
