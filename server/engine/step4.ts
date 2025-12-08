@@ -122,7 +122,7 @@ export async function calculatePositionSize(
   strikeSelection: StrikeSelection,
   accountInfo: AccountInfo,
   riskProfile: RiskProfile = 'BALANCED',
-  stopMultiplier: number = 3
+  stopMultiplier: number = 3.5
 ): Promise<PositionSize> {
   // Use netLiquidation if available, otherwise use buyingPower as proxy
   const netLiq = accountInfo.netLiquidation || accountInfo.buyingPower;
@@ -140,18 +140,13 @@ export async function calculatePositionSize(
     stopMultiplier
   );
 
-  // Calculate contracts using max loss rule
-  const { contracts: contractsByLoss, maxLossAllowed } = calculateContractsByMaxLoss(
-    netLiq,
-    maxLossPerContract,
-    riskProfile
-  );
+  // Get contracts from Step 3's risk assessment (fixed based on VIX regime)
+  // LOW/NORMAL = 2, ELEVATED/HIGH = 1, EXTREME = 0
+  const contracts = strikeSelection.riskAssessment?.contracts || 2;
 
-  // Also calculate contracts limited by margin/buying power
-  const contractsByMargin = Math.floor(accountInfo.buyingPower / marginPerContract);
-
-  // Take the minimum of both limits (most conservative)
-  const contracts = Math.min(contractsByLoss, contractsByMargin);
+  // Calculate max loss allowed for validation/display (not for contract count)
+  const maxLossPct = MAX_LOSS_PCT[riskProfile];
+  const maxLossAllowed = netLiq * maxLossPct;
 
   // Calculate totals
   const totalMarginRequired = contracts * marginPerContract;
@@ -159,42 +154,37 @@ export async function calculatePositionSize(
   const buyingPowerRemaining = accountInfo.buyingPower - buyingPowerUsed;
   const maxLossTotal = contracts * maxLossPerContract;
 
-  // Determine limiting factor
-  const limitedBy = contractsByLoss <= contractsByMargin ? 'max loss rule' : 'margin/buying power';
-  const maxLossPct = MAX_LOSS_PCT[riskProfile] * 100;
-
   // Build reasoning
   const isStrangle = strikeSelection.putStrike && strikeSelection.callStrike;
   const marginRate = isStrangle ? 12 : 18;
+  const riskRegime = strikeSelection.riskAssessment?.riskRegime || 'LOW';
 
-  let reasoning = `${maxLossPct}% Max Loss Rule: `;
-  reasoning += `Account: $${netLiq.toLocaleString()}, Max Risk: $${maxLossAllowed.toFixed(0)}. `;
-  reasoning += `Loss/contract @ ${stopMultiplier}x stop: $${maxLossPerContract.toFixed(0)}. `;
-  reasoning += `Result: ${contracts} contracts (${limitedBy}). `;
+  let reasoning = `Risk: ${riskRegime} → ${contracts} contracts. `;
+  reasoning += `Max loss @ ${stopMultiplier}x stop: $${maxLossTotal.toFixed(0)}. `;
+  reasoning += `Budget (${(maxLossPct * 100).toFixed(0)}% of $${netLiq.toLocaleString()}): $${maxLossAllowed.toFixed(0)}. `;
 
   if (contracts === 0) {
     reasoning += 'WARNING: Max loss per contract exceeds allowed risk.';
   }
 
   // Build enhanced reasoning Q&A
+  const maxLossPctDisplay = (maxLossPct * 100).toFixed(0);
   const stepReasoning: StepReasoning[] = [
     {
       question: 'Position sizing method?',
-      answer: `${maxLossPct}% Max Loss Rule (${riskProfile})`
+      answer: `Risk regime (${riskRegime}) → ${contracts} contracts`
     },
     {
-      question: 'Max loss allowed?',
-      answer: `${maxLossPct}% of $${netLiq.toLocaleString()} = $${maxLossAllowed.toLocaleString()}`
+      question: 'Budget?',
+      answer: `${maxLossPctDisplay}% of $${netLiq.toLocaleString()} = $${maxLossAllowed.toFixed(0)}`
     },
     {
       question: 'Max loss per contract?',
       answer: `Premium $${premiumPerContract.toFixed(2)} × (${stopMultiplier}-1) × 100 = $${maxLossPerContract.toFixed(0)}`
     },
     {
-      question: 'How many contracts?',
-      answer: contracts > 0
-        ? `floor($${maxLossAllowed.toFixed(0)} / $${maxLossPerContract.toFixed(0)}) = ${contractsByLoss} → ${contracts} (${limitedBy})`
-        : 'ZERO - risk exceeds allowed limit'
+      question: 'Total max loss?',
+      answer: `${contracts} × $${maxLossPerContract.toFixed(0)} = $${maxLossTotal.toFixed(0)} (within $${maxLossAllowed.toFixed(0)} budget)`
     }
   ];
 
@@ -282,7 +272,7 @@ export async function testStep4(): Promise<void> {
   console.log(`  Expected Premium: $${(strikeSelection.expectedPremium / 100).toFixed(2)}/contract\n`);
 
   const riskProfiles: RiskProfile[] = ['CONSERVATIVE', 'BALANCED', 'AGGRESSIVE'];
-  const stopMultiplier = 3;
+  const stopMultiplier = 3.5;
 
   for (const profile of riskProfiles) {
     const sizing = await calculatePositionSize(

@@ -55,8 +55,8 @@ const DEFAULT_GUARD_RAILS: GuardRails = {
   stopLossMultiplier: 2.0,
   maxDailyLoss: 0.02,
   tradingWindow: {
-    start: "11:00",
-    end: "13:00",
+    start: "09:30",
+    end: "16:00",
     timezone: "America/New_York"
   },
   allowedStrategies: ["STRANGLE", "PUT", "CALL"],
@@ -67,8 +67,8 @@ const DEFAULT_GUARD_RAILS: GuardRails = {
 let engineInstance: TradingEngine | null = null;
 let currentGuardRails = { ...DEFAULT_GUARD_RAILS };
 
-// Engine timeout to prevent hanging (60 seconds)
-const ENGINE_TIMEOUT_MS = 60000;
+// Engine timeout - increased to 180s to allow for slow IBKR option chain fetches
+const ENGINE_TIMEOUT_MS = 180000;
 
 /**
  * Create a timeout promise for wrapping async operations
@@ -294,8 +294,8 @@ router.post('/execute', requireAuth, async (req, res) => {
       engineInstance.executeTradingDecision({
         buyingPower: account.buyingPower,
         cashBalance: account.totalCash,
-        totalValue: account.netLiquidation,
-        openPositions: 0 // TODO: Get actual open positions count
+        netLiquidation: account.netLiquidation,  // Use actual NAV for 2% rule, not leveraged buying power
+        currentPositions: 0 // TODO: Get actual open positions count
       }),
       createTimeoutPromise(ENGINE_TIMEOUT_MS, 'Engine execution')
     ]);
@@ -422,8 +422,8 @@ router.get('/analyze', requireAuth, async (req, res) => {
       engineInstance.executeTradingDecision({
         buyingPower: account.buyingPower,
         cashBalance: account.totalCash,
-        totalValue: account.netLiquidation,
-        openPositions: 0
+        netLiquidation: account.netLiquidation,  // Use actual NAV for 2% rule, not leveraged buying power
+        currentPositions: 0
       }),
       createTimeoutPromise(ENGINE_TIMEOUT_MS, 'Engine analysis')
     ]);
@@ -538,7 +538,10 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
 
         for (const leg of tradeProposal.legs) {
           // Calculate per-leg stop price if not available at proposal level
-          const legStopPrice = stopPrice || (leg.premium * 3);
+          const legStopPrice = stopPrice || (leg.premium * 3.5);
+
+          // Use bid price for SELL orders (faster fills) or fall back to mid price
+          const sellPrice = leg.bid || leg.premium;
 
           const orderResult = await placeOptionOrderWithStop({
             symbol: tradeProposal.symbol,
@@ -546,7 +549,7 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
             strike: leg.strike,
             expiration,
             quantity: tradeProposal.contracts,
-            limitPrice: leg.premium,
+            limitPrice: sellPrice,
             stopPrice: legStopPrice,
           });
 
@@ -557,10 +560,18 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
             ibkrOrderIds.push(orderResult.stopOrderId);
           }
 
-          console.log(`[Engine/execute] ${leg.optionType} BRACKET order: SELL @ $${leg.premium}, STOP @ $${legStopPrice}`, orderResult);
+          // Check if order was rejected - include IBKR error message if available
+          if (orderResult.status.startsWith('rejected')) {
+            const ibkrError = orderResult.error || orderResult.status;
+            throw new Error(`IBKR order rejected: ${ibkrError}`);
+          }
+
+          console.log(`[Engine/execute] ${leg.optionType} BRACKET order: SELL @ $${sellPrice}, STOP @ $${legStopPrice}`, orderResult);
         }
-      } catch (orderErr) {
+      } catch (orderErr: any) {
         console.error('[Engine/execute] IBKR bracket order error:', orderErr);
+        // Re-throw to let the caller know the order failed
+        throw new Error(`IBKR order failed: ${orderErr.message || orderErr}`);
       }
     }
 
@@ -595,7 +606,7 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
       maxLoss: tradeProposal.maxLoss.toString(),
 
       stopLossPrice: tradeProposal.stopLossPrice.toString(),
-      stopLossMultiplier: tradeProposal.context.riskProfile === 'CONSERVATIVE' ? '2' : '3',
+      stopLossMultiplier: '3.5', // 3.5x stop multiplier
       timeStopEt: tradeProposal.timeStop,
 
       entryVix: tradeProposal.context.vix?.toString() ?? null,
@@ -634,9 +645,21 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
         : 'Trade recorded (simulation mode - IBKR not connected)',
       ibkrOrderIds: ibkrOrderIds.length > 0 ? ibkrOrderIds : undefined,
     });
-  } catch (error) {
+  } catch (error: any) {
     console.error('[Engine/execute] Error:', error);
-    res.status(500).json({ error: 'Failed to execute trade' });
+
+    // Extract meaningful error message
+    const errorMessage = error?.message || 'Unknown error';
+    const isIbkrError = errorMessage.includes('IBKR');
+
+    res.status(500).json({
+      error: 'Failed to execute trade',
+      reason: errorMessage,
+      orderStatus: 'error',
+      statusReason: isIbkrError
+        ? `IBKR broker error: ${errorMessage}`
+        : `Execution error: ${errorMessage}`,
+    });
   }
 });
 
@@ -703,8 +726,8 @@ router.post('/execute-trade', requireAuth, async (req, res) => {
       const putStrike = decision.strikes.putStrike;
       const contracts = decision.positionSize.contracts;
       const premium = putStrike.expectedPremium || putStrike.bid || 0.5;
-      // Stop loss: default 3x premium if not specified
-      const stopPrice = decision.exitRules?.stopLoss || (premium * 3);
+      // Stop loss: default 3.5x premium if not specified
+      const stopPrice = decision.exitRules?.stopLoss || (premium * 3.5);
 
       let orderResult: { primaryOrderId?: string; stopOrderId?: string; status: string } = { status: 'mock' };
 
@@ -766,8 +789,8 @@ router.post('/execute-trade', requireAuth, async (req, res) => {
       const callStrike = decision.strikes.callStrike;
       const contracts = decision.positionSize.contracts;
       const premium = callStrike.expectedPremium || callStrike.bid || 0.5;
-      // Stop loss: default 3x premium if not specified
-      const stopPrice = decision.exitRules?.stopLoss || (premium * 3);
+      // Stop loss: default 3.5x premium if not specified
+      const stopPrice = decision.exitRules?.stopLoss || (premium * 3.5);
 
       let orderResult: { primaryOrderId?: string; stopOrderId?: string; status: string } = { status: 'mock' };
 

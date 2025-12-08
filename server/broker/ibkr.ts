@@ -832,6 +832,8 @@ class IbkrClient {
         buyingPower: buyingPwr || excessLiq || availFunds,
         // Use netliquidation for accurate portfolio value
         portfolioValue: netliq || getValue(data?.equitywithloanvalue),
+        // Also expose as netLiquidation for engine step4 position sizing
+        netLiquidation: netliq || getValue(data?.equitywithloanvalue),
         netDelta: getValue(data?.netdelta),
         // Combine unrealized + realized for day P&L
         dayPnL: unrealPnl + realPnl,
@@ -854,6 +856,7 @@ class IbkrClient {
         accountNumber: accountId || "",
         buyingPower: 0,
         portfolioValue: 0,
+        netLiquidation: 0,
         netDelta: 0,
         dayPnL: 0,
         marginUsed: 0,
@@ -1277,6 +1280,7 @@ class IbkrClient {
     await this.ensureReady();
     await this.ensureAccountSelected(); // CRITICAL: Prime session for option data
     const reqId = randomUUID().slice(0, 8);
+    const functionStartTime = Date.now();
     console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Starting for ${symbol}`);
 
     // Initialize diagnostics object
@@ -1574,12 +1578,16 @@ class IbkrClient {
           return null;
         };
 
-        // Process SEQUENTIALLY to avoid IBKR rate limits (503 errors)
-        const batchSize = 1; // One at a time - IBKR is very strict
+        // Process in small parallel batches to balance speed vs IBKR rate limits
+        // Batch size 3 with 500ms delays: ~60% faster than sequential
+        const batchSize = 3;
         const allStrikesWithType = [
           ...otmPuts.map(s => ({ strike: s, type: 'PUT' as const })),
           ...otmCalls.map(s => ({ strike: s, type: 'CALL' as const })),
         ];
+
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Processing ${allStrikesWithType.length} strikes in batches of ${batchSize}...`);
+        const startTime = Date.now();
 
         for (let i = 0; i < allStrikesWithType.length; i += batchSize) {
           const batch = allStrikesWithType.slice(i, i + batchSize);
@@ -1593,11 +1601,14 @@ class IbkrClient {
             }
           }
 
-          // INCREASED delay between batches to avoid 503 rate limits
+          // Delay between batches to respect IBKR rate limits
           if (i + batchSize < allStrikesWithType.length) {
-            await new Promise(r => setTimeout(r, 800)); // 800ms between batches
+            await new Promise(r => setTimeout(r, 500)); // 500ms between batches
           }
         }
+
+        const elapsed = Date.now() - startTime;
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Conid resolution took ${elapsed}ms`);
       } catch (err) {
         console.error(`[IBKR][getOptionChainWithStrikes][${reqId}] Error resolving option conids:`, err);
       }
@@ -1863,6 +1874,9 @@ class IbkrClient {
     diagnostics.putCount = puts.length;
     diagnostics.callCount = calls.length;
     diagnostics.underlyingPrice = underlyingPrice;
+
+    const totalTime = Date.now() - functionStartTime;
+    console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] COMPLETED in ${totalTime}ms (${(totalTime/1000).toFixed(1)}s) - ${puts.length} puts, ${calls.length} calls`);
 
     return { underlyingPrice, vix, expectedMove, strikeRangeLow, strikeRangeHigh, puts, calls, isHistorical, diagnostics };
   }
@@ -2488,7 +2502,7 @@ class IbkrClient {
     quantity: number;
     limitPrice: number; // Entry price (bid)
     stopPrice: number; // Stop loss trigger price (e.g., 3x premium)
-  }): Promise<{ primaryOrderId?: string; stopOrderId?: string; status: string; raw?: any }> {
+  }): Promise<{ primaryOrderId?: string; stopOrderId?: string; status: string; raw?: any; error?: string }> {
     await this.ensureReady();
     await this.ensureAccountSelected();
 
@@ -2596,6 +2610,31 @@ class IbkrClient {
             }
           }
         }
+      }
+
+      // Check for error responses (IBKR may return 200 with error in body)
+      if (Array.isArray(confirmedRaw)) {
+        for (const item of confirmedRaw) {
+          if (item.error) {
+            const errorMsg = item.error || 'Unknown IBKR error';
+            console.error(`[IBKR][placeOptionOrderWithStop][${reqId}] IBKR rejected order: ${errorMsg}`);
+            await storage.createAuditLog({
+              eventType: "IBKR_BRACKET_ORDER",
+              details: `REJECTED: ${errorMsg}`,
+              status: "FAILED"
+            });
+            return { status: "rejected_ibkr_error", raw: confirmedRaw, error: errorMsg };
+          }
+        }
+      } else if (confirmedRaw?.error) {
+        const errorMsg = confirmedRaw.error || 'Unknown IBKR error';
+        console.error(`[IBKR][placeOptionOrderWithStop][${reqId}] IBKR rejected order: ${errorMsg}`);
+        await storage.createAuditLog({
+          eventType: "IBKR_BRACKET_ORDER",
+          details: `REJECTED: ${errorMsg}`,
+          status: "FAILED"
+        });
+        return { status: "rejected_ibkr_error", raw: confirmedRaw, error: errorMsg };
       }
 
       // Parse order IDs from response

@@ -2,12 +2,12 @@
  * Step 2: Direction Selection
  * Determines whether to sell PUT, CALL, or STRANGLE (both)
  *
- * Uses moving average crossover strategy on IBKR 5-minute SPY bars:
- * - 5-bar MA (fast) = 25 minutes of price action
- * - 15-bar MA (slow) = 75 minutes of price action
- * - SPY > MA_FAST && MA_FAST > MA_SLOW → BULLISH → Sell PUTs
- * - SPY < MA_FAST && MA_FAST < MA_SLOW → BEARISH → Sell CALLs
- * - Otherwise → NEUTRAL → Sell STRANGLE
+ * Uses MA50 on IBKR 5-minute SPY bars (live data):
+ * - MA50 = 50 bars × 5 min = ~4 hours of price action
+ * - Check last 3 bars vs MA50 for trend confirmation
+ * - All 3 bars > MA50 → BULLISH → Sell PUTs
+ * - All 3 bars < MA50 → BEARISH → Sell CALLs
+ * - Mixed signals → NEUTRAL → Sell STRANGLE
  */
 
 import { MarketRegime } from './step1.ts';
@@ -16,9 +16,10 @@ import type { StepReasoning, StepMetric } from '../../shared/types/engineLog';
 
 export type TradeDirection = 'PUT' | 'CALL' | 'STRANGLE';
 
-// MA Configuration (can be made configurable via guard rails)
-const MA_FAST_PERIOD = 5;   // 5-period fast MA
-const MA_SLOW_PERIOD = 15;  // 15-period slow MA
+// MA Configuration
+const MA_PERIOD = 50;  // 50-period MA on 5-min bars = ~4 hours of price action
+const CONFIRMATION_BARS = 3;  // Check last 3 bars for trend confirmation
+const TREND_THRESHOLD_PCT = 0.5;  // 0.5% threshold for directional trades (flat days → STRANGLE)
 
 export interface DirectionDecision {
   direction: TradeDirection;
@@ -29,8 +30,7 @@ export interface DirectionDecision {
     momentum?: number;
     strength?: number;
     spyPrice?: number;
-    maFast?: number;
-    maSlow?: number;
+    ma50?: number;
   };
   // Enhanced logging
   stepReasoning?: StepReasoning[];
@@ -50,16 +50,16 @@ function calculateSMA(prices: number[], period: number): number | null {
 const SPY_CONID = 756733;
 
 /**
- * Fetch SPY 5-minute bars from IBKR and calculate MAs
+ * Fetch SPY 5-minute bars from IBKR and calculate MA50
  */
-async function getSPYWithMAs(): Promise<{
-  price: number;
-  maFast: number;
-  maSlow: number;
-  bars: number;
+async function getSPYWithMA50(): Promise<{
+  currentPrice: number;
+  ma50: number;
+  lastBars: number[];  // Last 3 bar closes for trend confirmation
+  totalBars: number;
 } | null> {
   try {
-    // Fetch 1-day of 5-minute bars from IBKR
+    // Fetch 1-day of 5-minute bars from IBKR (should give us 78 bars for a full trading day)
     console.log('[Step2] Fetching SPY 5-minute bars from IBKR...');
     const response: IbkrHistoricalResponse = await fetchIbkrHistoricalData(SPY_CONID, {
       period: '1d',
@@ -68,31 +68,29 @@ async function getSPYWithMAs(): Promise<{
     });
 
     const bars = response.data;
-    if (!bars || bars.length < MA_SLOW_PERIOD) {
-      console.log(`[Step2] Insufficient IBKR SPY history: ${bars?.length || 0} bars (need ${MA_SLOW_PERIOD})`);
+    if (!bars || bars.length < MA_PERIOD) {
+      console.log(`[Step2] Insufficient IBKR SPY history: ${bars?.length || 0} bars (need ${MA_PERIOD})`);
       return null;
     }
 
     // Extract close prices from IBKR bars
     const closes = bars.map(bar => bar.c);
 
-    // Calculate MAs on 5-minute bars
-    // MA5 = average of last 5 bars = 25 minutes of price action
-    // MA15 = average of last 15 bars = 75 minutes of price action
-    const maFast = calculateSMA(closes, MA_FAST_PERIOD);
-    const maSlow = calculateSMA(closes, MA_SLOW_PERIOD);
-
-    if (!maFast || !maSlow) {
-      console.log('[Step2] Could not calculate MAs from IBKR data');
+    // Calculate MA50
+    const ma50 = calculateSMA(closes, MA_PERIOD);
+    if (!ma50) {
+      console.log('[Step2] Could not calculate MA50 from IBKR data');
       return null;
     }
 
-    // Current price is the most recent close
+    // Get last 3 bar closes for trend confirmation
+    const lastBars = closes.slice(-CONFIRMATION_BARS);
     const currentPrice = closes[closes.length - 1];
 
-    console.log(`[Step2] IBKR Data: ${bars.length} bars, SPY: $${currentPrice.toFixed(2)}, MA${MA_FAST_PERIOD}: $${maFast.toFixed(2)}, MA${MA_SLOW_PERIOD}: $${maSlow.toFixed(2)}`);
+    console.log(`[Step2] IBKR Data: ${bars.length} bars, SPY: $${currentPrice.toFixed(2)}, MA50: $${ma50.toFixed(2)}`);
+    console.log(`[Step2] Last ${CONFIRMATION_BARS} bars: [${lastBars.map(p => `$${p.toFixed(2)}`).join(', ')}]`);
 
-    return { price: currentPrice, maFast, maSlow, bars: bars.length };
+    return { currentPrice, ma50, lastBars, totalBars: bars.length };
   } catch (error) {
     console.error('[Step2] Error fetching IBKR SPY data:', error);
     return null;
@@ -100,62 +98,73 @@ async function getSPYWithMAs(): Promise<{
 }
 
 /**
- * Analyze trend based on MA crossover
+ * Analyze trend by checking if last 3 bars are consistently above/below MA50
+ * @param lastBars - Last 3 bar close prices
+ * @param ma50 - 50-period moving average
+ * @returns Trend direction
  */
-function analyzeMAtrend(price: number, maFast: number, maSlow: number): 'UP' | 'DOWN' | 'SIDEWAYS' {
-  // Bullish: Price above fast MA AND fast MA above slow MA
-  if (price > maFast && maFast > maSlow) {
+function analyzeTrend(lastBars: number[], ma50: number): 'UP' | 'DOWN' | 'SIDEWAYS' {
+  const aboveCount = lastBars.filter(price => price > ma50).length;
+  const belowCount = lastBars.filter(price => price < ma50).length;
+
+  console.log(`[Step2] Trend analysis: ${aboveCount} bars above MA50, ${belowCount} bars below MA50`);
+
+  // All 3 bars above MA50 → clear uptrend
+  if (aboveCount === CONFIRMATION_BARS) {
     return 'UP';
   }
 
-  // Bearish: Price below fast MA AND fast MA below slow MA
-  if (price < maFast && maFast < maSlow) {
+  // All 3 bars below MA50 → clear downtrend
+  if (belowCount === CONFIRMATION_BARS) {
     return 'DOWN';
   }
 
-  // Sideways/mixed signals
+  // Mixed signals → sideways/uncertain
   return 'SIDEWAYS';
 }
 
 /**
- * Calculate momentum from MA spread
+ * Calculate momentum based on how far last bar is from MA50
+ * @param currentPrice - Current price
+ * @param ma50 - 50-period moving average
+ * @returns Momentum score -1 to +1
  */
-function calculateMomentum(price: number, maFast: number, maSlow: number): number {
-  // Calculate percentage spread between fast and slow MA
-  const maSpread = ((maFast - maSlow) / maSlow) * 100;
+function calculateMomentum(currentPrice: number, ma50: number): number {
+  // Calculate percentage distance from MA50
+  const pctDiff = ((currentPrice - ma50) / ma50) * 100;
 
-  // Calculate price distance from fast MA
-  const priceSpread = ((price - maFast) / maFast) * 100;
-
-  // Combined momentum score: -1 to +1
-  const momentum = Math.tanh((maSpread + priceSpread) / 2);
-
-  return momentum;
+  // Clamp to -1 to +1 range using tanh
+  return Math.tanh(pctDiff / 2);
 }
 
 /**
- * Calculate directional confidence based on signals
+ * Calculate directional confidence based on trend and momentum
  * @param trend - Market trend
- * @param momentum - Momentum score
+ * @param lastBars - Last 3 bar prices
+ * @param ma50 - MA50 value
  * @returns Confidence score 0-1
  */
-function calculateConfidence(trend: 'UP' | 'DOWN' | 'SIDEWAYS', momentum: number): number {
+function calculateConfidence(trend: 'UP' | 'DOWN' | 'SIDEWAYS', lastBars: number[], ma50: number): number {
   // Base confidence
   let confidence = 0.5;
 
-  // Adjust based on trend clarity
+  // Clear trend adds confidence
   if (trend === 'UP' || trend === 'DOWN') {
-    confidence += 0.2; // Clear trend adds confidence
-  }
+    confidence += 0.25;
 
-  // Adjust based on momentum strength
-  confidence += Math.abs(momentum) * 0.3; // Strong momentum adds up to 0.3
+    // Check how consistently bars are on one side of MA50
+    const distances = lastBars.map(p => Math.abs((p - ma50) / ma50));
+    const avgDistance = distances.reduce((a, b) => a + b, 0) / distances.length;
+
+    // Greater distance from MA50 = more confidence (up to 0.25 more)
+    confidence += Math.min(avgDistance * 10, 0.25);
+  }
 
   return Math.min(confidence, 1.0);
 }
 
 /**
- * Main function: Select trading direction based on MA crossover strategy
+ * Main function: Select trading direction based on MA50 strategy
  * @param marketRegime - Market regime from Step 1
  * @param mockDirection - Optional mock direction for testing
  * @returns Direction decision with reasoning
@@ -181,8 +190,8 @@ export async function selectDirection(
     };
   }
 
-  // Fetch real SPY data with MAs
-  const spyData = await getSPYWithMAs();
+  // Fetch real SPY data with MA50
+  const spyData = await getSPYWithMA50();
 
   // If we couldn't get MA data, default to STRANGLE
   if (!spyData) {
@@ -208,93 +217,122 @@ export async function selectDirection(
     };
   }
 
-  const { price, maFast, maSlow, bars } = spyData;
+  const { currentPrice, ma50, lastBars, totalBars } = spyData;
 
-  // Analyze trend based on MA crossover
-  const trend = analyzeMAtrend(price, maFast, maSlow);
-  const momentum = calculateMomentum(price, maFast, maSlow);
-  const confidence = calculateConfidence(trend, momentum);
+  // Analyze trend based on last 3 bars vs MA50
+  const trend = analyzeTrend(lastBars, ma50);
+  const momentum = calculateMomentum(currentPrice, ma50);
+  const confidence = calculateConfidence(trend, lastBars, ma50);
 
-  // Decision logic based on MA crossover
+  // Calculate percentage distance from MA50
+  const pctFromMA50 = ((currentPrice - ma50) / ma50) * 100;
+  const absPctFromMA50 = Math.abs(pctFromMA50);
+  const thresholdDollar = (TREND_THRESHOLD_PCT / 100) * ma50;
+
+  console.log(`[Step2] Price distance from MA50: ${pctFromMA50.toFixed(3)}% ($${(currentPrice - ma50).toFixed(2)}), threshold: ±${TREND_THRESHOLD_PCT}% ($${thresholdDollar.toFixed(2)})`);
+
+  // Decision logic:
+  // 1. If within ±0.5% of MA50 → FLAT DAY → STRANGLE (regardless of bar confirmation)
+  // 2. Only go directional if BOTH: trend confirmed AND >0.5% from MA50
   let direction: TradeDirection;
   let reasoning: string;
 
-  if (trend === 'UP') {
-    // Bullish: SPY > MA5 > MA15 → Sell PUTs (bullish strategy)
-    direction = 'PUT';
-    reasoning = `Bullish trend: SPY ($${price.toFixed(2)}) > MA${MA_FAST_PERIOD} ($${maFast.toFixed(2)}) > MA${MA_SLOW_PERIOD} ($${maSlow.toFixed(2)}) - Selling PUTs`;
+  const barsStr = lastBars.map(p => `$${p.toFixed(2)}`).join(', ');
+
+  // FLAT DAY: SPY within ±0.5% of MA50 → default to STRANGLE
+  if (absPctFromMA50 < TREND_THRESHOLD_PCT) {
+    direction = 'STRANGLE';
+    reasoning = `Flat day: SPY ${pctFromMA50 >= 0 ? '+' : ''}${pctFromMA50.toFixed(2)}% from MA50 (within ±${TREND_THRESHOLD_PCT}% threshold) - Using STRANGLE`;
+    console.log(`[Step2] FLAT DAY detected: ${pctFromMA50.toFixed(2)}% < ±${TREND_THRESHOLD_PCT}% threshold → STRANGLE`);
   }
-  else if (trend === 'DOWN') {
-    // Bearish: SPY < MA5 < MA15 → Sell CALLs (bearish strategy)
+  // TRENDING DAY: >0.5% from MA50, now check bar confirmation
+  else if (trend === 'UP' && pctFromMA50 > TREND_THRESHOLD_PCT) {
+    // Bullish: All 3 bars above MA50 AND >0.5% above → Sell PUTs
+    direction = 'PUT';
+    reasoning = `Bullish trending: SPY +${pctFromMA50.toFixed(2)}% above MA50 & all ${CONFIRMATION_BARS} bars confirm - Selling PUTs`;
+  }
+  else if (trend === 'DOWN' && pctFromMA50 < -TREND_THRESHOLD_PCT) {
+    // Bearish: All 3 bars below MA50 AND >0.5% below → Sell CALLs
     direction = 'CALL';
-    reasoning = `Bearish trend: SPY ($${price.toFixed(2)}) < MA${MA_FAST_PERIOD} ($${maFast.toFixed(2)}) < MA${MA_SLOW_PERIOD} ($${maSlow.toFixed(2)}) - Selling CALLs`;
+    reasoning = `Bearish trending: SPY ${pctFromMA50.toFixed(2)}% below MA50 & all ${CONFIRMATION_BARS} bars confirm - Selling CALLs`;
   }
   else {
-    // Sideways/mixed → STRANGLE (neutral strategy)
+    // Mixed signals OR bars don't confirm → STRANGLE
     direction = 'STRANGLE';
-    reasoning = `Mixed signals: SPY ($${price.toFixed(2)}), MA${MA_FAST_PERIOD} ($${maFast.toFixed(2)}), MA${MA_SLOW_PERIOD} ($${maSlow.toFixed(2)}) - Using STRANGLE`;
+    if (trend === 'SIDEWAYS') {
+      reasoning = `Mixed bars: [${barsStr}] around MA50 ($${ma50.toFixed(2)}) - Using STRANGLE`;
+    } else {
+      // Trend exists but doesn't match price direction (unusual)
+      reasoning = `Unconfirmed trend: bars show ${trend} but price ${pctFromMA50.toFixed(2)}% from MA50 - Using STRANGLE for safety`;
+    }
   }
 
   console.log(`[Step2] Direction: ${direction} (${trend}) - Confidence: ${(confidence * 100).toFixed(0)}%`);
 
   // Build enhanced reasoning Q&A
-  const maDiff = maFast - maSlow;
-  const maDiffStr = maDiff >= 0 ? `+$${maDiff.toFixed(2)}` : `-$${Math.abs(maDiff).toFixed(2)}`;
+  const priceDiff = currentPrice - ma50;
+  const priceDiffStr = priceDiff >= 0 ? `+$${priceDiff.toFixed(2)}` : `-$${Math.abs(priceDiff).toFixed(2)}`;
+  const pctStr = pctFromMA50 >= 0 ? `+${pctFromMA50.toFixed(2)}%` : `${pctFromMA50.toFixed(2)}%`;
   const strengthLabel = Math.abs(momentum) > 0.3 ? 'STRONG' : Math.abs(momentum) > 0.15 ? 'MODERATE' : 'WEAK';
+  const isFlatDay = absPctFromMA50 < TREND_THRESHOLD_PCT;
 
   const stepReasoning: StepReasoning[] = [
     {
-      question: 'What is market trend?',
-      answer: trend === 'UP'
-        ? `BULLISH (MA${MA_FAST_PERIOD} > MA${MA_SLOW_PERIOD})`
-        : trend === 'DOWN'
-          ? `BEARISH (MA${MA_FAST_PERIOD} < MA${MA_SLOW_PERIOD})`
-          : 'SIDEWAYS (mixed signals)'
+      question: 'Is today a flat or trending day?',
+      answer: isFlatDay
+        ? `FLAT (${pctStr} from MA50, within ±${TREND_THRESHOLD_PCT}% threshold)`
+        : `TRENDING (${pctStr} from MA50, exceeds ±${TREND_THRESHOLD_PCT}% threshold)`
     },
     {
-      question: 'How strong is the trend?',
-      answer: `${strengthLabel} (${maDiffStr} MA difference)`
+      question: 'What is bar confirmation?',
+      answer: trend === 'UP'
+        ? `BULLISH (all ${CONFIRMATION_BARS} bars > MA50)`
+        : trend === 'DOWN'
+          ? `BEARISH (all ${CONFIRMATION_BARS} bars < MA50)`
+          : `MIXED (bars split around MA50)`
     },
     {
       question: 'What strategy?',
       answer: direction === 'PUT'
-        ? 'SELL PUT (bullish - profit if SPY stays above strike)'
+        ? 'SELL PUT (bullish trending - profit if SPY stays above strike)'
         : direction === 'CALL'
-          ? 'SELL CALL (bearish - profit if SPY stays below strike)'
-          : 'SELL STRANGLE (neutral - profit from time decay)'
+          ? 'SELL CALL (bearish trending - profit if SPY stays below strike)'
+          : isFlatDay
+            ? 'SELL STRANGLE (flat day - hedge both directions)'
+            : 'SELL STRANGLE (unconfirmed trend - hedge both directions)'
     }
   ];
 
   // Build enhanced metrics
   const stepMetrics: StepMetric[] = [
     {
-      label: `MA${MA_FAST_PERIOD} (Fast)`,
-      value: `$${maFast.toFixed(2)}`,
-      status: 'normal'
+      label: 'Day Type',
+      value: isFlatDay ? 'FLAT' : 'TRENDING',
+      status: isFlatDay ? 'warning' : 'normal'
     },
     {
-      label: `MA${MA_SLOW_PERIOD} (Slow)`,
-      value: `$${maSlow.toFixed(2)}`,
+      label: 'Distance %',
+      value: pctStr,
+      status: isFlatDay ? 'warning' : 'normal'
+    },
+    {
+      label: 'MA50',
+      value: `$${ma50.toFixed(2)}`,
       status: 'normal'
     },
     {
       label: 'SPY Price',
-      value: `$${price.toFixed(2)}`,
+      value: `$${currentPrice.toFixed(2)}`,
       status: 'normal'
     },
     {
-      label: 'Momentum',
-      value: `${(momentum * 100).toFixed(1)}%`,
-      status: Math.abs(momentum) > 0.3 ? 'normal' : Math.abs(momentum) > 0.15 ? 'normal' : 'warning'
-    },
-    {
-      label: 'Confidence',
-      value: `${(confidence * 100).toFixed(0)}%`,
-      status: confidence >= 0.7 ? 'normal' : confidence >= 0.5 ? 'warning' : 'critical'
+      label: 'Bars',
+      value: trend === 'UP' ? 'All above' : trend === 'DOWN' ? 'All below' : 'Mixed',
+      status: trend === 'SIDEWAYS' ? 'warning' : 'normal'
     },
     {
       label: 'Data Source',
-      value: `IBKR 5-min (${bars} bars)`,
+      value: `IBKR (${totalBars} bars)`,
       status: 'normal'
     }
   ];
@@ -307,9 +345,8 @@ export async function selectDirection(
       trend,
       momentum,
       strength: Math.abs(momentum),
-      spyPrice: price,
-      maFast,
-      maSlow
+      spyPrice: currentPrice,
+      ma50
     },
     stepReasoning,
     stepMetrics
@@ -320,11 +357,13 @@ export async function selectDirection(
  * Test function to validate Step 2 logic
  */
 export async function testStep2(): Promise<void> {
-  console.log('Testing Step 2: Direction Selection\n');
+  console.log('Testing Step 2: Direction Selection (MA50 Strategy)\n');
 
   // Mock market regime (assuming we can trade)
   const mockRegime: MarketRegime = {
     shouldTrade: true,
+    withinTradingWindow: true,
+    canExecute: true,
     reason: 'Market conditions favorable',
     regime: 'NEUTRAL'
   };

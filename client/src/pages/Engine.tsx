@@ -5,15 +5,24 @@ import { EngineStepCard, StepStatus, StepFlowIndicator, StepConnector } from '@/
 import { Step1Content, Step2Content, Step3Content, Step4Content, Step5Content } from '@/components/EngineStepContents';
 import { StrikeSelector } from '@/components/StrikeSelector';
 import { OptionChainModal } from '@/components/OptionChainModal';
-import { CheckCircle, XCircle, Clock, Zap, AlertTriangle, Play, RefreshCw, Pause } from 'lucide-react';
+import { CheckCircle, XCircle, Clock, Zap, AlertTriangle, Play, RefreshCw, Pause, ExternalLink } from 'lucide-react';
 import { useEngine } from '@/hooks/useEngine';
 import { useBrokerStatus } from '@/hooks/useBrokerStatus';
 import EngineLog from '@/components/EngineLog';
 import toast from 'react-hot-toast';
-import type { EngineFlowState } from '../../../shared/types/engine';
+import type { EngineFlowState, ExecutePaperTradeResponse } from '../../../shared/types/engine';
 
 type RiskTier = 'conservative' | 'balanced' | 'aggressive';
 type StopMultiplier = 2 | 3 | 4;
+
+// Execution result state for UI display
+interface ExecutionResult {
+  success: boolean;
+  message: string;
+  tradeId?: string;
+  ibkrOrderIds?: string[];
+  timestamp: Date;
+}
 
 export function Engine() {
   const {
@@ -46,6 +55,9 @@ export function Engine() {
   const [selectedCallStrike, setSelectedCallStrike] = useState<number | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isConfirmingSelection, setIsConfirmingSelection] = useState(false);
+
+  // Execution result tracking
+  const [executionResult, setExecutionResult] = useState<ExecutionResult | null>(null);
 
   // Auto-connect to IBKR when page loads (same as Settings page)
   useEffect(() => {
@@ -173,12 +185,31 @@ export function Engine() {
 
     try {
       setIsExecuting(true);
+      setExecutionResult(null); // Clear previous result
       toast.loading('Executing bracket order (SELL + STOP)...', { id: 'execute' });
       const result = await executePaperTrade(analysis.tradeProposal);
+
+      // Store execution result for display
+      setExecutionResult({
+        success: result.success,
+        message: result.message,
+        tradeId: result.tradeId,
+        ibkrOrderIds: result.ibkrOrderIds,
+        timestamp: new Date(),
+      });
+
       toast.success(`Trade executed! ${result.message || 'ID: ' + result.tradeId}`, { id: 'execute' });
-    } catch (err) {
+    } catch (err: any) {
       console.error('[Engine] Execute trade error:', err);
-      toast.error('Failed to execute trade', { id: 'execute' });
+
+      // Store failed execution result
+      setExecutionResult({
+        success: false,
+        message: err.message || 'Failed to execute trade',
+        timestamp: new Date(),
+      });
+
+      toast.error(err.message || 'Failed to execute trade', { id: 'execute' });
     } finally {
       setIsExecuting(false);
     }
@@ -644,6 +675,60 @@ export function Engine() {
               </span>
             </div>
 
+            {/* Execution Result Display */}
+            {executionResult && (
+              <div className={`mb-4 p-4 rounded-lg border ${
+                executionResult.success
+                  ? 'bg-green-500/10 border-green-500/30'
+                  : 'bg-red-500/10 border-red-500/30'
+              }`}>
+                <div className="flex items-start gap-3">
+                  {executionResult.success ? (
+                    <CheckCircle className="w-5 h-5 text-green-500 flex-shrink-0 mt-0.5" />
+                  ) : (
+                    <XCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
+                  )}
+                  <div className="flex-1 min-w-0">
+                    <p className={`font-semibold ${executionResult.success ? 'text-green-400' : 'text-red-400'}`}>
+                      {executionResult.success ? 'Order Submitted' : 'Order Failed'}
+                    </p>
+                    <p className="text-sm text-silver mt-1">{executionResult.message}</p>
+                    {executionResult.ibkrOrderIds && executionResult.ibkrOrderIds.length > 0 && (
+                      <div className="mt-2">
+                        <p className="text-xs text-silver">IBKR Order IDs:</p>
+                        <div className="flex flex-wrap gap-2 mt-1">
+                          {executionResult.ibkrOrderIds.map((id, i) => (
+                            <span key={i} className="font-mono text-xs bg-black/30 px-2 py-1 rounded">
+                              {id}
+                            </span>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {executionResult.tradeId && (
+                      <p className="text-xs text-silver mt-2">
+                        Trade ID: <span className="font-mono">{executionResult.tradeId}</span>
+                      </p>
+                    )}
+                    <p className="text-xs text-silver/60 mt-2">
+                      {executionResult.timestamp.toLocaleTimeString('en-US', {
+                        hour: '2-digit',
+                        minute: '2-digit',
+                        second: '2-digit',
+                        timeZone: 'America/New_York'
+                      })} ET
+                    </p>
+                    {executionResult.success && (
+                      <p className="text-xs text-yellow-400/80 mt-2 flex items-center gap-1">
+                        <AlertTriangle className="w-3 h-3" />
+                        Check IBKR mobile/web for order status (filled, cancelled, etc.)
+                      </p>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
             {/* Execute Button */}
             <button
               onClick={handleExecuteTrade}
@@ -652,9 +737,13 @@ export function Engine() {
                 isExecuting ||
                 !analysis.guardRails?.passed
               }
-              className="w-full py-3 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed transition text-lg"
+              className={`w-full py-3 rounded-lg font-semibold transition text-lg ${
+                executionResult?.success
+                  ? 'bg-gray-600 text-white hover:bg-gray-700'
+                  : 'bg-green-600 text-white hover:bg-green-700'
+              } disabled:opacity-50 disabled:cursor-not-allowed`}
             >
-              {isExecuting ? 'Executing...' : 'Execute'}
+              {isExecuting ? 'Executing...' : executionResult?.success ? 'Execute Again' : 'Execute'}
             </button>
           </div>
         )}

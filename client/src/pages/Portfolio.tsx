@@ -78,15 +78,16 @@ export function Portfolio() {
     { header: 'Symbol', accessor: 'symbol' as keyof Position, sortable: true },
     { header: 'Strategy', accessor: (row: Position) => row.side === 'SELL' ? 'Credit Spread' : 'Long', className: 'text-silver' },
     { header: 'Qty', accessor: 'qty' as keyof Position, sortable: true, className: 'tabular-nums' },
-    { header: 'Entry', accessor: (row: Position) => `$${row.avg.toFixed(2)}`, className: 'tabular-nums' },
-    { header: 'Mark', accessor: (row: Position) => `$${row.mark.toFixed(2)}`, className: 'tabular-nums' },
-    { 
-      header: 'P/L$', 
+    { header: 'Entry', accessor: (row: Position) => `$${(row.avg ?? 0).toFixed(2)}`, className: 'tabular-nums' },
+    { header: 'Mark', accessor: (row: Position) => `$${(row.mark ?? 0).toFixed(2)}`, className: 'tabular-nums' },
+    {
+      header: 'P/L$',
       accessor: (row: Position) => {
-        const isProfit = row.upl >= 0;
+        const upl = row.upl ?? 0;
+        const isProfit = upl >= 0;
         return (
           <span className={isProfit ? 'font-medium' : 'font-medium'}>
-            {isProfit ? '+' : ''}${row.upl.toFixed(2)}
+            {isProfit ? '+' : ''}${upl.toFixed(2)}
           </span>
         );
       },
@@ -99,19 +100,20 @@ export function Portfolio() {
   // Trades/History table columns
   const tradesColumns = [
     { header: 'Trade ID', accessor: 'tradeId' as keyof PnlRow, sortable: true, className: 'font-mono text-sm' },
-    { header: 'Time', accessor: (row: PnlRow) => new Date(row.ts).toLocaleString(), sortable: true, className: 'text-silver text-sm' },
+    { header: 'Time', accessor: (row: PnlRow) => row.ts ? new Date(row.ts).toLocaleString() : '-', sortable: true, className: 'text-silver text-sm' },
     { header: 'Symbol', accessor: 'symbol' as keyof PnlRow, sortable: true },
     { header: 'Strategy', accessor: 'strategy' as keyof PnlRow, className: 'text-silver' },
     { header: 'Qty', accessor: 'qty' as keyof PnlRow, className: 'tabular-nums' },
-    { header: 'Entry', accessor: (row: PnlRow) => `$${row.entry.toFixed(2)}`, className: 'tabular-nums' },
-    { header: 'Exit', accessor: (row: PnlRow) => row.exit ? `$${row.exit.toFixed(2)}` : '-', className: 'tabular-nums text-silver' },
+    { header: 'Entry', accessor: (row: PnlRow) => `$${(row.entry ?? 0).toFixed(2)}`, className: 'tabular-nums' },
+    { header: 'Exit', accessor: (row: PnlRow) => row.exit != null ? `$${row.exit.toFixed(2)}` : '-', className: 'tabular-nums text-silver' },
     {
       header: 'Realized',
       accessor: (row: PnlRow) => {
-        const isProfit = row.realized >= 0;
+        const realized = row.realized ?? 0;
+        const isProfit = realized >= 0;
         return (
           <span className={isProfit ? 'font-medium' : 'font-medium'}>
-            {isProfit ? '+' : ''}${row.realized.toFixed(2)}
+            {isProfit ? '+' : ''}${realized.toFixed(2)}
           </span>
         );
       },

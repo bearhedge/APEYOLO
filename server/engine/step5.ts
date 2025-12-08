@@ -283,11 +283,11 @@ export async function testStep5(): Promise<void> {
   };
 
   const mockPositionSize: PositionSize = {
-    contracts: 3,
+    contracts: 2,
     marginPerContract: 8010,
-    totalMarginRequired: 24030,
-    buyingPowerUsed: 24030,
-    buyingPowerRemaining: 641970,
+    totalMarginRequired: 16020,
+    buyingPowerUsed: 16020,
+    buyingPowerRemaining: 649980,
     reasoning: 'Test sizing'
   };
 
@@ -304,7 +304,7 @@ export async function testStep5(): Promise<void> {
   // Test position monitoring with different scenarios
   const position = {
     premiumReceived: 52.50,
-    contracts: 3,
+    contracts: 2,
     entryTime: new Date(),
     expirationTime: new Date(Date.now() + 6 * 60 * 60 * 1000) // 6 hours from now
   };

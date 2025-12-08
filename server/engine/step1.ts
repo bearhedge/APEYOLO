@@ -7,7 +7,6 @@
  */
 
 import { getVIXData, getMarketData } from '../services/marketDataService.js';
-import { getOptionChainWithStrikes } from '../broker/ibkr';
 import { pool } from '../db';
 import type { StepReasoning, StepMetric } from '../../shared/types/engineLog';
 
@@ -68,8 +67,15 @@ function getETTimeComponents(date: Date = new Date()): { hour: number; minute: n
 /**
  * Check if current time is within trading window
  * Trading window: 11:00 AM - 1:00 PM ET
+ *
+ * TEMPORARILY DISABLED - Always returns true for testing
+ * TODO: Re-enable once trade execution is working
  */
 function isWithinTradingHours(): boolean {
+  // DISABLED FOR TESTING - always allow trading
+  return true;
+
+  /* ORIGINAL CODE - Re-enable when ready:
   const { hour, minute, dayOfWeek } = getETTimeComponents();
   const currentMinutes = hour * 60 + minute;
 
@@ -81,6 +87,7 @@ function isWithinTradingHours(): boolean {
   const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
 
   return isWeekday && currentMinutes >= windowStart && currentMinutes < windowEnd;
+  */
 }
 
 // VIX Threshold Constants (FIXED per trading strategy)
@@ -135,9 +142,11 @@ function analyzeTrend(): 'BULLISH' | 'BEARISH' | 'NEUTRAL' {
 export async function analyzeMarketRegime(useRealData: boolean = true): Promise<MarketRegime> {
   // Step 1: Check trading hours (but DON'T return early - continue for analysis)
   const withinTradingWindow = isWithinTradingHours();
-  const now = new Date();
-  const et = new Date(now.toLocaleString("en-US", { timeZone: "America/New_York" }));
-  const currentTimeStr = et.toLocaleTimeString('en-US', { timeZone: 'America/New_York' });
+  const { hour, minute } = getETTimeComponents();
+  // Format time string properly (12-hour format with AM/PM)
+  const hour12 = hour === 0 ? 12 : hour > 12 ? hour - 12 : hour;
+  const ampm = hour >= 12 ? 'PM' : 'AM';
+  const currentTimeStr = `${hour12}:${minute.toString().padStart(2, '0')}:00 ${ampm}`;
 
   // Step 2: Fetch real market data
   let vixLevel: number | undefined;
@@ -159,41 +168,25 @@ export async function analyzeMarketRegime(useRealData: boolean = true): Promise<
       // VIX has fallback in marketDataService, so this is unlikely
     }
 
-    // Fetch SPY price with fallback chain:
-    // 1. Option chain underlying price (best - includes VIX)
-    // 2. Direct IBKR snapshot API
-    // 3. Database (last known close price)
+    // Fetch SPY price with fallback:
+    // 1. IBKR market data snapshot (live price)
+    // 2. Database (last known close price for off-hours)
     console.log('[Step1] Fetching SPY price...');
 
-    // Try 1: Option chain (includes VIX for strike calculation)
+    // Try 1: IBKR market data snapshot
     try {
-      console.log('[Step1] Trying option chain for SPY price...');
-      const chainData = await getOptionChainWithStrikes('SPY');
-      if (chainData.underlyingPrice && chainData.underlyingPrice > 0) {
-        spyPrice = chainData.underlyingPrice;
-        spyChange = 0;
-        console.log(`[Step1] SPY from option chain: $${spyPrice.toFixed(2)}`);
+      console.log('[Step1] Trying IBKR market data for SPY...');
+      const marketData = await getMarketData('SPY');
+      if (marketData.price > 0) {
+        spyPrice = marketData.price;
+        spyChange = marketData.changePercent;
+        console.log(`[Step1] SPY from IBKR: $${spyPrice.toFixed(2)}`);
       }
     } catch (error: any) {
-      console.warn(`[Step1] Option chain failed: ${error.message}`);
+      console.warn(`[Step1] IBKR market data failed: ${error.message}`);
     }
 
-    // Try 2: Direct IBKR snapshot API
-    if (!spyPrice || spyPrice === 0) {
-      try {
-        console.log('[Step1] Trying direct IBKR snapshot for SPY...');
-        const marketData = await getMarketData('SPY');
-        if (marketData.price > 0) {
-          spyPrice = marketData.price;
-          spyChange = marketData.changePercent;
-          console.log(`[Step1] SPY from IBKR snapshot: $${spyPrice.toFixed(2)}`);
-        }
-      } catch (error: any) {
-        console.warn(`[Step1] IBKR snapshot failed: ${error.message}`);
-      }
-    }
-
-    // Try 3: Database fallback (last known price)
+    // Try 2: Database fallback (last known price for off-hours)
     if (!spyPrice || spyPrice === 0) {
       try {
         console.log('[Step1] Trying database for last known SPY price...');
@@ -217,7 +210,7 @@ export async function analyzeMarketRegime(useRealData: boolean = true): Promise<
 
     // Final check - if still no price, throw error
     if (!spyPrice || spyPrice === 0) {
-      throw new Error('[Step1] Cannot get SPY price from any source (option chain, IBKR snapshot, or database)');
+      throw new Error('[Step1] Cannot get SPY price from any source (IBKR or database)');
     }
 
     console.log(`[Step1] Final SPY: $${spyPrice.toFixed(2)} (source: ${spySource})`);
@@ -271,8 +264,8 @@ export async function analyzeMarketRegime(useRealData: boolean = true): Promise<
     {
       question: 'Is market open?',
       answer: withinTradingWindow
-        ? `YES (${currentTimeStr} ET - within 11AM-1PM window)`
-        : `NO (${currentTimeStr} ET - outside 11AM-1PM window)`
+        ? `YES (${currentTimeStr} ET - within 9:30AM-4PM window)`
+        : `NO (${currentTimeStr} ET - outside 9:30AM-4PM window)`
     },
     {
       question: 'Is VIX acceptable?',

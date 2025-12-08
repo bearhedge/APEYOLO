@@ -172,7 +172,7 @@ export function useEngine() {
                           last?.validate?.status === 200 &&
                           last?.init?.status === 200;
 
-  // Calculate trading window locally (11:00 AM - 1:00 PM ET)
+  // Calculate trading window locally (9:30 AM - 4:00 PM ET)
   // Weekday check disabled for testing
   const getTradingWindow = useCallback(() => {
     const now = new Date();
@@ -185,8 +185,8 @@ export function useEngine() {
 
     const [hour, minute] = nyTime.split(':').map(Number);
     const currentMinutes = hour * 60 + minute;
-    const startMinutes = 11 * 60; // 11:00 AM
-    const endMinutes = 13 * 60;   // 1:00 PM
+    const startMinutes = 9 * 60 + 30; // 9:30 AM
+    const endMinutes = 16 * 60;       // 4:00 PM
 
     // Weekday check disabled for testing
     // const nyDate = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
@@ -199,7 +199,7 @@ export function useEngine() {
       isOpen,
       reason: isOpen
         ? 'Trading window is open'
-        : 'Trading only allowed between 11:00 AM and 1:00 PM ET'
+        : 'Trading only allowed between 9:30 AM and 4:00 PM ET'
     };
   }, []);
 
@@ -336,7 +336,12 @@ export function useEngine() {
 
       if (!response.ok) {
         const errorData = await safeParseJSON(response);
-        throw new Error(errorData.error || 'Failed to execute paper trade');
+        // Capture detailed error info from backend
+        const errorMessage = errorData.statusReason || errorData.reason || errorData.error || 'Failed to execute paper trade';
+        const err = new Error(errorMessage) as any;
+        err.orderStatus = errorData.orderStatus;
+        err.statusReason = errorData.statusReason;
+        throw err;
       }
 
       return await safeParseJSON(response);

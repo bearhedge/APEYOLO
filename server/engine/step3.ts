@@ -73,43 +73,34 @@ export interface RiskAssessment {
 /**
  * Assess risk based on VIX and determine target delta + position size
  *
- * VIX < 15:    LOW risk      → 0.40 delta, 3 contracts (aggressive)
- * VIX 15-20:   NORMAL risk   → 0.35 delta, 3 contracts
- * VIX 20-25:   ELEVATED risk → 0.30 delta, 2 contracts
- * VIX 25-35:   HIGH risk     → 0.25 delta, 1 contract (defensive)
- * VIX >= 35:   EXTREME risk  → 0.20 delta, 0 contracts (sit out)
+ * Delta target is always 0.20 (strictly below 0.30)
  */
 export function assessRisk(vix: number): RiskAssessment {
   let riskRegime: RiskRegime;
-  let targetDelta: number;
+  const targetDelta = 0.20; // Always target ~0.20 delta (OTM)
   let contracts: number;
   let reasoning: string;
 
-  if (vix < 15) {
+  if (vix < 17) {
     riskRegime = 'LOW';
-    targetDelta = 0.40;
-    contracts = 3;
-    reasoning = `VIX ${vix.toFixed(1)} < 15: LOW risk → aggressive positioning (0.40 delta, 3 contracts)`;
+    contracts = 2;
+    reasoning = `VIX ${vix.toFixed(1)} < 17: LOW risk (0.20 delta, 2 contracts)`;
   } else if (vix < 20) {
     riskRegime = 'NORMAL';
-    targetDelta = 0.35;
-    contracts = 3;
-    reasoning = `VIX ${vix.toFixed(1)} in 15-20: NORMAL risk → standard positioning (0.35 delta, 3 contracts)`;
+    contracts = 2;
+    reasoning = `VIX ${vix.toFixed(1)} in 17-20: NORMAL risk (0.20 delta, 2 contracts)`;
   } else if (vix < 25) {
     riskRegime = 'ELEVATED';
-    targetDelta = 0.30;
-    contracts = 2;
-    reasoning = `VIX ${vix.toFixed(1)} in 20-25: ELEVATED risk → cautious positioning (0.30 delta, 2 contracts)`;
+    contracts = 1;
+    reasoning = `VIX ${vix.toFixed(1)} in 20-25: ELEVATED risk (0.20 delta, 1 contract)`;
   } else if (vix < 35) {
     riskRegime = 'HIGH';
-    targetDelta = 0.25;
     contracts = 1;
-    reasoning = `VIX ${vix.toFixed(1)} in 25-35: HIGH risk → defensive positioning (0.25 delta, 1 contract)`;
+    reasoning = `VIX ${vix.toFixed(1)} in 25-35: HIGH risk (0.20 delta, 1 contract)`;
   } else {
     riskRegime = 'EXTREME';
-    targetDelta = 0.20;
     contracts = 0;
-    reasoning = `VIX ${vix.toFixed(1)} >= 35: EXTREME risk → NO TRADE (market too volatile)`;
+    reasoning = `VIX ${vix.toFixed(1)} >= 35: EXTREME risk → NO TRADE`;
   }
 
   return { vixLevel: vix, riskRegime, targetDelta, contracts, reasoning };
@@ -139,15 +130,15 @@ function getDeltaTargets(targetDelta: number): {
   };
 }
 
-// Default delta targets (used when VIX unavailable - assumes ELEVATED risk)
-const DEFAULT_TARGET_DELTA = 0.30;
-const PUT_DELTA_TARGET = { min: -0.35, max: -0.25, ideal: -0.30 };
-const CALL_DELTA_TARGET = { min: 0.25, max: 0.35, ideal: 0.30 };
+// Default delta targets - strictly below 0.30
+const DEFAULT_TARGET_DELTA = 0.20;
+const PUT_DELTA_TARGET = { min: -0.25, max: -0.10, ideal: -0.20 };
+const CALL_DELTA_TARGET = { min: 0.10, max: 0.25, ideal: 0.20 };
 
 // Legacy constants for backward compatibility (absolute values)
-const TARGET_DELTA_MIN = 0.25;
-const TARGET_DELTA_MAX = 0.35;
-const TARGET_DELTA_IDEAL = 0.30;
+const TARGET_DELTA_MIN = 0.10;
+const TARGET_DELTA_MAX = 0.25;
+const TARGET_DELTA_IDEAL = 0.20;
 
 /**
  * Generate mock option chain for testing
@@ -1010,7 +1001,9 @@ export async function selectStrikes(
     },
     {
       label: 'Premium',
-      value: `$${selection.expectedPremium.toFixed(2)}`,
+      value: selection.riskAssessment
+        ? `$${(selection.expectedPremium * selection.riskAssessment.contracts).toFixed(2)} (${selection.riskAssessment.contracts} × $${selection.expectedPremium.toFixed(2)})`
+        : `$${selection.expectedPremium.toFixed(2)}`,
       status: selection.expectedPremium > 0 ? 'normal' : 'critical'
     },
     {

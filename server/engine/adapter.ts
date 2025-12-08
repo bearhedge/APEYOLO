@@ -42,8 +42,7 @@ const VIX_HIGH_THRESHOLD = 20;
 const VIX_EXTREME_THRESHOLD = 35;
 
 // MA period constants (must match step2.ts)
-const MA_FAST_PERIOD = 5;
-const MA_SLOW_PERIOD = 15;
+const MA_PERIOD = 50;  // 50-period MA on 5-min bars = ~4 hours of price action
 
 /**
  * Calculate σ-distance (standard deviations from price)
@@ -123,18 +122,18 @@ function adaptDirection(direction: DirectionDecision | undefined): Q2Direction {
   if (direction?.signals?.trend === 'UP') trend = 'UP';
   else if (direction?.signals?.trend === 'DOWN') trend = 'DOWN';
 
-  // Build MA alignment string
+  // Build MA alignment string (now using single MA50)
   const spyPrice = direction?.signals?.spyPrice ?? 0;
-  const maFast = direction?.signals?.maFast ?? 0;
-  const maSlow = direction?.signals?.maSlow ?? 0;
+  const ma50 = direction?.signals?.ma50 ?? 0;
   let maAlignment = 'N/A';
-  if (spyPrice > 0 && maFast > 0 && maSlow > 0) {
-    const parts = [
-      { label: 'SPY', value: spyPrice },
-      { label: `MA${MA_FAST_PERIOD}`, value: maFast },
-      { label: `MA${MA_SLOW_PERIOD}`, value: maSlow },
-    ].sort((a, b) => b.value - a.value);
-    maAlignment = parts.map(p => p.label).join(' > ');
+  if (spyPrice > 0 && ma50 > 0) {
+    if (spyPrice > ma50) {
+      maAlignment = `SPY > MA${MA_PERIOD}`;
+    } else if (spyPrice < ma50) {
+      maAlignment = `SPY < MA${MA_PERIOD}`;
+    } else {
+      maAlignment = `SPY ≈ MA${MA_PERIOD}`;
+    }
   }
 
   return {
@@ -145,10 +144,8 @@ function adaptDirection(direction: DirectionDecision | undefined): Q2Direction {
 
     inputs: {
       spyPrice,
-      maFast,
-      maSlow,
-      maFastPeriod: MA_FAST_PERIOD,
-      maSlowPeriod: MA_SLOW_PERIOD,
+      ma50,
+      maPeriod: MA_PERIOD,
     },
 
     signals: {
@@ -443,7 +440,7 @@ function buildTradeProposal(
     entryPremiumPerContract: q3.expectedPremiumPerContract,
     entryPremiumTotal: q4.expectedPremiumTotal,
     marginRequired: q4.totalMarginRequired,
-    maxLoss: q4.worstCaseLoss,
+    maxLoss: q5.stopLossAmount,  // Use actual stop loss amount, not margin
 
     stopLossPrice: q5.stopLossPrice,
     stopLossAmount: q5.stopLossAmount,
@@ -558,7 +555,7 @@ export function adaptTradingDecision(
   }
 ): EngineAnalyzeResponse {
   const riskProfile = options?.riskProfile ?? 'BALANCED';
-  const stopMultiplier = options?.stopMultiplier ?? 3;
+  const stopMultiplier = options?.stopMultiplier ?? 3.5;
 
   // Adapt each step
   const q1 = adaptMarketRegime(decision.marketRegime);
