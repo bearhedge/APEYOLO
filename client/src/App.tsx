@@ -4,17 +4,55 @@ import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Route, Link, useLocation, Redirect } from "wouter";
-import { CheckCircle, XCircle, LogOut, Clock } from "lucide-react";
+import { CheckCircle, XCircle, LogOut, Clock, Wallet } from "lucide-react";
 import { Home } from "@/pages/Home";
 import { Onboarding } from "@/pages/Onboarding";
 import { Agent } from "@/pages/Agent";
 import { Engine } from "@/pages/Engine";
 import { Portfolio } from "@/pages/Portfolio";
 import { TrackRecord } from "@/pages/TrackRecord";
+import { DeFi } from "@/pages/DeFi";
 import { Data } from "@/pages/Data";
 import { Jobs } from "@/pages/Jobs";
 import { Settings } from "@/pages/Settings";
+import { WalletProvider, useWalletContext } from "@/components/WalletProvider";
 import { getAccount, getDiag } from "@/lib/api";
+import { useWallet } from "@solana/wallet-adapter-react";
+import { useWalletModal } from "@solana/wallet-adapter-react-ui";
+
+// Wallet indicator component for nav bar
+function WalletIndicator() {
+  const { connected, publicKey, disconnect } = useWallet();
+  const { cluster } = useWalletContext();
+  const { setVisible } = useWalletModal();
+
+  if (!connected || !publicKey) {
+    return (
+      <button
+        onClick={() => setVisible(true)}
+        className="flex items-center gap-2 px-3 py-1.5 bg-charcoal border border-white/10 rounded-full hover:bg-dark-gray transition-colors"
+      >
+        <Wallet className="w-4 h-4 text-silver" />
+        <span className="text-sm text-silver">Connect</span>
+      </button>
+    );
+  }
+
+  const address = publicKey.toBase58();
+  const truncated = `${address.slice(0, 4)}..${address.slice(-4)}`;
+
+  return (
+    <button
+      onClick={() => disconnect()}
+      className="flex items-center gap-2 px-3 py-1.5 bg-charcoal border border-white/10 rounded-full hover:bg-dark-gray transition-colors group"
+      title="Click to disconnect"
+    >
+      <span className="text-xs font-medium text-silver">SOL</span>
+      <span className="text-sm font-mono">{truncated}</span>
+      <span className={`w-2 h-2 rounded-full ${cluster === 'devnet' ? 'bg-yellow-400' : 'bg-green-400'}`} />
+    </button>
+  );
+}
 
 function Navigation() {
   const [location] = useLocation();
@@ -93,6 +131,9 @@ function Navigation() {
           </div>
 
           <div className="flex items-center gap-6">
+            {/* Solana Wallet Indicator */}
+            <WalletIndicator />
+
             {/* IBKR Status - green when connected, red when disconnected */}
             <div className="flex items-center gap-2" data-testid="ibkr-status">
               {isIBKRConnected ? (
@@ -136,31 +177,34 @@ function Navigation() {
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <Toaster />
-        <div className="min-h-screen bg-background text-foreground">
-          <Navigation />
-          <Route path="/" component={Home} />
-          <Route path="/onboarding" component={Onboarding} />
-          <Route path="/agent" component={Agent} />
-          <Route path="/engine" component={Engine} />
-          <Route path="/portfolio" component={Portfolio} />
-          <Route path="/track-record" component={TrackRecord} />
-          <Route path="/data" component={Data} />
-          <Route path="/jobs" component={Jobs} />
-          <Route path="/settings" component={Settings} />
-          {/* Redirects for old routes */}
-          <Route path="/dashboard">
-            <Redirect to="/agent" />
-          </Route>
-          <Route path="/sessions">
-            <Redirect to="/agent" />
-          </Route>
-          <Route path="/trades">
-            <Redirect to="/portfolio" />
-          </Route>
-        </div>
-      </TooltipProvider>
+      <WalletProvider>
+        <TooltipProvider>
+          <Toaster />
+          <div className="min-h-screen bg-background text-foreground">
+            <Navigation />
+            <Route path="/" component={Home} />
+            <Route path="/onboarding" component={Onboarding} />
+            <Route path="/agent" component={Agent} />
+            <Route path="/engine" component={Engine} />
+            <Route path="/portfolio" component={Portfolio} />
+            <Route path="/track-record" component={TrackRecord} />
+            <Route path="/defi" component={DeFi} />
+            <Route path="/data" component={Data} />
+            <Route path="/jobs" component={Jobs} />
+            <Route path="/settings" component={Settings} />
+            {/* Redirects for old routes */}
+            <Route path="/dashboard">
+              <Redirect to="/agent" />
+            </Route>
+            <Route path="/sessions">
+              <Redirect to="/agent" />
+            </Route>
+            <Route path="/trades">
+              <Redirect to="/portfolio" />
+            </Route>
+          </div>
+        </TooltipProvider>
+      </WalletProvider>
     </QueryClientProvider>
   );
 }

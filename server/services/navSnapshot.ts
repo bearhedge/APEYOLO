@@ -177,10 +177,10 @@ export async function getPreviousNavSnapshot(): Promise<{ date: string; nav: num
 // ============================================
 
 /**
- * Register the NAV snapshot job handler (opening only)
+ * Register the NAV snapshot job handlers (opening and closing)
  */
 export function initNavSnapshotJob(): void {
-  console.log('[NavSnapshot] Initializing job handler...');
+  console.log('[NavSnapshot] Initializing job handlers...');
 
   // Opening snapshot (9:30 AM ET) - for Day P&L calculation
   registerJobHandler({
@@ -190,18 +190,27 @@ export function initNavSnapshotJob(): void {
     execute: () => captureNavSnapshot('opening'),
   });
 
-  console.log('[NavSnapshot] Job handler registered');
+  // Closing snapshot (4:15 PM ET) - for daily return tracking & Sharpe ratio
+  registerJobHandler({
+    id: 'nav-snapshot-closing',
+    name: 'NAV Snapshot (Closing)',
+    description: 'Capture market-close NAV for daily returns & Sharpe ratio',
+    execute: () => captureNavSnapshot('closing'),
+  });
+
+  console.log('[NavSnapshot] Job handlers registered (opening + closing)');
 }
 
 /**
- * Create the nav-snapshot-opening job in the database if it doesn't exist
+ * Create the nav-snapshot jobs in the database if they don't exist
  */
 export async function ensureNavSnapshotJob(): Promise<void> {
   if (!db) return;
 
   try {
-    const [existing] = await db.select().from(jobs).where(eq(jobs.id, 'nav-snapshot-opening')).limit(1);
-    if (!existing) {
+    // Opening snapshot job (9:30 AM ET)
+    const [existingOpening] = await db.select().from(jobs).where(eq(jobs.id, 'nav-snapshot-opening')).limit(1);
+    if (!existingOpening) {
       console.log('[NavSnapshot] Creating nav-snapshot-opening job in database...');
       await db.insert(jobs).values({
         id: 'nav-snapshot-opening',
@@ -215,7 +224,24 @@ export async function ensureNavSnapshotJob(): Promise<void> {
       });
       console.log('[NavSnapshot] Opening snapshot job created');
     }
+
+    // Closing snapshot job (4:15 PM ET) - after market close for final NAV
+    const [existingClosing] = await db.select().from(jobs).where(eq(jobs.id, 'nav-snapshot-closing')).limit(1);
+    if (!existingClosing) {
+      console.log('[NavSnapshot] Creating nav-snapshot-closing job in database...');
+      await db.insert(jobs).values({
+        id: 'nav-snapshot-closing',
+        name: 'NAV Snapshot (Closing)',
+        description: 'Capture market-close NAV for daily returns & Sharpe ratio',
+        type: 'nav-snapshot',
+        schedule: '15 16 * * 1-5', // 4:15 PM ET on weekdays (after market close)
+        timezone: 'America/New_York',
+        enabled: true,
+        config: { snapshotType: 'closing' },
+      });
+      console.log('[NavSnapshot] Closing snapshot job created');
+    }
   } catch (err) {
-    console.warn('[NavSnapshot] Could not ensure job exists:', err);
+    console.warn('[NavSnapshot] Could not ensure jobs exist:', err);
   }
 }

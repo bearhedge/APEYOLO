@@ -962,11 +962,13 @@ class IbkrClient {
       if (resp.status !== 200) throw new Error(`status ${resp.status}`);
       const data = resp.data as any;
 
-      // IBKR returns nested objects with 'amount' field for numeric values
+      // IBKR returns nested objects with 'amount' or 'value' field for numeric values
+      // Note: 'value' can be a string (e.g., cushion returns {amount: 0, value: "0.259785"})
       const getValue = (field: any): number => {
         if (typeof field === 'number') return field;
+        if (field?.amount !== undefined && field.amount !== 0) return Number(field.amount);
+        if (field?.value !== undefined) return Number(field.value) || 0;
         if (field?.amount !== undefined) return Number(field.amount);
-        if (field?.value !== undefined && typeof field.value === 'number') return Number(field.value);
         return 0;
       };
 
@@ -988,6 +990,8 @@ class IbkrClient {
       const settledCash = getValue(data?.settledcash || data?.['settledcashbydate']);
       const grossPosValue = getValue(data?.grosspositionvalue);
       const maintMargin = getValue(data?.maintmarginreq || data?.maintenancemargin);
+      // Debug cushion raw value
+      console.log(`[IBKR][getAccount] cushion raw:`, JSON.stringify(data?.cushion));
       const cushionRaw = getValue(data?.cushion);
 
       // Calculate leverage: grossPositionValue / netLiquidation
@@ -2260,8 +2264,18 @@ class IbkrClient {
         throw new Error(`Could not resolve conid for ${symbol}`);
       }
 
-      const snap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${conid}`);
+      let snap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${conid}`);
       console.log(`[IBKR][getMarketData][${reqId}] IBKR snapshot response: status=${snap.status} raw=${JSON.stringify(snap.data).slice(0, 500)}`);
+
+      // Handle "no bridge" error by re-establishing gateway and retrying
+      if (snap.status === 400 && JSON.stringify(snap.data).includes('no bridge')) {
+        console.log(`[IBKR][getMarketData][${reqId}] Got "no bridge" error, re-establishing gateway...`);
+        await this.establishGateway();
+        await new Promise(r => setTimeout(r, 1000)); // Brief pause after reconnect
+        snap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${conid}`);
+        console.log(`[IBKR][getMarketData][${reqId}] Retry after gateway: status=${snap.status}`);
+      }
+
       if (snap.status !== 200 || !Array.isArray(snap.data) || snap.data.length === 0) {
         throw new Error(`Snapshot request failed for ${symbol}`);
       }

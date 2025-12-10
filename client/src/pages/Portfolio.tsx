@@ -305,9 +305,15 @@ const calculateAllGreeks = (
   const isShort = position.side === 'SELL';
 
   return {
+    // Per-contract values (for table display)
+    deltaPerContract: isShort ? -delta : delta,
+    gammaPerContract: gamma,
+    thetaPerContract: isShort ? -theta : theta,
+    vegaPerContract: isShort ? -vega : vega,
+    // Position values (for Net Delta calculation)
     delta: (isShort ? -delta : delta) * qty,
-    gamma: gamma * qty, // Gamma is always positive
-    theta: (isShort ? -theta : theta) * qty, // Short positions earn theta
+    gamma: gamma * qty,
+    theta: (isShort ? -theta : theta) * qty,
     vega: (isShort ? -vega : vega) * qty,
   };
 };
@@ -437,7 +443,10 @@ export function Portfolio() {
         netGamma: 0,
         netTheta: 0,
         netVega: 0,
-        positionGreeks: new Map<string, { delta: number; gamma: number; theta: number; vega: number }>(),
+        positionGreeks: new Map<string, {
+          deltaPerContract: number; gammaPerContract: number; thetaPerContract: number; vegaPerContract: number;
+          delta: number; gamma: number; theta: number; vega: number;
+        }>(),
       };
     }
 
@@ -446,7 +455,10 @@ export function Portfolio() {
     let weightedDTE = 0;
     let totalWeight = 0;
     let netDelta = 0, netGamma = 0, netTheta = 0, netVega = 0;
-    const positionGreeks = new Map<string, { delta: number; gamma: number; theta: number; vega: number }>();
+    const positionGreeks = new Map<string, {
+      deltaPerContract: number; gammaPerContract: number; thetaPerContract: number; vegaPerContract: number;
+      delta: number; gamma: number; theta: number; vega: number;
+    }>();
 
     positions.forEach(p => {
       const underlying = getUnderlyingSymbol(p.symbol || '');
@@ -518,9 +530,9 @@ export function Portfolio() {
     {
       header: 'Delta',
       accessor: (row: Position) => {
-        // Use calculated delta from positionMetrics
+        // Use per-contract delta from positionMetrics (not position-level)
         const greeks = positionMetrics.positionGreeks.get(row.id);
-        if (greeks) return formatDelta(greeks.delta);
+        if (greeks) return formatDelta(greeks.deltaPerContract);
 
         // Fallback to IBKR delta if available
         const ibkrDelta = toNum(row.delta);
@@ -538,7 +550,7 @@ export function Portfolio() {
       header: 'Gamma',
       accessor: (row: Position) => {
         const greeks = positionMetrics.positionGreeks.get(row.id);
-        return greeks ? formatGreek(greeks.gamma) : '-';
+        return greeks ? formatGreek(greeks.gammaPerContract) : '-';
       },
       className: 'tabular-nums text-silver'
     },
@@ -547,8 +559,8 @@ export function Portfolio() {
       accessor: (row: Position) => {
         const greeks = positionMetrics.positionGreeks.get(row.id);
         if (!greeks) return '-';
-        // Format theta as currency (daily $ value)
-        const theta = greeks.theta;
+        // Format theta as currency (daily $ value per contract)
+        const theta = greeks.thetaPerContract;
         const formatted = `$${Math.abs(theta).toFixed(2)}`;
         return theta >= 0 ? `+${formatted}` : `-${formatted.substring(1)}`;
       },
@@ -558,7 +570,7 @@ export function Portfolio() {
       header: 'Vega',
       accessor: (row: Position) => {
         const greeks = positionMetrics.positionGreeks.get(row.id);
-        return greeks ? formatGreek(greeks.vega) : '-';
+        return greeks ? formatGreek(greeks.vegaPerContract) : '-';
       },
       className: 'tabular-nums text-silver'
     },
@@ -664,7 +676,7 @@ export function Portfolio() {
         </div>
 
         {/* Account Summary Cards - Row 3: Position Risk Metrics */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <StatCard
             label="Max Loss"
             value={positionMetrics.maxLoss > 0 ? formatCurrency(positionMetrics.maxLoss) : '--'}
@@ -689,6 +701,12 @@ export function Portfolio() {
             icon={<Calendar className="w-5 h-5 text-amber-500" />}
             testId="days-to-expiry"
           />
+          <StatCard
+            label="Net Delta"
+            value={formatDelta(positionMetrics.netDelta)}
+            icon={<TrendingUp className={`w-5 h-5 ${positionMetrics.netDelta >= 0 ? 'text-green-500' : 'text-red-500'}`} />}
+            testId="net-delta"
+          />
         </div>
 
         {/* Open Positions */}
@@ -710,39 +728,6 @@ export function Portfolio() {
           )}
         </div>
 
-        {/* Net Greeks Summary */}
-        {positions && positions.length > 0 && (
-          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            <StatCard
-              label="Net Delta"
-              value={formatDelta(positionMetrics.netDelta)}
-              icon={<TrendingUp className={`w-5 h-5 ${positionMetrics.netDelta >= 0 ? 'text-green-500' : 'text-red-500'}`} />}
-              testId="net-delta"
-            />
-            <StatCard
-              label="Net Gamma"
-              value={formatGreek(positionMetrics.netGamma)}
-              icon={<Activity className="w-5 h-5 text-blue-500" />}
-              testId="net-gamma"
-            />
-            <StatCard
-              label="Net Theta"
-              value={(() => {
-                const theta = positionMetrics.netTheta;
-                const formatted = `$${Math.abs(theta).toFixed(2)}`;
-                return theta >= 0 ? `+${formatted}` : `-${formatted.substring(1)}`;
-              })()}
-              icon={<Clock className={`w-5 h-5 ${positionMetrics.netTheta >= 0 ? 'text-green-500' : 'text-red-500'}`} />}
-              testId="net-theta"
-            />
-            <StatCard
-              label="Net Vega"
-              value={formatGreek(positionMetrics.netVega)}
-              icon={<BarChart3 className={`w-5 h-5 ${positionMetrics.netVega >= 0 ? 'text-green-500' : 'text-red-500'}`} />}
-              testId="net-vega"
-            />
-          </div>
-        )}
       </div>
     </div>
   );

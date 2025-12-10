@@ -6,9 +6,12 @@ ARG CACHE_BUST=default
 
 WORKDIR /app
 
+# Install build dependencies for native modules (usb package needs python/make/g++)
+RUN apk add --no-cache python3 make g++ linux-headers eudev-dev
+
 # Copy package files first (cacheable layer)
 COPY package*.json ./
-RUN npm ci --include=dev --no-fund --no-audit
+RUN npm install --legacy-peer-deps --no-fund --no-audit
 
 # Copy source and build (invalidated by CACHE_BUST)
 COPY . .
@@ -19,12 +22,15 @@ FROM node:20-alpine AS runtime
 WORKDIR /app
 ENV NODE_ENV=production
 
+# Install build dependencies for native modules (usb package needs python/make/g++)
+RUN apk add --no-cache python3 make g++ linux-headers eudev-dev
+
 # Copy built artifacts from build stage
 COPY --from=build /app/dist ./dist
 COPY --from=build /app/package*.json ./
 
 # Install production dependencies only
-RUN npm ci --omit=dev --no-fund --no-audit
+RUN npm install --legacy-peer-deps --omit=dev --no-fund --no-audit
 
 ENV PORT=8080
 EXPOSE 8080
