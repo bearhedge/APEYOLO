@@ -529,17 +529,17 @@ export function TrackRecord() {
         <Tabs defaultValue="kpis" className="w-full">
           <TabsList className="bg-charcoal border border-white/10 mb-4">
             <TabsTrigger value="kpis" className="data-[state=active]:bg-white data-[state=active]:text-black">
-              KPI Details
+              KPIs
             </TabsTrigger>
             <TabsTrigger value="cashflows" className="data-[state=active]:bg-white data-[state=active]:text-black">
-              Cash Flows
+              Cashflows
             </TabsTrigger>
             <TabsTrigger value="history" className="data-[state=active]:bg-white data-[state=active]:text-black">
               All Trades ({allTrades.length})
             </TabsTrigger>
           </TabsList>
 
-          {/* KPI Details Tab */}
+          {/* KPIs Tab */}
           <TabsContent value="kpis">
             <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
               <h3 className="text-lg font-semibold mb-6">Detailed Performance Metrics</h3>
@@ -604,7 +604,7 @@ export function TrackRecord() {
             </div>
           </TabsContent>
 
-          {/* Cash Flows Tab */}
+          {/* Cashflows Tab */}
           <TabsContent value="cashflows">
             <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
               <div className="flex items-center justify-between mb-6">
