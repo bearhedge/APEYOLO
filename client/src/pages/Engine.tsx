@@ -395,13 +395,6 @@ export function Engine() {
           />
         </div>
 
-        {/* Trading Window Alert */}
-        {!status?.tradingWindowOpen && status?.tradingWindowReason && (
-          <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-4 flex items-center gap-3">
-            <AlertTriangle className="w-5 h-5 text-yellow-500" />
-            <p className="text-sm">{status.tradingWindowReason}</p>
-          </div>
-        )}
 
         {/* 5-Step Decision Process */}
         <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
