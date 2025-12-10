@@ -276,6 +276,16 @@ export async function initializeJobsSystem(): Promise<void> {
   const { initializeEconomicCalendarRefreshJob } = await import('./services/jobs/economicCalendarRefresh');
   initializeEconomicCalendarRefreshJob();
 
+  // Initialize trade monitor job
+  const { initTradeMonitorJob, ensureTradeMonitorJob } = await import('./services/tradeMonitor');
+  initTradeMonitorJob();
+  await ensureTradeMonitorJob();
+
+  // Initialize NAV snapshot job
+  const { initNavSnapshotJob, ensureNavSnapshotJob } = await import('./services/navSnapshot');
+  initNavSnapshotJob();
+  await ensureNavSnapshotJob();
+
   // Seed default jobs in database
   await seedDefaultJobs();
 

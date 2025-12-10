@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, decimal, integer, timestamp, boolean, jsonb, bigint, index } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, decimal, integer, timestamp, boolean, jsonb, bigint, index, doublePrecision } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -40,8 +40,44 @@ export const trades = pgTable("trades", {
   expiration: timestamp("expiration").notNull(),
   quantity: integer("quantity").notNull(),
   credit: decimal("credit", { precision: 10, scale: 2 }).notNull(),
-  status: text("status").notNull(), // "pending" | "filled" | "rejected"
+  status: text("status").notNull(), // "pending" | "filled" | "rejected" | "closed"
   submittedAt: timestamp("submitted_at").notNull().defaultNow(),
+
+  // === ENTRY DETAILS (nullable for backward compatibility) ===
+  entryFillPrice: doublePrecision("entry_fill_price"),
+  entryCommission: doublePrecision("entry_commission"),
+  entryDelta: doublePrecision("entry_delta"),
+  entryGamma: doublePrecision("entry_gamma"),
+  entryTheta: doublePrecision("entry_theta"),
+  entryVega: doublePrecision("entry_vega"),
+  entryIv: doublePrecision("entry_iv"),
+  entryUnderlyingPrice: doublePrecision("entry_underlying_price"),
+  entryVix: doublePrecision("entry_vix"),
+
+  // === EXIT DETAILS ===
+  exitFillPrice: doublePrecision("exit_fill_price"),
+  exitCommission: doublePrecision("exit_commission"),
+  exitDelta: doublePrecision("exit_delta"),
+  exitGamma: doublePrecision("exit_gamma"),
+  exitTheta: doublePrecision("exit_theta"),
+  exitVega: doublePrecision("exit_vega"),
+  exitIv: doublePrecision("exit_iv"),
+  exitUnderlyingPrice: doublePrecision("exit_underlying_price"),
+  exitVix: doublePrecision("exit_vix"),
+  exitReason: text("exit_reason"), // "profit_target" | "stop_loss" | "time_stop" | "manual" | "expiration"
+  closedAt: timestamp("closed_at"),
+
+  // === P&L BREAKDOWN ===
+  grossPnl: doublePrecision("gross_pnl"),
+  totalCommissions: doublePrecision("total_commissions"),
+  totalFees: doublePrecision("total_fees"),
+  netPnl: doublePrecision("net_pnl"),
+
+  // === RISK CONTEXT AT ENTRY ===
+  riskRegime: text("risk_regime"), // 'LOW' | 'NORMAL' | 'ELEVATED' | 'HIGH' | 'EXTREME'
+  targetDelta: doublePrecision("target_delta"),
+  actualDelta: doublePrecision("actual_delta"),
+  contractCount: integer("contract_count"),
 });
 
 export const riskRules = pgTable("risk_rules", {
@@ -75,6 +111,71 @@ export const orders = pgTable("orders", {
   filledAt: timestamp("filled_at"),
   cancelledAt: timestamp("cancelled_at"),
 });
+
+// ==================== COMPREHENSIVE TRADE TRACKING ====================
+// Fills table - Granular execution tracking for live orders
+export const fills = pgTable("fills", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  orderId: varchar("order_id").references(() => orders.id, { onDelete: "set null" }),
+  tradeId: varchar("trade_id").references(() => trades.id, { onDelete: "set null" }),
+
+  // Execution details
+  fillTime: timestamp("fill_time").notNull(),
+  fillPrice: doublePrecision("fill_price").notNull(),
+  fillQuantity: integer("fill_quantity").notNull(),
+  executionId: text("execution_id"), // IBKR execution ID
+
+  // Costs
+  commission: doublePrecision("commission").default(0),
+  fees: doublePrecision("fees").default(0), // SEC, exchange fees
+
+  // Greeks at fill time
+  deltaAtFill: doublePrecision("delta_at_fill"),
+  gammaAtFill: doublePrecision("gamma_at_fill"),
+  thetaAtFill: doublePrecision("theta_at_fill"),
+  vegaAtFill: doublePrecision("vega_at_fill"),
+  ivAtFill: doublePrecision("iv_at_fill"),
+
+  // Market state at fill
+  underlyingPriceAtFill: doublePrecision("underlying_price_at_fill"),
+  vixAtFill: doublePrecision("vix_at_fill"),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  index("fills_order_id_idx").on(table.orderId),
+  index("fills_trade_id_idx").on(table.tradeId),
+  index("fills_fill_time_idx").on(table.fillTime),
+]);
+
+// Greeks snapshots - Track Greeks evolution over trade lifetime
+export const greeksSnapshots = pgTable("greeks_snapshots", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tradeId: varchar("trade_id").references(() => trades.id, { onDelete: "cascade" }),
+
+  snapshotTime: timestamp("snapshot_time").notNull(),
+
+  // Current Greeks
+  delta: doublePrecision("delta"),
+  gamma: doublePrecision("gamma"),
+  theta: doublePrecision("theta"),
+  vega: doublePrecision("vega"),
+  iv: doublePrecision("iv"),
+
+  // Market state
+  optionPrice: doublePrecision("option_price"),
+  underlyingPrice: doublePrecision("underlying_price"),
+  vix: doublePrecision("vix"),
+
+  // Time context
+  dte: doublePrecision("dte"), // Days to expiration
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  index("greeks_snapshots_trade_id_idx").on(table.tradeId),
+  index("greeks_snapshots_time_idx").on(table.snapshotTime),
+]);
+
+// ==================== END COMPREHENSIVE TRADE TRACKING ====================
 
 // IBKR Credentials table for user-specific broker authentication
 export const ibkrCredentials = pgTable("ibkr_credentials", {
@@ -160,6 +261,16 @@ export const insertOrderSchema = createInsertSchema(orders).omit({
   cancelledAt: true,
 });
 
+export const insertFillSchema = createInsertSchema(fills).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertGreeksSnapshotSchema = createInsertSchema(greeksSnapshots).omit({
+  id: true,
+  createdAt: true,
+});
+
 export const insertMarketDataSchema = createInsertSchema(marketData).omit({
   id: true,
   createdAt: true,
@@ -180,6 +291,10 @@ export type IbkrCredentials = typeof ibkrCredentials.$inferSelect;
 export type InsertIbkrCredentials = z.infer<typeof insertIbkrCredentialsSchema>;
 export type Order = typeof orders.$inferSelect;
 export type InsertOrder = z.infer<typeof insertOrderSchema>;
+export type Fill = typeof fills.$inferSelect;
+export type InsertFill = z.infer<typeof insertFillSchema>;
+export type GreeksSnapshot = typeof greeksSnapshots.$inferSelect;
+export type InsertGreeksSnapshot = z.infer<typeof insertGreeksSnapshotSchema>;
 export type MarketData = typeof marketData.$inferSelect;
 export type InsertMarketData = z.infer<typeof insertMarketDataSchema>;
 
@@ -371,6 +486,55 @@ export type EconomicEvent = typeof economicEvents.$inferSelect;
 export type InsertEconomicEvent = z.infer<typeof insertEconomicEventSchema>;
 
 // ==================== END ECONOMIC EVENTS ====================
+
+// ==================== CASH FLOWS ====================
+// Track deposits and withdrawals for accurate performance calculation
+
+export const cashFlows = pgTable("cash_flows", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  date: text("date").notNull(), // YYYY-MM-DD
+  type: text("type").notNull(), // 'deposit' | 'withdrawal'
+  amount: decimal("amount", { precision: 12, scale: 2 }).notNull(),
+  description: text("description"),
+  userId: varchar("user_id").references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  index("cash_flows_date_idx").on(table.date),
+  index("cash_flows_type_idx").on(table.type),
+]);
+
+export const insertCashFlowSchema = createInsertSchema(cashFlows).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type CashFlow = typeof cashFlows.$inferSelect;
+export type InsertCashFlow = z.infer<typeof insertCashFlowSchema>;
+
+// ==================== END CASH FLOWS ====================
+
+// ==================== NAV SNAPSHOTS ====================
+// End-of-day NAV snapshots for accurate Day P&L calculation (marked-to-market)
+
+export const navSnapshots = pgTable("nav_snapshots", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  date: text("date").notNull().unique(), // YYYY-MM-DD - one snapshot per day
+  nav: decimal("nav", { precision: 12, scale: 2 }).notNull(),
+  userId: varchar("user_id").references(() => users.id),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  index("nav_snapshots_date_idx").on(table.date),
+]);
+
+export const insertNavSnapshotSchema = createInsertSchema(navSnapshots).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type NavSnapshot = typeof navSnapshots.$inferSelect;
+export type InsertNavSnapshot = z.infer<typeof insertNavSnapshotSchema>;
+
+// ==================== END NAV SNAPSHOTS ====================
 
 // Option chain types
 export type OptionData = {

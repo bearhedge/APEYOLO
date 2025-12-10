@@ -1,14 +1,16 @@
+import { useState, useEffect } from "react";
 import { queryClient } from "./lib/queryClient";
 import { QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { Toaster } from "@/components/ui/toaster";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Route, Link, useLocation, Redirect } from "wouter";
-import { CheckCircle, XCircle, LogOut } from "lucide-react";
+import { CheckCircle, XCircle, LogOut, Clock } from "lucide-react";
 import { Home } from "@/pages/Home";
 import { Onboarding } from "@/pages/Onboarding";
 import { Agent } from "@/pages/Agent";
 import { Engine } from "@/pages/Engine";
 import { Portfolio } from "@/pages/Portfolio";
+import { TrackRecord } from "@/pages/TrackRecord";
 import { Data } from "@/pages/Data";
 import { Jobs } from "@/pages/Jobs";
 import { Settings } from "@/pages/Settings";
@@ -17,6 +19,31 @@ import { getAccount, getDiag } from "@/lib/api";
 function Navigation() {
   const [location] = useLocation();
   const isOnboarding = location.startsWith('/onboarding');
+
+  // NY time state - updates every minute
+  const [nyTime, setNyTime] = useState(() =>
+    new Date().toLocaleString('en-US', {
+      timeZone: 'America/New_York',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true
+    })
+  );
+
+  useEffect(() => {
+    const updateTime = () => {
+      setNyTime(new Date().toLocaleString('en-US', {
+        timeZone: 'America/New_York',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: true
+      }));
+    };
+
+    // Update every minute
+    const interval = setInterval(updateTime, 60000);
+    return () => clearInterval(interval);
+  }, []);
 
   const { data: account } = useQuery({
     queryKey: ['/api/account'],
@@ -76,6 +103,12 @@ function Navigation() {
               <span className={`text-sm ${isIBKRConnected ? 'text-green-500' : 'text-red-500'}`}>IBKR</span>
             </div>
 
+            {/* NY Time */}
+            <div className="flex items-center gap-1.5" data-testid="ny-time">
+              <Clock className="w-4 h-4 text-silver" />
+              <span className="text-sm text-silver tabular-nums">{nyTime} ET</span>
+            </div>
+
             {/* NAV from IBKR */}
             <div className="flex items-center gap-2" data-testid="nav-display">
               <span className="text-sm text-silver">NAV</span>
@@ -112,6 +145,7 @@ function App() {
           <Route path="/agent" component={Agent} />
           <Route path="/engine" component={Engine} />
           <Route path="/portfolio" component={Portfolio} />
+          <Route path="/track-record" component={TrackRecord} />
           <Route path="/data" component={Data} />
           <Route path="/jobs" component={Jobs} />
           <Route path="/settings" component={Settings} />

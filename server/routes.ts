@@ -7,13 +7,18 @@ import { getIbkrDiagnostics, ensureIbkrReady, placePaperStockOrder, placePaperOp
 import { IbkrWebSocketManager, initIbkrWebSocket, getIbkrWebSocketManager, destroyIbkrWebSocket, type MarketDataUpdate } from "./broker/ibkrWebSocket";
 import { getOptionChainStreamer, initOptionChainStreamer } from "./broker/optionChainStreamer";
 import { TradingEngine } from "./engine/index.ts";
-import { 
-  insertTradeSchema, 
-  insertPositionSchema, 
-  insertRiskRulesSchema, 
+import {
+  insertTradeSchema,
+  insertPositionSchema,
+  insertRiskRulesSchema,
   insertAuditLogSchema,
-  type SpreadConfig 
+  cashFlows,
+  insertCashFlowSchema,
+  paperTrades,
+  type SpreadConfig
 } from "@shared/schema";
+import { db } from "./db";
+import { desc } from "drizzle-orm";
 import { z } from "zod";
 import cookieParser from "cookie-parser";
 import jwt from "jsonwebtoken";
@@ -23,6 +28,7 @@ import ibkrRoutes from "./ibkrRoutes.js";
 import engineRoutes from "./engineRoutes.js";
 import marketRoutes from "./marketRoutes.js";
 import jobRoutes, { initializeJobsSystem } from "./jobRoutes.js";
+import { getPreviousNavSnapshot } from "./services/navSnapshot.js";
 
 // Helper function to get session from request
 async function getSessionFromRequest(req: any) {
@@ -190,10 +196,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       const account = await broker.api.getAccount();
       console.log('[API] /api/account: Success, portfolioValue=', account?.portfolioValue, 'netLiq=', account?.netLiquidation);
-      res.json(account);
+
+      // Calculate Day P&L using NAV snapshot (marked-to-market accounting)
+      // Current NAV - Previous Day's NAV = Day P&L
+      let enhancedDayPnL = account?.dayPnL || 0; // Default to IBKR's value
+      try {
+        const previousNav = await getPreviousNavSnapshot();
+        if (previousNav && account?.portfolioValue) {
+          const currentNav = account.portfolioValue;
+          enhancedDayPnL = currentNav - previousNav.nav;
+          console.log(`[API] /api/account: Day P&L (NAV-based): $${enhancedDayPnL.toFixed(2)} (current: $${currentNav.toFixed(2)}, prev: $${previousNav.nav.toFixed(2)} from ${previousNav.date})`);
+        } else {
+          console.log('[API] /api/account: No NAV snapshot available, using IBKR Day P&L');
+        }
+      } catch (navErr) {
+        console.warn('[API] /api/account: Could not get NAV snapshot, using IBKR Day P&L:', navErr);
+      }
+
+      res.json({
+        ...account,
+        dayPnL: enhancedDayPnL, // Override with NAV-based calculation
+      });
     } catch (error: any) {
       console.error('[API] /api/account: FAILED -', error?.message || error);
-      res.status(500).json({ error: 'Failed to fetch account info', message: error?.message });
+      const isGatewayError = error?.message?.includes('Gateway') || error?.message?.includes('authenticated');
+      res.status(isGatewayError ? 503 : 500).json({
+        error: isGatewayError ? 'IBKR connection expired' : 'Failed to fetch account info',
+        message: error?.message,
+        retryable: isGatewayError
+      });
     }
   });
 
@@ -205,8 +236,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
       const positions = await broker.api.getPositions();
       res.json(positions);
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to fetch positions' });
+    } catch (error: any) {
+      console.error('[API] /api/positions: FAILED -', error?.message || error);
+      const isGatewayError = error?.message?.includes('Gateway') || error?.message?.includes('authenticated');
+      res.status(isGatewayError ? 503 : 500).json({
+        error: isGatewayError ? 'IBKR connection expired' : 'Failed to fetch positions',
+        message: error?.message,
+        retryable: isGatewayError
+      });
     }
   });
 
@@ -275,42 +312,190 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // PnL endpoint for Trades page - transforms stored trades to PnlRow format
+  // PnL endpoint for Trades page - merges engine trades, local DB trades, and IBKR executions
   app.get('/api/pnl', async (_req, res) => {
+    console.log('[API][/api/pnl] Request received');
     try {
-      const trades = await storage.getTrades();
+      // Get engine trades from database (real executed trades)
+      let engineTradeRows: any[] = [];
+      if (db) {
+        try {
+          const dbEngineTrades = await db.select().from(paperTrades).orderBy(desc(paperTrades.createdAt));
+          console.log(`[API][/api/pnl] Engine trades: ${dbEngineTrades.length}`);
 
-      // Transform trades to PnlRow format expected by frontend
-      const pnlRows = trades.map(trade => {
+          engineTradeRows = dbEngineTrades.map(pt => {
+            const entryPremium = parseFloat(pt.entryPremiumTotal as any) || 0;
+            const contracts = pt.contracts || 1;
+            const realizedPnl = pt.realizedPnl ? parseFloat(pt.realizedPnl as any) : null;
+
+            // Format strategy display: "STRANGLE: PUT $130 + CALL $145"
+            let strategyDisplay = pt.strategy;
+            if (pt.leg1Type && pt.leg1Strike) {
+              strategyDisplay = `${pt.leg1Type} $${parseFloat(pt.leg1Strike as any).toFixed(0)}`;
+              if (pt.leg2Type && pt.leg2Strike) {
+                strategyDisplay += ` + ${pt.leg2Type} $${parseFloat(pt.leg2Strike as any).toFixed(0)}`;
+              }
+            }
+
+            return {
+              tradeId: pt.id,
+              ts: pt.createdAt?.toISOString() || new Date().toISOString(),
+              symbol: pt.symbol,
+              strategy: strategyDisplay,
+              side: 'SELL' as const,
+              qty: contracts,
+              entry: entryPremium / (contracts * 100), // Per-contract premium
+              exit: pt.exitPrice ? parseFloat(pt.exitPrice as any) : null,
+              fees: contracts * 2.00, // Estimate $2/contract for options
+              realized: realizedPnl !== null ? realizedPnl : (pt.status === 'open' ? 0 : entryPremium),
+              run: pt.status === 'open' ? entryPremium : (realizedPnl || 0),
+              notes: `${pt.strategy} | ${pt.expirationLabel} | ${pt.status.toUpperCase()}`,
+              // Extended info
+              ibkrOrderIds: pt.ibkrOrderIds,
+              status: pt.status,
+              bias: pt.bias,
+              expiration: pt.expiration,
+            };
+          });
+        } catch (err) {
+          console.warn('[API][/api/pnl] Could not fetch engine trades:', err);
+        }
+      }
+
+      // Get trades from local DB (legacy trades table)
+      const localTrades = await storage.getTrades();
+      console.log(`[API][/api/pnl] Local DB trades: ${localTrades.length}`);
+
+      // Also try to get live trades from IBKR
+      let ibkrTrades: any[] = [];
+      if (broker.status.provider === 'ibkr') {
+        console.log('[API][/api/pnl] Fetching IBKR trades...');
+        try {
+          await ensureIbkrReady();
+          ibkrTrades = await broker.api.getTrades();
+          console.log(`[API][/api/pnl] IBKR trades fetched: ${ibkrTrades.length}`);
+        } catch (err) {
+          console.warn('[API][/api/pnl] Could not fetch IBKR trades:', err);
+        }
+      } else {
+        console.log(`[API][/api/pnl] Provider is ${broker.status.provider}, skipping IBKR trades`);
+      }
+
+      // Transform local trades to PnlRow format
+      const localRows = localTrades.map(trade => {
         const credit = parseFloat(trade.credit) || 0;
         const qty = trade.quantity || 1;
-        const entryPerContract = credit / (qty * 100); // Per-share entry price
+        const entryPerContract = credit / (qty * 100);
 
         return {
           tradeId: trade.id,
           ts: trade.submittedAt?.toISOString() || new Date().toISOString(),
           symbol: trade.symbol,
           strategy: trade.strategy,
-          side: 'SELL' as const, // Engine sells options for premium
+          side: 'SELL' as const,
           qty: qty,
           entry: entryPerContract,
-          exit: trade.status === 'filled' ? entryPerContract : null, // NULL if still open
-          fees: qty * 1.00, // Estimated fees per contract
+          exit: trade.status === 'filled' ? entryPerContract : null,
+          fees: qty * 1.00,
           realized: trade.status === 'filled' ? credit : 0,
-          run: trade.status === 'pending' ? 0 : credit, // Running P&L
+          run: trade.status === 'pending' ? 0 : credit,
           notes: `${trade.strategy} ${parseFloat(trade.sellStrike).toFixed(0)} strike - ${trade.status}`,
         };
       });
 
-      // Sort by timestamp descending (newest first)
-      pnlRows.sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
+      // Transform IBKR trades to PnlRow format
+      const ibkrRows = ibkrTrades.map(trade => {
+        const price = trade.entryFillPrice || parseFloat(trade.credit) || 0;
+        const qty = trade.quantity || 1;
+        const side = trade.symbol?.includes('P') ? 'PUT' : trade.symbol?.includes('C') ? 'CALL' : trade.strategy;
 
-      res.json(pnlRows);
+        return {
+          tradeId: trade.id,
+          ts: trade.submittedAt?.toISOString?.() || trade.submittedAt || new Date().toISOString(),
+          symbol: trade.symbol,
+          strategy: side,
+          side: (qty < 0 ? 'SELL' : 'BUY') as 'BUY' | 'SELL',
+          qty: Math.abs(qty),
+          entry: price,
+          exit: price, // Executions are filled
+          fees: trade.entryCommission || 0,
+          realized: trade.netPnl || (price * Math.abs(qty) * 100),
+          run: trade.netPnl || 0,
+          notes: `IBKR execution`,
+        };
+      });
+
+      // Merge: engine trades first (primary), then local, then IBKR
+      // Deduplicate by tradeId
+      const allRows = [...engineTradeRows, ...localRows, ...ibkrRows];
+      const seenIds = new Set<string>();
+      const uniqueRows = allRows.filter(row => {
+        if (seenIds.has(row.tradeId)) return false;
+        seenIds.add(row.tradeId);
+        return true;
+      });
+
+      // Sort by timestamp descending (newest first)
+      uniqueRows.sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
+
+      res.json(uniqueRows);
     } catch (error) {
       console.error('[API] Failed to fetch PnL:', error);
       res.status(500).json({ error: 'Failed to fetch P&L data' });
     }
   });
+
+  // ==================== CASH FLOWS ====================
+
+  // Get all cash flows (deposits/withdrawals)
+  app.get('/api/cashflows', async (_req, res) => {
+    try {
+      if (!db) {
+        return res.json([]);
+      }
+      const flows = await db.select().from(cashFlows).orderBy(desc(cashFlows.date));
+      // Convert decimal to number for frontend
+      const result = flows.map(f => ({
+        ...f,
+        amount: parseFloat(String(f.amount)) || 0,
+      }));
+      res.json(result);
+    } catch (error) {
+      console.error('[API] Failed to fetch cash flows:', error);
+      res.json([]); // Return empty array on error for graceful degradation
+    }
+  });
+
+  // Add a new cash flow
+  app.post('/api/cashflows', async (req, res) => {
+    try {
+      if (!db) {
+        return res.status(503).json({ error: 'Database not configured' });
+      }
+
+      const validation = insertCashFlowSchema.safeParse(req.body);
+      if (!validation.success) {
+        return res.status(400).json({ error: 'Invalid cash flow data', details: validation.error.errors });
+      }
+
+      const [created] = await db.insert(cashFlows).values({
+        date: validation.data.date,
+        type: validation.data.type,
+        amount: String(validation.data.amount),
+        description: validation.data.description,
+      }).returning();
+
+      res.json({
+        ...created,
+        amount: parseFloat(String(created.amount)) || 0,
+      });
+    } catch (error) {
+      console.error('[API] Failed to create cash flow:', error);
+      res.status(500).json({ error: 'Failed to create cash flow' });
+    }
+  });
+
+  // ==================== END CASH FLOWS ====================
 
   // Trade validation and submission
   /** Archived deterministic validation endpoint for agent-driven flow

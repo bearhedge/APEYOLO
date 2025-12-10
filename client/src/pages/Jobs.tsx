@@ -155,9 +155,9 @@ function MarketEventsCard({
 
       <h2 className="text-lg font-semibold mb-4">Market Events</h2>
 
-      <div className="space-y-2">
+      <div className="space-y-3">
         {upcomingEvents.slice(0, 8).map((event, i) => (
-          <div key={i} className="flex items-center gap-4 text-sm py-1.5 border-b border-white/5 last:border-0">
+          <div key={i} className="flex items-center gap-4 text-sm py-2.5 border-b border-white/5 last:border-0">
             <span className="font-mono text-zinc-400 w-24 flex-shrink-0">{event.date}</span>
             <span className="w-20 flex-shrink-0">
               <EventTypeBadge type={event.type} />
@@ -251,7 +251,14 @@ function JobsTable({
                   {job.lastRunAt ? (
                     <div>
                       <p className="font-mono text-xs">
-                        {new Date(job.lastRunAt).toLocaleString()}
+                        {new Date(job.lastRunAt).toLocaleString('en-US', {
+                          timeZone: 'America/New_York',
+                          month: 'short',
+                          day: 'numeric',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                          hour12: true
+                        })} ET
                       </p>
                       {job.latestRun?.durationMs && (
                         <p className="text-silver text-xs">
@@ -349,7 +356,14 @@ function RunHistoryTable({ history }: { history: JobRun[] }) {
                   <code className="text-xs">{run.jobId}</code>
                 </td>
                 <td className="py-3 px-2 font-mono text-xs">
-                  {new Date(run.startedAt).toLocaleString()}
+                  {new Date(run.startedAt).toLocaleString('en-US', {
+                    timeZone: 'America/New_York',
+                    month: 'short',
+                    day: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    hour12: true
+                  })} ET
                 </td>
                 <td className="py-3 px-2 font-mono text-xs">
                   {run.durationMs ? `${(run.durationMs / 1000).toFixed(2)}s` : '—'}

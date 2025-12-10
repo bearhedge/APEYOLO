@@ -1,11 +1,21 @@
 import { useQuery } from '@tanstack/react-query';
-import { getPositions, getPNL } from '@/lib/api';
+import { getPositions } from '@/lib/api';
 import { DataTable } from '@/components/DataTable';
 import { LeftNav } from '@/components/LeftNav';
 import { StatCard } from '@/components/StatCard';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
-import { DollarSign, TrendingUp, Shield, Activity, ArrowUpDown, Wallet, Banknote, BarChart3, Scale, Gauge } from 'lucide-react';
-import type { Position, PnlRow } from '@shared/types';
+import { DollarSign, TrendingUp, Shield, Activity, Wallet, Banknote, BarChart3, Scale, Gauge } from 'lucide-react';
+import type { Position } from '@shared/types';
+
+// Universal type coercion helper - handles strings, nulls, objects from IBKR
+const toNum = (val: any): number => {
+  if (typeof val === 'number' && isFinite(val)) return val;
+  if (val === null || val === undefined) return 0;
+  // Handle IBKR's {amount: "value"} or {value: X} patterns
+  if (val?.amount !== undefined) return Number(val.amount) || 0;
+  if (val?.value !== undefined) return Number(val.value) || 0;
+  const parsed = Number(val);
+  return isFinite(parsed) ? parsed : 0;
+};
 
 interface AccountInfo {
   accountNumber: string;
@@ -24,32 +34,49 @@ interface AccountInfo {
   excessLiquidity: number;
 }
 
-// Helper to format currency values, showing "-" for null/undefined
-const formatCurrency = (value: number | null | undefined, includeSign = false): string => {
+// Helper to format currency values - handles strings, nulls, objects
+const formatCurrency = (value: any, includeSign = false): string => {
+  const num = toNum(value);
   if (value === null || value === undefined) return '-';
-  const formatted = `$${Math.abs(value).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  const formatted = `$${Math.abs(num).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   if (includeSign) {
-    return value >= 0 ? `+${formatted}` : `-${formatted.substring(1)}`;
+    return num >= 0 ? `+${formatted}` : `-${formatted.substring(1)}`;
   }
   return formatted;
 };
 
-// Helper to format percentage values, showing "-" for null/undefined
-const formatPercent = (value: number | null | undefined): string => {
+// Helper to format percentage values - handles strings, nulls, objects
+const formatPercent = (value: any): string => {
   if (value === null || value === undefined) return '-';
-  return `${value.toFixed(1)}%`;
+  return `${toNum(value).toFixed(1)}%`;
 };
 
-// Helper to format multiplier values, showing "-" for null/undefined
-const formatMultiplier = (value: number | null | undefined): string => {
+// Helper to format multiplier values - handles strings, nulls, objects
+const formatMultiplier = (value: any): string => {
   if (value === null || value === undefined) return '-';
-  return `${value.toFixed(2)}x`;
+  return `${toNum(value).toFixed(2)}x`;
 };
 
-// Helper to format delta values, showing "-" for null/undefined
-const formatDelta = (value: number | null | undefined): string => {
+// Helper to format delta values - handles strings, nulls, objects
+const formatDelta = (value: any): string => {
   if (value === null || value === undefined) return '-';
-  return value.toFixed(2);
+  return toNum(value).toFixed(2);
+};
+
+// Helper to parse and format IBKR option symbols
+// Input: "ARM   241212P00135000" -> Output: "ARM 12/12 $135 PUT"
+const formatOptionSymbol = (symbol: string): string => {
+  if (!symbol) return '-';
+
+  // Match pattern: SYMBOL + whitespace + YYMMDD + P/C + strike (in cents)
+  const match = symbol.match(/^([A-Z]+)\s+(\d{2})(\d{2})(\d{2})([PC])(\d+)$/);
+  if (!match) return symbol; // Return as-is if doesn't match option pattern
+
+  const [, underlying, yy, mm, dd, type, strikeRaw] = match;
+  const strike = parseInt(strikeRaw) / 1000; // Convert from cents
+  const optType = type === 'P' ? 'PUT' : 'CALL';
+
+  return `${underlying} ${mm}/${dd} $${strike} ${optType}`;
 };
 
 export function Portfolio() {
@@ -58,12 +85,7 @@ export function Portfolio() {
     queryFn: getPositions,
   });
 
-  const { data: trades } = useQuery<PnlRow[]>({
-    queryKey: ['/api/pnl'],
-    queryFn: getPNL,
-  });
-
-  const { data: account, isLoading: accountLoading } = useQuery<AccountInfo>({
+  const { data: account, isLoading: accountLoading, isError: accountError, refetch: refetchAccount } = useQuery<AccountInfo>({
     queryKey: ['/api/account'],
     queryFn: async () => {
       const res = await fetch('/api/account', { credentials: 'include' });
@@ -71,55 +93,31 @@ export function Portfolio() {
       return res.json();
     },
     refetchInterval: 30000, // Refresh every 30s
+    retry: 2, // Retry twice before giving up
   });
 
-  // Positions table columns
+  // Positions table columns - all fields use accessor functions to avoid object rendering
   const columns = [
-    { header: 'Symbol', accessor: 'symbol' as keyof Position, sortable: true },
-    { header: 'Strategy', accessor: (row: Position) => row.side === 'SELL' ? 'Credit Spread' : 'Long', className: 'text-silver' },
-    { header: 'Qty', accessor: 'qty' as keyof Position, sortable: true, className: 'tabular-nums' },
-    { header: 'Entry', accessor: (row: Position) => `$${(row.avg ?? 0).toFixed(2)}`, className: 'tabular-nums' },
-    { header: 'Mark', accessor: (row: Position) => `$${(row.mark ?? 0).toFixed(2)}`, className: 'tabular-nums' },
+    { header: 'Symbol', accessor: (row: Position) => formatOptionSymbol(row.symbol || ''), sortable: true },
+    { header: 'Side', accessor: (row: Position) => row.side === 'SELL' ? 'SHORT' : 'LONG', className: 'text-silver' },
+    { header: 'Qty', accessor: (row: Position) => String(toNum(row.qty)), sortable: true, className: 'tabular-nums' },
+    { header: 'Entry', accessor: (row: Position) => `$${toNum(row.avg).toFixed(2)}`, className: 'tabular-nums' },
+    { header: 'Mark', accessor: (row: Position) => `$${toNum(row.mark).toFixed(2)}`, className: 'tabular-nums' },
     {
-      header: 'P/L$',
+      header: 'P/L (USD)',
       accessor: (row: Position) => {
-        const upl = row.upl ?? 0;
+        const upl = toNum(row.upl);
         const isProfit = upl >= 0;
         return (
-          <span className={isProfit ? 'font-medium' : 'font-medium'}>
-            {isProfit ? '+' : ''}${upl.toFixed(2)}
+          <span className={isProfit ? 'text-green-400 font-medium' : 'text-red-400 font-medium'}>
+            {isProfit ? '+' : ''}{formatCurrency(upl)}
           </span>
         );
       },
       className: 'tabular-nums'
     },
-    { header: 'Delta', accessor: (row: Position) => row.delta?.toFixed(2) || '-', className: 'tabular-nums text-silver' },
-    { header: 'Margin', accessor: (row: Position) => `$${row.margin?.toLocaleString() || '0'}`, className: 'tabular-nums text-silver' },
-  ];
-
-  // Trades/History table columns
-  const tradesColumns = [
-    { header: 'Trade ID', accessor: 'tradeId' as keyof PnlRow, sortable: true, className: 'font-mono text-sm' },
-    { header: 'Time', accessor: (row: PnlRow) => row.ts ? new Date(row.ts).toLocaleString() : '-', sortable: true, className: 'text-silver text-sm' },
-    { header: 'Symbol', accessor: 'symbol' as keyof PnlRow, sortable: true },
-    { header: 'Strategy', accessor: 'strategy' as keyof PnlRow, className: 'text-silver' },
-    { header: 'Qty', accessor: 'qty' as keyof PnlRow, className: 'tabular-nums' },
-    { header: 'Entry', accessor: (row: PnlRow) => `$${(row.entry ?? 0).toFixed(2)}`, className: 'tabular-nums' },
-    { header: 'Exit', accessor: (row: PnlRow) => row.exit != null ? `$${row.exit.toFixed(2)}` : '-', className: 'tabular-nums text-silver' },
-    {
-      header: 'Realized',
-      accessor: (row: PnlRow) => {
-        const realized = row.realized ?? 0;
-        const isProfit = realized >= 0;
-        return (
-          <span className={isProfit ? 'font-medium' : 'font-medium'}>
-            {isProfit ? '+' : ''}${realized.toFixed(2)}
-          </span>
-        );
-      },
-      className: 'tabular-nums'
-    },
-    { header: 'Notes', accessor: (row: PnlRow) => row.notes || '-', className: 'text-silver text-sm' },
+    { header: 'Delta', accessor: (row: Position) => formatDelta(row.delta), className: 'tabular-nums text-silver' },
+    { header: 'Margin', accessor: (row: Position) => toNum(row.margin) > 0 ? formatCurrency(row.margin) : '-', className: 'tabular-nums text-silver' },
   ];
 
   return (
@@ -129,39 +127,59 @@ export function Portfolio() {
         <div className="mb-6">
           <h1 className="text-3xl font-bold tracking-wide">Portfolio</h1>
           <p className="text-silver text-sm mt-1">
-            {account?.accountNumber ? `Account: ${account.accountNumber}` : 'Loading account data...'}
+            {accountError
+              ? 'Connection error - unable to load account'
+              : account?.accountNumber
+                ? `Account: ${account.accountNumber}`
+                : 'Loading account data...'}
           </p>
         </div>
+
+        {/* IBKR Connection Error Alert */}
+        {accountError && (
+          <div className="bg-red-900/20 border border-red-500/50 p-4 rounded-lg flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <span className="text-red-400 font-medium">IBKR Connection Error</span>
+              <span className="text-silver text-sm">Unable to fetch account data. The SSO session may have expired.</span>
+            </div>
+            <button
+              onClick={() => refetchAccount()}
+              className="px-4 py-2 bg-red-500 hover:bg-red-600 text-white rounded text-sm font-medium transition-colors"
+            >
+              Retry Connection
+            </button>
+          </div>
+        )}
 
         {/* Account Summary Cards - Row 1: Core Values */}
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <StatCard
             label="Portfolio Value"
-            value={accountLoading ? 'Loading...' : formatCurrency(account?.portfolioValue)}
+            value={accountError ? '--' : accountLoading ? 'Loading...' : formatCurrency(account?.portfolioValue)}
             icon={<TrendingUp className="w-5 h-5 text-blue-500" />}
             testId="portfolio-value"
           />
           <StatCard
             label="Buying Power"
-            value={accountLoading ? 'Loading...' : formatCurrency(account?.buyingPower)}
+            value={accountError ? '--' : accountLoading ? 'Loading...' : formatCurrency(account?.buyingPower)}
             icon={<DollarSign className="w-5 h-5 text-green-500" />}
             testId="buying-power"
           />
           <StatCard
             label="Total Cash"
-            value={accountLoading ? 'Loading...' : formatCurrency(account?.totalCash)}
+            value={accountError ? '--' : accountLoading ? 'Loading...' : formatCurrency(account?.totalCash)}
             icon={<Wallet className="w-5 h-5 text-emerald-500" />}
             testId="total-cash"
           />
           <StatCard
             label="Settled Cash"
-            value={accountLoading ? 'Loading...' : formatCurrency(account?.settledCash)}
+            value={accountError ? '--' : accountLoading ? 'Loading...' : formatCurrency(account?.settledCash)}
             icon={<Banknote className="w-5 h-5 text-teal-500" />}
             testId="settled-cash"
           />
           <StatCard
             label="Day P&L"
-            value={accountLoading ? 'Loading...' : formatCurrency(account?.dayPnL, true)}
+            value={accountError ? '--' : accountLoading ? 'Loading...' : formatCurrency(account?.dayPnL, true)}
             icon={<ArrowUpDown className={`w-5 h-5 ${(account?.dayPnL ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}`} />}
             testId="day-pnl"
           />
@@ -171,31 +189,31 @@ export function Portfolio() {
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <StatCard
             label="Position Value"
-            value={accountLoading ? 'Loading...' : formatCurrency(account?.grossPositionValue)}
+            value={accountError ? '--' : accountLoading ? 'Loading...' : formatCurrency(account?.grossPositionValue)}
             icon={<BarChart3 className="w-5 h-5 text-indigo-500" />}
             testId="position-value"
           />
           <StatCard
             label="Initial Margin"
-            value={accountLoading ? 'Loading...' : formatCurrency(account?.marginUsed)}
+            value={accountError ? '--' : accountLoading ? 'Loading...' : formatCurrency(account?.marginUsed)}
             icon={<Shield className="w-5 h-5 text-yellow-500" />}
             testId="margin-used"
           />
           <StatCard
             label="Maint. Margin"
-            value={accountLoading ? 'Loading...' : formatCurrency(account?.maintenanceMargin)}
+            value={accountError ? '--' : accountLoading ? 'Loading...' : formatCurrency(account?.maintenanceMargin)}
             icon={<Shield className="w-5 h-5 text-orange-500" />}
             testId="maint-margin"
           />
           <StatCard
             label="Cushion"
-            value={accountLoading ? 'Loading...' : formatPercent(account?.cushion)}
+            value={accountError ? '--' : accountLoading ? 'Loading...' : formatPercent(account?.cushion)}
             icon={<Gauge className={`w-5 h-5 ${(account?.cushion ?? 100) > 50 ? 'text-green-500' : (account?.cushion ?? 100) > 20 ? 'text-yellow-500' : 'text-red-500'}`} />}
             testId="cushion"
           />
           <StatCard
             label="Leverage"
-            value={accountLoading ? 'Loading...' : formatMultiplier(account?.leverage)}
+            value={accountError ? '--' : accountLoading ? 'Loading...' : formatMultiplier(account?.leverage)}
             icon={<Scale className={`w-5 h-5 ${(account?.leverage ?? 0) < 2 ? 'text-green-500' : (account?.leverage ?? 0) < 4 ? 'text-yellow-500' : 'text-red-500'}`} />}
             testId="leverage"
           />
@@ -205,60 +223,31 @@ export function Portfolio() {
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <StatCard
             label="Net Delta"
-            value={accountLoading ? 'Loading...' : formatDelta(account?.netDelta)}
+            value={accountError ? '--' : accountLoading ? 'Loading...' : formatDelta(account?.netDelta)}
             icon={<Activity className="w-5 h-5 text-purple-500" />}
             testId="net-delta"
           />
         </div>
 
-        {/* Tabbed Content: Positions & History */}
-        <Tabs defaultValue="positions" className="w-full">
-          <TabsList className="bg-charcoal border border-white/10 mb-4">
-            <TabsTrigger value="positions" className="data-[state=active]:bg-white data-[state=active]:text-black">
-              Positions ({positions?.length || 0})
-            </TabsTrigger>
-            <TabsTrigger value="history" className="data-[state=active]:bg-white data-[state=active]:text-black">
-              History ({trades?.length || 0})
-            </TabsTrigger>
-          </TabsList>
-
-          <TabsContent value="positions">
-            <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
-              <h3 className="text-lg font-semibold mb-4">Open Positions</h3>
-              {positions && positions.length > 0 ? (
-                <DataTable
-                  data={positions}
-                  columns={columns}
-                  testId="table-portfolio-positions"
-                />
-              ) : (
-                <div className="text-center py-12">
-                  <p className="text-silver">No open positions</p>
-                </div>
-              )}
+        {/* Open Positions */}
+        <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
+          <div className="flex items-center justify-between mb-4">
+            <h3 className="text-lg font-semibold">Open Positions</h3>
+            <span className="text-sm text-silver">{positions?.length || 0} positions</span>
+          </div>
+          {positions && positions.length > 0 ? (
+            <DataTable
+              data={positions}
+              columns={columns}
+              testId="table-portfolio-positions"
+            />
+          ) : (
+            <div className="text-center py-12">
+              <p className="text-silver">No open positions</p>
+              <p className="text-silver text-sm mt-1">Positions will appear here when you have active trades</p>
             </div>
-          </TabsContent>
-
-          <TabsContent value="history">
-            <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold">Execution Log</h3>
-                <span className="text-sm text-silver tabular-nums">{trades?.length || 0} trades</span>
-              </div>
-              {trades && trades.length > 0 ? (
-                <DataTable
-                  data={trades}
-                  columns={tradesColumns}
-                  testId="table-trades"
-                />
-              ) : (
-                <div className="text-center py-12">
-                  <p className="text-silver">No trades yet</p>
-                </div>
-              )}
-            </div>
-          </TabsContent>
-        </Tabs>
+          )}
+        </div>
       </div>
     </div>
   );
