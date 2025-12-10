@@ -4,7 +4,7 @@ import { getPositions } from '@/lib/api';
 import { DataTable } from '@/components/DataTable';
 import { LeftNav } from '@/components/LeftNav';
 import { StatCard } from '@/components/StatCard';
-import { DollarSign, TrendingUp, Shield, ArrowUpDown, Wallet, Banknote, BarChart3, Scale, Gauge } from 'lucide-react';
+import { DollarSign, TrendingUp, Shield, ArrowUpDown, Wallet, Banknote, BarChart3, Scale, Gauge, AlertTriangle, Calendar, Activity, Clock } from 'lucide-react';
 import type { Position } from '@shared/types';
 
 // Universal type coercion helper - handles strings, nulls, objects from IBKR
@@ -46,6 +46,21 @@ const formatCurrency = (value: any, includeSign = false): string => {
   return formatted;
 };
 
+// USD to HKD conversion rate
+const USD_TO_HKD = 7.8;
+
+// Helper to format HKD values (converts from USD)
+const formatHKD = (value: any, includeSign = false): string => {
+  const usd = toNum(value);
+  if (value === null || value === undefined) return '-';
+  const hkd = usd * USD_TO_HKD;
+  const formatted = `$${Math.abs(hkd).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  if (includeSign) {
+    return hkd >= 0 ? `+${formatted}` : `-${formatted.substring(1)}`;
+  }
+  return formatted;
+};
+
 // Helper to format percentage values - handles strings, nulls, objects (3 decimal places)
 const formatPercent = (value: any): string => {
   if (value === null || value === undefined) return '-';
@@ -62,6 +77,21 @@ const formatMultiplier = (value: any): string => {
 const formatDelta = (value: any): string => {
   if (value === null || value === undefined) return '-';
   return toNum(value).toFixed(2);
+};
+
+// Helper to format Greek values (gamma, theta, vega) with appropriate precision
+const formatGreek = (value: any): string => {
+  if (value === null || value === undefined) return '-';
+  const num = toNum(value);
+  if (Math.abs(num) < 0.01) return num.toFixed(4);
+  if (Math.abs(num) < 1) return num.toFixed(3);
+  return num.toFixed(2);
+};
+
+// Helper to format days with decimal
+const formatDays = (value: any): string => {
+  if (value === null || value === undefined) return '-';
+  return `${toNum(value).toFixed(1)} days`;
 };
 
 // Standard normal CDF approximation (Abramowitz and Stegun)
@@ -82,6 +112,63 @@ const normalCDF = (x: number): number => {
   return 0.5 * (1.0 + sign * y);
 };
 
+// Standard normal PDF for vega calculation
+const normalPDF = (x: number): number => {
+  return Math.exp(-0.5 * x * x) / Math.sqrt(2 * Math.PI);
+};
+
+// Black-Scholes option price calculation
+const blackScholesPrice = (
+  S: number,      // Underlying price
+  K: number,      // Strike price
+  T: number,      // Time to expiry (years)
+  r: number,      // Risk-free rate
+  sigma: number,  // Volatility (IV)
+  isCall: boolean
+): number => {
+  const d1 = (Math.log(S / K) + (r + (sigma * sigma) / 2) * T) / (sigma * Math.sqrt(T));
+  const d2 = d1 - sigma * Math.sqrt(T);
+
+  if (isCall) {
+    return S * normalCDF(d1) - K * Math.exp(-r * T) * normalCDF(d2);
+  } else {
+    return K * Math.exp(-r * T) * normalCDF(-d2) - S * normalCDF(-d1);
+  }
+};
+
+// Calculate implied volatility using Newton-Raphson method
+const calculateImpliedVolatility = (
+  marketPrice: number,  // Option market price
+  S: number,            // Underlying price
+  K: number,            // Strike price
+  T: number,            // Time to expiry
+  r: number,            // Risk-free rate
+  isCall: boolean
+): number => {
+  // Initial guess
+  let sigma = 0.5;
+  const tolerance = 0.0001;
+  const maxIterations = 100;
+
+  for (let i = 0; i < maxIterations; i++) {
+    const price = blackScholesPrice(S, K, T, r, sigma, isCall);
+    const diff = price - marketPrice;
+
+    if (Math.abs(diff) < tolerance) break;
+
+    // Vega calculation for Newton-Raphson
+    const d1 = (Math.log(S / K) + (r + (sigma * sigma) / 2) * T) / (sigma * Math.sqrt(T));
+    const vega = S * Math.sqrt(T) * normalPDF(d1);
+
+    if (vega < 0.0001) break;  // Avoid division by near-zero
+
+    sigma = sigma - diff / (vega * 100);  // Adjust for vega scaling
+    sigma = Math.max(0.01, Math.min(sigma, 5.0));  // Clamp to reasonable range
+  }
+
+  return sigma;
+};
+
 // Extract underlying symbol from option symbol
 // Input: "ARM   241212P00135000" -> Output: "ARM"
 const getUnderlyingSymbol = (optionSymbol: string): string | null => {
@@ -90,7 +177,7 @@ const getUnderlyingSymbol = (optionSymbol: string): string | null => {
 };
 
 // Black-Scholes delta estimation for options
-// Requires the actual underlying price to calculate correctly
+// Calculates IV from option market price, then computes delta
 const estimateDelta = (position: Position, underlyingPrice: number): number | null => {
   if (!underlyingPrice || underlyingPrice <= 0) return null;
 
@@ -112,11 +199,20 @@ const estimateDelta = (position: Position, underlyingPrice: number): number | nu
 
   const timeToExpiry = Math.max((expDate.getTime() - now.getTime()) / (365.25 * 24 * 60 * 60 * 1000), 0.001);
 
-  // Use position IV if available, otherwise default to 30%
-  const iv = toNum(position.iv) > 0 ? toNum(position.iv) : 0.30;
-
   // Risk-free rate (approximate)
   const r = 0.05;
+
+  // Get option market price and calculate IV from it
+  const optionPrice = toNum(position.mark);
+  let iv: number;
+
+  if (optionPrice > 0) {
+    // Calculate implied volatility from market price using Newton-Raphson
+    iv = calculateImpliedVolatility(optionPrice, underlyingPrice, strike, timeToExpiry, r, isCall);
+  } else {
+    // Fallback to 50% if no market price available
+    iv = 0.50;
+  }
 
   // Black-Scholes d1 calculation
   const d1 = (Math.log(underlyingPrice / strike) + (r + (iv * iv) / 2) * timeToExpiry) / (iv * Math.sqrt(timeToExpiry));
@@ -134,6 +230,119 @@ const estimateDelta = (position: Position, underlyingPrice: number): number | nu
 
   return delta;
 };
+
+// Calculate all Greeks for a position using Black-Scholes
+// Returns { delta, gamma, theta, vega } for per-contract values
+const calculateAllGreeks = (
+  position: Position,
+  underlyingPrice: number
+): { delta: number; gamma: number; theta: number; vega: number } | null => {
+  if (!underlyingPrice || underlyingPrice <= 0) return null;
+
+  // Parse option symbol to extract strike and type
+  const symbol = position.symbol || '';
+  const match = symbol.match(/^([A-Z]+)\s+(\d{2})(\d{2})(\d{2})([PC])(\d+)$/);
+  if (!match) return null; // Not an option
+
+  const [, , yy, mm, dd, optionType, strikeRaw] = match;
+  const strike = parseInt(strikeRaw) / 1000;
+  const isCall = optionType === 'C';
+
+  // Calculate time to expiration
+  const now = new Date();
+  const expYear = 2000 + parseInt(yy);
+  const expMonth = parseInt(mm) - 1;
+  const expDay = parseInt(dd);
+  const expDate = new Date(expYear, expMonth, expDay, 16, 0, 0); // 4 PM ET
+
+  const timeToExpiry = Math.max((expDate.getTime() - now.getTime()) / (365.25 * 24 * 60 * 60 * 1000), 0.001);
+
+  // Risk-free rate (approximate)
+  const r = 0.05;
+
+  // Get option market price and calculate IV from it
+  const optionPrice = toNum(position.mark);
+  let iv: number;
+
+  if (optionPrice > 0) {
+    iv = calculateImpliedVolatility(optionPrice, underlyingPrice, strike, timeToExpiry, r, isCall);
+  } else {
+    iv = 0.50; // Fallback
+  }
+
+  // Black-Scholes calculations
+  const sqrtT = Math.sqrt(timeToExpiry);
+  const d1 = (Math.log(underlyingPrice / strike) + (r + (iv * iv) / 2) * timeToExpiry) / (iv * sqrtT);
+  const d2 = d1 - iv * sqrtT;
+  const nd1 = normalPDF(d1);
+
+  // Delta (per contract, 100 shares)
+  let delta = normalCDF(d1);
+  if (!isCall) {
+    delta = delta - 1; // Put delta
+  }
+
+  // Gamma = N'(d1) / (S * sigma * sqrt(T)) - same for calls and puts
+  const gamma = nd1 / (underlyingPrice * iv * sqrtT);
+
+  // Theta (per day, negative for long options)
+  // Theta = -(S * N'(d1) * sigma) / (2 * sqrt(T)) - r * K * e^(-rT) * N(d2) for calls
+  // Theta = -(S * N'(d1) * sigma) / (2 * sqrt(T)) + r * K * e^(-rT) * N(-d2) for puts
+  const discountFactor = Math.exp(-r * timeToExpiry);
+  let theta: number;
+  if (isCall) {
+    theta = -(underlyingPrice * nd1 * iv) / (2 * sqrtT) - r * strike * discountFactor * normalCDF(d2);
+  } else {
+    theta = -(underlyingPrice * nd1 * iv) / (2 * sqrtT) + r * strike * discountFactor * normalCDF(-d2);
+  }
+  theta = theta / 365; // Convert to daily
+
+  // Vega = S * sqrt(T) * N'(d1) / 100 (per 1% IV change)
+  const vega = underlyingPrice * sqrtT * nd1 / 100;
+
+  // Adjust signs for short positions
+  const qty = Math.abs(toNum(position.qty));
+  const isShort = position.side === 'SELL';
+
+  return {
+    delta: (isShort ? -delta : delta) * qty,
+    gamma: gamma * qty, // Gamma is always positive
+    theta: (isShort ? -theta : theta) * qty, // Short positions earn theta
+    vega: (isShort ? -vega : vega) * qty,
+  };
+};
+
+// Parse strike price from option symbol
+const parseStrikeFromSymbol = (symbol: string): number => {
+  const match = symbol.match(/^([A-Z]+)\s+(\d{2})(\d{2})(\d{2})([PC])(\d+)$/);
+  if (!match) return 0;
+  return parseInt(match[6]) / 1000;
+};
+
+// Calculate days to expiry from option symbol
+const calculateDTE = (symbol: string): number => {
+  const match = symbol.match(/^([A-Z]+)\s+(\d{2})(\d{2})(\d{2})([PC])(\d+)$/);
+  if (!match) return 0;
+
+  const [, , yy, mm, dd] = match;
+  const now = new Date();
+  const expYear = 2000 + parseInt(yy);
+  const expMonth = parseInt(mm) - 1;
+  const expDay = parseInt(dd);
+  const expDate = new Date(expYear, expMonth, expDay, 16, 0, 0);
+
+  const msPerDay = 24 * 60 * 60 * 1000;
+  return Math.max(0, (expDate.getTime() - now.getTime()) / msPerDay);
+};
+
+// Paper trade type for max loss calculations
+interface PaperTrade {
+  id: string;
+  symbol: string;
+  status: string;
+  maxLoss: string | number;
+  stopLossPrice: string | number;
+}
 
 // Helper to parse and format IBKR option symbols
 // Input: "ARM   241212P00135000" -> Output: "ARM 12/12 $135 PUT"
@@ -155,6 +364,7 @@ export function Portfolio() {
   const { data: positions } = useQuery<Position[]>({
     queryKey: ['/api/positions'],
     queryFn: getPositions,
+    refetchInterval: 30000, // Sync with account data refresh
   });
 
   const { data: account, isLoading: accountLoading, isError: accountError, refetch: refetchAccount } = useQuery<AccountInfo>({
@@ -205,6 +415,85 @@ export function Portfolio() {
     return prices;
   }, [underlyingQueries]);
 
+  // Fetch paper trades for max loss data
+  const { data: paperTrades } = useQuery<PaperTrade[]>({
+    queryKey: ['/api/paper-trades/open'],
+    queryFn: async () => {
+      const res = await fetch('/api/paper-trades/open', { credentials: 'include' });
+      if (!res.ok) return [];
+      return res.json();
+    },
+    refetchInterval: 30000,
+  });
+
+  // Calculate position metrics including Greeks and risk values
+  const positionMetrics = useMemo(() => {
+    if (!positions || positions.length === 0) {
+      return {
+        maxLoss: 0,
+        impliedNotional: 0,
+        avgDTE: 0,
+        netDelta: 0,
+        netGamma: 0,
+        netTheta: 0,
+        netVega: 0,
+        positionGreeks: new Map<string, { delta: number; gamma: number; theta: number; vega: number }>(),
+      };
+    }
+
+    let totalMaxLoss = 0;
+    let totalNotional = 0;
+    let weightedDTE = 0;
+    let totalWeight = 0;
+    let netDelta = 0, netGamma = 0, netTheta = 0, netVega = 0;
+    const positionGreeks = new Map<string, { delta: number; gamma: number; theta: number; vega: number }>();
+
+    positions.forEach(p => {
+      const underlying = getUnderlyingSymbol(p.symbol || '');
+      const price = underlying ? underlyingPrices[underlying] : 0;
+      const greeks = calculateAllGreeks(p, price);
+
+      if (greeks) {
+        netDelta += greeks.delta;
+        netGamma += greeks.gamma;
+        netTheta += greeks.theta;
+        netVega += greeks.vega;
+        positionGreeks.set(p.id, greeks);
+      }
+
+      // Match with paper trade for max loss
+      if (paperTrades && underlying) {
+        const matchedTrade = paperTrades.find(pt =>
+          pt.symbol === underlying && pt.status === 'open'
+        );
+        if (matchedTrade) {
+          totalMaxLoss += toNum(matchedTrade.maxLoss);
+        }
+      }
+
+      // Implied notional: qty * strike * 100
+      const strike = parseStrikeFromSymbol(p.symbol || '');
+      const qty = Math.abs(toNum(p.qty));
+      totalNotional += qty * strike * 100;
+
+      // Weighted DTE
+      const dte = calculateDTE(p.symbol || '');
+      totalWeight += qty;
+      weightedDTE += dte * qty;
+    });
+
+    return {
+      maxLoss: totalMaxLoss,
+      impliedNotional: totalNotional,
+      avgDTE: totalWeight > 0 ? weightedDTE / totalWeight : 0,
+      netDelta,
+      netGamma,
+      netTheta,
+      netVega,
+      positionGreeks,
+    };
+  }, [positions, underlyingPrices, paperTrades]);
+
   // Positions table columns - all fields use accessor functions to avoid object rendering
   const columns = [
     { header: 'Symbol', accessor: (row: Position) => formatOptionSymbol(row.symbol || ''), sortable: true },
@@ -213,13 +502,14 @@ export function Portfolio() {
     { header: 'Entry', accessor: (row: Position) => `$${toNum(row.avg).toFixed(2)}`, className: 'tabular-nums' },
     { header: 'Mark', accessor: (row: Position) => `$${toNum(row.mark).toFixed(2)}`, className: 'tabular-nums' },
     {
-      header: 'P/L (USD)',
+      header: 'P/L (HKD)',
       accessor: (row: Position) => {
         const upl = toNum(row.upl);
-        const isProfit = upl >= 0;
+        const hkd = upl * USD_TO_HKD;
+        const isProfit = hkd >= 0;
         return (
           <span className={isProfit ? 'text-green-400 font-medium' : 'text-red-400 font-medium'}>
-            {isProfit ? '+' : ''}{formatCurrency(upl)}
+            {isProfit ? '+' : ''}{formatHKD(upl)}
           </span>
         );
       },
@@ -228,7 +518,11 @@ export function Portfolio() {
     {
       header: 'Delta',
       accessor: (row: Position) => {
-        // Use IBKR delta if available and non-zero
+        // Use calculated delta from positionMetrics
+        const greeks = positionMetrics.positionGreeks.get(row.id);
+        if (greeks) return formatDelta(greeks.delta);
+
+        // Fallback to IBKR delta if available
         const ibkrDelta = toNum(row.delta);
         if (ibkrDelta !== 0) return formatDelta(ibkrDelta);
 
@@ -237,6 +531,34 @@ export function Portfolio() {
         const underlyingPrice = underlying ? underlyingPrices[underlying] : 0;
         const estimated = estimateDelta(row, underlyingPrice);
         return estimated !== null ? formatDelta(estimated) : '-';
+      },
+      className: 'tabular-nums text-silver'
+    },
+    {
+      header: 'Gamma',
+      accessor: (row: Position) => {
+        const greeks = positionMetrics.positionGreeks.get(row.id);
+        return greeks ? formatGreek(greeks.gamma) : '-';
+      },
+      className: 'tabular-nums text-silver'
+    },
+    {
+      header: 'Theta',
+      accessor: (row: Position) => {
+        const greeks = positionMetrics.positionGreeks.get(row.id);
+        if (!greeks) return '-';
+        // Format theta as currency (daily $ value)
+        const theta = greeks.theta;
+        const formatted = `$${Math.abs(theta).toFixed(2)}`;
+        return theta >= 0 ? `+${formatted}` : `-${formatted.substring(1)}`;
+      },
+      className: 'tabular-nums text-silver'
+    },
+    {
+      header: 'Vega',
+      accessor: (row: Position) => {
+        const greeks = positionMetrics.positionGreeks.get(row.id);
+        return greeks ? formatGreek(greeks.vega) : '-';
       },
       className: 'tabular-nums text-silver'
     },
@@ -301,7 +623,7 @@ export function Portfolio() {
           />
           <StatCard
             label="Day P&L"
-            value={accountError ? '--' : accountLoading ? 'Loading...' : formatCurrency(account?.dayPnL, true)}
+            value={accountError ? '--' : accountLoading ? 'Loading...' : formatHKD(account?.dayPnL, true)}
             icon={<ArrowUpDown className={`w-5 h-5 ${(account?.dayPnL ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}`} />}
             testId="day-pnl"
           />
@@ -341,6 +663,34 @@ export function Portfolio() {
           />
         </div>
 
+        {/* Account Summary Cards - Row 3: Position Risk Metrics */}
+        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+          <StatCard
+            label="Max Loss"
+            value={positionMetrics.maxLoss > 0 ? formatCurrency(positionMetrics.maxLoss) : '--'}
+            icon={<AlertTriangle className="w-5 h-5 text-red-500" />}
+            testId="max-loss"
+          />
+          <StatCard
+            label="Margin Used"
+            value={accountError ? '--' : accountLoading ? 'Loading...' : formatCurrency(account?.marginUsed)}
+            icon={<Shield className="w-5 h-5 text-purple-500" />}
+            testId="margin-used-row3"
+          />
+          <StatCard
+            label="Implied Notional"
+            value={positionMetrics.impliedNotional > 0 ? formatCurrency(positionMetrics.impliedNotional) : '--'}
+            icon={<Activity className="w-5 h-5 text-cyan-500" />}
+            testId="implied-notional"
+          />
+          <StatCard
+            label="Days to Expiry"
+            value={positionMetrics.avgDTE > 0 ? formatDays(positionMetrics.avgDTE) : '--'}
+            icon={<Calendar className="w-5 h-5 text-amber-500" />}
+            testId="days-to-expiry"
+          />
+        </div>
+
         {/* Open Positions */}
         <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
           <div className="flex items-center justify-between mb-4">
@@ -359,6 +709,40 @@ export function Portfolio() {
             </div>
           )}
         </div>
+
+        {/* Net Greeks Summary */}
+        {positions && positions.length > 0 && (
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <StatCard
+              label="Net Delta"
+              value={formatDelta(positionMetrics.netDelta)}
+              icon={<TrendingUp className={`w-5 h-5 ${positionMetrics.netDelta >= 0 ? 'text-green-500' : 'text-red-500'}`} />}
+              testId="net-delta"
+            />
+            <StatCard
+              label="Net Gamma"
+              value={formatGreek(positionMetrics.netGamma)}
+              icon={<Activity className="w-5 h-5 text-blue-500" />}
+              testId="net-gamma"
+            />
+            <StatCard
+              label="Net Theta"
+              value={(() => {
+                const theta = positionMetrics.netTheta;
+                const formatted = `$${Math.abs(theta).toFixed(2)}`;
+                return theta >= 0 ? `+${formatted}` : `-${formatted.substring(1)}`;
+              })()}
+              icon={<Clock className={`w-5 h-5 ${positionMetrics.netTheta >= 0 ? 'text-green-500' : 'text-red-500'}`} />}
+              testId="net-theta"
+            />
+            <StatCard
+              label="Net Vega"
+              value={formatGreek(positionMetrics.netVega)}
+              icon={<BarChart3 className={`w-5 h-5 ${positionMetrics.netVega >= 0 ? 'text-green-500' : 'text-red-500'}`} />}
+              testId="net-vega"
+            />
+          </div>
+        )}
       </div>
     </div>
   );

@@ -8,7 +8,9 @@ export type Position = {
   upl: number;
   iv: number;
   delta: number;
+  gamma: number;
   theta: number;
+  vega: number;
   margin: number;
   openedAt: string;
   status?: 'OPEN' | 'CLOSED' | 'EXPIRED' | 'EXERCISED';

@@ -18,7 +18,7 @@ import {
   type SpreadConfig
 } from "@shared/schema";
 import { db } from "./db";
-import { desc } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { z } from "zod";
 import cookieParser from "cookie-parser";
 import jwt from "jsonwebtoken";
@@ -28,6 +28,7 @@ import ibkrRoutes from "./ibkrRoutes.js";
 import engineRoutes from "./engineRoutes.js";
 import marketRoutes from "./marketRoutes.js";
 import jobRoutes, { initializeJobsSystem } from "./jobRoutes.js";
+import defiRoutes from "./defiRoutes.js";
 import { getTodayOpeningSnapshot } from "./services/navSnapshot.js";
 
 // Helper function to get session from request
@@ -63,6 +64,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Register Jobs routes
   app.use('/api/jobs', jobRoutes);
+
+  // Register DeFi routes
+  app.use('/api/defi', defiRoutes);
 
   // Initialize jobs system (register handlers, seed default jobs)
   await initializeJobsSystem();
@@ -294,7 +298,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Option chains (via provider) — express v5 does not allow 
+  // Paper trades - open positions with stop loss info
+  app.get('/api/paper-trades/open', async (_req, res) => {
+    try {
+      if (!db) {
+        return res.json([]);
+      }
+      const openTrades = await db.select().from(paperTrades)
+        .where(eq(paperTrades.status, 'open'))
+        .orderBy(desc(paperTrades.createdAt));
+      res.json(openTrades);
+    } catch (error: any) {
+      console.error('[API] /api/paper-trades/open: FAILED -', error?.message || error);
+      res.status(500).json({ error: 'Failed to fetch paper trades' });
+    }
+  });
+
+  // Option chains (via provider) — express v5 does not allow
   // an optional param with a preceding slash; register two routes.
   const optionsChainHandler = async (req: any, res: any) => {
     try {
