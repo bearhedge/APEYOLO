@@ -177,62 +177,36 @@ export async function getPreviousNavSnapshot(): Promise<{ date: string; nav: num
 // ============================================
 
 /**
- * Register the NAV snapshot job handlers (opening and closing)
+ * Register the NAV snapshot job handler (opening only)
  */
 export function initNavSnapshotJob(): void {
-  console.log('[NavSnapshot] Initializing job handlers...');
+  console.log('[NavSnapshot] Initializing job handler...');
 
-  // Closing snapshot (4:15 PM ET) - original
-  registerJobHandler({
-    id: 'nav-snapshot',
-    name: 'NAV Snapshot (Closing)',
-    description: 'Capture end-of-day NAV for Day P&L calculation',
-    execute: () => captureNavSnapshot('closing'),
-  });
-
-  // Opening snapshot (9:30 AM ET) - new
+  // Opening snapshot (9:30 AM ET) - for Day P&L calculation
   registerJobHandler({
     id: 'nav-snapshot-opening',
     name: 'NAV Snapshot (Opening)',
-    description: 'Capture market-open NAV for intraday Day P&L calculation',
+    description: 'Capture market-open NAV for Day P&L calculation',
     execute: () => captureNavSnapshot('opening'),
   });
 
-  console.log('[NavSnapshot] Job handlers registered (opening + closing)');
+  console.log('[NavSnapshot] Job handler registered');
 }
 
 /**
- * Create the nav-snapshot jobs in the database if they don't exist
+ * Create the nav-snapshot-opening job in the database if it doesn't exist
  */
 export async function ensureNavSnapshotJob(): Promise<void> {
   if (!db) return;
 
   try {
-    // Ensure closing snapshot job
-    const [existingClosing] = await db.select().from(jobs).where(eq(jobs.id, 'nav-snapshot')).limit(1);
-    if (!existingClosing) {
-      console.log('[NavSnapshot] Creating nav-snapshot (closing) job in database...');
-      await db.insert(jobs).values({
-        id: 'nav-snapshot',
-        name: 'NAV Snapshot (Closing)',
-        description: 'Capture end-of-day NAV for Day P&L calculation',
-        type: 'nav-snapshot',
-        schedule: '15 16 * * 1-5', // 4:15 PM ET on weekdays (after market close)
-        timezone: 'America/New_York',
-        enabled: true,
-        config: { snapshotType: 'closing' },
-      });
-      console.log('[NavSnapshot] Closing snapshot job created');
-    }
-
-    // Ensure opening snapshot job
-    const [existingOpening] = await db.select().from(jobs).where(eq(jobs.id, 'nav-snapshot-opening')).limit(1);
-    if (!existingOpening) {
+    const [existing] = await db.select().from(jobs).where(eq(jobs.id, 'nav-snapshot-opening')).limit(1);
+    if (!existing) {
       console.log('[NavSnapshot] Creating nav-snapshot-opening job in database...');
       await db.insert(jobs).values({
         id: 'nav-snapshot-opening',
         name: 'NAV Snapshot (Opening)',
-        description: 'Capture market-open NAV for intraday Day P&L calculation',
+        description: 'Capture market-open NAV for Day P&L calculation',
         type: 'nav-snapshot',
         schedule: '30 9 * * 1-5', // 9:30 AM ET on weekdays (market open)
         timezone: 'America/New_York',
@@ -242,6 +216,6 @@ export async function ensureNavSnapshotJob(): Promise<void> {
       console.log('[NavSnapshot] Opening snapshot job created');
     }
   } catch (err) {
-    console.warn('[NavSnapshot] Could not ensure jobs exist:', err);
+    console.warn('[NavSnapshot] Could not ensure job exists:', err);
   }
 }

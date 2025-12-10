@@ -265,28 +265,25 @@ router.post('/:id/run', async (req: Request, res: Response) => {
 
 /**
  * Initialize jobs system on server startup
+ *
+ * Active jobs:
+ * - nav-snapshot-opening (9:30 AM ET) - Day P&L baseline
+ * - 0dte-position-manager (3:55 PM ET) - Close risky 0DTE positions
+ * - economic-calendar-refresh (monthly) - FRED data
  */
 export async function initializeJobsSystem(): Promise<void> {
   console.log('[JobRoutes] Initializing jobs system...');
 
-  // Register job handlers
-  const { initializeOptionChainCaptureJob } = await import('./services/jobs/optionChainCapture');
-  initializeOptionChainCaptureJob();
-
+  // Economic calendar refresh (monthly FRED data)
   const { initializeEconomicCalendarRefreshJob } = await import('./services/jobs/economicCalendarRefresh');
   initializeEconomicCalendarRefreshJob();
 
-  // Initialize trade monitor job
-  const { initTradeMonitorJob, ensureTradeMonitorJob } = await import('./services/tradeMonitor');
-  initTradeMonitorJob();
-  await ensureTradeMonitorJob();
-
-  // Initialize NAV snapshot job
+  // NAV snapshot (opening only - for Day P&L)
   const { initNavSnapshotJob, ensureNavSnapshotJob } = await import('./services/navSnapshot');
   initNavSnapshotJob();
   await ensureNavSnapshotJob();
 
-  // Initialize 0DTE position manager job (3:55 PM ET safety net for expiring options)
+  // 0DTE position manager (3:55 PM ET safety net)
   const { init0dtePositionManagerJob, ensure0dtePositionManagerJob } = await import('./services/jobs/0dtePositionManager');
   init0dtePositionManagerJob();
   await ensure0dtePositionManagerJob();
