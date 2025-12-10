@@ -16,6 +16,63 @@ import type {
   QualityRating
 } from '../../shared/types/engine';
 
+// Expiration modes for different symbols
+export type ExpirationMode = '0DTE' | 'WEEKLY';
+
+/**
+ * Calculate expiration date based on mode
+ * @param mode - '0DTE' for same-day or 'WEEKLY' for next Friday
+ * @returns Expiration date
+ */
+export function getExpirationDate(mode: ExpirationMode): Date {
+  const now = new Date();
+  const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+
+  if (mode === '0DTE') {
+    // Same day expiration (4 PM ET close)
+    const expiration = new Date(et);
+    expiration.setHours(16, 0, 0, 0);
+    return expiration;
+  } else {
+    // WEEKLY: Next Friday (or today if Friday before market close)
+    const dayOfWeek = et.getDay(); // 0=Sun, 5=Fri
+    let daysUntilFriday: number;
+
+    if (dayOfWeek === 5) {
+      // It's Friday - use today if before 4PM ET
+      const currentHour = et.getHours();
+      if (currentHour < 16) {
+        daysUntilFriday = 0; // Today
+      } else {
+        daysUntilFriday = 7; // Next Friday
+      }
+    } else if (dayOfWeek === 6) {
+      // Saturday - next Friday is 6 days away
+      daysUntilFriday = 6;
+    } else {
+      // Sun-Thu: calculate days until Friday
+      daysUntilFriday = (5 - dayOfWeek + 7) % 7;
+      if (daysUntilFriday === 0) daysUntilFriday = 7; // Should not happen but safety check
+    }
+
+    const expiration = new Date(et);
+    expiration.setDate(expiration.getDate() + daysUntilFriday);
+    expiration.setHours(16, 0, 0, 0);
+    return expiration;
+  }
+}
+
+/**
+ * Get expiration date string in YYYYMMDD format for IBKR
+ */
+export function getExpirationString(mode: ExpirationMode): string {
+  const expDate = getExpirationDate(mode);
+  const year = expDate.getFullYear();
+  const month = String(expDate.getMonth() + 1).padStart(2, '0');
+  const day = String(expDate.getDate()).padStart(2, '0');
+  return `${year}${month}${day}`;
+}
+
 export interface Strike {
   strike: number;
   expiration: Date;
@@ -74,31 +131,52 @@ export interface RiskAssessment {
  * Assess risk based on VIX and determine target delta + position size
  *
  * Delta target is always 0.20 (strictly below 0.30)
+ * Contract sizing: Simple formula based on buying power / margin per contract
+ *
+ * @param vix - Current VIX level
+ * @param underlyingPrice - Underlying price in USD (for margin calculation)
+ * @param cash - Account cash/netLiquidation in HKD (NOT buying power)
+ * @param symbol - Underlying symbol (for ETF vs stock margin rate)
  */
-export function assessRisk(vix: number): RiskAssessment {
+export function assessRisk(
+  vix: number,
+  underlyingPrice?: number,
+  cash?: number,
+  symbol?: string
+): RiskAssessment {
   let riskRegime: RiskRegime;
   const targetDelta = 0.20; // Always target ~0.20 delta (OTM)
   let contracts: number;
   let reasoning: string;
 
+  // Determine VIX regime (for logging/display only - doesn't affect contract sizing)
   if (vix < 17) {
     riskRegime = 'LOW';
-    contracts = 2;
-    reasoning = `VIX ${vix.toFixed(1)} < 17: LOW risk (0.20 delta, 2 contracts)`;
   } else if (vix < 20) {
     riskRegime = 'NORMAL';
-    contracts = 2;
-    reasoning = `VIX ${vix.toFixed(1)} in 17-20: NORMAL risk (0.20 delta, 2 contracts)`;
   } else if (vix < 25) {
     riskRegime = 'ELEVATED';
-    contracts = 1;
-    reasoning = `VIX ${vix.toFixed(1)} in 20-25: ELEVATED risk (0.20 delta, 1 contract)`;
   } else if (vix < 35) {
     riskRegime = 'HIGH';
-    contracts = 1;
-    reasoning = `VIX ${vix.toFixed(1)} in 25-35: HIGH risk (0.20 delta, 1 contract)`;
   } else {
     riskRegime = 'EXTREME';
+  }
+
+  // Calculate contracts from cash (simple formula)
+  if (cash && underlyingPrice && symbol && underlyingPrice > 0 && cash > 0) {
+    contracts = calculateMaxContracts(underlyingPrice, cash, symbol);
+    const isETF = ETF_SYMBOLS.includes(symbol);
+    const marginRate = isETF ? ETF_MARGIN_RATE : STOCK_MARGIN_RATE;
+    const marginPerContract = underlyingPrice * 100 * USD_TO_HKD * marginRate;
+    reasoning = `VIX ${vix.toFixed(1)} (${riskRegime}): ${contracts} contracts (cash $${(cash/1000).toFixed(0)}k ÷ $${(marginPerContract/1000).toFixed(0)}k margin)`;
+  } else {
+    // Fallback: 2 for SPY, 5 for others (legacy behavior)
+    contracts = symbol === 'SPY' ? 2 : 5;
+    reasoning = `VIX ${vix.toFixed(1)} (${riskRegime}): ${contracts} contracts (fallback - no cash data)`;
+  }
+
+  // EXTREME VIX = no trading
+  if (riskRegime === 'EXTREME') {
     contracts = 0;
     reasoning = `VIX ${vix.toFixed(1)} >= 35: EXTREME risk → NO TRADE`;
   }
@@ -134,6 +212,51 @@ function getDeltaTargets(targetDelta: number): {
 const DEFAULT_TARGET_DELTA = 0.20;
 const PUT_DELTA_TARGET = { min: -0.25, max: -0.10, ideal: -0.20 };
 const CALL_DELTA_TARGET = { min: 0.10, max: 0.25, ideal: 0.20 };
+
+// =============================================================================
+// Dynamic Contract Sizing (HKD Account)
+// =============================================================================
+// Simple formula: max_contracts = floor(buying_power / margin_per_contract)
+// margin_per_contract = underlying_price × 100 × USD_TO_HKD × margin_rate
+
+const USD_TO_HKD = 7.8;
+
+// Margin rates calibrated from user-verified data:
+// ARM: 5 contracts @ $150k cash → $30k/contract → 27.5% margin
+// SPY: 2 contracts @ $150k cash @ ~$608 → $75k/contract → 15.5% margin
+const STOCK_MARGIN_RATE = 0.270;  // 27.0% for stocks (calibrated for ARM = 5 contracts)
+const ETF_MARGIN_RATE = 0.155;    // 15.5% for ETFs (calibrated for SPY = 2 contracts)
+const ETF_SYMBOLS = ['SPY', 'QQQ', 'IWM', 'DIA'];
+
+/**
+ * Calculate maximum contracts based on CASH and margin requirements
+ * Margin is calculated from cash (net liquidation), NOT buying power
+ *
+ * User-verified values (HKD account, ~$150k cash):
+ * - ARM $140: ~$30,000 HKD margin/contract → 5 contracts max
+ * - SPY $600: ~$75,000 HKD margin/contract → 2 contracts max
+ *
+ * @param underlyingPrice - Current price in USD
+ * @param cash - Account cash/netLiquidation in HKD (NOT buying power)
+ * @param symbol - Underlying symbol (to determine ETF vs stock margin rate)
+ * @returns Maximum number of contracts
+ */
+export function calculateMaxContracts(
+  underlyingPrice: number,
+  cash: number,
+  symbol: string
+): number {
+  const isETF = ETF_SYMBOLS.includes(symbol);
+  const marginRate = isETF ? ETF_MARGIN_RATE : STOCK_MARGIN_RATE;
+  const marginPerContract = underlyingPrice * 100 * USD_TO_HKD * marginRate;
+  const maxContracts = Math.floor(cash / marginPerContract);
+
+  console.log(`[Step3] calculateMaxContracts: ${symbol} @ $${underlyingPrice}, cash=$${cash.toLocaleString()} HKD`);
+  console.log(`[Step3]   isETF=${isETF}, marginRate=${marginRate}, marginPerContract=$${marginPerContract.toLocaleString()} HKD`);
+  console.log(`[Step3]   maxContracts=${maxContracts}`);
+
+  return maxContracts;
+}
 
 // Legacy constants for backward compatibility (absolute values)
 const TARGET_DELTA_MIN = 0.10;
@@ -565,7 +688,7 @@ interface FullOptionChainResult {
  * @param symbol - Underlying symbol (e.g., 'SPY')
  * @returns Full option chain with both PUT and CALL strikes
  */
-async function fetchFullOptionChain(symbol: string): Promise<FullOptionChainResult | null> {
+async function fetchFullOptionChain(symbol: string, expirationStr?: string): Promise<FullOptionChainResult | null> {
   const today = new Date();
   const expiration = new Date(today);
   expiration.setHours(16, 0, 0, 0); // 4 PM ET close
@@ -594,7 +717,8 @@ async function fetchFullOptionChain(symbol: string): Promise<FullOptionChainResu
 
     // Priority 2: Fall back to HTTP snapshot
     console.log(`[Step3] WebSocket cache unavailable, fetching HTTP snapshot for ${symbol}...`);
-    const chainData = await getOptionChainWithStrikes(symbol);
+    console.log(`[Step3] Requesting expiration: ${expirationStr || 'default (today)'}`);
+    const chainData = await getOptionChainWithStrikes(symbol, expirationStr);
 
     // Always capture diagnostics for debugging
     const diagnostics = chainData?.diagnostics;
@@ -684,15 +808,24 @@ async function fetchRealOptionChain(
  * @param direction - Trade direction from Step 2
  * @param underlyingPrice - Current price of underlying (used as fallback)
  * @param symbol - Underlying symbol (default: 'SPY')
+ * @param expirationMode - Expiration mode: '0DTE' for same-day, 'WEEKLY' for Friday
+ * @param cash - Account cash/netLiquidation in HKD (for margin-based contract sizing)
  * @returns Selected strikes with expected premium
  */
 export async function selectStrikes(
   direction: TradeDirection,
   underlyingPrice: number = 450, // Default SPY price for testing
-  symbol: string = 'SPY'
+  symbol: string = 'SPY',
+  expirationMode: ExpirationMode = '0DTE',
+  cash?: number
 ): Promise<StrikeSelection> {
   console.log(`[Step3] Strike Selection START`);
-  console.log(`[Step3] Direction: ${direction}, Underlying fallback price: $${underlyingPrice.toFixed(2)}, Symbol: ${symbol}`);
+  console.log(`[Step3] Direction: ${direction}, Underlying fallback price: $${underlyingPrice.toFixed(2)}, Symbol: ${symbol}, Mode: ${expirationMode}`);
+
+  // Calculate expiration based on mode
+  const expirationDate = getExpirationDate(expirationMode);
+  const expirationStr = getExpirationString(expirationMode);
+  console.log(`[Step3] Expiration: ${expirationDate.toISOString().split('T')[0]} (${expirationMode})`);
 
   const selection: StrikeSelection = {
     expectedPremium: 0,
@@ -705,9 +838,9 @@ export async function selectStrikes(
 
   // CRITICAL: Fetch option chain ONCE and reuse for both PUT and CALL
   // This ensures consistent data source and avoids the bug where PUT uses IBKR but CALL uses mock
-  console.log(`[Step3] Fetching option chain for ${symbol}...`);
+  console.log(`[Step3] Fetching option chain for ${symbol} with expiration ${expirationStr}...`);
   const chainStart = Date.now();
-  const fullChain = await fetchFullOptionChain(symbol);
+  const fullChain = await fetchFullOptionChain(symbol, expirationStr);
   console.log(`[Step3] Option chain fetch took ${Date.now() - chainStart}ms`);
 
   if (fullChain && (fullChain.putStrikes.length > 0 || fullChain.callStrikes.length > 0)) {
@@ -720,9 +853,10 @@ export async function selectStrikes(
     if (fullChain.vix) console.log(`[Step3] VIX from chain: ${fullChain.vix}`);
     if (fullChain.expectedMove) console.log(`[Step3] Expected move: $${fullChain.expectedMove.toFixed(2)}`);
 
-    // === RISK ASSESSMENT: Dynamic delta and position sizing based on VIX ===
+    // === RISK ASSESSMENT: Dynamic delta and position sizing based on VIX + buying power ===
     const vix = fullChain.vix ?? 20; // Default to 20 (ELEVATED) if VIX unavailable
-    const riskAssessment = assessRisk(vix);
+    // Pass buying power for dynamic contract sizing
+    const riskAssessment = assessRisk(vix, actualUnderlyingPrice, cash, symbol);
     selection.riskAssessment = riskAssessment;
     console.log(`[Step3] RISK ASSESSMENT: ${riskAssessment.reasoning}`);
 

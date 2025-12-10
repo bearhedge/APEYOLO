@@ -3,7 +3,7 @@ import { getPositions } from '@/lib/api';
 import { DataTable } from '@/components/DataTable';
 import { LeftNav } from '@/components/LeftNav';
 import { StatCard } from '@/components/StatCard';
-import { DollarSign, TrendingUp, Shield, Activity, ArrowUpDown, Wallet, Banknote, BarChart3, Scale, Gauge } from 'lucide-react';
+import { DollarSign, TrendingUp, Shield, ArrowUpDown, Wallet, Banknote, BarChart3, Scale, Gauge } from 'lucide-react';
 import type { Position } from '@shared/types';
 
 // Universal type coercion helper - handles strings, nulls, objects from IBKR
@@ -216,16 +216,6 @@ export function Portfolio() {
             value={accountError ? '--' : accountLoading ? 'Loading...' : formatMultiplier(account?.leverage)}
             icon={<Scale className={`w-5 h-5 ${(account?.leverage ?? 0) < 2 ? 'text-green-500' : (account?.leverage ?? 0) < 4 ? 'text-yellow-500' : 'text-red-500'}`} />}
             testId="leverage"
-          />
-        </div>
-
-        {/* Account Summary Cards - Row 3: Greeks */}
-        <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
-          <StatCard
-            label="Net Delta"
-            value={accountError ? '--' : accountLoading ? 'Loading...' : formatDelta(account?.netDelta)}
-            icon={<Activity className="w-5 h-5 text-purple-500" />}
-            testId="net-delta"
           />
         </div>
 

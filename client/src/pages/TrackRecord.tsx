@@ -13,7 +13,6 @@ import {
   DollarSign,
   Percent,
   ArrowUpDown,
-  ArrowDownUp,
   CalendarDays,
   PiggyBank,
   Wallet,
@@ -22,8 +21,6 @@ import {
   Scale,
   BarChart3,
   Banknote,
-  Clock,
-  CheckCircle2,
 } from 'lucide-react';
 import type { PnlRow, Position } from '@shared/types';
 
@@ -39,8 +36,8 @@ type UnifiedTrade = {
   side: 'BUY' | 'SELL';
   qty: number;
   entry: number;
-  pnl: number;
-  status: 'OPEN' | 'CLOSED';
+  realizedPnl: number;
+  unrealizedPnl: number;
 };
 
 // Helper to parse and format IBKR option symbols
@@ -270,22 +267,22 @@ export function TrackRecord() {
   const allTrades = useMemo((): UnifiedTrade[] => {
     const unified: UnifiedTrade[] = [];
 
-    // Add open positions
+    // Add open positions (unrealized P&L only)
     (positions || []).forEach((pos) => {
       unified.push({
         id: pos.id,
         ts: pos.openedAt,
         symbol: pos.symbol,
-        strategy: pos.side === 'SELL' ? 'SHORT' : 'LONG', // Infer from side
+        strategy: pos.side === 'SELL' ? 'SHORT' : 'LONG',
         side: pos.side,
         qty: pos.qty,
         entry: pos.avg,
-        pnl: pos.upl, // Unrealized P&L
-        status: 'OPEN',
+        realizedPnl: 0,
+        unrealizedPnl: toNum(pos.upl),
       });
     });
 
-    // Add closed trades
+    // Add closed trades (realized P&L only)
     (filteredTrades || []).forEach((trade) => {
       unified.push({
         id: trade.tradeId,
@@ -295,8 +292,8 @@ export function TrackRecord() {
         side: trade.side,
         qty: trade.qty,
         entry: trade.entry,
-        pnl: trade.realized, // Realized P&L
-        status: 'CLOSED',
+        realizedPnl: toNum(trade.realized),
+        unrealizedPnl: 0,
       });
     });
 
@@ -304,9 +301,9 @@ export function TrackRecord() {
     return unified.sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
   }, [positions, filteredTrades]);
 
-  // Count open vs closed
-  const openCount = allTrades.filter(t => t.status === 'OPEN').length;
-  const closedCount = allTrades.filter(t => t.status === 'CLOSED').length;
+  // Calculate total unrealized P&L from open positions
+  const totalUnrealizedPnl = allTrades.reduce((sum, t) => sum + t.unrealizedPnl, 0);
+  const totalRealizedPnl = allTrades.reduce((sum, t) => sum + t.realizedPnl, 0);
 
   // KPIs recalculate based on filtered trades (closed only)
   const kpis = calculateKPIs(filteredTrades);
@@ -382,19 +379,6 @@ export function TrackRecord() {
   // Unified trade columns (open + closed)
   const tradeColumns = [
     {
-      header: 'Status',
-      accessor: (row: UnifiedTrade) => (
-        <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${
-          row.status === 'OPEN'
-            ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
-            : 'bg-green-500/20 text-green-400 border border-green-500/30'
-        }`}>
-          {row.status === 'OPEN' ? <Clock className="w-3 h-3" /> : <CheckCircle2 className="w-3 h-3" />}
-          {row.status}
-        </span>
-      ),
-    },
-    {
       header: 'Time',
       accessor: (row: UnifiedTrade) => new Date(row.ts).toLocaleString('en-US', { timeZone: 'America/New_York' }),
       className: 'text-silver text-sm',
@@ -413,12 +397,24 @@ export function TrackRecord() {
       className: 'tabular-nums',
     },
     {
-      header: 'P&L',
+      header: 'Realized',
       accessor: (row: UnifiedTrade) => (
-        <span className={`font-medium ${toNum(row.pnl) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-          {formatCurrency(row.pnl, true)}
-          {row.status === 'OPEN' && <span className="text-xs text-silver ml-1">(unreal)</span>}
-        </span>
+        row.realizedPnl !== 0 ? (
+          <span className={`font-medium ${row.realizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+            {formatCurrency(row.realizedPnl, true)}
+          </span>
+        ) : <span className="text-zinc-600">-</span>
+      ),
+      className: 'tabular-nums text-right',
+    },
+    {
+      header: 'Unrealized',
+      accessor: (row: UnifiedTrade) => (
+        row.unrealizedPnl !== 0 ? (
+          <span className={`font-medium ${row.unrealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+            {formatCurrency(row.unrealizedPnl, true)}
+          </span>
+        ) : <span className="text-zinc-600">-</span>
       ),
       className: 'tabular-nums text-right',
     },
@@ -462,8 +458,8 @@ export function TrackRecord() {
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
           <StatCard
             label="Total P&L"
-            value={formatCurrency(kpis.totalPnL, true)}
-            icon={kpis.totalPnL >= 0 ? <TrendingUp className="w-5 h-5 text-green-400" /> : <TrendingDown className="w-5 h-5 text-red-400" />}
+            value={formatCurrency(totalRealizedPnl + totalUnrealizedPnl, true)}
+            icon={(totalRealizedPnl + totalUnrealizedPnl) >= 0 ? <TrendingUp className="w-5 h-5 text-green-400" /> : <TrendingDown className="w-5 h-5 text-red-400" />}
           />
           <StatCard
             label="Win Rate"
@@ -540,11 +536,6 @@ export function TrackRecord() {
             </TabsTrigger>
             <TabsTrigger value="history" className="data-[state=active]:bg-white data-[state=active]:text-black">
               All Trades ({allTrades.length})
-              {openCount > 0 && (
-                <span className="ml-1.5 px-1.5 py-0.5 text-xs bg-yellow-500/20 text-yellow-400 rounded-full">
-                  {openCount} open
-                </span>
-              )}
             </TabsTrigger>
           </TabsList>
 
@@ -721,15 +712,9 @@ export function TrackRecord() {
             <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-semibold">All Trades</h3>
-                <div className="flex items-center gap-4 text-sm">
-                  <span className="text-yellow-400">
-                    <Clock className="w-4 h-4 inline mr-1" />
-                    {openCount} open
-                  </span>
-                  <span className="text-green-400">
-                    <CheckCircle2 className="w-4 h-4 inline mr-1" />
-                    {closedCount} closed
-                  </span>
+                <div className="flex items-center gap-4 text-sm text-silver">
+                  <span>Realized: <span className={totalRealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}>{formatCurrency(totalRealizedPnl, true)}</span></span>
+                  <span>Unrealized: <span className={totalUnrealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}>{formatCurrency(totalUnrealizedPnl, true)}</span></span>
                 </div>
               </div>
               {allTrades.length > 0 ? (

@@ -102,16 +102,14 @@ export interface Q2Direction {
 
   inputs: {
     spyPrice: number;
-    maFast: number;              // 5-period MA
-    maSlow: number;              // 15-period MA
-    maFastPeriod: number;
-    maSlowPeriod: number;
+    ma50: number;                // 50-period MA on 5-min bars (~4 hours)
+    maPeriod: number;            // MA period used (50)
   };
 
   signals: {
     trend: TrendDirection;
     momentum: number;            // -1.0 to 1.0
-    maAlignment: string;         // "SPY > MA5 > MA15"
+    maAlignment: string;         // "SPY > MA50" or "SPY < MA50"
   };
 
   stepNumber: 2;
@@ -449,6 +447,9 @@ export interface ExecutePaperTradeResponse {
   tradeId: string;
   message: string;
   ibkrOrderIds?: string[];
+  // Enhanced status for UI feedback
+  orderStatus?: 'submitted' | 'filled' | 'cancelled' | 'rejected' | 'error';
+  statusReason?: string;
 }
 
 // =============================================================================
@@ -460,6 +461,7 @@ export interface AnalyzeOptions {
   stopMultiplier?: 2 | 3 | 4;
   deltaMin?: number;
   deltaMax?: number;
+  symbol?: 'SPY' | 'ARM';  // Trading symbol selection
 }
 
 // =============================================================================

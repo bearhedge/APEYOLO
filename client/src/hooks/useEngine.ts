@@ -276,6 +276,10 @@ export function useEngine() {
         riskTier: options?.riskTier || 'balanced',
         stopMultiplier: String(options?.stopMultiplier || 3),
       });
+      // Add symbol parameter if provided
+      if (options?.symbol) {
+        params.set('symbol', options.symbol);
+      }
 
       const response = await fetch(`/api/engine/analyze?${params}`, {
         credentials: 'include',

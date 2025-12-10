@@ -79,10 +79,21 @@ function createTimeoutPromise(ms: number, operation: string): Promise<never> {
   );
 }
 
+// Supported symbols and their expiration modes
+export type TradingSymbol = 'SPY' | 'ARM';
+export type ExpirationMode = '0DTE' | 'WEEKLY';
+
+// Symbol configurations
+export const SYMBOL_CONFIG: Record<TradingSymbol, { name: string; expirationMode: ExpirationMode; description: string }> = {
+  SPY: { name: 'SPY', expirationMode: '0DTE', description: 'S&P 500 ETF (Daily 0DTE)' },
+  ARM: { name: 'ARM', expirationMode: 'WEEKLY', description: 'ARM Holdings (Weekly Friday)' },
+};
+
 // Engine configuration schema
 const engineConfigSchema = z.object({
   riskProfile: z.enum(['CONSERVATIVE', 'BALANCED', 'AGGRESSIVE']).optional(),
-  underlyingSymbol: z.string().optional().default('SPY'),
+  underlyingSymbol: z.enum(['SPY', 'ARM']).optional().default('SPY'),
+  expirationMode: z.enum(['0DTE', 'WEEKLY']).optional(), // Auto-determined from symbol if not set
   executionMode: z.enum(['manual', 'auto']).optional().default('manual'),
   guardRails: z.object({
     maxDelta: z.number().min(0).max(1).optional(),
@@ -240,6 +251,12 @@ router.post('/execute', requireAuth, async (req, res) => {
     // Accept configurable parameters from UI
     const { riskTier, stopMultiplier } = req.body || {};
 
+    // Get symbol from query params or body, default to SPY
+    const requestedSymbol = ((req.query.symbol as string) || req.body?.symbol || 'SPY').toUpperCase() as TradingSymbol;
+    const symbol = SYMBOL_CONFIG[requestedSymbol] ? requestedSymbol : 'SPY';
+    const symbolConfig = SYMBOL_CONFIG[symbol];
+    const expirationMode = symbolConfig.expirationMode;
+
     // Map riskTier to riskProfile
     const riskProfileMap: Record<string, 'CONSERVATIVE' | 'BALANCED' | 'AGGRESSIVE'> = {
       'conservative': 'CONSERVATIVE',
@@ -266,27 +283,32 @@ router.post('/execute', requireAuth, async (req, res) => {
     // Get account info
     const account = await broker.api.getAccount();
 
-    // Get current SPY price for the engine
-    let spyPrice = 450; // Default
+    // Get current underlying price for the engine
+    let underlyingPrice = symbol === 'SPY' ? 450 : 150; // Defaults
     try {
       const { getMarketData } = await import('./services/marketDataService.js');
-      const spyData = await getMarketData('SPY');
-      spyPrice = spyData.price;
+      const marketData = await getMarketData(symbol);
+      underlyingPrice = marketData.price;
     } catch (error) {
-      console.error('[Engine] Error fetching SPY price:', error);
+      console.error(`[Engine] Error fetching ${symbol} price:`, error);
     }
 
-    // Create or get engine instance
-    if (!engineInstance || engineInstance['config'].riskProfile !== riskProfile) {
+    // Create or get engine instance - recreate if symbol or risk profile changed
+    const needNewInstance = !engineInstance ||
+      engineInstance['config'].riskProfile !== riskProfile ||
+      engineInstance['config'].underlyingSymbol !== symbol;
+
+    if (needNewInstance) {
       engineInstance = new TradingEngine({
         riskProfile,
-        underlyingSymbol: 'SPY',
-        underlyingPrice: spyPrice,
+        underlyingSymbol: symbol,
+        expirationMode,
+        underlyingPrice,
         mockMode: broker.status.provider === 'mock'
       });
     } else {
       // Update underlying price
-      engineInstance['config'].underlyingPrice = spyPrice;
+      engineInstance['config'].underlyingPrice = underlyingPrice;
     }
 
     // Execute the 5-step decision process with timeout protection
@@ -369,6 +391,12 @@ router.get('/analyze', requireAuth, async (req, res) => {
   try {
     const { riskTier = 'balanced', stopMultiplier = '3' } = req.query;
 
+    // Get symbol from query params, default to SPY
+    const requestedSymbol = ((req.query.symbol as string) || 'SPY').toUpperCase() as TradingSymbol;
+    const symbol = SYMBOL_CONFIG[requestedSymbol] ? requestedSymbol : 'SPY';
+    const symbolConfig = SYMBOL_CONFIG[symbol];
+    const expirationMode = symbolConfig.expirationMode;
+
     // Map riskTier to riskProfile
     const riskProfileMap: Record<string, RiskProfile> = {
       'conservative': 'CONSERVATIVE',
@@ -395,26 +423,31 @@ router.get('/analyze', requireAuth, async (req, res) => {
     // Get account info
     const account = await broker.api.getAccount();
 
-    // Get current SPY price for the engine
-    let spyPrice = 450;
+    // Get current underlying price for the engine
+    let underlyingPrice = symbol === 'SPY' ? 450 : 150; // Defaults by symbol
     try {
       const { getMarketData } = await import('./services/marketDataService.js');
-      const spyData = await getMarketData('SPY');
-      spyPrice = spyData.price;
+      const marketData = await getMarketData(symbol);
+      underlyingPrice = marketData.price;
     } catch (error) {
-      console.error('[Engine/analyze] Error fetching SPY price:', error);
+      console.error(`[Engine/analyze] Error fetching ${symbol} price:`, error);
     }
 
-    // Create or get engine instance
-    if (!engineInstance || engineInstance['config'].riskProfile !== riskProfile) {
+    // Create or get engine instance - recreate if symbol or risk profile changed
+    const needNewInstance = !engineInstance ||
+      engineInstance['config'].riskProfile !== riskProfile ||
+      engineInstance['config'].underlyingSymbol !== symbol;
+
+    if (needNewInstance) {
       engineInstance = new TradingEngine({
         riskProfile,
-        underlyingSymbol: 'SPY',
-        underlyingPrice: spyPrice,
+        underlyingSymbol: symbol,
+        expirationMode,
+        underlyingPrice,
         mockMode: broker.status.provider === 'mock'
       });
     } else {
-      engineInstance['config'].underlyingPrice = spyPrice;
+      engineInstance['config'].underlyingPrice = underlyingPrice;
     }
 
     // Execute the 5-step decision process with timeout protection
@@ -456,7 +489,9 @@ router.get('/analyze', requireAuth, async (req, res) => {
         riskProfile,
         stopMultiplier: stopMult,
         guardRailViolations,
-        tradingWindowOpen: tradingWindow.allowed
+        tradingWindowOpen: tradingWindow.allowed,
+        symbol,
+        expirationMode,
       }
     );
 
@@ -530,8 +565,10 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
       try {
         await ensureIbkrReady();
 
-        const today = new Date();
-        const expiration = today.toISOString().slice(0, 10).replace(/-/g, '');
+        // Use expiration date from trade proposal (e.g., "2024-12-13" for Friday weekly)
+        // Convert from YYYY-MM-DD to YYYYMMDD format for IBKR
+        const expiration = tradeProposal.expirationDate.replace(/-/g, '');
+        console.log(`[Engine/execute] Using expiration date: ${tradeProposal.expirationDate} → ${expiration}`);
 
         // Stop loss price from proposal (3x premium by default)
         const stopPrice = tradeProposal.stopLossPrice;
@@ -575,75 +612,92 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
       }
     }
 
-    // Insert paper trade record into database
-    const expirationDate = new Date();
+    // Insert trade record into database
+    // Use expiration from proposal (Friday for weekly options)
+    const expirationDate = new Date(tradeProposal.expirationDate);
     expirationDate.setHours(16, 0, 0, 0);
 
     const leg1 = tradeProposal.legs[0];
     const leg2 = tradeProposal.legs[1];
 
-    const [paperTrade] = await db.insert(paperTrades).values({
-      proposalId: tradeProposal.proposalId,
-      symbol: tradeProposal.symbol,
-      strategy: tradeProposal.strategy,
-      bias: tradeProposal.bias,
-      expiration: expirationDate,
-      expirationLabel: tradeProposal.expiration,
-      contracts: tradeProposal.contracts,
+    let engineTradeId: string | null = null;
+    let dbInsertError: string | null = null;
 
-      leg1Type: leg1.optionType,
-      leg1Strike: leg1.strike.toString(),
-      leg1Delta: leg1.delta.toString(),
-      leg1Premium: leg1.premium.toString(),
+    // Try to insert trade record - but don't fail the whole request if DB insert fails
+    // IBKR orders have already been placed successfully at this point
+    try {
+      const [engineTrade] = await db.insert(paperTrades).values({
+        proposalId: tradeProposal.proposalId,
+        symbol: tradeProposal.symbol,
+        strategy: tradeProposal.strategy,
+        bias: tradeProposal.bias,
+        expiration: expirationDate,
+        expirationLabel: tradeProposal.expiration,
+        contracts: tradeProposal.contracts,
 
-      leg2Type: leg2?.optionType ?? null,
-      leg2Strike: leg2?.strike?.toString() ?? null,
-      leg2Delta: leg2?.delta?.toString() ?? null,
-      leg2Premium: leg2?.premium?.toString() ?? null,
+        leg1Type: leg1.optionType,
+        leg1Strike: leg1.strike.toString(),
+        leg1Delta: leg1.delta.toString(),
+        leg1Premium: leg1.premium.toString(),
 
-      entryPremiumTotal: tradeProposal.entryPremiumTotal.toString(),
-      marginRequired: tradeProposal.marginRequired.toString(),
-      maxLoss: tradeProposal.maxLoss.toString(),
+        leg2Type: leg2?.optionType ?? null,
+        leg2Strike: leg2?.strike?.toString() ?? null,
+        leg2Delta: leg2?.delta?.toString() ?? null,
+        leg2Premium: leg2?.premium?.toString() ?? null,
 
-      stopLossPrice: tradeProposal.stopLossPrice.toString(),
-      stopLossMultiplier: '3.5', // 3.5x stop multiplier
-      timeStopEt: tradeProposal.timeStop,
+        entryPremiumTotal: tradeProposal.entryPremiumTotal.toString(),
+        marginRequired: tradeProposal.marginRequired.toString(),
+        maxLoss: tradeProposal.maxLoss.toString(),
 
-      entryVix: tradeProposal.context.vix?.toString() ?? null,
-      entryVixRegime: tradeProposal.context.vixRegime ?? null,
-      entrySpyPrice: tradeProposal.context.spyPrice?.toString() ?? null,
-      riskProfile: tradeProposal.context.riskProfile,
+        stopLossPrice: tradeProposal.stopLossPrice.toString(),
+        stopLossMultiplier: '3.5', // 3.5x stop multiplier
+        timeStopEt: tradeProposal.timeStop,
 
-      status: 'open',
-      ibkrOrderIds: ibkrOrderIds.length > 0 ? ibkrOrderIds : null,
-      userId: (req as any).user?.userId ?? null,
-      fullProposal: tradeProposal,
-    }).returning();
+        entryVix: tradeProposal.context.vix?.toString() ?? null,
+        entryVixRegime: tradeProposal.context.vixRegime ?? null,
+        entrySpyPrice: tradeProposal.context.spyPrice?.toString() ?? null,
+        riskProfile: tradeProposal.context.riskProfile,
+
+        status: 'open',
+        ibkrOrderIds: ibkrOrderIds.length > 0 ? ibkrOrderIds : null,
+        userId: (req as any).user?.userId ?? null,
+        fullProposal: tradeProposal,
+      }).returning();
+
+      engineTradeId = engineTrade.id;
+    } catch (dbErr: any) {
+      console.error('[Engine/execute] Failed to insert trade record:', dbErr);
+      dbInsertError = dbErr.message || 'Database insert failed';
+      // Don't throw - IBKR orders succeeded, we should still report success
+    }
 
     // Create audit log
     try {
       await storage.createAuditLog({
-        action: 'PAPER_TRADE_EXECUTED',
+        action: 'ENGINE_TRADE_EXECUTED',
         details: JSON.stringify({
-          tradeId: paperTrade.id,
+          tradeId: engineTradeId,
           proposalId: tradeProposal.proposalId,
           strategy: tradeProposal.strategy,
           contracts: tradeProposal.contracts,
           ibkrOrderIds,
+          dbInsertError,
         }),
         userId: (req as any).user?.userId || 'system',
       });
     } catch (auditErr) {
-      console.error('[Engine/execute-paper] Failed to create audit log:', auditErr);
+      console.error('[Engine/execute] Failed to create audit log:', auditErr);
     }
 
+    // Return success if IBKR orders were placed (even if DB insert failed)
     res.json({
-      success: true,
-      tradeId: paperTrade.id,
+      success: ibkrOrderIds.length > 0 || engineTradeId !== null,
+      tradeId: engineTradeId,
       message: broker.status.provider === 'ibkr' && ibkrOrderIds.length > 0
         ? `LIVE bracket orders submitted: ${ibkrOrderIds.length} order(s) (SELL + STOP)`
         : 'Trade recorded (simulation mode - IBKR not connected)',
       ibkrOrderIds: ibkrOrderIds.length > 0 ? ibkrOrderIds : undefined,
+      warning: dbInsertError ? `Trade executed but database record failed: ${dbInsertError}` : undefined,
     });
   } catch (error: any) {
     console.error('[Engine/execute] Error:', error);

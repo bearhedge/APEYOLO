@@ -11,8 +11,8 @@
  */
 
 import { analyzeMarketRegime, MarketRegime } from './step1.ts';
-import { selectDirection, DirectionDecision } from './step2.ts';
-import { selectStrikes, StrikeSelection } from './step3.ts';
+import { selectDirection, DirectionDecision, ExpirationMode as Step2ExpirationMode } from './step2.ts';
+import { selectStrikes, StrikeSelection, ExpirationMode as Step3ExpirationMode } from './step3.ts';
 import { calculatePositionSize, PositionSize, RiskProfile, AccountInfo } from './step4.ts';
 import { defineExitRules, ExitRules } from './step5.ts';
 import type { OptionChainDiagnostics } from '../../shared/types/engine';
@@ -75,11 +75,17 @@ export interface AuditEntry {
 }
 
 /**
+ * Expiration mode for options
+ */
+export type ExpirationMode = '0DTE' | 'WEEKLY';
+
+/**
  * Engine configuration
  */
 export interface EngineConfig {
   riskProfile: RiskProfile;
   underlyingSymbol: string;
+  expirationMode?: ExpirationMode; // '0DTE' for same-day, 'WEEKLY' for Friday expiry
   underlyingPrice?: number; // If not provided, will fetch from market
   mockMode?: boolean;       // Use mock data for testing
 }
@@ -219,11 +225,13 @@ export class TradingEngine {
     // Step 1: Market Regime Check
     let marketRegime: MarketRegime;
     stepStartTime = Date.now();
-    console.log('\n[Engine] Step 1 START: Market Regime Check');
+    const symbol = this.config.underlyingSymbol;
+    const expirationMode: Step3ExpirationMode = this.config.expirationMode || '0DTE';
+    console.log(`\n[Engine] Step 1 START: Market Regime Check (${symbol}, ${expirationMode})`);
     try {
-      marketRegime = await analyzeMarketRegime();
+      marketRegime = await analyzeMarketRegime(true, symbol);
       console.log(`[Engine] Step 1 COMPLETE (${Date.now() - stepStartTime}ms)`);
-      console.log(`[Engine] Step 1 Result: VIX=${marketRegime.metadata?.vix?.toFixed(2) || 'N/A'}, SPY=$${marketRegime.metadata?.spyPrice?.toFixed(2) || 'N/A'}`);
+      console.log(`[Engine] Step 1 Result: VIX=${marketRegime.metadata?.vix?.toFixed(2) || 'N/A'}, ${symbol}=$${marketRegime.metadata?.spyPrice?.toFixed(2) || 'N/A'}`);
     } catch (error: any) {
       const stepDuration = Date.now() - stepStartTime;
       console.error(`[Engine] Step 1 FAILED (${stepDuration}ms): ${error.message}`);
@@ -278,7 +286,8 @@ export class TradingEngine {
     stepStartTime = Date.now();
     console.log('\n[Engine] Step 2 START: Direction Selection');
     try {
-      direction = await selectDirection(marketRegime);
+      // Pass symbol and expirationMode for timeframe-adapted analysis
+      direction = await selectDirection(marketRegime, symbol, expirationMode as Step2ExpirationMode);
       console.log(`[Engine] Step 2 COMPLETE (${Date.now() - stepStartTime}ms)`);
     } catch (error: any) {
       const stepDuration = Date.now() - stepStartTime;
@@ -318,15 +327,15 @@ export class TradingEngine {
     // Step 3: Strike Selection
     let strikes: StrikeSelection;
     stepStartTime = Date.now();
-    console.log('\n[Engine] Step 3 START: Strike Selection');
+    console.log(`\n[Engine] Step 3 START: Strike Selection (${symbol}, ${expirationMode})`);
 
-    // Use REAL SPY price from Step 1 (IBKR only - no fallbacks)
+    // Use REAL underlying price from Step 1 (IBKR only - no fallbacks)
     const underlyingPrice = marketRegime.metadata?.spyPrice || 0;
-    console.log(`[Engine] Step 3: SPY price from Step 1 = $${underlyingPrice}`);
+    console.log(`[Engine] Step 3: ${symbol} price from Step 1 = $${underlyingPrice}`);
 
     if (!underlyingPrice || underlyingPrice <= 0) {
       const stepDuration = Date.now() - stepStartTime;
-      const errorMsg = '[IBKR] No SPY price available from Step 1 - cannot proceed without real IBKR data';
+      const errorMsg = `[IBKR] No ${symbol} price available from Step 1 - cannot proceed without real IBKR data`;
       console.error(`[Engine] Step 3 FAILED: ${errorMsg}`);
       this.addAudit(3, 'Strike Selection', { underlyingPrice }, { error: errorMsg }, false, errorMsg);
       const partialLog = this.buildPartialEnhancedLog(
@@ -338,7 +347,10 @@ export class TradingEngine {
     }
 
     try {
-      strikes = await selectStrikes(direction.direction, underlyingPrice);
+      // Pass cash (netLiquidation) for margin-based contract sizing
+      // Margin is calculated from cash, not buying power
+      const cashForMargin = accountInfo.netLiquidation ?? accountInfo.cashBalance;
+      strikes = await selectStrikes(direction.direction, underlyingPrice, symbol, expirationMode, cashForMargin);
       console.log(`[Engine] Step 3 COMPLETE (${Date.now() - stepStartTime}ms)`);
     } catch (error: any) {
       const stepDuration = Date.now() - stepStartTime;
@@ -505,8 +517,9 @@ export class TradingEngine {
 
     // Build summary for UI
     const selectedStrike = strikes.putStrike || strikes.callStrike;
+    const expirationLabel = expirationMode === '0DTE' ? '0DTE' : 'Weekly';
     const strikeLabel = selectedStrike
-      ? `SPY $${selectedStrike.strike}${strikes.putStrike ? 'P' : 'C'} 0DTE`
+      ? `${symbol} $${selectedStrike.strike}${strikes.putStrike ? 'P' : 'C'} ${expirationLabel}`
       : 'N/A';
 
     const enhancedLog: EnhancedEngineLog = {

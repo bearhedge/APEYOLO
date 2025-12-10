@@ -14,6 +14,13 @@ import type { EngineFlowState, ExecutePaperTradeResponse } from '../../../shared
 
 type RiskTier = 'conservative' | 'balanced' | 'aggressive';
 type StopMultiplier = 2 | 3 | 4;
+type TradingSymbol = 'SPY' | 'ARM';
+
+// Symbol configuration for display
+const SYMBOL_CONFIG: Record<TradingSymbol, { name: string; label: string; expiration: string }> = {
+  SPY: { name: 'SPY', label: 'S&P 500 ETF', expiration: 'Daily' },
+  ARM: { name: 'ARM', label: 'ARM Holdings', expiration: 'Weekly' },
+};
 
 // Execution result state for UI display
 interface ExecutionResult {
@@ -48,6 +55,7 @@ export function Engine() {
   const [isExecuting, setIsExecuting] = useState(false);
   const [riskTier, setRiskTier] = useState<RiskTier>('balanced');
   const [stopMultiplier, setStopMultiplier] = useState<StopMultiplier>(3);
+  const [selectedSymbol, setSelectedSymbol] = useState<TradingSymbol>('SPY');
 
   // Gated flow state
   const [engineFlowState, setEngineFlowState] = useState<EngineFlowState>('idle');
@@ -86,7 +94,7 @@ export function Engine() {
       toast.loading('Running engine analysis (Steps 1-3)...', { id: 'engine-execute' });
 
       // Run the actual analysis - enhanced logs come from backend
-      const result = await analyzeEngine({ riskTier, stopMultiplier });
+      const result = await analyzeEngine({ riskTier, stopMultiplier, symbol: selectedSymbol });
 
       if (result.canTrade) {
         // Check if we have smart candidates for interactive selection
@@ -129,7 +137,7 @@ export function Engine() {
     } finally {
       setIsExecuting(false);
     }
-  }, [analyzeEngine, riskTier, stopMultiplier, executionMode, executePaperTrade]);
+  }, [analyzeEngine, riskTier, stopMultiplier, selectedSymbol, executionMode, executePaperTrade]);
 
   // Handle user confirming strike selection (continue to Steps 4-5)
   const handleConfirmSelection = useCallback(async () => {
@@ -336,10 +344,26 @@ export function Engine() {
             <div>
               <h1 className="text-3xl font-bold tracking-wide">Engine</h1>
               <p className="text-silver text-sm mt-1">
-                {brokerConnectedFinal ? 'IBKR Live Trading' : 'Simulation Mode'} - 0DTE Options with Stop Loss
+                {brokerConnectedFinal ? 'IBKR Live Trading' : 'Simulation Mode'} - {SYMBOL_CONFIG[selectedSymbol].expiration} Options with Stop Loss
               </p>
             </div>
 
+            {/* Symbol Selector */}
+            <div className="flex items-center gap-3">
+              <label className="text-sm text-silver">Symbol:</label>
+              <select
+                value={selectedSymbol}
+                onChange={(e) => setSelectedSymbol(e.target.value as TradingSymbol)}
+                disabled={isExecuting || engineFlowState === 'awaiting_selection'}
+                className="bg-charcoal border border-white/20 rounded-lg px-3 py-2 text-white text-sm focus:outline-none focus:border-white/40 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {Object.entries(SYMBOL_CONFIG).map(([sym, config]) => (
+                  <option key={sym} value={sym}>
+                    {config.name} ({config.expiration})
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
         </div>
 
@@ -601,7 +625,7 @@ export function Engine() {
                   {analysis.tradeProposal.strategy === 'STRANGLE' ? 'SELL STRANGLE' :
                    analysis.tradeProposal.strategy === 'PUT' ? 'SELL PUT' : 'SELL CALL'}
                 </h3>
-                <p className="text-sm text-silver">SPY 0DTE</p>
+                <p className="text-sm text-silver">{analysis.tradeProposal.symbol || selectedSymbol} {analysis.tradeProposal.expiration || SYMBOL_CONFIG[selectedSymbol].expiration}</p>
               </div>
               <span className={`text-xs font-medium px-2 py-1 rounded ${
                 analysis.tradeProposal.bias === 'NEUTRAL' ? 'bg-blue-500/20 text-blue-400' :

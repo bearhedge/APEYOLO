@@ -13,7 +13,7 @@
 import { TradingDecision, AuditEntry as EngineAuditEntry } from './index.ts';
 import { MarketRegime, VolatilityRegime as VR } from './step1.ts';
 import { DirectionDecision, TradeDirection } from './step2.ts';
-import { StrikeSelection, Strike } from './step3.ts';
+import { StrikeSelection, Strike, getExpirationDate, ExpirationMode } from './step3.ts';
 import { PositionSize, RiskProfile } from './step4.ts';
 import { ExitRules } from './step5.ts';
 import type {
@@ -190,7 +190,9 @@ function convertStrike(
  */
 function adaptStrikes(
   strikes: StrikeSelection | undefined,
-  underlyingPrice: number
+  underlyingPrice: number,
+  symbol: string = 'SPY',
+  expirationMode: string = '0DTE'
 ): Q3Strikes {
   const actualPrice = underlyingPrice || 450; // Fallback
 
@@ -255,8 +257,9 @@ function adaptStrikes(
       targetDeltaMin: 0.15,
       targetDeltaMax: 0.20,
       targetDeltaIdeal: 0.18,
-      symbol: 'SPY',
+      symbol,
       expiration: expirationStr,
+      expirationMode,
     },
 
     stepNumber: 3,
@@ -291,7 +294,7 @@ function adaptSize(
   const riskLimits = {
     CONSERVATIVE: { maxContracts: 2, bpUtilizationPct: 50, maxPositionPctOfNav: 5 },
     BALANCED: { maxContracts: 3, bpUtilizationPct: 70, maxPositionPctOfNav: 10 },
-    AGGRESSIVE: { maxContracts: 5, bpUtilizationPct: 100, maxPositionPctOfNav: 20 },
+    AGGRESSIVE: { maxContracts: 4, bpUtilizationPct: 100, maxPositionPctOfNav: 20 },
   };
 
   const limits = riskLimits[riskProfile];
@@ -377,7 +380,9 @@ function buildTradeProposal(
   decision: TradingDecision,
   q3: Q3Strikes,
   q4: Q4Size,
-  q5: Q5Exit
+  q5: Q5Exit,
+  symbol: string = 'SPY',
+  expirationMode: string = '0DTE'
 ): TradeProposal | null {
   if (!decision.executionReady || !decision.direction) {
     return null;
@@ -419,16 +424,15 @@ function buildTradeProposal(
   if (strategy === 'PUT') bias = 'BULL';
   else if (strategy === 'CALL') bias = 'BEAR';
 
-  const today = new Date();
-  const expirationDate = new Date(today);
-  expirationDate.setHours(16, 0, 0, 0);
+  // Use correct expiration based on mode (0DTE = today, WEEKLY = Friday)
+  const expirationDate = getExpirationDate(expirationMode as ExpirationMode);
 
   return {
     proposalId: `prop-${Date.now().toString(36)}`,
     createdAt: new Date().toISOString(),
 
-    symbol: 'SPY',
-    expiration: '0DTE',
+    symbol,
+    expiration: expirationMode,
     expirationDate: expirationDate.toISOString().split('T')[0],
 
     strategy,
@@ -552,10 +556,14 @@ export function adaptTradingDecision(
     stopMultiplier?: number;
     guardRailViolations?: string[];
     tradingWindowOpen?: boolean;
+    symbol?: string;
+    expirationMode?: string;
   }
 ): EngineAnalyzeResponse {
   const riskProfile = options?.riskProfile ?? 'BALANCED';
   const stopMultiplier = options?.stopMultiplier ?? 3.5;
+  const symbol = options?.symbol ?? decision.marketRegime?.metadata?.symbol ?? 'SPY';
+  const expirationMode = options?.expirationMode ?? '0DTE';
 
   // Adapt each step
   const q1 = adaptMarketRegime(decision.marketRegime);
@@ -566,7 +574,7 @@ export function adaptTradingDecision(
     ?? decision.direction?.signals?.spyPrice
     ?? 450;
 
-  const q3 = adaptStrikes(decision.strikes, underlyingPrice);
+  const q3 = adaptStrikes(decision.strikes, underlyingPrice, symbol, expirationMode);
 
   const premiumPerContract = q3.expectedPremiumPerContract / 100; // Convert to per-share
   const q4 = adaptSize(decision.positionSize, accountInfo, riskProfile, premiumPerContract);
@@ -574,7 +582,7 @@ export function adaptTradingDecision(
   const q5 = adaptExitRules(decision.exitRules, q4.recommendedContracts, premiumPerContract, stopMultiplier);
 
   // Build trade proposal
-  const tradeProposal = buildTradeProposal(decision, q3, q4, q5);
+  const tradeProposal = buildTradeProposal(decision, q3, q4, q5, symbol, expirationMode);
 
   // Build guard rails result
   const guardRails: GuardRailResult = {

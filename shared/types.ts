@@ -29,6 +29,23 @@ export type PnlRow = {
   notes?: string;
 };
 
+export type DiagEntry = {
+  status: number | null;
+  ts: string;
+};
+
+export type BrokerDiag = {
+  provider: string;
+  env: string;
+  last: {
+    oauth: DiagEntry;
+    sso: DiagEntry;
+    validate: DiagEntry;
+    init: DiagEntry;
+  };
+};
+
+// Legacy type - kept for backwards compatibility
 export type BrokerStatus = {
   oauth: number | null;
   sso: number | null;

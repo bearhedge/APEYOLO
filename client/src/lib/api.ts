@@ -1,4 +1,4 @@
-import type { BrokerStatus, DashboardData, PnlRow } from '@shared/types';
+import type { BrokerDiag, DashboardData, PnlRow } from '@shared/types';
 
 const API_BASE = '';
 
@@ -19,8 +19,8 @@ async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> 
   return await response.json();
 }
 
-export async function getDiag(): Promise<BrokerStatus> {
-  return fetchAPI<BrokerStatus>('/api/broker/diag');
+export async function getDiag(): Promise<BrokerDiag> {
+  return fetchAPI<BrokerDiag>('/api/broker/diag');
 }
 
 export async function getAccount(): Promise<any> {

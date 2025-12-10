@@ -138,8 +138,8 @@ export async function getMarketData(symbol: string): Promise<MarketData> {
     }
 
     if (attempt < maxRetries) {
-      console.log(`[MarketData] Waiting 500ms before retry...`);
-      await new Promise(resolve => setTimeout(resolve, 500));
+      console.log(`[MarketData] Waiting 1500ms before retry (IBKR needs time to prime subscription)...`);
+      await new Promise(resolve => setTimeout(resolve, 1500));
     }
   }
 

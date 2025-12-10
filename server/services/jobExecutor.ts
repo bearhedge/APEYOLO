@@ -312,20 +312,13 @@ export async function seedDefaultJobs(): Promise<void> {
     schedule: string;
     config: any;
   }> = [
-    {
-      id: 'market-close-options',
-      name: 'Market Close Option Chain',
-      description: 'Capture SPY option chain 5 minutes before market close',
-      type: 'option-chain-capture',
-      schedule: '55 15 * * 1-5', // 3:55 PM ET Mon-Fri
-      config: { symbol: 'SPY' },
-    },
+    // market-close-options removed - using live IBKR stream instead
     {
       id: 'economic-calendar-refresh',
       name: 'Economic Calendar Refresh',
       description: 'Refresh macroeconomic events (FOMC, CPI, NFP, GDP) from FRED API',
       type: 'economic-calendar-refresh',
-      schedule: '0 23 * * 0', // 11 PM ET Sunday
+      schedule: '0 0 1 * *', // Midnight ET on 1st of each month
       config: { daysAhead: 90 },
     },
   ];

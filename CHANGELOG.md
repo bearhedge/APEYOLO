@@ -1,4 +1,4 @@
-## 2025-11-29
+[ ## 2025-11-29
 
 ### True WebSocket Streaming to Browser (NEW)
 - **Added**: Real-time WebSocket streaming from server to browser

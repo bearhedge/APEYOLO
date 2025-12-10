@@ -217,17 +217,186 @@ class IbkrClient {
   }
 
   /**
-   * Estimate delta from moneyness for off-hours (when live Greeks unavailable)
-   * Uses simplified 0DTE formula: delta decays faster for near-term options
+   * Standard Normal CDF approximation (Abramowitz and Stegun)
+   * Accurate to ~1e-7
    */
-  private estimateDeltaFromMoneyness(strike: number, underlying: number, type: 'PUT' | 'CALL'): number {
-    const moneyness = (strike - underlying) / underlying;
-    // For 0DTE, delta decays ~3x faster than 30 DTE, so use multiplier 15
-    if (type === 'PUT') {
-      return -Math.max(0.05, Math.min(0.45, 0.5 + moneyness * 15));
+  private normalCDF(x: number): number {
+    const a1 =  0.254829592;
+    const a2 = -0.284496736;
+    const a3 =  1.421413741;
+    const a4 = -1.453152027;
+    const a5 =  1.061405429;
+    const p  =  0.3275911;
+
+    const sign = x < 0 ? -1 : 1;
+    x = Math.abs(x) / Math.sqrt(2);
+
+    const t = 1.0 / (1.0 + p * x);
+    const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
+
+    return 0.5 * (1.0 + sign * y);
+  }
+
+  /**
+   * Black-Scholes option price calculation
+   */
+  private blackScholesPrice(
+    S: number,      // Underlying price
+    K: number,      // Strike price
+    T: number,      // Time to expiry in years
+    r: number,      // Risk-free rate
+    sigma: number,  // Volatility (IV)
+    type: 'PUT' | 'CALL'
+  ): number {
+    if (T <= 0 || sigma <= 0) return Math.max(0, type === 'CALL' ? S - K : K - S);
+
+    const d1 = (Math.log(S / K) + (r + (sigma * sigma) / 2) * T) / (sigma * Math.sqrt(T));
+    const d2 = d1 - sigma * Math.sqrt(T);
+
+    if (type === 'CALL') {
+      return S * this.normalCDF(d1) - K * Math.exp(-r * T) * this.normalCDF(d2);
     } else {
-      return Math.max(0.05, Math.min(0.45, 0.5 - moneyness * 15));
+      return K * Math.exp(-r * T) * this.normalCDF(-d2) - S * this.normalCDF(-d1);
     }
+  }
+
+  /**
+   * Extract Implied Volatility from option market price using Newton-Raphson
+   * This is the professional approach: solve BS backwards to find IV
+   *
+   * @param marketPrice - Option mid price from market
+   * @param S - Underlying price
+   * @param K - Strike price
+   * @param T - Time to expiry in years
+   * @param r - Risk-free rate
+   * @param type - 'PUT' or 'CALL'
+   * @returns Implied volatility as decimal, or null if can't solve
+   */
+  private extractImpliedVolatility(
+    marketPrice: number,
+    S: number,
+    K: number,
+    T: number,
+    r: number,
+    type: 'PUT' | 'CALL'
+  ): number | null {
+    // Sanity checks
+    if (marketPrice <= 0 || T <= 0 || S <= 0 || K <= 0) return null;
+
+    // Intrinsic value check
+    const intrinsic = type === 'CALL' ? Math.max(0, S - K) : Math.max(0, K - S);
+    if (marketPrice < intrinsic * 0.99) return null; // Price below intrinsic (allow 1% tolerance)
+
+    // Newton-Raphson iteration
+    let sigma = 0.30; // Initial guess (30% vol)
+    const maxIterations = 100;
+    const tolerance = 1e-6;
+
+    for (let i = 0; i < maxIterations; i++) {
+      const price = this.blackScholesPrice(S, K, T, r, sigma, type);
+      const diff = price - marketPrice;
+
+      if (Math.abs(diff) < tolerance) {
+        return sigma;
+      }
+
+      // Vega (derivative of price with respect to sigma)
+      const d1 = (Math.log(S / K) + (r + (sigma * sigma) / 2) * T) / (sigma * Math.sqrt(T));
+      const vega = S * Math.sqrt(T) * Math.exp(-d1 * d1 / 2) / Math.sqrt(2 * Math.PI);
+
+      if (vega < 1e-10) {
+        // Vega too small, use bisection fallback
+        break;
+      }
+
+      // Newton-Raphson step
+      sigma = sigma - diff / vega;
+
+      // Keep sigma in reasonable bounds
+      if (sigma <= 0.01) sigma = 0.01;
+      if (sigma > 5.0) sigma = 5.0; // 500% vol max
+    }
+
+    // Fallback to bisection if Newton-Raphson didn't converge
+    let low = 0.01;
+    let high = 3.0;
+
+    for (let i = 0; i < 100; i++) {
+      const mid = (low + high) / 2;
+      const price = this.blackScholesPrice(S, K, T, r, mid, type);
+
+      if (Math.abs(price - marketPrice) < tolerance) {
+        return mid;
+      }
+
+      if (price > marketPrice) {
+        high = mid;
+      } else {
+        low = mid;
+      }
+    }
+
+    return null; // Could not solve
+  }
+
+  /**
+   * Black-Scholes Delta calculation using option-specific IV
+   */
+  private calculateBlackScholesDelta(
+    strike: number,
+    underlying: number,
+    type: 'PUT' | 'CALL',
+    T: number,           // Time to expiry in YEARS
+    sigma: number,       // Implied volatility
+    riskFreeRate: number = 0.045
+  ): number {
+    if (T <= 0 || sigma <= 0) {
+      // At expiry or no vol, delta is binary
+      if (type === 'CALL') return underlying > strike ? 1 : 0;
+      return underlying < strike ? -1 : 0;
+    }
+
+    const d1 = (Math.log(underlying / strike) + (riskFreeRate + (sigma * sigma) / 2) * T) / (sigma * Math.sqrt(T));
+
+    if (type === 'CALL') {
+      return this.normalCDF(d1);
+    } else {
+      return this.normalCDF(d1) - 1;
+    }
+  }
+
+  /**
+   * Calculate delta from market price by extracting IV first (professional approach)
+   * Falls back to VIX-based estimate if IV extraction fails
+   */
+  private calculateDeltaFromMarketPrice(
+    strike: number,
+    underlying: number,
+    type: 'PUT' | 'CALL',
+    daysToExpiry: number,
+    bid: number,
+    ask: number,
+    vixFallback: number = 20
+  ): number {
+    const T = Math.max(daysToExpiry / 365, 1/365);
+    const r = 0.045; // Risk-free rate
+
+    // Use mid price for IV extraction
+    const midPrice = (bid + ask) / 2;
+
+    if (midPrice > 0 && bid > 0) {
+      // Try to extract option-specific IV from market price
+      const iv = this.extractImpliedVolatility(midPrice, underlying, strike, T, r, type);
+
+      if (iv !== null && iv > 0.01 && iv < 3.0) {
+        // Successfully extracted IV - use it for delta
+        return this.calculateBlackScholesDelta(strike, underlying, type, T, iv, r);
+      }
+    }
+
+    // Fallback: use VIX as IV proxy
+    const fallbackIV = vixFallback / 100;
+    return this.calculateBlackScholesDelta(strike, underlying, type, T, fallbackIV, r);
   }
 
   private async signClientAssertion(): Promise<string> {
@@ -728,7 +897,7 @@ class IbkrClient {
     console.log(`[IBKR][primeMarketData][${reqId}] Priming market data subscriptions...`);
 
     try {
-      const conids = [756733, 13455763]; // SPY, VIX
+      const conids = [756733, 13455763, 653400472]; // SPY, VIX, ARM
       const fields = '31,84,86'; // last, bid, ask
 
       // First call - subscribes to market data (returns minimal data)
@@ -745,8 +914,10 @@ class IbkrClient {
       // Log what we got
       const spyData = response.data?.find((d: any) => d.conid === 756733);
       const vixData = response.data?.find((d: any) => d.conid === 13455763);
+      const armData = response.data?.find((d: any) => d.conid === 653400472);
       console.log(`[IBKR][primeMarketData][${reqId}] SPY: price=${spyData?.['31'] || 0}, bid=${spyData?.['84'] || 0}, ask=${spyData?.['86'] || 0}`);
       console.log(`[IBKR][primeMarketData][${reqId}] VIX: price=${vixData?.['31'] || 0}`);
+      console.log(`[IBKR][primeMarketData][${reqId}] ARM: price=${armData?.['31'] || 0}, bid=${armData?.['84'] || 0}, ask=${armData?.['86'] || 0}`);
 
       // Prime option chain endpoints for SPY (prevents "no bridge" in Step 3)
       console.log(`[IBKR][primeMarketData][${reqId}] Priming option chain endpoints...`);
@@ -875,6 +1046,16 @@ class IbkrClient {
     await this.ensureReady();
     await this.ensureAccountSelected();
     const accountId = this.accountId || process.env.IBKR_ACCOUNT_ID || "";
+
+    // Helper to safely extract numeric values from IBKR's various response formats
+    const getValue = (field: any): number => {
+      if (typeof field === 'number' && isFinite(field)) return field;
+      if (field?.amount !== undefined) return Number(field.amount) || 0;
+      if (field?.value !== undefined) return Number(field.value) || 0;
+      const parsed = Number(field);
+      return isFinite(parsed) ? parsed : 0;
+    };
+
     try {
       // CP endpoint - use cookie auth only, no Authorization header
       const resp = await this.http.get(`/v1/api/portfolio/${encodeURIComponent(accountId)}/positions`);
@@ -882,24 +1063,46 @@ class IbkrClient {
       console.log(`[IBKR][getPositions] status=${resp.status} body=${bodySnippet}`);
       if (resp.status !== 200) throw new Error(`status ${resp.status}`);
       const items = (resp.data as any[]) || [];
-      // Minimal mapping: only map options legs we can infer; return empty if unknown
+
+      // Map IBKR position data to client Position type with proper numeric coercion
+      // Filter out closed positions (qty=0) and non-option positions
       const positions: Position[] = (items || [])
-        .filter((p) => p?.assetClass === "OPT")
-        .map((p) => ({
-          id: String(p?.conid || randomUUID()),
-          symbol: String(p?.symbol || p?.localSymbol || ""),
-          strategy: "put_credit",
-          sellStrike: "0",
-          buyStrike: "0",
-          expiration: new Date(),
-          quantity: Number(p?.position || 0),
-          openCredit: "0",
-          currentValue: String(Number(p?.marketPrice || 0) * 100),
-          delta: String(Number(p?.delta || 0)),
-          marginRequired: "0",
-          openedAt: new Date(),
-          status: "open",
-        }));
+        .filter((p) => {
+          const position = getValue(p?.position);
+          return p?.assetClass === "OPT" && Math.abs(position) > 0;
+        })
+        .map((p) => {
+          const position = getValue(p?.position);
+
+          // Extract OCC symbol from contractDesc: "ARM    DEC2025 135 P [ARM   251212P00135000 100]"
+          // The OCC symbol is inside the brackets: "ARM   251212P00135000"
+          let symbol = String(p?.symbol || p?.localSymbol || "");
+          if (p?.contractDesc) {
+            const bracketMatch = p.contractDesc.match(/\[([A-Z]+\s+\d+[PC]\d+)\s+\d+\]/);
+            if (bracketMatch) {
+              symbol = bracketMatch[1];  // e.g., "ARM   251212P00135000"
+            } else {
+              // Fallback: use first part of contractDesc
+              symbol = p.contractDesc.split('[')[0].trim() || symbol;
+            }
+          }
+
+          return {
+            id: String(p?.conid || randomUUID()),
+            symbol,
+            side: position < 0 ? 'SELL' as const : 'BUY' as const,
+            qty: Math.abs(position),
+            avg: getValue(p?.avgCost) / 100,  // IBKR returns cents, convert to dollars
+            mark: getValue(p?.mktPrice || p?.marketPrice),
+            upl: getValue(p?.unrealizedPnl),
+            iv: getValue(p?.impVol) * 100,  // Convert to percentage
+            delta: getValue(p?.delta),
+            theta: getValue(p?.theta),
+            margin: getValue(p?.margin),
+            openedAt: new Date().toISOString(),
+            status: 'OPEN' as const,
+          };
+        });
       return positions;
     } catch {
       return [];
@@ -916,6 +1119,14 @@ class IbkrClient {
       const reauthResp = await this.http.post(reauthUrl, {});
       console.log(`[IBKR][Gateway] Reauthenticate status=${reauthResp.status}`);
 
+      // If reauthenticate returns 400/401, we need to re-init the SSO session
+      if (reauthResp.status === 400 || reauthResp.status === 401) {
+        console.log('[IBKR][Gateway] Reauthenticate failed, re-initializing SSO session...');
+        // Force re-init of brokerage session
+        await this.initBrokerageWithSso();
+        await this.sleep(1000);
+      }
+
       // Call auth/status to check gateway status
       const statusUrl = '/v1/api/iserver/auth/status';
       const statusResp = await this.http.post(statusUrl, {});
@@ -927,6 +1138,15 @@ class IbkrClient {
 
       if (!isAuthenticated || !isConnected) {
         console.warn(`[IBKR][Gateway] Gateway not fully established: authenticated=${isAuthenticated}, connected=${isConnected}`);
+
+        // Try calling /tickle to keep session alive and potentially trigger connection
+        try {
+          const tickleResp = await this.http.post('/v1/api/tickle', {});
+          console.log(`[IBKR][Gateway] Tickle response: status=${tickleResp.status}`);
+        } catch (tickleErr) {
+          console.warn('[IBKR][Gateway] Tickle failed:', tickleErr);
+        }
+
         // Try one more time after a delay
         await this.sleep(3000);
         const retryResp = await this.http.post(statusUrl, {});
@@ -935,7 +1155,66 @@ class IbkrClient {
         console.log(`[IBKR][Gateway] Retry auth status: authenticated=${retryAuth} connected=${retryConn}`);
 
         if (!retryAuth || !retryConn) {
-          throw new Error(`Gateway connection failed: authenticated=${retryAuth}, connected=${retryConn}`);
+          // One more attempt: call /sso/validate to refresh session
+          console.log('[IBKR][Gateway] Calling /sso/validate to refresh session...');
+          try {
+            const validateResp = await this.http.get('/v1/api/sso/validate');
+            console.log(`[IBKR][Gateway] Validate response: status=${validateResp.status}`);
+
+            // If validate returns 401, force complete re-auth
+            if (validateResp.status === 401) {
+              console.log('[IBKR][Gateway] SSO expired (401) - forcing complete re-auth...');
+              // Clear cached tokens and force full re-authentication
+              this.accessToken = null;
+              this.accessTokenExpiryMs = 0;
+              this.ssoAccessToken = null;
+              this.ssoAccessTokenExpiryMs = 0;
+              this.ssoSessionId = null;
+              this.sessionReady = false;
+              this.accountSelected = false;
+              this.lastInitTimeMs = 0;
+              this.lastValidateTimeMs = 0;
+
+              // Force full re-auth (OAuth → SSO → validate → init)
+              await this._doEnsureReady(true, true);
+              console.log('[IBKR][Gateway] Re-auth complete, checking gateway status...');
+            }
+
+            await this.sleep(2000);
+
+            // Final status check
+            const finalResp = await this.http.post(statusUrl, {});
+            const finalAuth = finalResp.data?.authenticated === true;
+            const finalConn = finalResp.data?.connected === true;
+            console.log(`[IBKR][Gateway] Final auth status: authenticated=${finalAuth} connected=${finalConn}`);
+
+            if (!finalAuth || !finalConn) {
+              throw new Error(`Gateway connection failed: authenticated=${finalAuth}, connected=${finalConn}`);
+            }
+          } catch (validateErr: any) {
+            // Check if the error is from axios with a 401 response
+            if (validateErr?.response?.status === 401 || validateErr?.status === 401) {
+              console.log('[IBKR][Gateway] SSO validate threw 401 - forcing complete re-auth...');
+              this.accessToken = null;
+              this.accessTokenExpiryMs = 0;
+              this.ssoAccessToken = null;
+              this.ssoAccessTokenExpiryMs = 0;
+              this.ssoSessionId = null;
+              this.sessionReady = false;
+              this.accountSelected = false;
+              this.lastInitTimeMs = 0;
+              this.lastValidateTimeMs = 0;
+
+              await this._doEnsureReady(true, true);
+              // Re-check status one more time
+              const recheckResp = await this.http.post(statusUrl, {});
+              if (recheckResp.data?.authenticated && recheckResp.data?.connected) {
+                console.log('[IBKR][Gateway] Re-auth successful, gateway established');
+                return; // Success!
+              }
+            }
+            throw new Error(`Gateway connection failed: authenticated=${retryAuth}, connected=${retryConn}`);
+          }
         }
       }
 
@@ -982,6 +1261,10 @@ class IbkrClient {
       'AMZN': 3691937,
       'NVDA': 4815747,
       'TSLA': 76792991,
+      'ARM': 653400472,   // ARM Holdings PLC-ADR on NASDAQ (verified from IBKR search)
+      'META': 107113386,  // Meta Platforms (formerly Facebook)
+      'GOOGL': 208813720, // Alphabet Class A
+      'GOOG': 208813719,  // Alphabet Class C
     };
 
     // Use known conid if available (instant, no API call)
@@ -1318,6 +1601,10 @@ class IbkrClient {
     // Track if we're using historical fallback (market closed)
     let isHistorical = false;
 
+    // Determine expiration early - needed for days-to-expiry calculation
+    const today = new Date();
+    const targetExpiration = expiration || this.getNextTradingDay(today);
+
     // Get underlying price
     let underlyingPrice = 0;
     let underlyingConid: number | null = null;
@@ -1431,10 +1718,18 @@ class IbkrClient {
       console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] Could not fetch VIX, using default ${vix}`);
     }
 
+    // Calculate days to expiry from target expiration date
+    const expirationDate = new Date(
+      parseInt(targetExpiration.slice(0, 4)),
+      parseInt(targetExpiration.slice(4, 6)) - 1,
+      parseInt(targetExpiration.slice(6, 8))
+    );
+    const daysToExpiry = Math.max(1, Math.ceil((expirationDate.getTime() - today.getTime()) / (1000 * 60 * 60 * 24)));
+    console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Days to expiry: ${daysToExpiry} (${targetExpiration})`);
+
     // Calculate expected move using VIX
     // For 0DTE: expected_move = spot * (VIX / 100) / sqrt(252)
     // For N days: expected_move = spot * (VIX / 100) * sqrt(N / 252)
-    const daysToExpiry = 1; // 0DTE = 1 day
     const expectedMove = underlyingPrice * (vix / 100) * Math.sqrt(daysToExpiry / 252);
     // Use 4σ range OR minimum $20 to capture 0.20-0.40 delta range (dynamic based on VIX)
     // Previously 3σ was too narrow in low-VIX environments
@@ -1460,9 +1755,7 @@ class IbkrClient {
       console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] Underlying price is 0, continuing anyway...`);
     }
 
-    // Determine expiration - use next trading day on weekends
-    const today = new Date();
-    const targetExpiration = expiration || this.getNextTradingDay(today);
+    // Set expiration month for API call (targetExpiration already set at top of function)
     const expirationMonth = targetExpiration.slice(0, 6);
     diagnostics.monthInput = expirationMonth;
     console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Target expiration: ${targetExpiration}`);
@@ -1772,6 +2065,59 @@ class IbkrClient {
           console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] After retry: ${emptyBidAskCount}/${marketDataMap.size} still have empty bid/ask`);
         }
 
+        // Phase 2b-RETRY-GREEKS: If most options have no delta, retry after longer delay
+        // IBKR needs time to calculate Greeks for less liquid options (like ARM)
+        let deltaRetryCount = 0;
+        for (const data of marketDataMap.values()) {
+          if (data.delta == null) deltaRetryCount++;
+        }
+        if (deltaRetryCount > marketDataMap.size * 0.5 && marketDataMap.size > 0) {
+          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] GREEKS RETRY: ${deltaRetryCount}/${marketDataMap.size} missing delta. Waiting 3000ms for IBKR to calculate Greeks...`);
+          await new Promise(r => setTimeout(r, 3000));
+
+          // Re-fetch all batches to get Greeks
+          for (let i = 0; i < allConids.length; i += 20) {
+            const batch = allConids.slice(i, i + 20);
+            const conidStr = batch.join(',');
+
+            try {
+              const snap = await this.httpGetWithBridgeRetry(
+                `/v1/api/iserver/marketdata/snapshot?conids=${conidStr}&fields=${fields}`,
+                `getOptionChainWithStrikes:opt-greeks-${i}:${reqId}`
+              );
+              if (snap.status === 200 && Array.isArray(snap.data)) {
+                for (const item of snap.data) {
+                  const conid = item.conid || item.conidEx;
+                  if (conid) {
+                    const existing = marketDataMap.get(conid);
+                    // Update delta if now available
+                    if (item["7308"] != null && existing) {
+                      existing.delta = Number(item["7308"]);
+                    }
+                    // Also update other Greeks if available
+                    if (item["7309"] != null && existing) existing.gamma = Number(item["7309"]);
+                    if (item["7310"] != null && existing) existing.theta = Number(item["7310"]);
+                    if (item["7633"] != null && existing) existing.vega = Number(item["7633"]);
+                  }
+                }
+              }
+            } catch (err) {
+              console.error(`[IBKR][getOptionChainWithStrikes][${reqId}] Greeks refetch error:`, err);
+            }
+
+            if (i + 20 < allConids.length) {
+              await new Promise(r => setTimeout(r, 100));
+            }
+          }
+
+          // Recount after Greeks retry
+          let finalDeltaCount = 0;
+          for (const data of marketDataMap.values()) {
+            if (data.delta != null) finalDeltaCount++;
+          }
+          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] After Greeks retry: ${finalDeltaCount}/${marketDataMap.size} now have delta`);
+        }
+
         // DIAGNOSTIC: Log marketDataMap stats after Phase 2b
         console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] marketDataMap populated: ${marketDataMap.size} entries`);
 
@@ -1821,19 +2167,23 @@ class IbkrClient {
       }
 
       // Phase 3: Build puts array - include ALL options even without delta
-      // Show actual IBKR data where available, 0 values indicate missing data
+      // Show actual IBKR data where available, estimate delta if missing
       for (const strike of otmPuts) {
         const conid = putConidMap.get(strike);
         const marketData = conid ? marketDataMap.get(conid) : undefined;
 
-        // Include options even without delta - user needs to see what's available
-        // Missing delta will show as 0, bid/ask $0 indicates no market data
+        // IBKR often doesn't return Greeks - extract IV from market price, then calculate delta (professional approach)
+        const bid = marketData?.bid || 0;
+        const ask = marketData?.ask || 0;
+        const estimatedDelta = marketData?.delta ?? this.calculateDeltaFromMarketPrice(
+          strike, underlyingPrice, 'PUT', daysToExpiry, bid, ask, vix
+        );
         puts.push({
           strike,
-          bid: marketData?.bid || 0,
-          ask: marketData?.ask || 0,
+          bid,
+          ask,
           last: marketData?.last,
-          delta: marketData?.delta || 0,
+          delta: estimatedDelta,
           gamma: marketData?.gamma,
           theta: marketData?.theta,
           vega: marketData?.vega,
@@ -1848,12 +2198,18 @@ class IbkrClient {
         const conid = callConidMap.get(strike);
         const marketData = conid ? marketDataMap.get(conid) : undefined;
 
+        // IBKR often doesn't return Greeks - extract IV from market price, then calculate delta (professional approach)
+        const bid = marketData?.bid || 0;
+        const ask = marketData?.ask || 0;
+        const estimatedDelta = marketData?.delta ?? this.calculateDeltaFromMarketPrice(
+          strike, underlyingPrice, 'CALL', daysToExpiry, bid, ask, vix
+        );
         calls.push({
           strike,
-          bid: marketData?.bid || 0,
-          ask: marketData?.ask || 0,
+          bid,
+          ask,
           last: marketData?.last,
-          delta: marketData?.delta || 0,
+          delta: estimatedDelta,
           gamma: marketData?.gamma,
           theta: marketData?.theta,
           vega: marketData?.vega,
@@ -1938,8 +2294,56 @@ class IbkrClient {
   }
 
   async getTrades(): Promise<Trade[]> {
-    // Not implemented yet — could map from orders; return empty list to keep UI stable
-    return [];
+    // Fetch trade executions from IBKR for the past 7 days
+    await this.ensureReady();
+    const accountId = this.accountId || process.env.IBKR_ACCOUNT_ID || "";
+
+    const getValue = (field: any): number => {
+      if (typeof field === 'number' && isFinite(field)) return field;
+      if (field?.amount !== undefined) return Number(field.amount) || 0;
+      if (field?.value !== undefined) return Number(field.value) || 0;
+      const parsed = Number(field);
+      return isFinite(parsed) ? parsed : 0;
+    };
+
+    try {
+      // IBKR Client Portal API endpoint for trade executions (up to 7 days)
+      const resp = await this.http.get(`/v1/api/iserver/account/trades?days=7`);
+      console.log(`[IBKR][getTrades] status=${resp.status} count=${Array.isArray(resp.data) ? resp.data.length : 0}`);
+
+      if (resp.status !== 200) {
+        console.warn(`[IBKR][getTrades] Non-200 status: ${resp.status}`);
+        return [];
+      }
+
+      const items = (resp.data as any[]) || [];
+
+      // Transform IBKR trade executions to our Trade format
+      // Note: We return minimal Trade objects since most fields are for our internal DB
+      const trades: Trade[] = items.map((t: any) => ({
+        id: String(t.execution_id || t.order_id || randomUUID()),
+        symbol: String(t.symbol || t.localSymbol || ''),
+        strategy: t.sec_type === 'OPT' ? 'option' : 'stock',
+        sellStrike: String(getValue(t.strike) || '0'),
+        buyStrike: '0', // N/A for single leg
+        expiration: t.last_liquidity_ind ? new Date() : new Date(), // Use execution time
+        quantity: Math.abs(getValue(t.size || t.filled_quantity || t.position)),
+        credit: String(getValue(t.price) * getValue(t.size || t.filled_quantity || 1)),
+        status: 'filled', // All returned trades are filled executions
+        submittedAt: t.trade_time ? new Date(t.trade_time) : new Date(),
+        // Optional fields from IBKR trade data
+        entryFillPrice: getValue(t.price),
+        entryCommission: getValue(t.commission),
+        entryUnderlyingPrice: getValue(t.underlying_price),
+        closedAt: t.trade_time ? new Date(t.trade_time) : null,
+        netPnl: getValue(t.realized_pnl),
+      }));
+
+      return trades;
+    } catch (err) {
+      console.error('[IBKR][getTrades] Error fetching trades:', err);
+      return [];
+    }
   }
 
   async placeOrder(_trade: InsertTrade): Promise<{ id?: string; status: string; raw?: any }> {

@@ -13,12 +13,20 @@ import {
   type InsertIbkrCredentials,
   type Order,
   type InsertOrder,
+  type Fill,
+  type InsertFill,
+  type GreeksSnapshot,
+  type InsertGreeksSnapshot,
   type OptionChainData,
   type SpreadConfig,
   type TradeValidation,
-  type ValidationResult
+  type ValidationResult,
+  trades,
+  auditLogs,
 } from "@shared/schema";
 import { randomUUID } from "crypto";
+import { db } from "./db";
+import { eq, desc } from "drizzle-orm";
 
 export interface IStorage {
   // User management
@@ -85,6 +93,18 @@ export interface IStorage {
   getOrderByIbkrId(ibkrOrderId: string): Promise<Order | undefined>;
   updateOrderStatus(id: string, status: string, extras?: { filledAt?: Date; cancelledAt?: Date }): Promise<Order>;
   clearAllLocalOrders(): Promise<number>;
+
+  // Fill tracking (comprehensive execution details)
+  createFill(fill: InsertFill): Promise<Fill>;
+  getFillsByOrderId(orderId: string): Promise<Fill[]>;
+  getFillsByTradeId(tradeId: string): Promise<Fill[]>;
+
+  // Greeks snapshots (track Greeks evolution)
+  createGreeksSnapshot(snapshot: InsertGreeksSnapshot): Promise<GreeksSnapshot>;
+  getGreeksSnapshotsByTradeId(tradeId: string): Promise<GreeksSnapshot[]>;
+
+  // Enhanced trade operations
+  updateTradeWithDetails(id: string, updates: Partial<Trade>): Promise<Trade>;
 }
 
 export class MemStorage implements IStorage {
@@ -95,6 +115,8 @@ export class MemStorage implements IStorage {
   private auditLogs: Map<string, AuditLog> = new Map();
   private ibkrCredentials: Map<string, IbkrCredentials> = new Map();
   private orders: Map<string, Order> = new Map();
+  private fills: Map<string, Fill> = new Map();
+  private greeksSnapshots: Map<string, GreeksSnapshot> = new Map();
 
   constructor() {
     // Initialize with default risk rules
@@ -202,6 +224,16 @@ export class MemStorage implements IStorage {
   }
 
   async getTrades(): Promise<Trade[]> {
+    // Try database first, fall back to memory
+    if (db) {
+      try {
+        const dbTrades = await db.select().from(trades).orderBy(desc(trades.submittedAt));
+        console.log(`[Storage] Fetched ${dbTrades.length} trades from database`);
+        return dbTrades;
+      } catch (err) {
+        console.error('[Storage] Failed to fetch trades from DB, using memory:', err);
+      }
+    }
     return Array.from(this.trades.values());
   }
 
@@ -212,16 +244,68 @@ export class MemStorage implements IStorage {
       id,
       submittedAt: new Date()
     };
+
+    // Save to memory
     this.trades.set(id, trade);
+
+    // Also persist to database if available
+    if (db) {
+      try {
+        await db.insert(trades).values({
+          id: trade.id,
+          symbol: trade.symbol,
+          strategy: trade.strategy,
+          sellStrike: trade.sellStrike,
+          buyStrike: trade.buyStrike,
+          expiration: trade.expiration,
+          quantity: trade.quantity,
+          credit: trade.credit,
+          status: trade.status,
+          // Entry details
+          entryFillPrice: trade.entryFillPrice,
+          entryCommission: trade.entryCommission,
+          entryDelta: trade.entryDelta,
+          entryGamma: trade.entryGamma,
+          entryTheta: trade.entryTheta,
+          entryVega: trade.entryVega,
+          entryIv: trade.entryIv,
+          entryUnderlyingPrice: trade.entryUnderlyingPrice,
+          entryVix: trade.entryVix,
+          // Risk context
+          riskRegime: trade.riskRegime,
+          targetDelta: trade.targetDelta,
+          actualDelta: trade.actualDelta,
+          contractCount: trade.contractCount,
+        });
+        console.log(`[Storage] ✅ Trade ${id} saved to database`);
+      } catch (err) {
+        console.error(`[Storage] ❌ Failed to save trade ${id} to database:`, err);
+        // Don't throw - we still have it in memory
+      }
+    } else {
+      console.warn(`[Storage] Database not available, trade ${id} only in memory`);
+    }
+
     return trade;
   }
 
   async updateTradeStatus(id: string, status: string): Promise<Trade> {
     const trade = this.trades.get(id);
     if (!trade) throw new Error("Trade not found");
-    
+
     trade.status = status;
     this.trades.set(id, trade);
+
+    // Update in database if available
+    if (db) {
+      try {
+        await db.update(trades).set({ status }).where(eq(trades.id, id));
+        console.log(`[Storage] Updated trade ${id} status to ${status} in database`);
+      } catch (err) {
+        console.error(`[Storage] Failed to update trade ${id} status in database:`, err);
+      }
+    }
+
     return trade;
   }
 
@@ -259,6 +343,15 @@ export class MemStorage implements IStorage {
   }
 
   async getAuditLogs(): Promise<AuditLog[]> {
+    // Try database first
+    if (db) {
+      try {
+        const dbLogs = await db.select().from(auditLogs).orderBy(desc(auditLogs.timestamp)).limit(100);
+        return dbLogs;
+      } catch (err) {
+        console.error('[Storage] Failed to fetch audit logs from DB:', err);
+      }
+    }
     return Array.from(this.auditLogs.values())
       .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
   }
@@ -272,6 +365,22 @@ export class MemStorage implements IStorage {
       timestamp: new Date()
     };
     this.auditLogs.set(id, log);
+
+    // Persist to database
+    if (db) {
+      try {
+        await db.insert(auditLogs).values({
+          id: log.id,
+          eventType: log.action,  // Map 'action' field to 'event_type' column
+          details: log.details,
+          userId: log.userId,
+          status: 'success',  // Default status for audit logs
+        });
+      } catch (err) {
+        console.error('[Storage] Failed to save audit log to database:', err);
+      }
+    }
+
     return log;
   }
 
@@ -571,6 +680,91 @@ export class MemStorage implements IStorage {
     }
     console.log(`[Storage] Cleared ${cleared} local orders`);
     return cleared;
+  }
+
+  // ==================== FILL TRACKING ====================
+
+  async createFill(fill: InsertFill): Promise<Fill> {
+    const id = randomUUID();
+    const newFill: Fill = {
+      id,
+      ...fill,
+      createdAt: new Date(),
+    };
+    this.fills.set(id, newFill);
+    console.log(`[Storage] Created fill ${id} for order ${fill.orderId}`);
+    return newFill;
+  }
+
+  async getFillsByOrderId(orderId: string): Promise<Fill[]> {
+    const result: Fill[] = [];
+    for (const fill of this.fills.values()) {
+      if (fill.orderId === orderId) {
+        result.push(fill);
+      }
+    }
+    return result.sort((a, b) => new Date(a.fillTime).getTime() - new Date(b.fillTime).getTime());
+  }
+
+  async getFillsByTradeId(tradeId: string): Promise<Fill[]> {
+    const result: Fill[] = [];
+    for (const fill of this.fills.values()) {
+      if (fill.tradeId === tradeId) {
+        result.push(fill);
+      }
+    }
+    return result.sort((a, b) => new Date(a.fillTime).getTime() - new Date(b.fillTime).getTime());
+  }
+
+  // ==================== GREEKS SNAPSHOTS ====================
+
+  async createGreeksSnapshot(snapshot: InsertGreeksSnapshot): Promise<GreeksSnapshot> {
+    const id = randomUUID();
+    const newSnapshot: GreeksSnapshot = {
+      id,
+      ...snapshot,
+      createdAt: new Date(),
+    };
+    this.greeksSnapshots.set(id, newSnapshot);
+    console.log(`[Storage] Created Greeks snapshot ${id} for trade ${snapshot.tradeId}`);
+    return newSnapshot;
+  }
+
+  async getGreeksSnapshotsByTradeId(tradeId: string): Promise<GreeksSnapshot[]> {
+    const result: GreeksSnapshot[] = [];
+    for (const snapshot of this.greeksSnapshots.values()) {
+      if (snapshot.tradeId === tradeId) {
+        result.push(snapshot);
+      }
+    }
+    return result.sort((a, b) => new Date(a.snapshotTime).getTime() - new Date(b.snapshotTime).getTime());
+  }
+
+  // ==================== ENHANCED TRADE OPERATIONS ====================
+
+  async updateTradeWithDetails(id: string, updates: Partial<Trade>): Promise<Trade> {
+    const trade = this.trades.get(id);
+    if (!trade) throw new Error(`Trade not found: ${id}`);
+
+    const updated: Trade = {
+      ...trade,
+      ...updates,
+    };
+    this.trades.set(id, updated);
+
+    // Persist to database
+    if (db) {
+      try {
+        await db.update(trades).set(updates).where(eq(trades.id, id));
+        console.log(`[Storage] Updated trade ${id} with details in database:`, Object.keys(updates).join(', '));
+      } catch (err) {
+        console.error(`[Storage] Failed to update trade ${id} in database:`, err);
+      }
+    } else {
+      console.log(`[Storage] Updated trade ${id} with details (memory only):`, Object.keys(updates).join(', '));
+    }
+
+    return updated;
   }
 }
 

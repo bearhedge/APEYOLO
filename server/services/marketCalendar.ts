@@ -271,9 +271,12 @@ export function getMarketCalendar(startDate: Date, days: number = 30): MarketDay
 
 /**
  * Get upcoming market events (holidays and early close days)
+ *
+ * Consolidates early close days with their associated holiday when applicable.
+ * For example, "Christmas Eve" early close appears as part of the Christmas holiday entry.
  */
-export function getUpcomingMarketEvents(days: number = 60): Array<{ date: string; event: string; type: 'holiday' | 'early_close' }> {
-  const events: Array<{ date: string; event: string; type: 'holiday' | 'early_close' }> = [];
+export function getUpcomingMarketEvents(days: number = 60): Array<{ date: string; event: string; type: 'holiday' | 'early_close'; earlyCloseDate?: string }> {
+  const events: Array<{ date: string; event: string; type: 'holiday' | 'early_close'; earlyCloseDate?: string }> = [];
   const today = new Date();
   const endDate = new Date(today);
   endDate.setDate(endDate.getDate() + days);
@@ -281,16 +284,37 @@ export function getUpcomingMarketEvents(days: number = 60): Array<{ date: string
   const todayStr = getETDateString(today);
   const endStr = getETDateString(endDate);
 
-  // Add holidays
+  // Build a map of holidays by date
+  const holidayDates = new Set(Object.keys(US_MARKET_HOLIDAYS));
+
+  // Track which early close days are consolidated with holidays
+  const consolidatedEarlyClose = new Set<string>();
+
+  // Add holidays, and check if previous day is an early close to consolidate
   for (const [date, holiday] of Object.entries(US_MARKET_HOLIDAYS)) {
     if (date >= todayStr && date <= endStr) {
-      events.push({ date, event: holiday, type: 'holiday' });
+      // Check if the day before is an early close day (e.g., Christmas Eve before Christmas)
+      const prevDate = getPreviousDateString(date);
+      const earlyCloseReason = EARLY_CLOSE_DAYS[prevDate];
+
+      if (earlyCloseReason) {
+        // Consolidate: show holiday with early close info
+        events.push({
+          date,
+          event: `${holiday} (Early Close ${formatDateShort(prevDate)})`,
+          type: 'holiday',
+          earlyCloseDate: prevDate
+        });
+        consolidatedEarlyClose.add(prevDate);
+      } else {
+        events.push({ date, event: holiday, type: 'holiday' });
+      }
     }
   }
 
-  // Add early close days
+  // Add standalone early close days (not consolidated with a holiday)
   for (const [date, reason] of Object.entries(EARLY_CLOSE_DAYS)) {
-    if (date >= todayStr && date <= endStr) {
+    if (date >= todayStr && date <= endStr && !consolidatedEarlyClose.has(date)) {
       events.push({ date, event: `Early Close: ${reason}`, type: 'early_close' });
     }
   }
@@ -299,6 +323,23 @@ export function getUpcomingMarketEvents(days: number = 60): Array<{ date: string
   events.sort((a, b) => a.date.localeCompare(b.date));
 
   return events;
+}
+
+/**
+ * Get the previous day's date string (YYYY-MM-DD)
+ */
+function getPreviousDateString(dateStr: string): string {
+  const date = new Date(dateStr + 'T12:00:00');
+  date.setDate(date.getDate() - 1);
+  return date.toISOString().split('T')[0];
+}
+
+/**
+ * Format date as short string (e.g., "Dec 24")
+ */
+function formatDateShort(dateStr: string): string {
+  const date = new Date(dateStr + 'T12:00:00');
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
 /**
