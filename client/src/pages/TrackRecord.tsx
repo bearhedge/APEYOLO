@@ -33,7 +33,7 @@ type UnifiedTrade = {
   ts: string;
   symbol: string;
   strategy: string;
-  side: 'BUY' | 'SELL';
+  status: 'Open' | 'Closed';
   qty: number;
   entry: number;
   realizedPnl: number;
@@ -263,6 +263,17 @@ export function TrackRecord() {
     return cashFlows.filter(cf => new Date(cf.date) >= cutoff);
   }, [cashFlows, timePeriod]);
 
+  // Helper to determine strategy type based on symbol
+  const getStrategyType = (symbol: string): string => {
+    // Extract underlying from IBKR symbol format (e.g., "ARM   251212P00135000" -> "ARM")
+    const underlying = symbol.match(/^([A-Z]+)/)?.[1] || symbol;
+    // Index symbols
+    if (['SPY', 'SPX', 'QQQ', 'IWM', 'DIA'].includes(underlying)) {
+      return 'Index';
+    }
+    return 'Stock Option';
+  };
+
   // Combine open positions and closed trades into unified list
   const allTrades = useMemo((): UnifiedTrade[] => {
     const unified: UnifiedTrade[] = [];
@@ -273,8 +284,8 @@ export function TrackRecord() {
         id: pos.id,
         ts: pos.openedAt,
         symbol: pos.symbol,
-        strategy: pos.side === 'SELL' ? 'SHORT' : 'LONG',
-        side: pos.side,
+        strategy: getStrategyType(pos.symbol),
+        status: 'Open',
         qty: pos.qty,
         entry: pos.avg,
         realizedPnl: 0,
@@ -288,8 +299,8 @@ export function TrackRecord() {
         id: trade.tradeId,
         ts: trade.ts,
         symbol: trade.symbol,
-        strategy: trade.strategy,
-        side: trade.side,
+        strategy: getStrategyType(trade.symbol),
+        status: 'Closed',
         qty: trade.qty,
         entry: trade.entry,
         realizedPnl: toNum(trade.realized),
@@ -389,7 +400,14 @@ export function TrackRecord() {
       className: 'font-medium',
     },
     { header: 'Strategy', accessor: (row: UnifiedTrade) => String(row.strategy || '-') },
-    { header: 'Side', accessor: (row: UnifiedTrade) => row.side === 'SELL' ? 'SHORT' : 'LONG' },
+    {
+      header: 'Status',
+      accessor: (row: UnifiedTrade) => (
+        <span className={row.status === 'Open' ? 'text-blue-400 font-medium' : 'text-silver'}>
+          {row.status}
+        </span>
+      ),
+    },
     { header: 'Qty', accessor: (row: UnifiedTrade) => String(row.qty ?? '-'), className: 'tabular-nums' },
     {
       header: 'Entry',
@@ -473,7 +491,7 @@ export function TrackRecord() {
           />
           <StatCard
             label="Total Trades"
-            value={kpis.totalTrades.toString()}
+            value={allTrades.length.toString()}
             icon={<ArrowUpDown className="w-5 h-5 text-electric" />}
           />
           <StatCard

@@ -1,4 +1,50 @@
-[ ## 2025-11-29
+## 2025-12-10
+
+### Track Record Page Enhancements
+- **Unified Trades View**: Combined open positions and closed trades into single "All Trades" tab
+  - Open positions now appear alongside closed trades for complete view
+  - Status column shows "Open" (blue) or "Closed" (gray) for each entry
+  - Strategy column shows "Index" for SPY/SPX/QQQ/IWM/DIA, "Stock Option" for others
+  - Separate Realized and Unrealized P&L columns
+- **KPI Improvements**:
+  - Total Trades now includes both open positions + closed trades
+  - Total P&L = Realized + Unrealized for accurate portfolio-wide tracking
+  - Renamed "KPI Details" → "KPIs", "Cash Flows" → "Cashflows"
+- **Time Period Filters**: Added 1M | 3M | 6M | YTD | All filter buttons
+  - All KPIs recalculate based on selected time period
+- **Fund-Style Metrics**: Added TVPI, RVPI, DPI calculations
+
+### Portfolio Page Cleanup
+- **Removed**: Net Delta section (was in third row of stat cards)
+- **Removed**: History tab - moved to Track Record page
+- **Focus**: Portfolio now purely shows live positions, account values, and margins
+
+### NAV Snapshot System (NEW)
+- **Added**: `nav_snapshots` table for end-of-day NAV tracking
+- **Added**: NAV snapshot job scheduled at 4:15 PM ET on weekdays
+- **Purpose**: Enables accurate Day P&L calculation using marked-to-market accounting
+- **Files**: `server/services/navSnapshot.ts`, `shared/schema.ts`
+
+### Jobs System Updates
+- **Changed**: Trade monitor schedule from 5 minutes to 30 minutes
+- **Added**: NY time (ET) display in navigation header
+
+### Codebase Cleanup
+- **Removed**: `/archive` folder (legacy files no longer needed)
+
+### Files Modified
+- `client/src/pages/TrackRecord.tsx` - Complete overhaul with unified trades view
+- `client/src/pages/Portfolio.tsx` - Removed Net Delta, removed History tab
+- `client/src/App.tsx` - Added NY time to header
+- `client/src/pages/Jobs.tsx` - Added "ET" suffix to timestamps
+- `server/services/tradeMonitor.ts` - Changed schedule to 30min
+- `server/services/navSnapshot.ts` - NEW NAV capture service
+- `server/jobRoutes.ts` - Registered NAV snapshot job
+- `shared/schema.ts` - Added `navSnapshots` table
+
+---
+
+## 2025-11-29
 
 ### True WebSocket Streaming to Browser (NEW)
 - **Added**: Real-time WebSocket streaming from server to browser
