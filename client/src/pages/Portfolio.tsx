@@ -1,4 +1,5 @@
-import { useQuery } from '@tanstack/react-query';
+import { useMemo } from 'react';
+import { useQuery, useQueries } from '@tanstack/react-query';
 import { getPositions } from '@/lib/api';
 import { DataTable } from '@/components/DataTable';
 import { LeftNav } from '@/components/LeftNav';
@@ -57,17 +58,6 @@ const formatMultiplier = (value: any): string => {
   return `${toNum(value).toFixed(3)}x`;
 };
 
-// Helper to format currency in HKD - handles strings, nulls, objects
-const formatHKD = (value: any, includeSign = false): string => {
-  const num = toNum(value);
-  if (value === null || value === undefined) return '-';
-  const formatted = `HK$${Math.abs(num).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
-  if (includeSign) {
-    return num >= 0 ? `+${formatted}` : `-${formatted.substring(3)}`;
-  }
-  return formatted;
-};
-
 // Helper to format delta values - handles strings, nulls, objects
 const formatDelta = (value: any): string => {
   if (value === null || value === undefined) return '-';
@@ -92,9 +82,18 @@ const normalCDF = (x: number): number => {
   return 0.5 * (1.0 + sign * y);
 };
 
+// Extract underlying symbol from option symbol
+// Input: "ARM   241212P00135000" -> Output: "ARM"
+const getUnderlyingSymbol = (optionSymbol: string): string | null => {
+  const match = optionSymbol.match(/^([A-Z]+)\s+/);
+  return match ? match[1] : null;
+};
+
 // Black-Scholes delta estimation for options
-// Returns delta for a single contract (not adjusted for position qty)
-const estimateDelta = (position: Position): number | null => {
+// Requires the actual underlying price to calculate correctly
+const estimateDelta = (position: Position, underlyingPrice: number): number | null => {
+  if (!underlyingPrice || underlyingPrice <= 0) return null;
+
   // Parse option symbol to extract strike and type
   const symbol = position.symbol || '';
   const match = symbol.match(/^([A-Z]+)\s+(\d{2})(\d{2})(\d{2})([PC])(\d+)$/);
@@ -103,15 +102,6 @@ const estimateDelta = (position: Position): number | null => {
   const [, , yy, mm, dd, optionType, strikeRaw] = match;
   const strike = parseInt(strikeRaw) / 1000;
   const isCall = optionType === 'C';
-
-  // Get current price (mark price is used as a proxy)
-  // For proper calculation, we'd need the underlying price
-  // Using a reasonable estimate based on strike and market price
-  const markPrice = toNum(position.mark);
-
-  // Estimate underlying price from strike (assume option is near ATM if no better data)
-  // This is a rough estimate - in production, you'd get the actual underlying price
-  const underlyingPrice = strike; // Assume ATM for estimation
 
   // Calculate time to expiration
   const now = new Date();
@@ -122,8 +112,8 @@ const estimateDelta = (position: Position): number | null => {
 
   const timeToExpiry = Math.max((expDate.getTime() - now.getTime()) / (365.25 * 24 * 60 * 60 * 1000), 0.001);
 
-  // Use default IV of 25% if not available
-  const iv = 0.25;
+  // Use position IV if available, otherwise default to 30%
+  const iv = toNum(position.iv) > 0 ? toNum(position.iv) : 0.30;
 
   // Risk-free rate (approximate)
   const r = 0.05;
@@ -134,10 +124,10 @@ const estimateDelta = (position: Position): number | null => {
   // Delta calculation
   let delta = normalCDF(d1);
   if (!isCall) {
-    delta = delta - 1; // Put delta
+    delta = delta - 1; // Put delta (negative for long puts)
   }
 
-  // Adjust for short position (SELL)
+  // Adjust for short position (SELL) - flip the sign
   if (position.side === 'SELL') {
     delta = -delta;
   }
@@ -178,6 +168,43 @@ export function Portfolio() {
     retry: 2, // Retry twice before giving up
   });
 
+  // Get unique underlying symbols from positions
+  const underlyingSymbols = useMemo(() => {
+    if (!positions) return [];
+    const symbols = new Set<string>();
+    positions.forEach(p => {
+      const underlying = getUnderlyingSymbol(p.symbol || '');
+      if (underlying) symbols.add(underlying);
+    });
+    return Array.from(symbols);
+  }, [positions]);
+
+  // Fetch market data for each underlying symbol
+  const underlyingQueries = useQueries({
+    queries: underlyingSymbols.map(symbol => ({
+      queryKey: ['/api/broker/test-market', symbol],
+      queryFn: async () => {
+        const res = await fetch(`/api/broker/test-market/${symbol}`, { credentials: 'include' });
+        if (!res.ok) return null;
+        const data = await res.json();
+        return { symbol, price: data?.data?.price || 0 };
+      },
+      refetchInterval: 10000, // Refresh every 10s
+      staleTime: 5000,
+    })),
+  });
+
+  // Build a map of underlying symbol -> price
+  const underlyingPrices = useMemo(() => {
+    const prices: Record<string, number> = {};
+    underlyingQueries.forEach(q => {
+      if (q.data?.symbol && q.data?.price > 0) {
+        prices[q.data.symbol] = q.data.price;
+      }
+    });
+    return prices;
+  }, [underlyingQueries]);
+
   // Positions table columns - all fields use accessor functions to avoid object rendering
   const columns = [
     { header: 'Symbol', accessor: (row: Position) => formatOptionSymbol(row.symbol || ''), sortable: true },
@@ -201,10 +228,14 @@ export function Portfolio() {
     {
       header: 'Delta',
       accessor: (row: Position) => {
-        // Use IBKR delta if available and non-zero, otherwise estimate via Black-Scholes
+        // Use IBKR delta if available and non-zero
         const ibkrDelta = toNum(row.delta);
         if (ibkrDelta !== 0) return formatDelta(ibkrDelta);
-        const estimated = estimateDelta(row);
+
+        // Otherwise estimate via Black-Scholes using actual underlying price
+        const underlying = getUnderlyingSymbol(row.symbol || '');
+        const underlyingPrice = underlying ? underlyingPrices[underlying] : 0;
+        const estimated = estimateDelta(row, underlyingPrice);
         return estimated !== null ? formatDelta(estimated) : '-';
       },
       className: 'tabular-nums text-silver'
@@ -270,7 +301,7 @@ export function Portfolio() {
           />
           <StatCard
             label="Day P&L"
-            value={accountError ? '--' : accountLoading ? 'Loading...' : formatHKD(account?.dayPnL, true)}
+            value={accountError ? '--' : accountLoading ? 'Loading...' : formatCurrency(account?.dayPnL, true)}
             icon={<ArrowUpDown className={`w-5 h-5 ${(account?.dayPnL ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}`} />}
             testId="day-pnl"
           />
