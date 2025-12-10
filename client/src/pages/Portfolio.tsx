@@ -3,7 +3,7 @@ import { getPositions } from '@/lib/api';
 import { DataTable } from '@/components/DataTable';
 import { LeftNav } from '@/components/LeftNav';
 import { StatCard } from '@/components/StatCard';
-import { DollarSign, TrendingUp, Shield, Activity, Wallet, Banknote, BarChart3, Scale, Gauge } from 'lucide-react';
+import { DollarSign, TrendingUp, Shield, Activity, ArrowUpDown, Wallet, Banknote, BarChart3, Scale, Gauge } from 'lucide-react';
 import type { Position } from '@shared/types';
 
 // Universal type coercion helper - handles strings, nulls, objects from IBKR
