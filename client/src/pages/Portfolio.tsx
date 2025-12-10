@@ -45,22 +45,104 @@ const formatCurrency = (value: any, includeSign = false): string => {
   return formatted;
 };
 
-// Helper to format percentage values - handles strings, nulls, objects
+// Helper to format percentage values - handles strings, nulls, objects (3 decimal places)
 const formatPercent = (value: any): string => {
   if (value === null || value === undefined) return '-';
-  return `${toNum(value).toFixed(1)}%`;
+  return `${toNum(value).toFixed(3)}%`;
 };
 
-// Helper to format multiplier values - handles strings, nulls, objects
+// Helper to format multiplier values - handles strings, nulls, objects (3 decimal places)
 const formatMultiplier = (value: any): string => {
   if (value === null || value === undefined) return '-';
-  return `${toNum(value).toFixed(2)}x`;
+  return `${toNum(value).toFixed(3)}x`;
+};
+
+// Helper to format currency in HKD - handles strings, nulls, objects
+const formatHKD = (value: any, includeSign = false): string => {
+  const num = toNum(value);
+  if (value === null || value === undefined) return '-';
+  const formatted = `HK$${Math.abs(num).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  if (includeSign) {
+    return num >= 0 ? `+${formatted}` : `-${formatted.substring(3)}`;
+  }
+  return formatted;
 };
 
 // Helper to format delta values - handles strings, nulls, objects
 const formatDelta = (value: any): string => {
   if (value === null || value === undefined) return '-';
   return toNum(value).toFixed(2);
+};
+
+// Standard normal CDF approximation (Abramowitz and Stegun)
+const normalCDF = (x: number): number => {
+  const a1 = 0.254829592;
+  const a2 = -0.284496736;
+  const a3 = 1.421413741;
+  const a4 = -1.453152027;
+  const a5 = 1.061405429;
+  const p = 0.3275911;
+
+  const sign = x < 0 ? -1 : 1;
+  x = Math.abs(x) / Math.sqrt(2);
+
+  const t = 1.0 / (1.0 + p * x);
+  const y = 1.0 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-x * x);
+
+  return 0.5 * (1.0 + sign * y);
+};
+
+// Black-Scholes delta estimation for options
+// Returns delta for a single contract (not adjusted for position qty)
+const estimateDelta = (position: Position): number | null => {
+  // Parse option symbol to extract strike and type
+  const symbol = position.symbol || '';
+  const match = symbol.match(/^([A-Z]+)\s+(\d{2})(\d{2})(\d{2})([PC])(\d+)$/);
+  if (!match) return null; // Not an option
+
+  const [, , yy, mm, dd, optionType, strikeRaw] = match;
+  const strike = parseInt(strikeRaw) / 1000;
+  const isCall = optionType === 'C';
+
+  // Get current price (mark price is used as a proxy)
+  // For proper calculation, we'd need the underlying price
+  // Using a reasonable estimate based on strike and market price
+  const markPrice = toNum(position.mark);
+
+  // Estimate underlying price from strike (assume option is near ATM if no better data)
+  // This is a rough estimate - in production, you'd get the actual underlying price
+  const underlyingPrice = strike; // Assume ATM for estimation
+
+  // Calculate time to expiration
+  const now = new Date();
+  const expYear = 2000 + parseInt(yy);
+  const expMonth = parseInt(mm) - 1;
+  const expDay = parseInt(dd);
+  const expDate = new Date(expYear, expMonth, expDay, 16, 0, 0); // 4 PM ET
+
+  const timeToExpiry = Math.max((expDate.getTime() - now.getTime()) / (365.25 * 24 * 60 * 60 * 1000), 0.001);
+
+  // Use default IV of 25% if not available
+  const iv = 0.25;
+
+  // Risk-free rate (approximate)
+  const r = 0.05;
+
+  // Black-Scholes d1 calculation
+  const d1 = (Math.log(underlyingPrice / strike) + (r + (iv * iv) / 2) * timeToExpiry) / (iv * Math.sqrt(timeToExpiry));
+
+  // Delta calculation
+  let delta = normalCDF(d1);
+  if (!isCall) {
+    delta = delta - 1; // Put delta
+  }
+
+  // Adjust for short position (SELL)
+  if (position.side === 'SELL') {
+    delta = -delta;
+  }
+
+  return delta;
 };
 
 // Helper to parse and format IBKR option symbols
@@ -116,8 +198,17 @@ export function Portfolio() {
       },
       className: 'tabular-nums'
     },
-    { header: 'Delta', accessor: (row: Position) => formatDelta(row.delta), className: 'tabular-nums text-silver' },
-    { header: 'Margin', accessor: (row: Position) => toNum(row.margin) > 0 ? formatCurrency(row.margin) : '-', className: 'tabular-nums text-silver' },
+    {
+      header: 'Delta',
+      accessor: (row: Position) => {
+        // Use IBKR delta if available and non-zero, otherwise estimate via Black-Scholes
+        const ibkrDelta = toNum(row.delta);
+        if (ibkrDelta !== 0) return formatDelta(ibkrDelta);
+        const estimated = estimateDelta(row);
+        return estimated !== null ? formatDelta(estimated) : '-';
+      },
+      className: 'tabular-nums text-silver'
+    },
   ];
 
   return (
@@ -179,7 +270,7 @@ export function Portfolio() {
           />
           <StatCard
             label="Day P&L"
-            value={accountError ? '--' : accountLoading ? 'Loading...' : formatCurrency(account?.dayPnL, true)}
+            value={accountError ? '--' : accountLoading ? 'Loading...' : formatHKD(account?.dayPnL, true)}
             icon={<ArrowUpDown className={`w-5 h-5 ${(account?.dayPnL ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}`} />}
             testId="day-pnl"
           />

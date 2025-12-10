@@ -101,10 +101,10 @@ const formatCurrency = (value: any, includeSign = false): string => {
   return formatted;
 };
 
-// Format percentage
+// Format percentage (2 decimal places)
 const formatPercent = (value: any): string => {
   if (value === null || value === undefined) return '-';
-  return `${toNum(value).toFixed(1)}%`;
+  return `${toNum(value).toFixed(2)}%`;
 };
 
 // Calculate trading KPIs from trade history

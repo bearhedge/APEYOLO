@@ -678,9 +678,9 @@ export function Data() {
                 </h4>
                 <div className="overflow-auto max-h-96 rounded-lg border border-white/10">
                   <table className="w-full text-sm">
-                    <thead className="bg-white/5 sticky top-0">
+                    <thead className="bg-white/5 sticky top-0 z-20">
                       <tr className="text-left text-silver">
-                        <th className="px-3 py-2 font-medium">Strike</th>
+                        <th className="px-3 py-2 font-medium sticky left-0 bg-charcoal z-10">Strike</th>
                         <th className="px-3 py-2 font-medium text-right">Bid</th>
                         <th className="px-3 py-2 font-medium text-right">Ask</th>
                         <th className="px-3 py-2 font-medium text-right">Delta</th>
@@ -701,7 +701,7 @@ export function Data() {
                               hover:bg-white/5 transition
                             `}
                           >
-                            <td className="px-3 py-2 font-medium">${option.strike}</td>
+                            <td className={`px-3 py-2 font-medium sticky left-0 z-10 ${isATM ? 'bg-yellow-500/10' : isITM ? 'bg-red-500/5' : 'bg-charcoal'}`}>${option.strike}</td>
                             <td className="px-3 py-2 text-right font-mono">{option.bid?.toFixed(2) || '-'}</td>
                             <td className="px-3 py-2 text-right font-mono">{option.ask?.toFixed(2) || '-'}</td>
                             <td className="px-3 py-2 text-right font-mono text-red-400">
@@ -735,9 +735,9 @@ export function Data() {
                 </h4>
                 <div className="overflow-auto max-h-96 rounded-lg border border-white/10">
                   <table className="w-full text-sm">
-                    <thead className="bg-white/5 sticky top-0">
+                    <thead className="bg-white/5 sticky top-0 z-20">
                       <tr className="text-left text-silver">
-                        <th className="px-3 py-2 font-medium">Strike</th>
+                        <th className="px-3 py-2 font-medium sticky left-0 bg-charcoal z-10">Strike</th>
                         <th className="px-3 py-2 font-medium text-right">Bid</th>
                         <th className="px-3 py-2 font-medium text-right">Ask</th>
                         <th className="px-3 py-2 font-medium text-right">Delta</th>
@@ -758,7 +758,7 @@ export function Data() {
                               hover:bg-white/5 transition
                             `}
                           >
-                            <td className="px-3 py-2 font-medium">${option.strike}</td>
+                            <td className={`px-3 py-2 font-medium sticky left-0 z-10 ${isATM ? 'bg-yellow-500/10' : isITM ? 'bg-green-500/5' : 'bg-charcoal'}`}>${option.strike}</td>
                             <td className="px-3 py-2 text-right font-mono">{option.bid?.toFixed(2) || '-'}</td>
                             <td className="px-3 py-2 text-right font-mono">{option.ask?.toFixed(2) || '-'}</td>
                             <td className="px-3 py-2 text-right font-mono text-green-400">
