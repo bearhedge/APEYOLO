@@ -286,6 +286,11 @@ export async function initializeJobsSystem(): Promise<void> {
   initNavSnapshotJob();
   await ensureNavSnapshotJob();
 
+  // Initialize 0DTE position manager job (3:55 PM ET safety net for expiring options)
+  const { init0dtePositionManagerJob, ensure0dtePositionManagerJob } = await import('./services/jobs/0dtePositionManager');
+  init0dtePositionManagerJob();
+  await ensure0dtePositionManagerJob();
+
   // Seed default jobs in database
   await seedDefaultJobs();
 
