@@ -1,18 +1,23 @@
 /**
  * NAV Snapshot Service
  *
- * Captures end-of-day Net Asset Value for accurate Day P&L calculation.
- * Uses marked-to-market accounting (consistent with standard fund accounting).
+ * Captures NAV snapshots for accurate Day P&L calculation:
+ * - Opening snapshot at 9:30 AM ET (market open)
+ * - Closing snapshot at 4:15 PM ET (after market close)
  *
- * Schedule: 4:15 PM ET on weekdays (after market close at 4:00 PM)
+ * Day P&L Logic:
+ * - During market hours: Current NAV - Opening NAV (today's change)
+ * - After market hours: Current NAV - Closing NAV (final day's P&L)
  */
 
 import { db } from '../db';
 import { navSnapshots, jobs } from '@shared/schema';
-import { eq, desc } from 'drizzle-orm';
+import { eq, desc, and } from 'drizzle-orm';
 import { getBroker } from '../broker';
 import { ensureIbkrReady } from '../broker/ibkr';
 import { registerJobHandler, type JobResult } from './jobExecutor';
+
+type SnapshotType = 'opening' | 'closing';
 
 // ============================================
 // NAV Capture Logic
@@ -20,9 +25,10 @@ import { registerJobHandler, type JobResult } from './jobExecutor';
 
 /**
  * Capture the current NAV and save to database
+ * @param snapshotType - 'opening' for market open, 'closing' for market close
  */
-export async function captureNavSnapshot(): Promise<JobResult> {
-  console.log('[NavSnapshot] Capturing NAV snapshot...');
+export async function captureNavSnapshot(snapshotType: SnapshotType = 'closing'): Promise<JobResult> {
+  console.log(`[NavSnapshot] Capturing ${snapshotType} NAV snapshot...`);
 
   if (!db) {
     return { success: false, error: 'Database not available' };
@@ -53,25 +59,29 @@ export async function captureNavSnapshot(): Promise<JobResult> {
     // Get today's date in ET timezone
     const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }); // YYYY-MM-DD
 
-    // Check if we already have a snapshot for today
+    // Check if we already have a snapshot for today with this type
     const [existing] = await db
       .select()
       .from(navSnapshots)
-      .where(eq(navSnapshots.date, today))
+      .where(and(
+        eq(navSnapshots.date, today),
+        eq(navSnapshots.snapshotType, snapshotType)
+      ))
       .limit(1);
 
     if (existing) {
       // Update existing snapshot
-      console.log(`[NavSnapshot] Updating existing snapshot for ${today}: $${nav.toFixed(2)}`);
+      console.log(`[NavSnapshot] Updating existing ${snapshotType} snapshot for ${today}: $${nav.toFixed(2)}`);
       await db
         .update(navSnapshots)
         .set({ nav: nav.toString() })
         .where(eq(navSnapshots.id, existing.id));
     } else {
       // Create new snapshot
-      console.log(`[NavSnapshot] Creating new snapshot for ${today}: $${nav.toFixed(2)}`);
+      console.log(`[NavSnapshot] Creating new ${snapshotType} snapshot for ${today}: $${nav.toFixed(2)}`);
       await db.insert(navSnapshots).values({
         date: today,
+        snapshotType,
         nav: nav.toString(),
       });
     }
@@ -80,6 +90,7 @@ export async function captureNavSnapshot(): Promise<JobResult> {
       success: true,
       data: {
         date: today,
+        snapshotType,
         nav,
         action: existing ? 'updated' : 'created',
       },
@@ -91,38 +102,55 @@ export async function captureNavSnapshot(): Promise<JobResult> {
 }
 
 /**
- * Get the most recent NAV snapshot (for Day P&L calculation)
- * @returns The previous trading day's NAV, or null if not found
+ * Get today's opening NAV snapshot (for intraday Day P&L calculation)
  */
-export async function getPreviousNavSnapshot(): Promise<{ date: string; nav: number } | null> {
+export async function getTodayOpeningSnapshot(): Promise<{ date: string; nav: number } | null> {
   if (!db) return null;
 
   try {
-    // Get today's date in ET timezone
     const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 
-    // Get the most recent snapshot that's NOT today
     const [snapshot] = await db
       .select()
       .from(navSnapshots)
-      .where(
-        // We want the most recent snapshot before today
-        // Using desc order on date and taking first non-today result
-        // Since we use text dates, string comparison works for YYYY-MM-DD
-      )
-      .orderBy(desc(navSnapshots.date))
-      .limit(2); // Get 2 in case first is today
+      .where(and(
+        eq(navSnapshots.date, today),
+        eq(navSnapshots.snapshotType, 'opening')
+      ))
+      .limit(1);
 
     if (!snapshot) return null;
 
-    // If the most recent is today, we need the second one
-    const [first, second] = await db
+    return {
+      date: snapshot.date,
+      nav: parseFloat(snapshot.nav as any) || 0,
+    };
+  } catch (error) {
+    console.error('[NavSnapshot] Error getting opening snapshot:', error);
+    return null;
+  }
+}
+
+/**
+ * Get the most recent closing NAV snapshot (for after-hours Day P&L)
+ * Returns yesterday's closing NAV, or most recent available
+ */
+export async function getPreviousClosingSnapshot(): Promise<{ date: string; nav: number } | null> {
+  if (!db) return null;
+
+  try {
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+
+    // Get the most recent closing snapshot that's NOT today
+    const closingSnapshots = await db
       .select()
       .from(navSnapshots)
+      .where(eq(navSnapshots.snapshotType, 'closing'))
       .orderBy(desc(navSnapshots.date))
       .limit(2);
 
-    const previousSnapshot = first?.date === today ? second : first;
+    // Find the first one that's not today
+    const previousSnapshot = closingSnapshots.find(s => s.date !== today) || closingSnapshots[0];
 
     if (!previousSnapshot) return null;
 
@@ -131,9 +159,17 @@ export async function getPreviousNavSnapshot(): Promise<{ date: string; nav: num
       nav: parseFloat(previousSnapshot.nav as any) || 0,
     };
   } catch (error) {
-    console.error('[NavSnapshot] Error getting previous snapshot:', error);
+    console.error('[NavSnapshot] Error getting previous closing snapshot:', error);
     return null;
   }
+}
+
+/**
+ * Get the most recent NAV snapshot (backwards compatibility)
+ * @returns The previous trading day's NAV, or null if not found
+ */
+export async function getPreviousNavSnapshot(): Promise<{ date: string; nav: number } | null> {
+  return getPreviousClosingSnapshot();
 }
 
 // ============================================
@@ -141,45 +177,71 @@ export async function getPreviousNavSnapshot(): Promise<{ date: string; nav: num
 // ============================================
 
 /**
- * Register the NAV snapshot job handler
+ * Register the NAV snapshot job handlers (opening and closing)
  */
 export function initNavSnapshotJob(): void {
-  console.log('[NavSnapshot] Initializing job handler...');
+  console.log('[NavSnapshot] Initializing job handlers...');
 
+  // Closing snapshot (4:15 PM ET) - original
   registerJobHandler({
     id: 'nav-snapshot',
-    name: 'NAV Snapshot',
+    name: 'NAV Snapshot (Closing)',
     description: 'Capture end-of-day NAV for Day P&L calculation',
-    execute: captureNavSnapshot,
+    execute: () => captureNavSnapshot('closing'),
   });
 
-  console.log('[NavSnapshot] Job handler registered');
+  // Opening snapshot (9:30 AM ET) - new
+  registerJobHandler({
+    id: 'nav-snapshot-opening',
+    name: 'NAV Snapshot (Opening)',
+    description: 'Capture market-open NAV for intraday Day P&L calculation',
+    execute: () => captureNavSnapshot('opening'),
+  });
+
+  console.log('[NavSnapshot] Job handlers registered (opening + closing)');
 }
 
 /**
- * Create the nav-snapshot job in the database if it doesn't exist
+ * Create the nav-snapshot jobs in the database if they don't exist
  */
 export async function ensureNavSnapshotJob(): Promise<void> {
   if (!db) return;
 
   try {
-    const [existingJob] = await db.select().from(jobs).where(eq(jobs.id, 'nav-snapshot')).limit(1);
-
-    if (!existingJob) {
-      console.log('[NavSnapshot] Creating nav-snapshot job in database...');
+    // Ensure closing snapshot job
+    const [existingClosing] = await db.select().from(jobs).where(eq(jobs.id, 'nav-snapshot')).limit(1);
+    if (!existingClosing) {
+      console.log('[NavSnapshot] Creating nav-snapshot (closing) job in database...');
       await db.insert(jobs).values({
         id: 'nav-snapshot',
-        name: 'NAV Snapshot',
+        name: 'NAV Snapshot (Closing)',
         description: 'Capture end-of-day NAV for Day P&L calculation',
         type: 'nav-snapshot',
         schedule: '15 16 * * 1-5', // 4:15 PM ET on weekdays (after market close)
         timezone: 'America/New_York',
         enabled: true,
-        config: {},
+        config: { snapshotType: 'closing' },
       });
-      console.log('[NavSnapshot] Job created successfully');
+      console.log('[NavSnapshot] Closing snapshot job created');
+    }
+
+    // Ensure opening snapshot job
+    const [existingOpening] = await db.select().from(jobs).where(eq(jobs.id, 'nav-snapshot-opening')).limit(1);
+    if (!existingOpening) {
+      console.log('[NavSnapshot] Creating nav-snapshot-opening job in database...');
+      await db.insert(jobs).values({
+        id: 'nav-snapshot-opening',
+        name: 'NAV Snapshot (Opening)',
+        description: 'Capture market-open NAV for intraday Day P&L calculation',
+        type: 'nav-snapshot',
+        schedule: '30 9 * * 1-5', // 9:30 AM ET on weekdays (market open)
+        timezone: 'America/New_York',
+        enabled: true,
+        config: { snapshotType: 'opening' },
+      });
+      console.log('[NavSnapshot] Opening snapshot job created');
     }
   } catch (err) {
-    console.warn('[NavSnapshot] Could not ensure job exists:', err);
+    console.warn('[NavSnapshot] Could not ensure jobs exist:', err);
   }
 }

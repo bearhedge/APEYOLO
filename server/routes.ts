@@ -28,7 +28,7 @@ import ibkrRoutes from "./ibkrRoutes.js";
 import engineRoutes from "./engineRoutes.js";
 import marketRoutes from "./marketRoutes.js";
 import jobRoutes, { initializeJobsSystem } from "./jobRoutes.js";
-import { getPreviousNavSnapshot } from "./services/navSnapshot.js";
+import { getTodayOpeningSnapshot } from "./services/navSnapshot.js";
 
 // Helper function to get session from request
 async function getSessionFromRequest(req: any) {
@@ -198,25 +198,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log('[API] /api/account: Success, portfolioValue=', account?.portfolioValue, 'netLiq=', account?.netLiquidation);
 
       // Calculate Day P&L:
-      // 1. Try NAV snapshot (yesterday's close vs today's value)
-      // 2. Fallback: Sum unrealized P&L from positions (matches what user sees in table)
+      // Day P&L = Current NAV - Today's Opening NAV
+      // Simple: how much changed from when market opened today
       let enhancedDayPnL = 0;
       try {
-        const previousNav = await getPreviousNavSnapshot();
-        if (previousNav && account?.portfolioValue) {
-          const currentNav = account.portfolioValue;
-          enhancedDayPnL = currentNav - previousNav.nav;
-          console.log(`[API] /api/account: Day P&L (NAV-based): $${enhancedDayPnL.toFixed(2)} (current: $${currentNav.toFixed(2)}, prev: $${previousNav.nav.toFixed(2)} from ${previousNav.date})`);
+        const currentNav = account?.portfolioValue || 0;
+        const openingSnapshot = await getTodayOpeningSnapshot();
+
+        if (openingSnapshot && currentNav) {
+          enhancedDayPnL = currentNav - openingSnapshot.nav;
+          console.log(`[API] /api/account: Day P&L: $${enhancedDayPnL.toFixed(2)} (current: $${currentNav.toFixed(2)}, open: $${openingSnapshot.nav.toFixed(2)})`);
         } else {
-          // No NAV snapshot - calculate from positions unrealized P&L
-          // This matches what the user sees in the positions table
+          // No opening snapshot (weekend, holiday, or first day) - fall back to position UPL
           const positions = await broker.api.getPositions();
           enhancedDayPnL = positions.reduce((sum, p) => sum + (p.upl || 0), 0);
-          console.log(`[API] /api/account: Day P&L (sum of position UPL): $${enhancedDayPnL.toFixed(2)} from ${positions.length} positions`);
+          console.log(`[API] /api/account: Day P&L (no opening snapshot, using position UPL): $${enhancedDayPnL.toFixed(2)}`);
         }
       } catch (navErr) {
         console.warn('[API] /api/account: Could not calculate Day P&L:', navErr);
-        enhancedDayPnL = account?.dayPnL || 0; // Last resort: IBKR's value
+        enhancedDayPnL = account?.dayPnL || 0;
       }
 
       res.json({

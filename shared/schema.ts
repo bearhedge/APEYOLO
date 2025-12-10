@@ -514,16 +514,19 @@ export type InsertCashFlow = z.infer<typeof insertCashFlowSchema>;
 // ==================== END CASH FLOWS ====================
 
 // ==================== NAV SNAPSHOTS ====================
-// End-of-day NAV snapshots for accurate Day P&L calculation (marked-to-market)
+// NAV snapshots for accurate Day P&L calculation (marked-to-market)
+// Opening snapshots at 9:30 AM ET, closing snapshots at 4:15 PM ET
 
 export const navSnapshots = pgTable("nav_snapshots", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
-  date: text("date").notNull().unique(), // YYYY-MM-DD - one snapshot per day
+  date: text("date").notNull(), // YYYY-MM-DD
+  snapshotType: text("snapshot_type").notNull().default("closing"), // 'opening' (9:30 AM) | 'closing' (4:15 PM)
   nav: decimal("nav", { precision: 12, scale: 2 }).notNull(),
   userId: varchar("user_id").references(() => users.id),
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (table) => [
   index("nav_snapshots_date_idx").on(table.date),
+  index("nav_snapshots_date_type_idx").on(table.date, table.snapshotType),
 ]);
 
 export const insertNavSnapshotSchema = createInsertSchema(navSnapshots).omit({
