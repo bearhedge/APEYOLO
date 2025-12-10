@@ -223,7 +223,6 @@ export function Portfolio() {
         <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-semibold">Open Positions</h3>
-            <span className="text-sm text-silver">{positions?.length || 0} positions</span>
           </div>
           {positions && positions.length > 0 ? (
             <DataTable
