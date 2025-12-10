@@ -1,6 +1,6 @@
 import { useState, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { getPNL } from '@/lib/api';
+import { getPNL, getPositions } from '@/lib/api';
 import { DataTable } from '@/components/DataTable';
 import { LeftNav } from '@/components/LeftNav';
 import { StatCard } from '@/components/StatCard';
@@ -22,11 +22,38 @@ import {
   Scale,
   BarChart3,
   Banknote,
+  Clock,
+  CheckCircle2,
 } from 'lucide-react';
-import type { PnlRow } from '@shared/types';
+import type { PnlRow, Position } from '@shared/types';
 
 // Time period filter type
 type TimePeriod = '1m' | '3m' | '6m' | 'ytd' | 'all';
+
+// Unified trade type for combining open positions and closed trades
+type UnifiedTrade = {
+  id: string;
+  ts: string;
+  symbol: string;
+  strategy: string;
+  side: 'BUY' | 'SELL';
+  qty: number;
+  entry: number;
+  pnl: number;
+  status: 'OPEN' | 'CLOSED';
+};
+
+// Helper to parse and format IBKR option symbols
+// Input: "ARM   241212P00135000" -> Output: "ARM 12/12 $135 PUT"
+const formatOptionSymbol = (symbol: string): string => {
+  if (!symbol) return '-';
+  const match = symbol.match(/^([A-Z]+)\s+(\d{2})(\d{2})(\d{2})([PC])(\d+)$/);
+  if (!match) return symbol;
+  const [, underlying, , mm, dd, type, strikeRaw] = match;
+  const strike = parseInt(strikeRaw) / 1000;
+  const optType = type === 'P' ? 'PUT' : 'CALL';
+  return `${underlying} ${mm}/${dd} $${strike} ${optType}`;
+};
 
 // Get date cutoff for time period filter
 function getDateCutoff(period: TimePeriod): Date | null {
@@ -164,10 +191,16 @@ export function TrackRecord() {
   const [flowDescription, setFlowDescription] = useState('');
   const [timePeriod, setTimePeriod] = useState<TimePeriod>('all');
 
-  // Fetch trade history
+  // Fetch trade history (closed trades)
   const { data: trades } = useQuery<PnlRow[]>({
     queryKey: ['/api/pnl'],
     queryFn: getPNL,
+  });
+
+  // Fetch open positions
+  const { data: positions } = useQuery<Position[]>({
+    queryKey: ['/api/positions'],
+    queryFn: getPositions,
   });
 
   // Fetch cash flows (deposits/withdrawals)
@@ -233,7 +266,49 @@ export function TrackRecord() {
     return cashFlows.filter(cf => new Date(cf.date) >= cutoff);
   }, [cashFlows, timePeriod]);
 
-  // KPIs recalculate based on filtered trades
+  // Combine open positions and closed trades into unified list
+  const allTrades = useMemo((): UnifiedTrade[] => {
+    const unified: UnifiedTrade[] = [];
+
+    // Add open positions
+    (positions || []).forEach((pos) => {
+      unified.push({
+        id: pos.id,
+        ts: pos.openedAt,
+        symbol: pos.symbol,
+        strategy: pos.side === 'SELL' ? 'SHORT' : 'LONG', // Infer from side
+        side: pos.side,
+        qty: pos.qty,
+        entry: pos.avg,
+        pnl: pos.upl, // Unrealized P&L
+        status: 'OPEN',
+      });
+    });
+
+    // Add closed trades
+    (filteredTrades || []).forEach((trade) => {
+      unified.push({
+        id: trade.tradeId,
+        ts: trade.ts,
+        symbol: trade.symbol,
+        strategy: trade.strategy,
+        side: trade.side,
+        qty: trade.qty,
+        entry: trade.entry,
+        pnl: trade.realized, // Realized P&L
+        status: 'CLOSED',
+      });
+    });
+
+    // Sort by timestamp descending (most recent first)
+    return unified.sort((a, b) => new Date(b.ts).getTime() - new Date(a.ts).getTime());
+  }, [positions, filteredTrades]);
+
+  // Count open vs closed
+  const openCount = allTrades.filter(t => t.status === 'OPEN').length;
+  const closedCount = allTrades.filter(t => t.status === 'CLOSED').length;
+
+  // KPIs recalculate based on filtered trades (closed only)
   const kpis = calculateKPIs(filteredTrades);
 
   // Calculate cash flow totals (filtered)
@@ -304,18 +379,45 @@ export function TrackRecord() {
     { header: 'Description', accessor: (row: CashFlow) => row.description || '-', className: 'text-silver' },
   ];
 
-  // Trade history columns (simplified)
+  // Unified trade columns (open + closed)
   const tradeColumns = [
-    { header: 'Time', accessor: (row: PnlRow) => new Date(row.ts).toLocaleString(), className: 'text-silver text-sm' },
-    { header: 'Symbol', accessor: (row: PnlRow) => String(row.symbol || '-'), className: 'font-medium' },
-    { header: 'Strategy', accessor: (row: PnlRow) => String(row.strategy || '-') },
-    { header: 'Side', accessor: (row: PnlRow) => String(row.side || '-') },
-    { header: 'Qty', accessor: (row: PnlRow) => String(row.qty ?? '-'), className: 'tabular-nums' },
+    {
+      header: 'Status',
+      accessor: (row: UnifiedTrade) => (
+        <span className={`inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-xs font-medium ${
+          row.status === 'OPEN'
+            ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
+            : 'bg-green-500/20 text-green-400 border border-green-500/30'
+        }`}>
+          {row.status === 'OPEN' ? <Clock className="w-3 h-3" /> : <CheckCircle2 className="w-3 h-3" />}
+          {row.status}
+        </span>
+      ),
+    },
+    {
+      header: 'Time',
+      accessor: (row: UnifiedTrade) => new Date(row.ts).toLocaleString('en-US', { timeZone: 'America/New_York' }),
+      className: 'text-silver text-sm',
+    },
+    {
+      header: 'Symbol',
+      accessor: (row: UnifiedTrade) => formatOptionSymbol(row.symbol),
+      className: 'font-medium',
+    },
+    { header: 'Strategy', accessor: (row: UnifiedTrade) => String(row.strategy || '-') },
+    { header: 'Side', accessor: (row: UnifiedTrade) => row.side === 'SELL' ? 'SHORT' : 'LONG' },
+    { header: 'Qty', accessor: (row: UnifiedTrade) => String(row.qty ?? '-'), className: 'tabular-nums' },
+    {
+      header: 'Entry',
+      accessor: (row: UnifiedTrade) => `$${toNum(row.entry).toFixed(2)}`,
+      className: 'tabular-nums',
+    },
     {
       header: 'P&L',
-      accessor: (row: PnlRow) => (
-        <span className={toNum(row.realized) >= 0 ? 'text-green-400' : 'text-red-400'}>
-          {formatCurrency(row.realized, true)}
+      accessor: (row: UnifiedTrade) => (
+        <span className={`font-medium ${toNum(row.pnl) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+          {formatCurrency(row.pnl, true)}
+          {row.status === 'OPEN' && <span className="text-xs text-silver ml-1">(unreal)</span>}
         </span>
       ),
       className: 'tabular-nums text-right',
@@ -437,7 +539,12 @@ export function TrackRecord() {
               Cash Flows
             </TabsTrigger>
             <TabsTrigger value="history" className="data-[state=active]:bg-white data-[state=active]:text-black">
-              Trade History ({filteredTrades.length})
+              All Trades ({allTrades.length})
+              {openCount > 0 && (
+                <span className="ml-1.5 px-1.5 py-0.5 text-xs bg-yellow-500/20 text-yellow-400 rounded-full">
+                  {openCount} open
+                </span>
+              )}
             </TabsTrigger>
           </TabsList>
 
@@ -609,25 +716,30 @@ export function TrackRecord() {
             </div>
           </TabsContent>
 
-          {/* Trade History Tab */}
+          {/* All Trades Tab */}
           <TabsContent value="history">
             <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold">Trade Execution Log</h3>
-                {timePeriod !== 'all' && (
-                  <span className="text-sm text-silver">
-                    Showing {timePeriod === 'ytd' ? 'YTD' : timePeriod.toUpperCase()} ({filteredTrades.length} of {trades?.length || 0} trades)
+                <h3 className="text-lg font-semibold">All Trades</h3>
+                <div className="flex items-center gap-4 text-sm">
+                  <span className="text-yellow-400">
+                    <Clock className="w-4 h-4 inline mr-1" />
+                    {openCount} open
                   </span>
-                )}
+                  <span className="text-green-400">
+                    <CheckCircle2 className="w-4 h-4 inline mr-1" />
+                    {closedCount} closed
+                  </span>
+                </div>
               </div>
-              {filteredTrades.length > 0 ? (
-                <DataTable data={filteredTrades} columns={tradeColumns} />
+              {allTrades.length > 0 ? (
+                <DataTable data={allTrades} columns={tradeColumns} />
               ) : (
                 <div className="text-center py-12">
                   <ArrowUpDown className="w-12 h-12 text-silver mx-auto mb-4" />
-                  <p className="text-silver">No trades in this period</p>
+                  <p className="text-silver">No trades yet</p>
                   <p className="text-silver text-sm mt-1">
-                    {trades?.length ? 'Try selecting a different time period' : 'Your trade history will appear here'}
+                    Open positions and closed trades will appear here
                   </p>
                 </div>
               )}
