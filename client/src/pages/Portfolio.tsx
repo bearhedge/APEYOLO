@@ -644,8 +644,8 @@ export function Portfolio() {
             testId="settled-cash"
           />
           <StatCard
-            label="Day P&L"
-            value={accountError ? '--' : accountLoading ? 'Loading...' : formatHKD(account?.dayPnL, true)}
+            label="Day P&L (HKD)"
+            value={accountError ? '--' : accountLoading ? 'Loading...' : formatCurrency(account?.dayPnL, true)}
             icon={<ArrowUpDown className={`w-5 h-5 ${(account?.dayPnL ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}`} />}
             testId="day-pnl"
           />
@@ -688,8 +688,8 @@ export function Portfolio() {
         {/* Account Summary Cards - Row 3: Position Risk Metrics */}
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <StatCard
-            label="Max Loss"
-            value={positionMetrics.maxLoss > 0 ? formatCurrency(positionMetrics.maxLoss) : '--'}
+            label="Max Loss (HKD)"
+            value={positionMetrics.maxLoss > 0 ? formatHKD(positionMetrics.maxLoss) : '--'}
             icon={<AlertTriangle className="w-5 h-5 text-red-500" />}
             testId="max-loss"
           />
