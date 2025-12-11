@@ -21,7 +21,7 @@ function StatusBadge({ status }: { status: string }) {
       'px-2 py-0.5 text-xs font-medium rounded-full border',
       styles[status] || styles.pending
     )}>
-      {status}
+      {status.charAt(0).toUpperCase() + status.slice(1)}
     </span>
   );
 }
@@ -245,7 +245,6 @@ function JobsTable({
                   <p className="text-sm font-medium">
                     {parseCronToHuman(job.schedule)}
                   </p>
-                  <code className="text-xs text-zinc-500">{job.schedule}</code>
                 </td>
                 <td className="py-3 px-2">
                   {job.lastRunAt ? (
@@ -346,7 +345,7 @@ function RunHistoryTable({ history }: { history: JobRun[] }) {
               <th className="text-left py-3 px-2 text-silver font-medium">Duration</th>
               <th className="text-left py-3 px-2 text-silver font-medium">Triggered By</th>
               <th className="text-left py-3 px-2 text-silver font-medium">Status</th>
-              <th className="text-left py-3 px-2 text-silver font-medium">Result/Error</th>
+              <th className="text-left py-3 px-2 text-silver font-medium">Result</th>
             </tr>
           </thead>
           <tbody>
@@ -375,7 +374,7 @@ function RunHistoryTable({ history }: { history: JobRun[] }) {
                       ? 'bg-purple-500/20 text-purple-400'
                       : 'bg-blue-500/20 text-blue-400'
                   )}>
-                    {run.triggeredBy}
+                    {run.triggeredBy === 'scheduler' ? 'Scheduler' : 'Manual'}
                   </span>
                 </td>
                 <td className="py-3 px-2">
