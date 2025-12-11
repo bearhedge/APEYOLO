@@ -473,19 +473,29 @@ export function Portfolio() {
         positionGreeks.set(p.id, greeks);
       }
 
-      // Match with paper trade for max loss
+      // Match with paper trade for max loss, with dynamic fallback
+      let positionMaxLoss = 0;
       if (paperTrades && underlying) {
         const matchedTrade = paperTrades.find(pt =>
           pt.symbol === underlying && pt.status === 'open'
         );
         if (matchedTrade) {
-          totalMaxLoss += toNum(matchedTrade.maxLoss);
+          positionMaxLoss = toNum(matchedTrade.maxLoss);
         }
       }
 
+      // Fallback: calculate max loss from position data when no paper_trade exists
+      const qty = Math.abs(toNum(p.qty));
+      const entryPremium = toNum(p.avg);
+      if (positionMaxLoss === 0 && p.side === 'SELL' && entryPremium > 0 && qty > 0) {
+        // For short options: max loss = 2x entry premium (stop at 100% loss of premium)
+        const stopLossMultiplier = 2;
+        positionMaxLoss = entryPremium * stopLossMultiplier * 100 * qty;
+      }
+      totalMaxLoss += positionMaxLoss;
+
       // Implied notional: qty * strike * 100
       const strike = parseStrikeFromSymbol(p.symbol || '');
-      const qty = Math.abs(toNum(p.qty));
       totalNotional += qty * strike * 100;
 
       // Weighted DTE

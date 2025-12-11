@@ -2983,7 +2983,7 @@ class IbkrClient {
       conid: optionConid,
       orderType: 'STP', // Stop order
       side: 'BUY', // Buy to close the short position
-      tif: 'DAY',
+      tif: 'GTC', // Good Till Cancel - stop loss must persist until triggered or manually cancelled
       quantity: Math.floor(params.quantity),
       price: params.stopPrice, // Stop trigger price
       parentId: parentCOID, // Link to parent order
