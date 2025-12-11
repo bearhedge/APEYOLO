@@ -16,11 +16,12 @@ import {
   insertCashFlowSchema,
   paperTrades,
   ibkrCredentials,
+  navSnapshots,
   type SpreadConfig
 } from "@shared/schema";
 import { encryptPrivateKey, isValidPrivateKey, sanitizeCredentials } from "./crypto";
 import { db } from "./db";
-import { desc, eq, and } from "drizzle-orm";
+import { desc, eq, and, asc } from "drizzle-orm";
 import { z } from "zod";
 import cookieParser from "cookie-parser";
 import jwt from "jsonwebtoken";
@@ -846,6 +847,123 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // ==================== END CASH FLOWS ====================
+
+  // ==================== NAV HISTORY ====================
+
+  // Get NAV history with daily balances - for Track Record Daily Balance tab
+  app.get('/api/nav-history', requireAuth, async (req, res) => {
+    try {
+      if (!db) {
+        return res.json({ dailyBalances: [], summary: null });
+      }
+      const userId = req.user!.id;
+
+      // Fetch all nav snapshots for user, ordered by date ascending
+      const snapshots = await db.select().from(navSnapshots)
+        .where(eq(navSnapshots.userId, userId))
+        .orderBy(asc(navSnapshots.date));
+
+      // Fetch cash flows for adjustment
+      const flows = await db.select().from(cashFlows)
+        .where(eq(cashFlows.userId, userId));
+
+      // Calculate net cash flows (deposits - withdrawals)
+      let totalDeposits = 0;
+      let totalWithdrawals = 0;
+      flows.forEach(f => {
+        const amount = parseFloat(String(f.amount)) || 0;
+        if (f.type === 'deposit') totalDeposits += amount;
+        else totalWithdrawals += amount;
+      });
+      const netCashFlows = totalDeposits - totalWithdrawals;
+
+      // Group snapshots by date
+      const byDate = new Map<string, { opening?: number; closing?: number }>();
+      snapshots.forEach(s => {
+        const date = s.date;
+        if (!byDate.has(date)) byDate.set(date, {});
+        const entry = byDate.get(date)!;
+        const nav = parseFloat(String(s.nav)) || 0;
+        if (s.snapshotType === 'opening') entry.opening = nav;
+        else if (s.snapshotType === 'closing') entry.closing = nav;
+      });
+
+      // Build daily balances array
+      const dailyBalances: Array<{
+        date: string;
+        openingNav: number | null;
+        closingNav: number | null;
+        dailyPnl: number | null;
+        cumulativePnl: number;
+      }> = [];
+
+      let startingNav: number | null = null;
+      let bestDay = { date: '', pnl: -Infinity };
+      let worstDay = { date: '', pnl: Infinity };
+
+      // Sort dates ascending
+      const sortedDates = Array.from(byDate.keys()).sort();
+
+      sortedDates.forEach(date => {
+        const entry = byDate.get(date)!;
+        const openingNav = entry.opening ?? null;
+        const closingNav = entry.closing ?? null;
+
+        // Track starting NAV (first opening we see)
+        if (startingNav === null && openingNav !== null) {
+          startingNav = openingNav;
+        }
+
+        // Calculate daily P&L (closing - opening for that day)
+        let dailyPnl: number | null = null;
+        if (openingNav !== null && closingNav !== null) {
+          dailyPnl = closingNav - openingNav;
+          // Track best/worst days
+          if (dailyPnl > bestDay.pnl) bestDay = { date, pnl: dailyPnl };
+          if (dailyPnl < worstDay.pnl) worstDay = { date, pnl: dailyPnl };
+        }
+
+        // Calculate cumulative P&L (current NAV - starting NAV - net cash flows)
+        const currentNav = closingNav ?? openingNav ?? 0;
+        const cumulativePnl = startingNav !== null
+          ? currentNav - startingNav - netCashFlows
+          : 0;
+
+        dailyBalances.push({
+          date,
+          openingNav,
+          closingNav,
+          dailyPnl,
+          cumulativePnl,
+        });
+      });
+
+      // Build summary
+      const tradingDays = dailyBalances.filter(d => d.dailyPnl !== null).length;
+      const latestBalance = dailyBalances[dailyBalances.length - 1];
+      const cumulativePnl = latestBalance?.cumulativePnl ?? 0;
+      const totalDailyPnl = dailyBalances.reduce((sum, d) => sum + (d.dailyPnl ?? 0), 0);
+      const avgDailyPnl = tradingDays > 0 ? totalDailyPnl / tradingDays : 0;
+
+      res.json({
+        dailyBalances: dailyBalances.reverse(), // Most recent first
+        summary: {
+          cumulativePnl,
+          tradingDays,
+          bestDay: bestDay.pnl !== -Infinity ? bestDay : null,
+          worstDay: worstDay.pnl !== Infinity ? worstDay : null,
+          avgDailyPnl,
+          netCashFlows,
+          startingNav,
+        }
+      });
+    } catch (error) {
+      console.error('[API] Failed to fetch nav history:', error);
+      res.json({ dailyBalances: [], summary: null });
+    }
+  });
+
+  // ==================== END NAV HISTORY ====================
 
   // Trade validation and submission
   /** Archived deterministic validation endpoint for agent-driven flow

@@ -21,6 +21,9 @@ import {
   Scale,
   BarChart3,
   Banknote,
+  Calendar,
+  Sunrise,
+  Sunset,
 } from 'lucide-react';
 import type { PnlRow, Position } from '@shared/types';
 
@@ -88,6 +91,30 @@ interface CashFlow {
   type: 'deposit' | 'withdrawal';
   amount: number;
   description: string;
+}
+
+// NAV history types
+interface DailyBalance {
+  date: string;
+  openingNav: number | null;
+  closingNav: number | null;
+  dailyPnl: number | null;
+  cumulativePnl: number;
+}
+
+interface NavHistorySummary {
+  cumulativePnl: number;
+  tradingDays: number;
+  bestDay: { date: string; pnl: number } | null;
+  worstDay: { date: string; pnl: number } | null;
+  avgDailyPnl: number;
+  netCashFlows: number;
+  startingNav: number | null;
+}
+
+interface NavHistoryResponse {
+  dailyBalances: DailyBalance[];
+  summary: NavHistorySummary | null;
 }
 
 // Format currency (USD)
@@ -239,6 +266,20 @@ export function TrackRecord() {
         return res.json();
       } catch {
         return { portfolioValue: 0, totalCash: 0 };
+      }
+    },
+  });
+
+  // Fetch NAV history for Daily Balance tab
+  const { data: navHistory } = useQuery<NavHistoryResponse>({
+    queryKey: ['/api/nav-history'],
+    queryFn: async () => {
+      try {
+        const res = await fetch('/api/nav-history', { credentials: 'include' });
+        if (!res.ok) return { dailyBalances: [], summary: null };
+        return res.json();
+      } catch {
+        return { dailyBalances: [], summary: null };
       }
     },
   });
@@ -490,9 +531,13 @@ export function TrackRecord() {
         {/* Primary KPI Cards */}
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
           <StatCard
-            label="Total P&L (HKD)"
-            value={formatHKD(totalRealizedPnl + totalUnrealizedPnl, true)}
-            icon={(totalRealizedPnl + totalUnrealizedPnl) >= 0 ? <TrendingUp className="w-5 h-5 text-green-400" /> : <TrendingDown className="w-5 h-5 text-red-400" />}
+            label="Cumulative P&L (HKD)"
+            value={navHistory?.summary?.cumulativePnl !== undefined
+              ? formatHKD(navHistory.summary.cumulativePnl, true)
+              : formatHKD(totalRealizedPnl + totalUnrealizedPnl, true)}
+            icon={(navHistory?.summary?.cumulativePnl ?? (totalRealizedPnl + totalUnrealizedPnl)) >= 0
+              ? <TrendingUp className="w-5 h-5 text-green-400" />
+              : <TrendingDown className="w-5 h-5 text-red-400" />}
           />
           <StatCard
             label="Win Rate"
@@ -564,6 +609,9 @@ export function TrackRecord() {
             <TabsTrigger value="kpis" className="data-[state=active]:bg-white data-[state=active]:text-black">
               KPIs
             </TabsTrigger>
+            <TabsTrigger value="daily-balance" className="data-[state=active]:bg-white data-[state=active]:text-black">
+              Daily NAV
+            </TabsTrigger>
             <TabsTrigger value="cashflows" className="data-[state=active]:bg-white data-[state=active]:text-black">
               Cashflows
             </TabsTrigger>
@@ -634,6 +682,120 @@ export function TrackRecord() {
                   <p className="text-2xl font-bold text-red-400">{kpis.consecutiveLosses}</p>
                 </div>
               </div>
+            </div>
+          </TabsContent>
+
+          {/* Daily NAV Tab */}
+          <TabsContent value="daily-balance">
+            <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
+              <h3 className="text-lg font-semibold mb-6">Daily NAV</h3>
+
+              {/* Summary Cards */}
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                <div className={`p-4 ${(navHistory?.summary?.cumulativePnl ?? 0) >= 0 ? 'bg-green-500/10 border-green-500/30' : 'bg-red-500/10 border-red-500/30'} border rounded-xl`}>
+                  <div className="flex items-center gap-2 mb-2">
+                    <TrendingUp className={`w-5 h-5 ${(navHistory?.summary?.cumulativePnl ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`} />
+                    <span className="text-silver text-sm">Cumulative P&L (HKD)</span>
+                  </div>
+                  <p className={`text-2xl font-bold tabular-nums ${(navHistory?.summary?.cumulativePnl ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                    {formatHKD(navHistory?.summary?.cumulativePnl ?? 0, true)}
+                  </p>
+                  <p className="text-xs text-silver mt-1">Cash flow adjusted</p>
+                </div>
+                <div className="p-4 bg-blue-500/10 border border-blue-500/30 rounded-xl">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Calendar className="w-5 h-5 text-blue-400" />
+                    <span className="text-silver text-sm">Trading Days</span>
+                  </div>
+                  <p className="text-2xl font-bold tabular-nums text-blue-400">
+                    {navHistory?.summary?.tradingDays ?? 0}
+                  </p>
+                  <p className="text-xs text-silver mt-1">Days with open+close</p>
+                </div>
+                <div className="p-4 bg-green-500/10 border border-green-500/30 rounded-xl">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Trophy className="w-5 h-5 text-green-400" />
+                    <span className="text-silver text-sm">Best Day (HKD)</span>
+                  </div>
+                  <p className="text-2xl font-bold tabular-nums text-green-400">
+                    {navHistory?.summary?.bestDay ? formatHKD(navHistory.summary.bestDay.pnl, true) : '--'}
+                  </p>
+                  <p className="text-xs text-silver mt-1">
+                    {navHistory?.summary?.bestDay ? new Date(navHistory.summary.bestDay.date).toLocaleDateString() : 'No data'}
+                  </p>
+                </div>
+                <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-xl">
+                  <div className="flex items-center gap-2 mb-2">
+                    <TrendingDown className="w-5 h-5 text-red-400" />
+                    <span className="text-silver text-sm">Worst Day (HKD)</span>
+                  </div>
+                  <p className="text-2xl font-bold tabular-nums text-red-400">
+                    {navHistory?.summary?.worstDay ? formatHKD(navHistory.summary.worstDay.pnl, true) : '--'}
+                  </p>
+                  <p className="text-xs text-silver mt-1">
+                    {navHistory?.summary?.worstDay ? new Date(navHistory.summary.worstDay.date).toLocaleDateString() : 'No data'}
+                  </p>
+                </div>
+              </div>
+
+              {/* Daily NAV Table - Excel-style chronological view */}
+              {navHistory?.dailyBalances && navHistory.dailyBalances.length > 0 ? (
+                <div className="overflow-x-auto">
+                  <table className="w-full">
+                    <thead>
+                      <tr className="border-b border-white/10">
+                        <th className="text-left py-3 px-4 text-silver text-sm font-medium w-16">Day</th>
+                        <th className="text-left py-3 px-4 text-silver text-sm font-medium">Date</th>
+                        <th className="text-right py-3 px-4 text-silver text-sm font-medium">
+                          <div className="flex items-center justify-end gap-1">
+                            <Sunrise className="w-4 h-4" /> Opening NAV
+                          </div>
+                        </th>
+                        <th className="text-right py-3 px-4 text-silver text-sm font-medium">
+                          <div className="flex items-center justify-end gap-1">
+                            <Sunset className="w-4 h-4" /> Closing NAV
+                          </div>
+                        </th>
+                        <th className="text-right py-3 px-4 text-silver text-sm font-medium">Daily P&L (HKD)</th>
+                        <th className="text-right py-3 px-4 text-silver text-sm font-medium">Cumulative (HKD)</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {/* Sort chronologically (oldest first) like Excel spreadsheet */}
+                      {[...navHistory.dailyBalances].sort((a, b) =>
+                        new Date(a.date).getTime() - new Date(b.date).getTime()
+                      ).map((day, idx) => (
+                        <tr key={day.date} className={idx % 2 === 0 ? 'bg-white/5' : ''}>
+                          <td className="py-3 px-4 text-sm text-electric font-medium">
+                            Day {idx + 1}
+                          </td>
+                          <td className="py-3 px-4 text-sm">
+                            {new Date(day.date).toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' })}
+                          </td>
+                          <td className="py-3 px-4 text-right tabular-nums">
+                            {day.openingNav !== null ? formatCurrency(day.openingNav) : <span className="text-zinc-500">--</span>}
+                          </td>
+                          <td className="py-3 px-4 text-right tabular-nums">
+                            {day.closingNav !== null ? formatCurrency(day.closingNav) : <span className="text-yellow-400 text-sm">Market Open</span>}
+                          </td>
+                          <td className={`py-3 px-4 text-right tabular-nums font-medium ${day.dailyPnl === null ? 'text-zinc-500' : day.dailyPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {day.dailyPnl !== null ? formatHKD(day.dailyPnl, true) : '--'}
+                          </td>
+                          <td className={`py-3 px-4 text-right tabular-nums font-medium ${day.cumulativePnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                            {formatHKD(day.cumulativePnl, true)}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="text-center py-12">
+                  <Calendar className="w-12 h-12 text-silver mx-auto mb-4" />
+                  <p className="text-silver">No NAV snapshots recorded yet</p>
+                  <p className="text-silver text-sm mt-1">Daily NAV will appear here after market open/close snapshots are captured</p>
+                </div>
+              )}
             </div>
           </TabsContent>
 
