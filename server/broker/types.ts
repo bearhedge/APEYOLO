@@ -6,7 +6,7 @@ import type {
   InsertTrade,
 } from "@shared/schema";
 
-export type BrokerProviderName = "mock" | "ibkr";
+export type BrokerProviderName = "mock" | "ibkr" | "none";
 export type BrokerEnv = "paper" | "live";
 
 export interface BrokerProvider {

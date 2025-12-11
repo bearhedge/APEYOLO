@@ -93,6 +93,14 @@ type IbkrConfig = {
   baseUrl?: string;
   accountId?: string;
   env: "paper" | "live";
+  // Optional: Per-user credentials (if not provided, falls back to env vars)
+  credentials?: {
+    clientId: string;
+    clientKeyId: string;
+    privateKey: string;
+    credential: string; // IBKR username
+    allowedIp?: string;
+  };
 };
 
 type OAuthToken = { access_token: string; expires_in: number };
@@ -103,6 +111,9 @@ class IbkrClient {
   private env: "paper" | "live";
   private http!: AxiosInstance;
   private jar = new CookieJar();
+
+  // Per-user credentials (optional - falls back to env vars)
+  private credentials?: IbkrConfig['credentials'];
 
   private accessToken: string | null = null;
   private accessTokenExpiryMs = 0;
@@ -129,6 +140,7 @@ class IbkrClient {
     this.baseUrl = cfg.baseUrl || "https://api.ibkr.com";
     this.accountId = cfg.accountId;
     this.env = cfg.env;
+    this.credentials = cfg.credentials; // Store per-user credentials
     // Axios client with cookie jar for CP API
     this.http = wrapper(axios.create({
       baseURL: 'https://api.ibkr.com',
@@ -139,6 +151,27 @@ class IbkrClient {
       timeout: 30000,  // 30 second timeout (reduced from 60s for faster failure)
       headers: { 'User-Agent': 'apeyolo/1.0' },
     }));
+  }
+
+  // Helper methods to get credentials from instance or env vars
+  private getClientId(): string | undefined {
+    return this.credentials?.clientId || process.env.IBKR_CLIENT_ID;
+  }
+
+  private getClientKeyId(): string | undefined {
+    return this.credentials?.clientKeyId || process.env.IBKR_CLIENT_KEY_ID;
+  }
+
+  private getPrivateKey(): string | undefined {
+    return this.credentials?.privateKey || process.env.IBKR_PRIVATE_KEY;
+  }
+
+  private getCredential(): string | undefined {
+    return this.credentials?.credential || process.env.IBKR_CREDENTIAL;
+  }
+
+  private getAllowedIp(): string | undefined {
+    return this.credentials?.allowedIp || process.env.IBKR_ALLOWED_IP;
   }
 
   private async ensureAccountSelected(): Promise<void> {
@@ -400,12 +433,12 @@ class IbkrClient {
   }
 
   private async signClientAssertion(): Promise<string> {
-    const clientId = process.env.IBKR_CLIENT_ID;
-    const clientKeyId = process.env.IBKR_CLIENT_KEY_ID; // kid
-    const privateKeyPem = process.env.IBKR_PRIVATE_KEY;
+    const clientId = this.getClientId();
+    const clientKeyId = this.getClientKeyId(); // kid
+    const privateKeyPem = this.getPrivateKey();
 
     if (!clientId || !clientKeyId || !privateKeyPem) {
-      throw new Error("IBKR OAuth env vars missing (IBKR_CLIENT_ID, IBKR_CLIENT_KEY_ID, IBKR_PRIVATE_KEY)");
+      throw new Error("IBKR credentials missing (clientId, clientKeyId, privateKey)");
     }
 
     const key = await importPKCS8(privateKeyPem, "RS256");
@@ -430,8 +463,8 @@ class IbkrClient {
       return this.accessToken;
     }
 
-    const clientId = process.env.IBKR_CLIENT_ID;
-    if (!clientId) throw new Error("IBKR_CLIENT_ID missing");
+    const clientId = this.getClientId();
+    if (!clientId) throw new Error("IBKR clientId missing");
 
     const clientAssertion = await this.signClientAssertion();
 
@@ -534,15 +567,15 @@ class IbkrClient {
     }
 
     // Build the SSO JWT (with optional IP claim)
-    const ip = process.env.IBKR_ALLOWED_IP;
-    const username = process.env.IBKR_CREDENTIAL;
-    const clientId = process.env.IBKR_CLIENT_ID;
-    const kid = process.env.IBKR_CLIENT_KEY_ID;
-    const privateKeyPem = process.env.IBKR_PRIVATE_KEY;
+    const ip = this.getAllowedIp();
+    const username = this.getCredential();
+    const clientId = this.getClientId();
+    const kid = this.getClientKeyId();
+    const privateKeyPem = this.getPrivateKey();
 
     if (!username || !clientId || !privateKeyPem || !kid) {
       this.last.sso = { status: 400, ts: new Date().toISOString() };
-      throw new Error('Missing required env for SSO (credential/clientId/key/kid)');
+      throw new Error('Missing required credentials for SSO (credential/clientId/key/kid)');
     }
 
     const nowSeconds = Math.floor(Date.now() / 1000);
@@ -3421,6 +3454,41 @@ export function getIbkrDiagnostics(): IbkrDiagnostics {
 export function createIbkrProvider(config: IbkrConfig): BrokerProvider {
   const client = new IbkrClient(config);
   activeClient = client;
+  return {
+    getAccount: () => client.getAccount(),
+    getPositions: () => client.getPositions(),
+    getOptionChain: (symbol: string, expiration?: string) => client.getOptionChain(symbol, expiration),
+    getTrades: () => client.getTrades(),
+    placeOrder: (trade: InsertTrade) => client.placeOrder(trade),
+    getMarketData: (symbol: string) => client.getMarketData(symbol),
+  };
+}
+
+/**
+ * Creates an IBKR provider with explicit user credentials.
+ * Used for multi-tenant scenarios where each user has their own IBKR credentials.
+ * Does NOT set activeClient to preserve default env-based client.
+ */
+export function createIbkrProviderWithCredentials(config: {
+  env: "paper" | "live";
+  accountId?: string;
+  baseUrl?: string;
+  credentials: {
+    clientId: string;
+    clientKeyId: string;
+    privateKey: string;
+    credential: string;
+    allowedIp?: string;
+  };
+}): BrokerProvider {
+  const client = new IbkrClient({
+    env: config.env,
+    accountId: config.accountId,
+    baseUrl: config.baseUrl,
+    credentials: config.credentials,
+  });
+  // Note: We intentionally do NOT set activeClient here to avoid
+  // affecting the default env-based broker for other operations
   return {
     getAccount: () => client.getAccount(),
     getPositions: () => client.getPositions(),

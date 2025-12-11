@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { WebSocketServer, WebSocket } from "ws";
 import { storage } from "./storage";
-import { getBroker } from "./broker";
+import { getBroker, getBrokerForUser, clearUserBrokerCache } from "./broker";
 import { getIbkrDiagnostics, ensureIbkrReady, placePaperStockOrder, placePaperOptionOrder, listPaperOpenOrders, getIbkrCookieString, resolveSymbolConid } from "./broker/ibkr";
 import { IbkrWebSocketManager, initIbkrWebSocket, getIbkrWebSocketManager, destroyIbkrWebSocket, type MarketDataUpdate } from "./broker/ibkrWebSocket";
 import { getOptionChainStreamer, initOptionChainStreamer } from "./broker/optionChainStreamer";
@@ -15,15 +15,17 @@ import {
   cashFlows,
   insertCashFlowSchema,
   paperTrades,
+  ibkrCredentials,
   type SpreadConfig
 } from "@shared/schema";
+import { encryptPrivateKey, isValidPrivateKey, sanitizeCredentials } from "./crypto";
 import { db } from "./db";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, and } from "drizzle-orm";
 import { z } from "zod";
 import cookieParser from "cookie-parser";
 import jwt from "jsonwebtoken";
 import crypto from "crypto";
-import authRoutes from "./auth.js";
+import authRoutes, { requireAuth } from "./auth.js";
 import ibkrRoutes from "./ibkrRoutes.js";
 import engineRoutes from "./engineRoutes.js";
 import marketRoutes from "./marketRoutes.js";
@@ -67,6 +69,271 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Register DeFi routes
   app.use('/api/defi', defiRoutes);
+
+  // ==================== IBKR CREDENTIALS SETTINGS (Multi-Tenant) ====================
+
+  // GET /api/settings/ibkr - Get user's IBKR credentials status (not the secrets)
+  app.get('/api/settings/ibkr', requireAuth, async (req, res) => {
+    try {
+      const userId = req.user!.id;
+      if (!db) {
+        return res.status(503).json({ error: 'Database not available' });
+      }
+
+      const creds = await db.select().from(ibkrCredentials)
+        .where(eq(ibkrCredentials.userId, userId))
+        .limit(1);
+
+      if (creds.length === 0) {
+        return res.json({
+          configured: false,
+          message: 'No IBKR credentials configured'
+        });
+      }
+
+      const cred = creds[0];
+      return res.json({
+        configured: true,
+        clientId: cred.clientId.substring(0, 8) + '****', // Partially masked
+        clientKeyId: cred.clientKeyId.substring(0, 8) + '****',
+        credential: cred.credential, // Username is not secret
+        accountId: cred.accountId || null,
+        allowedIp: cred.allowedIp || null,
+        environment: cred.environment,
+        status: cred.status,
+        lastConnectedAt: cred.lastConnectedAt,
+        errorMessage: cred.errorMessage,
+        createdAt: cred.createdAt,
+        updatedAt: cred.updatedAt
+      });
+    } catch (error) {
+      console.error('[Settings] Get IBKR credentials error:', error);
+      res.status(500).json({ error: 'Failed to get IBKR credentials' });
+    }
+  });
+
+  // POST /api/settings/ibkr - Save user's IBKR credentials
+  app.post('/api/settings/ibkr', requireAuth, async (req, res) => {
+    try {
+      const userId = req.user!.id;
+      if (!db) {
+        return res.status(503).json({ error: 'Database not available' });
+      }
+
+      const { clientId, clientKeyId, privateKey, credential, accountId, allowedIp, environment } = req.body;
+
+      // Validate required fields
+      if (!clientId || !clientKeyId || !privateKey || !credential) {
+        return res.status(400).json({
+          error: 'Missing required fields',
+          required: ['clientId', 'clientKeyId', 'privateKey', 'credential']
+        });
+      }
+
+      // Validate private key format
+      if (!isValidPrivateKey(privateKey)) {
+        return res.status(400).json({
+          error: 'Invalid private key format',
+          hint: 'Private key must be PEM-formatted (BEGIN PRIVATE KEY or BEGIN RSA PRIVATE KEY)'
+        });
+      }
+
+      // Validate environment
+      if (environment && !['paper', 'live'].includes(environment)) {
+        return res.status(400).json({
+          error: 'Invalid environment',
+          valid: ['paper', 'live']
+        });
+      }
+
+      // Encrypt the private key
+      const encryptedPrivateKey = encryptPrivateKey(privateKey);
+
+      // Check if credentials already exist for this user
+      const existing = await db.select().from(ibkrCredentials)
+        .where(eq(ibkrCredentials.userId, userId))
+        .limit(1);
+
+      if (existing.length > 0) {
+        // Update existing credentials
+        await db.update(ibkrCredentials)
+          .set({
+            clientId,
+            clientKeyId,
+            privateKeyEncrypted: encryptedPrivateKey,
+            credential,
+            accountId: accountId || null,
+            allowedIp: allowedIp || null,
+            environment: environment || 'paper',
+            status: 'inactive', // Reset status until tested
+            errorMessage: null,
+            updatedAt: new Date()
+          })
+          .where(eq(ibkrCredentials.userId, userId));
+
+        // Clear the broker cache so next request uses new credentials
+        clearUserBrokerCache(userId);
+
+        console.log(`[Settings] Updated IBKR credentials for user ${userId}`);
+        return res.json({
+          success: true,
+          message: 'IBKR credentials updated',
+          status: 'inactive'
+        });
+      } else {
+        // Insert new credentials
+        await db.insert(ibkrCredentials).values({
+          userId,
+          clientId,
+          clientKeyId,
+          privateKeyEncrypted: encryptedPrivateKey,
+          credential,
+          accountId: accountId || null,
+          allowedIp: allowedIp || null,
+          environment: environment || 'paper',
+          status: 'inactive'
+        });
+
+        console.log(`[Settings] Created IBKR credentials for user ${userId}`);
+        return res.json({
+          success: true,
+          message: 'IBKR credentials saved',
+          status: 'inactive'
+        });
+      }
+    } catch (error) {
+      console.error('[Settings] Save IBKR credentials error:', error);
+      res.status(500).json({ error: 'Failed to save IBKR credentials' });
+    }
+  });
+
+  // DELETE /api/settings/ibkr - Remove user's IBKR credentials
+  app.delete('/api/settings/ibkr', requireAuth, async (req, res) => {
+    try {
+      const userId = req.user!.id;
+      if (!db) {
+        return res.status(503).json({ error: 'Database not available' });
+      }
+
+      await db.delete(ibkrCredentials)
+        .where(eq(ibkrCredentials.userId, userId));
+
+      // Clear the broker cache
+      clearUserBrokerCache(userId);
+
+      console.log(`[Settings] Deleted IBKR credentials for user ${userId}`);
+      return res.json({
+        success: true,
+        message: 'IBKR credentials deleted'
+      });
+    } catch (error) {
+      console.error('[Settings] Delete IBKR credentials error:', error);
+      res.status(500).json({ error: 'Failed to delete IBKR credentials' });
+    }
+  });
+
+  // POST /api/settings/ibkr/test - Test user's IBKR credentials
+  app.post('/api/settings/ibkr/test', requireAuth, async (req, res) => {
+    try {
+      const userId = req.user!.id;
+      if (!db) {
+        return res.status(503).json({ error: 'Database not available' });
+      }
+
+      // Import getBrokerForUser dynamically to avoid circular imports
+      const { getBrokerForUser } = await import('./broker/index.js');
+
+      // Get broker for this user (will load and use their credentials)
+      // Use allowInactive: true to test credentials that haven't been activated yet
+      const broker = await getBrokerForUser(userId, { allowInactive: true });
+
+      // If we got here, credentials were loaded successfully
+      if (broker.status.provider !== 'ibkr') {
+        return res.json({
+          success: false,
+          message: 'Using mock broker - no IBKR credentials configured or credentials are invalid',
+          status: 'inactive'
+        });
+      }
+
+      // Try to get account info as a test
+      try {
+        const account = await broker.api.getAccount();
+
+        // Update credential status to active
+        await db.update(ibkrCredentials)
+          .set({
+            status: 'active',
+            lastConnectedAt: new Date(),
+            errorMessage: null,
+            updatedAt: new Date()
+          })
+          .where(eq(ibkrCredentials.userId, userId));
+
+        return res.json({
+          success: true,
+          message: 'IBKR connection successful',
+          status: 'active',
+          connected: broker.status.connected,
+          environment: broker.status.env,
+          account: {
+            accountId: account.accountId,
+            netValue: account.netValue
+          }
+        });
+      } catch (accountError) {
+        // Update credential status to error
+        const errorMsg = accountError instanceof Error ? accountError.message : 'Connection test failed';
+        await db.update(ibkrCredentials)
+          .set({
+            status: 'error',
+            errorMessage: errorMsg,
+            updatedAt: new Date()
+          })
+          .where(eq(ibkrCredentials.userId, userId));
+
+        return res.json({
+          success: false,
+          message: `IBKR connection test failed: ${errorMsg}`,
+          status: 'error'
+        });
+      }
+    } catch (error) {
+      console.error('[Settings] Test IBKR credentials error:', error);
+      res.status(500).json({ error: 'Failed to test IBKR credentials' });
+    }
+  });
+
+  // POST /api/settings/ibkr/activate - Activate credentials (mark as active after successful connection)
+  app.post('/api/settings/ibkr/activate', requireAuth, async (req, res) => {
+    try {
+      const userId = req.user!.id;
+      if (!db) {
+        return res.status(503).json({ error: 'Database not available' });
+      }
+
+      await db.update(ibkrCredentials)
+        .set({
+          status: 'active',
+          lastConnectedAt: new Date(),
+          errorMessage: null,
+          updatedAt: new Date()
+        })
+        .where(eq(ibkrCredentials.userId, userId));
+
+      // Clear broker cache to force reload with active credentials
+      clearUserBrokerCache(userId);
+
+      return res.json({
+        success: true,
+        message: 'IBKR credentials activated',
+        status: 'active'
+      });
+    } catch (error) {
+      console.error('[Settings] Activate IBKR credentials error:', error);
+      res.status(500).json({ error: 'Failed to activate IBKR credentials' });
+    }
+  });
 
   // Initialize jobs system (register handlers, seed default jobs)
   await initializeJobsSystem();
@@ -190,15 +457,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
   };
 
-  // Account info (via provider)
-  app.get('/api/account', async (req, res) => {
+  // Account info (via provider) - SECURED: requires auth + user's own IBKR credentials
+  app.get('/api/account', requireAuth, async (req, res) => {
     try {
-      if (broker.status.provider === 'ibkr') {
+      // Get broker for this specific user (no fallback to shared broker)
+      const userBroker = await getBrokerForUser(req.user!.id);
+
+      // Security: if user has no IBKR credentials, return 403
+      if (!userBroker.api) {
+        return res.status(403).json({
+          error: 'No IBKR credentials configured',
+          message: 'Please configure your IBKR credentials in Settings'
+        });
+      }
+
+      if (userBroker.status.provider === 'ibkr') {
         console.log('[API] /api/account: Ensuring IBKR ready...');
         await ensureIbkrReady();
         console.log('[API] /api/account: IBKR ready, fetching account...');
       }
-      const account = await broker.api.getAccount();
+      const account = await userBroker.api.getAccount();
       console.log('[API] /api/account: Success, portfolioValue=', account?.portfolioValue, 'netLiq=', account?.netLiquidation);
 
       // Calculate Day P&L:
@@ -214,7 +492,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           console.log(`[API] /api/account: Day P&L: $${enhancedDayPnL.toFixed(2)} (current: $${currentNav.toFixed(2)}, open: $${openingSnapshot.nav.toFixed(2)})`);
         } else {
           // No opening snapshot (weekend, holiday, or first day) - fall back to position UPL
-          const positions = await broker.api.getPositions();
+          const positions = await userBroker.api.getPositions();
           enhancedDayPnL = positions.reduce((sum, p) => sum + (p.upl || 0), 0);
           console.log(`[API] /api/account: Day P&L (no opening snapshot, using position UPL): $${enhancedDayPnL.toFixed(2)}`);
         }
@@ -238,13 +516,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Positions (via provider)
-  app.get('/api/positions', async (req, res) => {
+  // Positions (via provider) - SECURED: requires auth + user's own IBKR credentials
+  app.get('/api/positions', requireAuth, async (req, res) => {
     try {
-      if (broker.status.provider === 'ibkr') {
+      // Get broker for this specific user (no fallback to shared broker)
+      const userBroker = await getBrokerForUser(req.user!.id);
+
+      // Security: if user has no IBKR credentials, return 403
+      if (!userBroker.api) {
+        return res.status(403).json({
+          error: 'No IBKR credentials configured',
+          message: 'Please configure your IBKR credentials in Settings'
+        });
+      }
+
+      if (userBroker.status.provider === 'ibkr') {
         await ensureIbkrReady();
       }
-      const positions = await broker.api.getPositions();
+      const positions = await userBroker.api.getPositions();
       res.json(positions);
     } catch (error: any) {
       console.error('[API] /api/positions: FAILED -', error?.message || error);
@@ -298,14 +587,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Paper trades - open positions with stop loss info
-  app.get('/api/paper-trades/open', async (_req, res) => {
+  // Paper trades - open positions with stop loss info (filtered by userId)
+  app.get('/api/paper-trades/open', requireAuth, async (req, res) => {
     try {
       if (!db) {
         return res.json([]);
       }
+      const userId = req.user!.id;
       const openTrades = await db.select().from(paperTrades)
-        .where(eq(paperTrades.status, 'open'))
+        .where(and(
+          eq(paperTrades.status, 'open'),
+          eq(paperTrades.userId, userId)
+        ))
         .orderBy(desc(paperTrades.createdAt));
       res.json(openTrades);
     } catch (error: any) {
@@ -316,22 +609,45 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Option chains (via provider) — express v5 does not allow
   // an optional param with a preceding slash; register two routes.
+  // SECURED: requires auth + user's own IBKR credentials
   const optionsChainHandler = async (req: any, res: any) => {
     try {
+      // Get broker for this specific user (no fallback to shared broker)
+      const userBroker = await getBrokerForUser(req.user!.id);
+
+      // Security: if user has no IBKR credentials, return 403
+      if (!userBroker.api) {
+        return res.status(403).json({
+          error: 'No IBKR credentials configured',
+          message: 'Please configure your IBKR credentials in Settings'
+        });
+      }
+
       const { symbol, expiration } = req.params as { symbol: string; expiration?: string };
-      const chain = await broker.api.getOptionChain(symbol, expiration);
+      const chain = await userBroker.api.getOptionChain(symbol, expiration);
       res.json(chain);
     } catch (error) {
       res.status(500).json({ error: 'Failed to fetch option chain' });
     }
   };
-  app.get('/api/options/chain/:symbol', optionsChainHandler);
-  app.get('/api/options/chain/:symbol/:expiration', optionsChainHandler);
+  app.get('/api/options/chain/:symbol', requireAuth, optionsChainHandler);
+  app.get('/api/options/chain/:symbol/:expiration', requireAuth, optionsChainHandler);
 
-  // Trades list (via provider)
-  app.get('/api/trades', async (_req, res) => {
+  // Trades list (via provider) - SECURED: requires auth + user's own IBKR credentials
+  app.get('/api/trades', requireAuth, async (req, res) => {
     try {
-      const trades = await broker.api.getTrades();
+      // Get broker for this specific user (no fallback to shared broker)
+      const userBroker = await getBrokerForUser(req.user!.id);
+
+      // Security: if user has no IBKR credentials, return 403
+      if (!userBroker.api) {
+        return res.status(403).json({
+          error: 'No IBKR credentials configured',
+          message: 'Please configure your IBKR credentials in Settings'
+        });
+      }
+
+      const trades = await userBroker.api.getTrades();
       res.json(trades);
     } catch (_error) {
       res.status(500).json({ error: 'Failed to fetch trades' });
@@ -339,14 +655,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // PnL endpoint for Trades page - merges engine trades, local DB trades, and IBKR executions
-  app.get('/api/pnl', async (_req, res) => {
-    console.log('[API][/api/pnl] Request received');
+  app.get('/api/pnl', requireAuth, async (req, res) => {
+    const userId = req.user!.id;
+    console.log(`[API][/api/pnl] Request received for user ${userId}`);
     try {
-      // Get engine trades from database (real executed trades)
+      // Get engine trades from database (real executed trades) - filtered by userId
       let engineTradeRows: any[] = [];
       if (db) {
         try {
-          const dbEngineTrades = await db.select().from(paperTrades).orderBy(desc(paperTrades.createdAt));
+          const dbEngineTrades = await db.select().from(paperTrades)
+            .where(eq(paperTrades.userId, userId))
+            .orderBy(desc(paperTrades.createdAt));
           console.log(`[API][/api/pnl] Engine trades: ${dbEngineTrades.length}`);
 
           engineTradeRows = dbEngineTrades.map(pt => {
@@ -473,13 +792,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // ==================== CASH FLOWS ====================
 
-  // Get all cash flows (deposits/withdrawals)
-  app.get('/api/cashflows', async (_req, res) => {
+  // Get all cash flows (deposits/withdrawals) - filtered by userId
+  app.get('/api/cashflows', requireAuth, async (req, res) => {
     try {
       if (!db) {
         return res.json([]);
       }
-      const flows = await db.select().from(cashFlows).orderBy(desc(cashFlows.date));
+      const userId = req.user!.id;
+      const flows = await db.select().from(cashFlows)
+        .where(eq(cashFlows.userId, userId))
+        .orderBy(desc(cashFlows.date));
       // Convert decimal to number for frontend
       const result = flows.map(f => ({
         ...f,
@@ -492,13 +814,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Add a new cash flow
-  app.post('/api/cashflows', async (req, res) => {
+  // Add a new cash flow - attached to user
+  app.post('/api/cashflows', requireAuth, async (req, res) => {
     try {
       if (!db) {
         return res.status(503).json({ error: 'Database not configured' });
       }
 
+      const userId = req.user!.id;
       const validation = insertCashFlowSchema.safeParse(req.body);
       if (!validation.success) {
         return res.status(400).json({ error: 'Invalid cash flow data', details: validation.error.errors });
@@ -509,6 +832,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         type: validation.data.type,
         amount: String(validation.data.amount),
         description: validation.data.description,
+        userId: userId,
       }).returning();
 
       res.json({
@@ -603,16 +927,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Broker status
-  app.get('/api/broker/status', (_req, res) => {
-    res.json(broker.status);
+  // Broker status - SECURED: requires auth, returns user-specific status
+  app.get('/api/broker/status', requireAuth, async (req, res) => {
+    const userBroker = await getBrokerForUser(req.user!.id);
+    res.json(userBroker.status);
   });
 
-  // Broker diagnostics - tries to establish connection for accurate status
-  app.get('/api/broker/diag', async (_req, res) => {
+  // Broker diagnostics - SECURED: requires auth + user's own IBKR credentials
+  app.get('/api/broker/diag', requireAuth, async (req, res) => {
+    const userBroker = await getBrokerForUser(req.user!.id);
     let last = { oauth: { status: null, ts: '' }, sso: { status: null, ts: '' }, validate: { status: null, ts: '' }, init: { status: null, ts: '' } };
 
-    if (broker.status.provider === 'ibkr') {
+    if (userBroker.status.provider === 'ibkr' && userBroker.api) {
       // Try to establish/verify connection first (same as Engine status)
       try {
         last = await ensureIbkrReady();
@@ -622,14 +948,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     }
 
-    res.json({ provider: broker.status.provider, env: broker.status.env, last });
+    res.json({ provider: userBroker.status.provider, env: userBroker.status.env, last });
   });
 
-  // Warm the full IBKR flow and return diagnostics (JSON)
-  app.get('/api/broker/warm', async (_req, res) => {
+  // Warm the full IBKR flow and return diagnostics (JSON) - SECURED
+  app.get('/api/broker/warm', requireAuth, async (req, res) => {
     try {
-      if (broker.status.provider !== 'ibkr') {
-        return res.status(400).json({ ok: false, error: 'Set BROKER_PROVIDER=ibkr' });
+      const userBroker = await getBrokerForUser(req.user!.id);
+      if (userBroker.status.provider !== 'ibkr' || !userBroker.api) {
+        return res.status(400).json({ ok: false, error: 'No IBKR credentials configured' });
       }
       const diag = await ensureIbkrReady();
       return res.status(200).json({ ok: true, diag });
@@ -639,15 +966,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Test IBKR market data endpoint (no auth required - for debugging)
-  app.get('/api/broker/test-market/:symbol', async (req, res) => {
+  // Test IBKR market data endpoint - SECURED: requires auth + user's own IBKR credentials
+  app.get('/api/broker/test-market/:symbol', requireAuth, async (req, res) => {
     try {
+      const userBroker = await getBrokerForUser(req.user!.id);
       const symbol = req.params.symbol?.toUpperCase() || 'SPY';
-      if (broker.status.provider !== 'ibkr') {
-        return res.status(400).json({ ok: false, error: 'IBKR not configured' });
+      if (userBroker.status.provider !== 'ibkr' || !userBroker.api) {
+        return res.status(400).json({ ok: false, error: 'No IBKR credentials configured' });
       }
       console.log(`[TEST] Calling IBKR getMarketData for ${symbol}...`);
-      const data = await broker.api.getMarketData(symbol);
+      const data = await userBroker.api.getMarketData(symbol);
       console.log(`[TEST] Got ${symbol} price: $${data.price}`);
       return res.json({ ok: true, source: 'ibkr', data });
     } catch (err: any) {
@@ -656,14 +984,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Test IBKR option chain endpoint (no auth required - for debugging)
-  app.get('/api/broker/test-options/:symbol', async (req, res) => {
+  // Test IBKR option chain endpoint - SECURED: requires auth + user's own IBKR credentials
+  app.get('/api/broker/test-options/:symbol', requireAuth, async (req, res) => {
     try {
+      const userBroker = await getBrokerForUser(req.user!.id);
       const symbol = req.params.symbol?.toUpperCase() || 'SPY';
       const expiration = req.query.expiration as string | undefined;
 
-      if (broker.status.provider !== 'ibkr') {
-        return res.status(400).json({ ok: false, error: 'IBKR not configured' });
+      if (userBroker.status.provider !== 'ibkr' || !userBroker.api) {
+        return res.status(400).json({ ok: false, error: 'No IBKR credentials configured' });
       }
 
       console.log(`[TEST] Calling IBKR getOptionChainWithStrikes for ${symbol}...`);
@@ -903,9 +1232,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Get WebSocket status
-  app.get('/api/broker/ws/status', async (_req, res) => {
+  // SECURED: Get WebSocket status (requires authentication)
+  app.get('/api/broker/ws/status', requireAuth, async (req, res) => {
     try {
+      // Check if user has IBKR credentials
+      const userBroker = await getBrokerForUser(req.user!.id);
+      if (!userBroker.api || userBroker.status.provider === 'none') {
+        return res.json({
+          ok: true,
+          initialized: false,
+          connected: false,
+          subscriptions: [],
+          message: 'No IBKR credentials configured for your account'
+        });
+      }
+
       const wsManager = getIbkrWebSocketManager();
       if (!wsManager) {
         return res.json({
@@ -942,9 +1283,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Option Chain Streamer Endpoints (for Engine)
   // ============================================
 
-  // Start option chain streaming for a symbol (for engine strike selection)
-  app.post('/api/broker/stream/start', async (req, res) => {
+  // SECURED: Start option chain streaming for a symbol (for engine strike selection)
+  app.post('/api/broker/stream/start', requireAuth, async (req, res) => {
     try {
+      // Check if user has IBKR credentials
+      const userBroker = await getBrokerForUser(req.user!.id);
+      if (!userBroker.api || userBroker.status.provider === 'none') {
+        return res.status(403).json({
+          ok: false,
+          error: 'No IBKR credentials configured for your account'
+        });
+      }
+
       const { symbol = 'SPY' } = req.body || {};
       console.log(`[API] Starting option chain streaming for ${symbol}`);
 
@@ -963,9 +1313,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Stop option chain streaming for a symbol
-  app.post('/api/broker/stream/stop', async (req, res) => {
+  // SECURED: Stop option chain streaming for a symbol
+  app.post('/api/broker/stream/stop', requireAuth, async (req, res) => {
     try {
+      // Check if user has IBKR credentials
+      const userBroker = await getBrokerForUser(req.user!.id);
+      if (!userBroker.api || userBroker.status.provider === 'none') {
+        return res.status(403).json({
+          ok: false,
+          error: 'No IBKR credentials configured for your account'
+        });
+      }
+
       const { symbol } = req.body || {};
 
       const streamer = getOptionChainStreamer();
@@ -990,9 +1349,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Get option chain streamer status
-  app.get('/api/broker/stream/status', async (_req, res) => {
+  // SECURED: Get option chain streamer status
+  app.get('/api/broker/stream/status', requireAuth, async (req, res) => {
     try {
+      // Check if user has IBKR credentials
+      const userBroker = await getBrokerForUser(req.user!.id);
+      if (!userBroker.api || userBroker.status.provider === 'none') {
+        return res.json({
+          ok: true,
+          streaming: false,
+          symbols: [],
+          message: 'No IBKR credentials configured for your account'
+        });
+      }
+
       const streamer = getOptionChainStreamer();
       const status = streamer.getStatus();
 
@@ -1005,9 +1375,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Get cached option chain (what the engine sees)
-  app.get('/api/broker/stream/chain/:symbol', async (req, res) => {
+  // SECURED: Get cached option chain (what the engine sees)
+  app.get('/api/broker/stream/chain/:symbol', requireAuth, async (req, res) => {
     try {
+      // Check if user has IBKR credentials
+      const userBroker = await getBrokerForUser(req.user!.id);
+      if (!userBroker.api || userBroker.status.provider === 'none') {
+        return res.status(403).json({
+          ok: false,
+          error: 'No IBKR credentials configured for your account'
+        });
+      }
+
       const { symbol } = req.params;
       const streamer = getOptionChainStreamer();
       const chain = streamer.getOptionChain(symbol);
@@ -1078,28 +1457,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ============================================
 
   // IBKR Status endpoint - shows connection status and configuration
-  app.get('/api/ibkr/status', async (_req, res) => {
+  // SECURED: Returns user-specific IBKR status (not global server config)
+  app.get('/api/ibkr/status', requireAuth, async (req, res) => {
     try {
-      const requiredVars = [
-        'IBKR_CLIENT_ID',
-        'IBKR_CLIENT_KEY_ID',
-        'IBKR_PRIVATE_KEY',
-        'IBKR_CREDENTIAL',
-      ];
-      const missing = requiredVars.filter((k) => !process.env[k]);
-      const isConfigured = missing.length === 0;
+      // Get broker for this specific user (no fallback to shared broker)
+      const userBroker = await getBrokerForUser(req.user!.id);
 
-      if (!isConfigured) {
+      // If user has no IBKR credentials configured, return unconfigured status
+      if (!userBroker.api || userBroker.status.provider === 'none') {
         return res.json({
           configured: false,
           connected: false,
-          environment: process.env.IBKR_ENV || 'paper',
-          message: 'IBKR credentials not configured in environment variables',
-          missing,
+          environment: 'paper',
+          multiUserMode: true,  // Always show multi-user mode is enabled
+          message: 'No IBKR credentials configured for your account. Configure them in the Settings page.'
         });
       }
 
-      // Get diagnostics without trying to connect
+      // User has credentials - get their connection status
       const diag = getIbkrDiagnostics();
 
       // Check all 4 authentication steps
@@ -1109,13 +1484,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
         diag.validate.status === 200 &&
         diag.init.status === 200;
 
+      // Get user's credential info from database (masked)
+      let accountId = 'Configured';
+      let clientId = 'Configured';
+      if (db) {
+        const creds = await db.select().from(ibkrCredentials)
+          .where(eq(ibkrCredentials.userId, req.user!.id))
+          .limit(1);
+        if (creds.length > 0) {
+          accountId = creds[0].accountId || 'Not set';
+          clientId = creds[0].clientId.substring(0, 10) + '***';
+        }
+      }
+
       return res.json({
         configured: true,
         connected: allStepsConnected,
-        environment: process.env.IBKR_ENV || 'paper',
-        accountId: process.env.IBKR_ACCOUNT_ID || 'Not configured',
-        clientId: process.env.IBKR_CLIENT_ID?.substring(0, 10) + '***', // Partially masked
-        multiUserMode: process.env.ENABLE_MULTI_USER === 'true',
+        environment: userBroker.status.env,
+        accountId,
+        clientId,
+        multiUserMode: true, // Always true in multi-tenant mode
         diagnostics: {
           oauth: {
             status: diag.oauth.status,
@@ -1148,17 +1536,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // IBKR Test Connection endpoint - attempts to connect and validate
-  app.post('/api/ibkr/test', async (_req, res) => {
+  // SECURED: IBKR Test Connection endpoint - attempts to connect and validate for user
+  app.post('/api/ibkr/test', requireAuth, async (req, res) => {
     try {
-      if (broker.status.provider !== 'ibkr') {
+      // Get broker for this specific user (no fallback to shared broker)
+      const userBroker = await getBrokerForUser(req.user!.id);
+
+      // If user has no IBKR credentials configured, return error
+      if (!userBroker.api || userBroker.status.provider === 'none') {
         return res.json({
           success: false,
-          message: 'IBKR provider not configured. Set BROKER_PROVIDER=ibkr in environment variables.'
+          message: 'No IBKR credentials configured for your account. Configure them in the Settings page.'
         });
       }
 
-      // Try to ensure IBKR is ready
+      // Try to ensure IBKR is ready (uses global connection for now)
+      // TODO: In the future, each user should have their own connection
       const diag = await ensureIbkrReady();
 
       const allConnected =
@@ -1172,9 +1565,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log('[IBKR Test] All auth steps successful, establishing gateway for trading...');
         try {
           // Call the establishGateway to prepare for trading
-          const broker = getBroker();
-          if (broker && 'establishGateway' in broker) {
-            await (broker as any).establishGateway();
+          if (userBroker.api && 'establishGateway' in userBroker.api) {
+            await (userBroker.api as any).establishGateway();
             console.log('[IBKR Test] Gateway established successfully');
           }
         } catch (err) {
@@ -1475,9 +1867,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // List open orders (paper)
-  app.get('/api/broker/orders', async (_req, res) => {
-    if (broker.status.provider !== 'ibkr') {
+  // SECURED: List open orders (paper)
+  app.get('/api/broker/orders', requireAuth, async (req, res) => {
+    // Check if user has IBKR credentials
+    const userBroker = await getBrokerForUser(req.user!.id);
+    if (!userBroker.api || userBroker.status.provider === 'none') {
       return res.json([]);
     }
     try {
@@ -1493,9 +1887,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post('/api/rules', async (req, res) => { ... });
   */
 
-  // Trading Engine endpoints
-  app.get('/api/engine/status', async (req, res) => {
+  // SECURED: Trading Engine endpoints
+  app.get('/api/engine/status', requireAuth, async (req, res) => {
     try {
+      // Check if user has IBKR credentials
+      const userBroker = await getBrokerForUser(req.user!.id);
+      if (!userBroker.api || userBroker.status.provider === 'none') {
+        return res.json({
+          timestamp: new Date().toISOString(),
+          canTrade: false,
+          reason: 'No IBKR credentials configured for your account',
+          summary: null,
+          steps: []
+        });
+      }
+
       const engine = new TradingEngine({
         riskProfile: 'BALANCED',
         underlyingSymbol: 'SPY',

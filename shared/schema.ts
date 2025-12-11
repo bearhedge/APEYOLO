@@ -17,6 +17,7 @@ export const users = pgTable("users", {
 
 export const positions = pgTable("positions", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }), // Multi-tenant: nullable for migration
   symbol: text("symbol").notNull(),
   strategy: text("strategy").notNull(), // "put_credit" | "call_credit"
   sellStrike: decimal("sell_strike", { precision: 10, scale: 2 }).notNull(),
@@ -33,6 +34,7 @@ export const positions = pgTable("positions", {
 
 export const trades = pgTable("trades", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }), // Multi-tenant: nullable for migration
   symbol: text("symbol").notNull(),
   strategy: text("strategy").notNull(),
   sellStrike: decimal("sell_strike", { precision: 10, scale: 2 }).notNull(),
@@ -100,6 +102,7 @@ export const auditLogs = pgTable("audit_logs", {
 // Orders table for tracking IBKR orders locally
 export const orders = pgTable("orders", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }), // Multi-tenant: nullable for migration
   ibkrOrderId: varchar("ibkr_order_id", { length: 50 }),
   symbol: text("symbol").notNull(),
   side: text("side").notNull(), // "BUY" | "SELL"
@@ -116,6 +119,7 @@ export const orders = pgTable("orders", {
 // Fills table - Granular execution tracking for live orders
 export const fills = pgTable("fills", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "cascade" }), // Multi-tenant: nullable for migration
   orderId: varchar("order_id").references(() => orders.id, { onDelete: "set null" }),
   tradeId: varchar("trade_id").references(() => trades.id, { onDelete: "set null" }),
 

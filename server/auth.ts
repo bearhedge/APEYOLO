@@ -3,10 +3,27 @@
  * Handles Google OAuth flow for user authentication
  */
 
-import { Request, Response, Router } from 'express';
+import { Request, Response, Router, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { config } from './config.js';
+import { db } from './db.js';
+import { users } from '@shared/schema';
+import { eq } from 'drizzle-orm';
+
+// Express Request extension for typed user
+declare global {
+  namespace Express {
+    interface Request {
+      user?: {
+        id: string;
+        email: string;
+        name: string;
+        picture?: string;
+      };
+    }
+  }
+}
 
 const router = Router();
 
@@ -101,19 +118,76 @@ router.get('/google/callback', async (req: Request, res: Response) => {
 
     const googleUser = await userResponse.json();
 
-    // TODO: Replace with actual database operations when PostgreSQL is set up
-    // For now, using in-memory storage for development
-    let userId = crypto.randomUUID();
+    // Lookup or create user in database
+    let userId: string;
 
-    // Store user data in memory for development
-    // This will be replaced with proper database storage
-    const userData = {
-      id: userId,
-      email: googleUser.email,
-      name: googleUser.name,
-      picture: googleUser.picture,
-      googleId: googleUser.sub
-    };
+    if (db) {
+      // Try to find existing user by Google ID
+      const existingUsers = await db
+        .select()
+        .from(users)
+        .where(eq(users.googleId, googleUser.sub))
+        .limit(1);
+
+      if (existingUsers.length > 0) {
+        // User exists, update their info
+        const existingUser = existingUsers[0];
+        userId = existingUser.id;
+
+        // Update profile info if changed
+        await db
+          .update(users)
+          .set({
+            name: googleUser.name,
+            picture: googleUser.picture,
+            updatedAt: new Date(),
+          })
+          .where(eq(users.id, userId));
+
+        console.log(`[Auth] User logged in: ${googleUser.email} (ID: ${userId})`);
+      } else {
+        // Check if user exists by email (could have been created differently)
+        const emailUsers = await db
+          .select()
+          .from(users)
+          .where(eq(users.email, googleUser.email))
+          .limit(1);
+
+        if (emailUsers.length > 0) {
+          // Link Google ID to existing email account
+          userId = emailUsers[0].id;
+          await db
+            .update(users)
+            .set({
+              googleId: googleUser.sub,
+              name: googleUser.name,
+              picture: googleUser.picture,
+              updatedAt: new Date(),
+            })
+            .where(eq(users.id, userId));
+
+          console.log(`[Auth] Linked Google to existing user: ${googleUser.email} (ID: ${userId})`);
+        } else {
+          // Create new user
+          const newUsers = await db
+            .insert(users)
+            .values({
+              email: googleUser.email,
+              name: googleUser.name,
+              picture: googleUser.picture,
+              googleId: googleUser.sub,
+            })
+            .returning();
+
+          userId = newUsers[0].id;
+          console.log(`[Auth] New user created: ${googleUser.email} (ID: ${userId})`);
+        }
+      }
+    } else {
+      // Fallback for development without database
+      userId = crypto.randomUUID();
+      console.warn('[Auth] Database not available, using temporary user ID');
+    }
 
     // Create JWT token
     const token = jwt.sign(
@@ -198,8 +272,9 @@ router.get('/status', (req: Request, res: Response) => {
 
 /**
  * Check if user is authenticated (middleware)
+ * Attaches user object to req.user with id, email, name, picture
  */
-export function requireAuth(req: Request, res: Response, next: Function) {
+export function requireAuth(req: Request, res: Response, next: NextFunction) {
   const token = req.cookies.auth_token;
 
   if (!token) {
@@ -207,8 +282,21 @@ export function requireAuth(req: Request, res: Response, next: Function) {
   }
 
   try {
-    const decoded = jwt.verify(token, config.jwt.secret);
-    (req as any).user = decoded;
+    const decoded = jwt.verify(token, config.jwt.secret) as {
+      userId: string;
+      email: string;
+      name: string;
+      picture?: string;
+    };
+
+    // Attach user to request with typed interface
+    req.user = {
+      id: decoded.userId,
+      email: decoded.email,
+      name: decoded.name,
+      picture: decoded.picture,
+    };
+
     next();
   } catch (error) {
     return res.status(401).json({ error: 'Invalid token' });

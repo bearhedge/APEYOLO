@@ -84,9 +84,10 @@ export function decrypt(encryptedData: string, password: string): string {
  * In production, this should come from GCP Secret Manager
  */
 export function getEncryptionKey(): string {
-  const key = process.env.IBKR_ENCRYPTION_KEY;
+  // Use IBKR_ENCRYPTION_KEY if set, otherwise fall back to JWT_SECRET
+  const key = process.env.IBKR_ENCRYPTION_KEY || process.env.JWT_SECRET;
   if (!key) {
-    throw new Error('IBKR_ENCRYPTION_KEY environment variable is not set');
+    throw new Error('IBKR_ENCRYPTION_KEY or JWT_SECRET environment variable must be set');
   }
   return key;
 }
