@@ -766,7 +766,7 @@ export function TrackRecord() {
                         new Date(a.date).getTime() - new Date(b.date).getTime()
                       ).map((day, idx) => (
                         <tr key={day.date} className={idx % 2 === 0 ? 'bg-white/5' : ''}>
-                          <td className="py-3 px-4 text-sm text-electric font-medium">
+                          <td className="py-3 px-4 text-sm text-electric font-medium whitespace-nowrap">
                             Day {idx + 1}
                           </td>
                           <td className="py-3 px-4 text-sm">

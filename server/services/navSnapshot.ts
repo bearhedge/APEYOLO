@@ -11,9 +11,9 @@
  */
 
 import { db } from '../db';
-import { navSnapshots, jobs } from '@shared/schema';
+import { navSnapshots, jobs, ibkrCredentials } from '@shared/schema';
 import { eq, desc, and } from 'drizzle-orm';
-import { getBroker } from '../broker';
+import { getBrokerForUser } from '../broker';
 import { ensureIbkrReady } from '../broker/ibkr';
 import { registerJobHandler, type JobResult } from './jobExecutor';
 
@@ -24,33 +24,22 @@ type SnapshotType = 'opening' | 'closing';
 // ============================================
 
 /**
- * Capture the current NAV and save to database
+ * Capture the current NAV for a specific user and save to database
  * @param snapshotType - 'opening' for market open, 'closing' for market close
+ * @param userId - The user ID to capture NAV for
  */
-export async function captureNavSnapshot(snapshotType: SnapshotType = 'closing'): Promise<JobResult> {
-  console.log(`[NavSnapshot] Capturing ${snapshotType} NAV snapshot...`);
-
-  if (!db) {
-    return { success: false, error: 'Database not available' };
-  }
-
+async function captureNavSnapshotForUser(snapshotType: SnapshotType, userId: string): Promise<{ success: boolean; nav?: number; error?: string }> {
   try {
-    // Get current NAV from IBKR
-    const broker = getBroker();
-    let nav = 0;
+    // Get broker for this specific user
+    const broker = await getBrokerForUser(userId);
 
-    if (broker.status.provider === 'ibkr') {
-      try {
-        await ensureIbkrReady();
-        const account = await broker.api.getAccount();
-        nav = account?.portfolioValue || account?.netLiquidation || 0;
-      } catch (err) {
-        console.warn('[NavSnapshot] Could not fetch IBKR account:', err);
-        return { success: false, error: 'Failed to fetch IBKR account data' };
-      }
-    } else {
-      return { success: false, error: 'IBKR broker not available' };
+    if (broker.status.provider !== 'ibkr' || !broker.api) {
+      return { success: false, error: 'IBKR broker not available for user' };
     }
+
+    await ensureIbkrReady();
+    const account = await broker.api.getAccount();
+    const nav = account?.portfolioValue || account?.netLiquidation || 0;
 
     if (nav <= 0) {
       return { success: false, error: 'Invalid NAV value received' };
@@ -59,40 +48,89 @@ export async function captureNavSnapshot(snapshotType: SnapshotType = 'closing')
     // Get today's date in ET timezone
     const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }); // YYYY-MM-DD
 
-    // Check if we already have a snapshot for today with this type
-    const [existing] = await db
+    // Check if we already have a snapshot for today with this type FOR THIS USER
+    const [existing] = await db!
       .select()
       .from(navSnapshots)
       .where(and(
         eq(navSnapshots.date, today),
-        eq(navSnapshots.snapshotType, snapshotType)
+        eq(navSnapshots.snapshotType, snapshotType),
+        eq(navSnapshots.userId, userId)
       ))
       .limit(1);
 
     if (existing) {
       // Update existing snapshot
-      console.log(`[NavSnapshot] Updating existing ${snapshotType} snapshot for ${today}: $${nav.toFixed(2)}`);
-      await db
+      console.log(`[NavSnapshot] Updating ${snapshotType} snapshot for user ${userId} on ${today}: $${nav.toFixed(2)}`);
+      await db!
         .update(navSnapshots)
         .set({ nav: nav.toString() })
         .where(eq(navSnapshots.id, existing.id));
     } else {
-      // Create new snapshot
-      console.log(`[NavSnapshot] Creating new ${snapshotType} snapshot for ${today}: $${nav.toFixed(2)}`);
-      await db.insert(navSnapshots).values({
+      // Create new snapshot WITH USER_ID
+      console.log(`[NavSnapshot] Creating ${snapshotType} snapshot for user ${userId} on ${today}: $${nav.toFixed(2)}`);
+      await db!.insert(navSnapshots).values({
         date: today,
         snapshotType,
         nav: nav.toString(),
+        userId: userId,
       });
     }
 
+    return { success: true, nav };
+  } catch (err: any) {
+    console.warn(`[NavSnapshot] Could not capture NAV for user ${userId}:`, err);
+    return { success: false, error: err.message || 'Unknown error' };
+  }
+}
+
+/**
+ * Capture the current NAV for ALL users with active IBKR credentials
+ * @param snapshotType - 'opening' for market open, 'closing' for market close
+ */
+export async function captureNavSnapshot(snapshotType: SnapshotType = 'closing'): Promise<JobResult> {
+  console.log(`[NavSnapshot] Capturing ${snapshotType} NAV snapshot for all users...`);
+
+  if (!db) {
+    return { success: false, error: 'Database not available' };
+  }
+
+  try {
+    // Find all users with active IBKR credentials
+    const activeCredentials = await db
+      .select({ userId: ibkrCredentials.userId })
+      .from(ibkrCredentials)
+      .where(eq(ibkrCredentials.status, 'active'));
+
+    if (activeCredentials.length === 0) {
+      console.log('[NavSnapshot] No users with active IBKR credentials found');
+      return { success: false, error: 'No users with active IBKR credentials' };
+    }
+
+    console.log(`[NavSnapshot] Found ${activeCredentials.length} user(s) with active IBKR credentials`);
+
+    const results: { userId: string; success: boolean; nav?: number; error?: string }[] = [];
+
+    // Capture NAV for each user
+    for (const cred of activeCredentials) {
+      const result = await captureNavSnapshotForUser(snapshotType, cred.userId);
+      results.push({ userId: cred.userId, ...result });
+    }
+
+    const successCount = results.filter(r => r.success).length;
+    const failCount = results.filter(r => !r.success).length;
+
+    console.log(`[NavSnapshot] Completed: ${successCount} success, ${failCount} failed`);
+
     return {
-      success: true,
+      success: successCount > 0,
       data: {
-        date: today,
         snapshotType,
-        nav,
-        action: existing ? 'updated' : 'created',
+        date: new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' }),
+        totalUsers: activeCredentials.length,
+        successCount,
+        failCount,
+        results,
       },
     };
   } catch (error: any) {

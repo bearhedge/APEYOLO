@@ -5,7 +5,7 @@
 
 import { Router } from "express";
 import { TradingEngine, EngineError } from "./engine/index";
-import { getBroker, getBrokerWithStatus } from "./broker/index";
+import { getBroker, getBrokerWithStatus, getBrokerForUser } from "./broker/index";
 import { ensureIbkrReady, placePaperOptionOrder, placeOptionOrderWithStop, getIbkrDiagnostics } from "./broker/ibkr";
 import { storage } from "./storage";
 import { engineScheduler, SchedulerConfig } from "./services/engineScheduler";
@@ -270,7 +270,8 @@ router.post('/execute', requireAuth, async (req, res) => {
       currentGuardRails.stopLossMultiplier = stopMultiplier;
     }
 
-    const broker = getBroker();
+    // Multi-tenant: Get broker for the authenticated user
+    const broker = await getBrokerForUser(req.user!.id);
 
     // Ensure IBKR is ready if using it
     if (broker.status.provider === 'ibkr') {
@@ -406,7 +407,8 @@ router.get('/analyze', requireAuth, async (req, res) => {
     const riskProfile = riskProfileMap[riskTier as string] || 'BALANCED';
     const stopMult = parseInt(stopMultiplier as string, 10) || 3;
 
-    const broker = getBroker();
+    // Multi-tenant: Get broker for the authenticated user
+    const broker = await getBrokerForUser(req.user!.id);
 
     // Ensure IBKR is ready if using it
     if (broker.status.provider === 'ibkr') {
@@ -557,7 +559,8 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
       });
     }
 
-    const broker = getBroker();
+    // Multi-tenant: Get broker for the authenticated user
+    const broker = await getBrokerForUser(req.user!.id);
     const ibkrOrderIds: string[] = [];
 
     // Place BRACKET orders with IBKR for LIVE trading
@@ -660,7 +663,7 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
 
         status: 'open',
         ibkrOrderIds: ibkrOrderIds.length > 0 ? ibkrOrderIds : null,
-        userId: (req as any).user?.userId ?? null,
+        userId: req.user?.id ?? null, // Multi-tenant: attach user ID from auth
         fullProposal: tradeProposal,
       }).returning();
 
@@ -683,7 +686,7 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
           ibkrOrderIds,
           dbInsertError,
         }),
-        userId: (req as any).user?.userId || 'system',
+        userId: req.user?.id || 'system',
       });
     } catch (auditErr) {
       console.error('[Engine/execute] Failed to create audit log:', auditErr);
@@ -720,7 +723,8 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
 // POST /api/engine/execute-trade - Execute the recommended trade
 router.post('/execute-trade', requireAuth, async (req, res) => {
   try {
-    const broker = getBroker();
+    // Multi-tenant: Get broker for the authenticated user
+    const broker = await getBrokerForUser(req.user!.id);
 
     // Parse request body
     const { decision, autoApprove } = req.body;
@@ -911,7 +915,7 @@ router.post('/execute-trade', requireAuth, async (req, res) => {
           orders: orders.map(o => ({ optionType: o.optionType, strike: o.strike, orderId: o.orderId, status: o.ibkrStatus })),
           autoApprove,
         }),
-        userId: (req as any).user?.userId || 'system',
+        userId: req.user?.id || 'system',
       });
     } catch (auditErr) {
       console.error('[Engine] Failed to create audit log:', auditErr);
@@ -959,11 +963,14 @@ router.put('/config', requireAuth, async (req, res) => {
       };
     }
 
+    // Multi-tenant: Get broker for the authenticated user
+    const broker = await getBrokerForUser(req.user!.id);
+
     // Recreate engine with new config
     engineInstance = new TradingEngine({
       riskProfile: config.riskProfile || 'BALANCED',
       underlyingSymbol: config.underlyingSymbol || 'SPY',
-      mockMode: getBroker().status.provider === 'mock'
+      mockMode: broker.status.provider === 'mock'
     });
 
     res.json({
@@ -1061,17 +1068,18 @@ router.get('/test-strikes', requireAuth, async (req, res) => {
     console.log(`[Engine/test-strikes] ${symbol} exp=${expiration} range=±${range}`);
 
     await ensureIbkrReady();
-    const broker = getBroker();
+    // Multi-tenant: Get broker for the authenticated user
+    const broker = await getBrokerForUser(req.user!.id);
 
     // Get underlying price
-    const marketData = await broker.getMarketData(symbol);
+    const marketData = await broker.api.getMarketData(symbol);
     const underlyingPrice = marketData.price || marketData.last || 0;
     const atmStrike = Math.round(underlyingPrice);
 
     console.log(`[Engine/test-strikes] Underlying: $${underlyingPrice}, ATM: $${atmStrike}`);
 
     // Get option chain
-    const chain = await broker.getOptionChain(symbol, expiration);
+    const chain = await broker.api.getOptionChain(symbol, expiration);
 
     // Filter to ATM ± range
     const strikes: number[] = [];
