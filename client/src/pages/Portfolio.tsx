@@ -553,14 +553,20 @@ export function Portfolio() {
       header: 'DTE',
       accessor: (row: Position) => {
         const dte = calculateDTE(row.symbol || '');
-        return dte > 0 ? dte.toFixed(1) : '-';
+        // Show 0.0 for same-day expiration, "-" only if not a valid option symbol
+        if (dte === 0) {
+          // Check if symbol is a valid option format
+          const isOption = /^[A-Z]+\s+\d{6}[PC]\d+$/.test(row.symbol || '');
+          return isOption ? '0.0' : '-';
+        }
+        return dte.toFixed(1);
       },
       className: 'tabular-nums text-silver'
     },
     {
-      header: 'Delta',
+      header: 'Delta*',
       accessor: (row: Position) => {
-        // Use per-contract delta from positionMetrics (not position-level)
+        // Use per-contract delta from positionMetrics (Black-Scholes estimate)
         const greeks = positionMetrics.positionGreeks.get(row.id);
         if (greeks) return formatDelta(greeks.deltaPerContract);
 
@@ -577,7 +583,7 @@ export function Portfolio() {
       className: 'tabular-nums text-silver'
     },
     {
-      header: 'Gamma',
+      header: 'Gamma*',
       accessor: (row: Position) => {
         // Use calculated Greeks from positionMetrics (Black-Scholes)
         const greeks = positionMetrics.positionGreeks.get(row.id);
@@ -590,7 +596,7 @@ export function Portfolio() {
       className: 'tabular-nums text-silver'
     },
     {
-      header: 'Theta',
+      header: 'Theta*',
       accessor: (row: Position) => {
         // Use calculated Greeks from positionMetrics (Black-Scholes)
         const greeks = positionMetrics.positionGreeks.get(row.id);
@@ -611,7 +617,7 @@ export function Portfolio() {
       className: 'tabular-nums text-silver'
     },
     {
-      header: 'Vega',
+      header: 'Vega*',
       accessor: (row: Position) => {
         // Use calculated Greeks from positionMetrics (Black-Scholes)
         const greeks = positionMetrics.positionGreeks.get(row.id);
@@ -740,13 +746,13 @@ export function Portfolio() {
           />
           <StatCard
             label="Implied Notional"
-            value={positionMetrics.impliedNotional > 0 ? formatCurrency(positionMetrics.impliedNotional) : '--'}
+            value={positionMetrics.impliedNotional > 0 ? formatHKD(positionMetrics.impliedNotional) : '--'}
             icon={<Activity className="w-5 h-5 text-cyan-500" />}
             testId="implied-notional"
           />
           <StatCard
             label="Days to Expiry"
-            value={positionMetrics.avgDTE > 0 ? formatDays(positionMetrics.avgDTE) : '--'}
+            value={positions && positions.length > 0 ? formatDays(positionMetrics.avgDTE) : '--'}
             icon={<Calendar className="w-5 h-5 text-amber-500" />}
             testId="days-to-expiry"
           />
@@ -762,13 +768,17 @@ export function Portfolio() {
         <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-semibold">Open Positions</h3>
+            <span className="text-xs text-silver">* Black-Scholes estimates</span>
           </div>
           {positions && positions.length > 0 ? (
-            <DataTable
-              data={positions}
-              columns={columns}
-              testId="table-portfolio-positions"
-            />
+            <>
+              <DataTable
+                data={positions}
+                columns={columns}
+                testId="table-portfolio-positions"
+              />
+              <p className="text-xs text-silver mt-3">Net Delta: Sum of position deltas. Short puts = +delta (benefit when stock rises). Short calls = -delta.</p>
+            </>
           ) : (
             <div className="text-center py-12">
               <p className="text-silver">No open positions</p>
