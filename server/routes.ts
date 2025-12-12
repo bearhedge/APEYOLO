@@ -483,34 +483,30 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Calculate Day P&L based on market hours:
       // - During market hours: Current NAV - Today's Opening NAV
       // - After hours/Pre-market: Current NAV - Yesterday's Closing NAV
-      let enhancedDayPnL = 0;
-      try {
-        const currentNav = account?.portfolioValue || 0;
-        const userId = req.user!.id;
+      let dayPnL = 0;
+      const currentNav = account?.portfolioValue || 0;
+      const userId = req.user!.id;
 
+      try {
         if (isMarketHours()) {
-          // During market hours: use today's opening NAV
           const openingSnapshot = await getTodayOpeningSnapshot(userId);
           if (openingSnapshot && currentNav) {
-            enhancedDayPnL = currentNav - openingSnapshot.nav;
-            console.log(`[API] /api/account: Day P&L (market hours): $${enhancedDayPnL.toFixed(2)} (current: $${currentNav.toFixed(2)}, open: $${openingSnapshot.nav.toFixed(2)})`);
+            dayPnL = currentNav - openingSnapshot.nav;
           }
         } else {
-          // After hours/Pre-market: use yesterday's closing NAV
           const closingSnapshot = await getPreviousClosingSnapshot(userId);
           if (closingSnapshot && currentNav) {
-            enhancedDayPnL = currentNav - closingSnapshot.nav;
-            console.log(`[API] /api/account: Day P&L (after hours): $${enhancedDayPnL.toFixed(2)} (current: $${currentNav.toFixed(2)}, prevClose: $${closingSnapshot.nav.toFixed(2)} from ${closingSnapshot.date})`);
+            dayPnL = currentNav - closingSnapshot.nav;
           }
         }
-      } catch (navErr) {
-        console.warn('[API] /api/account: Could not calculate Day P&L:', navErr);
-        enhancedDayPnL = account?.dayPnL || 0;
+      } catch (err) {
+        console.error('[API] Day P&L error:', err);
       }
+
 
       res.json({
         ...account,
-        dayPnL: enhancedDayPnL, // Override with NAV-based calculation
+        dayPnL, // Override with NAV-based calculation
       });
     } catch (error: any) {
       console.error('[API] /api/account: FAILED -', error?.message || error);

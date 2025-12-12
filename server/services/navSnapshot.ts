@@ -245,40 +245,35 @@ export async function getTodayClosingSnapshot(userId?: string): Promise<{ date: 
 
 /**
  * Get the most recent closing NAV snapshot (for after-hours Day P&L)
- * Returns yesterday's closing NAV, or most recent available
+ * Returns the most recent closing NAV
  * @param userId - Optional user ID to filter by
  */
 export async function getPreviousClosingSnapshot(userId?: string): Promise<{ date: string; nav: number } | null> {
   if (!db) return null;
 
   try {
-    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
-
-    // Build conditions
+    // Build query conditions
     const conditions = [eq(navSnapshots.snapshotType, 'closing')];
     if (userId) {
       conditions.push(eq(navSnapshots.userId, userId));
     }
 
-    // Get the most recent closing snapshots
-    const closingSnapshots = await db
+    // Get the most recent closing snapshot
+    const [snapshot] = await db
       .select()
       .from(navSnapshots)
-      .where(and(...conditions))
+      .where(conditions.length > 1 ? and(...conditions) : conditions[0])
       .orderBy(desc(navSnapshots.date))
-      .limit(2);
+      .limit(1);
 
-    // Find the first one that's not today (previous day's closing)
-    const previousSnapshot = closingSnapshots.find(s => s.date !== today) || closingSnapshots[0];
-
-    if (!previousSnapshot) return null;
+    if (!snapshot) return null;
 
     return {
-      date: previousSnapshot.date,
-      nav: parseFloat(previousSnapshot.nav as any) || 0,
+      date: snapshot.date,
+      nav: parseFloat(snapshot.nav as any) || 0,
     };
   } catch (error) {
-    console.error('[NavSnapshot] Error getting previous closing snapshot:', error);
+    console.error('[NavSnapshot] Error getting closing snapshot:', error);
     return null;
   }
 }

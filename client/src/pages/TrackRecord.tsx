@@ -128,10 +128,14 @@ const formatCurrency = (value: any, includeSign = false): string => {
   return formatted;
 };
 
-// Format currency in HKD (data is already in HKD, no conversion needed)
-const formatHKD = (value: any, includeSign = false): string => {
-  const hkd = toNum(value);
-  if (value === null || value === undefined) return '-';
+// USD to HKD conversion rate
+const USD_TO_HKD = 7.8;
+
+// Format currency in HKD (converts USD to HKD)
+const formatHKD = (usdValue: any, includeSign = false): string => {
+  const usd = toNum(usdValue);
+  if (usdValue === null || usdValue === undefined) return '-';
+  const hkd = usd * USD_TO_HKD;
   const formatted = `$${Math.abs(hkd).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   if (includeSign) {
     return hkd >= 0 ? `+${formatted}` : `-${formatted.substring(1)}`;
@@ -467,22 +471,22 @@ export function TrackRecord() {
       className: 'tabular-nums',
     },
     {
-      header: 'Realized (HKD)',
+      header: 'Realized',
       accessor: (row: UnifiedTrade) => (
         row.realizedPnl !== 0 ? (
           <span className={`font-medium ${row.realizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-            {formatHKD(row.realizedPnl, true)}
+            {formatCurrency(row.realizedPnl, true)}
           </span>
         ) : <span className="text-zinc-600">-</span>
       ),
       className: 'tabular-nums text-right',
     },
     {
-      header: 'Unrealized (HKD)',
+      header: 'Unrealized',
       accessor: (row: UnifiedTrade) => (
         row.unrealizedPnl !== 0 ? (
           <span className={`font-medium ${row.unrealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-            {formatHKD(row.unrealizedPnl, true)}
+            {formatCurrency(row.unrealizedPnl, true)}
           </span>
         ) : <span className="text-zinc-600">-</span>
       ),
@@ -527,10 +531,10 @@ export function TrackRecord() {
         {/* Primary KPI Cards */}
         <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
           <StatCard
-            label="Cumulative P&L (HKD)"
+            label="Cumulative P&L"
             value={navHistory?.summary?.cumulativePnl !== undefined
-              ? formatHKD(navHistory.summary.cumulativePnl, true)
-              : formatHKD(totalRealizedPnl + totalUnrealizedPnl, true)}
+              ? formatCurrency(navHistory.summary.cumulativePnl, true)
+              : formatCurrency(totalRealizedPnl + totalUnrealizedPnl, true)}
             icon={(navHistory?.summary?.cumulativePnl ?? (totalRealizedPnl + totalUnrealizedPnl)) >= 0
               ? <TrendingUp className="w-5 h-5 text-green-400" />
               : <TrendingDown className="w-5 h-5 text-red-400" />}
@@ -632,27 +636,27 @@ export function TrackRecord() {
                   <p className="text-2xl font-bold text-red-400">{kpis.losingTrades}</p>
                 </div>
                 <div className="space-y-2">
-                  <p className="text-silver text-sm">Total Winnings (HKD)</p>
-                  <p className="text-2xl font-bold text-green-400">{formatHKD(kpis.totalWinnings)}</p>
+                  <p className="text-silver text-sm">Total Winnings</p>
+                  <p className="text-2xl font-bold text-green-400">{formatCurrency(kpis.totalWinnings)}</p>
                 </div>
                 <div className="space-y-2">
-                  <p className="text-silver text-sm">Total Losses (HKD)</p>
-                  <p className="text-2xl font-bold text-red-400">{formatHKD(kpis.totalLosses)}</p>
+                  <p className="text-silver text-sm">Total Losses</p>
+                  <p className="text-2xl font-bold text-red-400">{formatCurrency(kpis.totalLosses)}</p>
                 </div>
 
                 {/* Averages */}
                 <div className="space-y-2">
-                  <p className="text-silver text-sm">Average Win (HKD)</p>
-                  <p className="text-2xl font-bold text-green-400">{formatHKD(kpis.avgWin)}</p>
+                  <p className="text-silver text-sm">Average Win</p>
+                  <p className="text-2xl font-bold text-green-400">{formatCurrency(kpis.avgWin)}</p>
                 </div>
                 <div className="space-y-2">
-                  <p className="text-silver text-sm">Average Loss (HKD)</p>
-                  <p className="text-2xl font-bold text-red-400">{formatHKD(kpis.avgLoss)}</p>
+                  <p className="text-silver text-sm">Average Loss</p>
+                  <p className="text-2xl font-bold text-red-400">{formatCurrency(kpis.avgLoss)}</p>
                 </div>
                 <div className="space-y-2">
-                  <p className="text-silver text-sm">Avg Trade Return (HKD)</p>
+                  <p className="text-silver text-sm">Avg Trade Return</p>
                   <p className={`text-2xl font-bold ${kpis.avgTradeReturn >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {formatHKD(kpis.avgTradeReturn, true)}
+                    {formatCurrency(kpis.avgTradeReturn, true)}
                   </p>
                 </div>
                 <div className="space-y-2">
@@ -662,12 +666,12 @@ export function TrackRecord() {
 
                 {/* Extremes */}
                 <div className="space-y-2">
-                  <p className="text-silver text-sm">Largest Win (HKD)</p>
-                  <p className="text-2xl font-bold text-green-400">{formatHKD(kpis.largestWin)}</p>
+                  <p className="text-silver text-sm">Largest Win</p>
+                  <p className="text-2xl font-bold text-green-400">{formatCurrency(kpis.largestWin)}</p>
                 </div>
                 <div className="space-y-2">
-                  <p className="text-silver text-sm">Largest Loss (HKD)</p>
-                  <p className="text-2xl font-bold text-red-400">{formatHKD(kpis.largestLoss)}</p>
+                  <p className="text-silver text-sm">Largest Loss</p>
+                  <p className="text-2xl font-bold text-red-400">{formatCurrency(kpis.largestLoss)}</p>
                 </div>
                 <div className="space-y-2">
                   <p className="text-silver text-sm">Max Consecutive Wins</p>
@@ -691,10 +695,10 @@ export function TrackRecord() {
                 <div className={`p-4 ${(navHistory?.summary?.cumulativePnl ?? 0) >= 0 ? 'bg-green-500/10 border-green-500/30' : 'bg-red-500/10 border-red-500/30'} border rounded-xl`}>
                   <div className="flex items-center gap-2 mb-2">
                     <TrendingUp className={`w-5 h-5 ${(navHistory?.summary?.cumulativePnl ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`} />
-                    <span className="text-silver text-sm">Cumulative P&L (HKD)</span>
+                    <span className="text-silver text-sm">Cumulative P&L</span>
                   </div>
                   <p className={`text-2xl font-bold tabular-nums ${(navHistory?.summary?.cumulativePnl ?? 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                    {formatHKD(navHistory?.summary?.cumulativePnl ?? 0, true)}
+                    {formatCurrency(navHistory?.summary?.cumulativePnl ?? 0, true)}
                   </p>
                   <p className="text-xs text-silver mt-1">Cash flow adjusted</p>
                 </div>
@@ -711,10 +715,10 @@ export function TrackRecord() {
                 <div className="p-4 bg-green-500/10 border border-green-500/30 rounded-xl">
                   <div className="flex items-center gap-2 mb-2">
                     <Trophy className="w-5 h-5 text-green-400" />
-                    <span className="text-silver text-sm">Best Day (HKD)</span>
+                    <span className="text-silver text-sm">Best Day</span>
                   </div>
                   <p className="text-2xl font-bold tabular-nums text-green-400">
-                    {navHistory?.summary?.bestDay ? formatHKD(navHistory.summary.bestDay.pnl, true) : '--'}
+                    {navHistory?.summary?.bestDay ? formatCurrency(navHistory.summary.bestDay.pnl, true) : '--'}
                   </p>
                   <p className="text-xs text-silver mt-1">
                     {navHistory?.summary?.bestDay ? new Date(navHistory.summary.bestDay.date).toLocaleDateString() : 'No data'}
@@ -723,10 +727,10 @@ export function TrackRecord() {
                 <div className="p-4 bg-red-500/10 border border-red-500/30 rounded-xl">
                   <div className="flex items-center gap-2 mb-2">
                     <TrendingDown className="w-5 h-5 text-red-400" />
-                    <span className="text-silver text-sm">Worst Day (HKD)</span>
+                    <span className="text-silver text-sm">Worst Day</span>
                   </div>
                   <p className="text-2xl font-bold tabular-nums text-red-400">
-                    {navHistory?.summary?.worstDay ? formatHKD(navHistory.summary.worstDay.pnl, true) : '--'}
+                    {navHistory?.summary?.worstDay ? formatCurrency(navHistory.summary.worstDay.pnl, true) : '--'}
                   </p>
                   <p className="text-xs text-silver mt-1">
                     {navHistory?.summary?.worstDay ? new Date(navHistory.summary.worstDay.date).toLocaleDateString() : 'No data'}
@@ -752,8 +756,8 @@ export function TrackRecord() {
                             <Sunset className="w-4 h-4" /> Closing NAV
                           </div>
                         </th>
-                        <th className="text-right py-3 px-4 text-silver text-sm font-medium">Daily P&L (HKD)</th>
-                        <th className="text-right py-3 px-4 text-silver text-sm font-medium">Cumulative (HKD)</th>
+                        <th className="text-right py-3 px-4 text-silver text-sm font-medium">Daily P&L</th>
+                        <th className="text-right py-3 px-4 text-silver text-sm font-medium">Cumulative</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -775,10 +779,10 @@ export function TrackRecord() {
                             {day.closingNav !== null ? formatCurrency(day.closingNav) : <span className="text-yellow-400 text-sm">Market Open</span>}
                           </td>
                           <td className={`py-3 px-4 text-right tabular-nums font-medium ${day.dailyPnl === null ? 'text-zinc-500' : day.dailyPnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {day.dailyPnl !== null ? formatHKD(day.dailyPnl, true) : '--'}
+                            {day.dailyPnl !== null ? formatCurrency(day.dailyPnl, true) : '--'}
                           </td>
                           <td className={`py-3 px-4 text-right tabular-nums font-medium ${day.cumulativePnl >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                            {formatHKD(day.cumulativePnl, true)}
+                            {formatCurrency(day.cumulativePnl, true)}
                           </td>
                         </tr>
                       ))}
@@ -904,8 +908,8 @@ export function TrackRecord() {
               <div className="flex items-center justify-between mb-4">
                 <h3 className="text-lg font-semibold">Trades</h3>
                 <div className="flex items-center gap-4 text-sm text-silver">
-                  <span>Realized (HKD): <span className={totalRealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}>{formatHKD(totalRealizedPnl, true)}</span></span>
-                  <span>Unrealized (HKD): <span className={totalUnrealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}>{formatHKD(totalUnrealizedPnl, true)}</span></span>
+                  <span>Realized: <span className={totalRealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}>{formatCurrency(totalRealizedPnl, true)}</span></span>
+                  <span>Unrealized: <span className={totalUnrealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}>{formatCurrency(totalUnrealizedPnl, true)}</span></span>
                 </div>
               </div>
               {allTrades.length > 0 ? (
