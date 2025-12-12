@@ -128,14 +128,10 @@ const formatCurrency = (value: any, includeSign = false): string => {
   return formatted;
 };
 
-// USD to HKD conversion rate
-const USD_TO_HKD = 7.8;
-
-// Format currency in HKD (converts from USD)
+// Format currency in HKD (data is already in HKD, no conversion needed)
 const formatHKD = (value: any, includeSign = false): string => {
-  const usd = toNum(value);
+  const hkd = toNum(value);
   if (value === null || value === undefined) return '-';
-  const hkd = usd * USD_TO_HKD;
   const formatted = `$${Math.abs(hkd).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   if (includeSign) {
     return hkd >= 0 ? `+${formatted}` : `-${formatted.substring(1)}`;

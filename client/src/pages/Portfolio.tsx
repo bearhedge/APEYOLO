@@ -46,14 +46,10 @@ const formatCurrency = (value: any, includeSign = false): string => {
   return formatted;
 };
 
-// USD to HKD conversion rate
-const USD_TO_HKD = 7.8;
-
-// Helper to format HKD values (converts from USD)
+// Helper to format HKD values (data is already in HKD, no conversion needed)
 const formatHKD = (value: any, includeSign = false): string => {
-  const usd = toNum(value);
+  const hkd = toNum(value);
   if (value === null || value === undefined) return '-';
-  const hkd = usd * USD_TO_HKD;
   const formatted = `$${Math.abs(hkd).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   if (includeSign) {
     return hkd >= 0 ? `+${formatted}` : `-${formatted.substring(1)}`;
@@ -494,9 +490,9 @@ export function Portfolio() {
       }
       totalMaxLoss += positionMaxLoss;
 
-      // Implied notional: qty * strike * 100 * USD_TO_HKD (HKD)
+      // Implied notional: qty * strike * 100
       const strike = parseStrikeFromSymbol(p.symbol || '');
-      totalNotional += qty * strike * 100 * USD_TO_HKD;
+      totalNotional += qty * strike * 100;
 
       // Weighted DTE
       const dte = calculateDTE(p.symbol || '');
@@ -700,7 +696,7 @@ export function Portfolio() {
             testId="margin-used-row3"
           />
           <StatCard
-            label="Implied Notional (HKD)"
+            label="Implied Notional"
             value={positionMetrics.impliedNotional > 0 ? formatCurrency(positionMetrics.impliedNotional) : '--'}
             icon={<Activity className="w-5 h-5 text-cyan-500" />}
             testId="implied-notional"
