@@ -32,7 +32,7 @@ import engineRoutes from "./engineRoutes.js";
 import marketRoutes from "./marketRoutes.js";
 import jobRoutes, { initializeJobsSystem } from "./jobRoutes.js";
 import defiRoutes from "./defiRoutes.js";
-import { getTodayOpeningSnapshot } from "./services/navSnapshot.js";
+import { getTodayOpeningSnapshot, getPreviousClosingSnapshot, isMarketHours } from "./services/navSnapshot.js";
 
 // Helper function to get session from request
 async function getSessionFromRequest(req: any) {
@@ -480,22 +480,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const account = await userBroker.api.getAccount();
       console.log('[API] /api/account: Success, portfolioValue=', account?.portfolioValue, 'netLiq=', account?.netLiquidation);
 
-      // Calculate Day P&L:
-      // Day P&L = Current NAV - Today's Opening NAV
-      // Simple: how much changed from when market opened today
+      // Calculate Day P&L based on market hours:
+      // - During market hours: Current NAV - Today's Opening NAV
+      // - After hours/Pre-market: Current NAV - Yesterday's Closing NAV
       let enhancedDayPnL = 0;
       try {
         const currentNav = account?.portfolioValue || 0;
-        const openingSnapshot = await getTodayOpeningSnapshot();
+        const userId = req.user!.id;
 
-        if (openingSnapshot && currentNav) {
-          enhancedDayPnL = currentNav - openingSnapshot.nav;
-          console.log(`[API] /api/account: Day P&L: $${enhancedDayPnL.toFixed(2)} (current: $${currentNav.toFixed(2)}, open: $${openingSnapshot.nav.toFixed(2)})`);
+        if (isMarketHours()) {
+          // During market hours: use today's opening NAV
+          const openingSnapshot = await getTodayOpeningSnapshot(userId);
+          if (openingSnapshot && currentNav) {
+            enhancedDayPnL = currentNav - openingSnapshot.nav;
+            console.log(`[API] /api/account: Day P&L (market hours): $${enhancedDayPnL.toFixed(2)} (current: $${currentNav.toFixed(2)}, open: $${openingSnapshot.nav.toFixed(2)})`);
+          }
         } else {
-          // No opening snapshot (weekend, holiday, or first day) - fall back to position UPL
-          const positions = await userBroker.api.getPositions();
-          enhancedDayPnL = positions.reduce((sum, p) => sum + (p.upl || 0), 0);
-          console.log(`[API] /api/account: Day P&L (no opening snapshot, using position UPL): $${enhancedDayPnL.toFixed(2)}`);
+          // After hours/Pre-market: use yesterday's closing NAV
+          const closingSnapshot = await getPreviousClosingSnapshot(userId);
+          if (closingSnapshot && currentNav) {
+            enhancedDayPnL = currentNav - closingSnapshot.nav;
+            console.log(`[API] /api/account: Day P&L (after hours): $${enhancedDayPnL.toFixed(2)} (current: $${currentNav.toFixed(2)}, prevClose: $${closingSnapshot.nav.toFixed(2)} from ${closingSnapshot.date})`);
+          }
         }
       } catch (navErr) {
         console.warn('[API] /api/account: Could not calculate Day P&L:', navErr);

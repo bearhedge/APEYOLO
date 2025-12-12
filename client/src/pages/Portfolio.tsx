@@ -88,10 +88,10 @@ const formatGreek = (value: any): string => {
   return num.toFixed(2);
 };
 
-// Helper to format days with decimal
+// Helper to format days with decimal (2 decimal places for granularity)
 const formatDays = (value: any): string => {
   if (value === null || value === undefined) return '-';
-  return `${toNum(value).toFixed(1)} days`;
+  return `${toNum(value).toFixed(2)} days`;
 };
 
 // Standard normal CDF approximation (Abramowitz and Stegun)
@@ -325,20 +325,30 @@ const parseStrikeFromSymbol = (symbol: string): number => {
   return parseInt(match[6]) / 1000;
 };
 
-// Calculate days to expiry from option symbol
+// Calculate days to expiry from option symbol (granular, hours-based)
+// Expiration is 4 PM ET (Eastern Time) on expiration day
 const calculateDTE = (symbol: string): number => {
   const match = symbol.match(/^([A-Z]+)\s+(\d{2})(\d{2})(\d{2})([PC])(\d+)$/);
-  if (!match) return 0;
+  if (!match) return -1; // Return -1 to indicate invalid symbol
 
   const [, , yy, mm, dd] = match;
-  const now = new Date();
   const expYear = 2000 + parseInt(yy);
   const expMonth = parseInt(mm) - 1;
   const expDay = parseInt(dd);
-  const expDate = new Date(expYear, expMonth, expDay, 16, 0, 0);
 
+  // Create expiration date at 4 PM ET (16:00 Eastern Time)
+  // ET is UTC-5 (EST) or UTC-4 (EDT), so 4 PM ET = 21:00 or 20:00 UTC
+  // Use a simple approach: create date in UTC at 21:00 (assuming EST, close enough)
+  const expDateUTC = new Date(Date.UTC(expYear, expMonth, expDay, 21, 0, 0));
+
+  // Get current time
+  const now = new Date();
+
+  // Calculate difference in days (with decimal precision for hours)
   const msPerDay = 24 * 60 * 60 * 1000;
-  return Math.max(0, (expDate.getTime() - now.getTime()) / msPerDay);
+  const diffMs = expDateUTC.getTime() - now.getTime();
+
+  return Math.max(0, diffMs / msPerDay);
 };
 
 // Paper trade type for max loss calculations
@@ -553,13 +563,10 @@ export function Portfolio() {
       header: 'DTE',
       accessor: (row: Position) => {
         const dte = calculateDTE(row.symbol || '');
-        // Show 0.0 for same-day expiration, "-" only if not a valid option symbol
-        if (dte === 0) {
-          // Check if symbol is a valid option format
-          const isOption = /^[A-Z]+\s+\d{6}[PC]\d+$/.test(row.symbol || '');
-          return isOption ? '0.0' : '-';
-        }
-        return dte.toFixed(1);
+        // -1 indicates invalid symbol (not an option)
+        if (dte < 0) return '-';
+        // Show 2 decimal places for granular hours-based display
+        return dte.toFixed(2);
       },
       className: 'tabular-nums text-silver'
     },
@@ -768,17 +775,13 @@ export function Portfolio() {
         <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-semibold">Open Positions</h3>
-            <span className="text-xs text-silver">* Black-Scholes estimates</span>
           </div>
           {positions && positions.length > 0 ? (
-            <>
-              <DataTable
-                data={positions}
-                columns={columns}
-                testId="table-portfolio-positions"
-              />
-              <p className="text-xs text-silver mt-3">Net Delta: Sum of position deltas. Short puts = +delta (benefit when stock rises). Short calls = -delta.</p>
-            </>
+            <DataTable
+              data={positions}
+              columns={columns}
+              testId="table-portfolio-positions"
+            />
           ) : (
             <div className="text-center py-12">
               <p className="text-silver">No open positions</p>

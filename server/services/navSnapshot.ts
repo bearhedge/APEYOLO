@@ -140,21 +140,58 @@ export async function captureNavSnapshot(snapshotType: SnapshotType = 'closing')
 }
 
 /**
- * Get today's opening NAV snapshot (for intraday Day P&L calculation)
+ * Check if current time is within US market hours (9:30 AM - 4:00 PM ET)
  */
-export async function getTodayOpeningSnapshot(): Promise<{ date: string; nav: number } | null> {
+export function isMarketHours(): boolean {
+  const now = new Date();
+  const etFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric',
+    minute: 'numeric',
+    hour12: false,
+  });
+  const etTime = etFormatter.format(now);
+  const [hours, minutes] = etTime.split(':').map(Number);
+  const totalMinutes = hours * 60 + minutes;
+
+  // Market hours: 9:30 AM (570 min) to 4:00 PM (960 min) ET
+  const marketOpen = 9 * 60 + 30;  // 9:30 AM = 570 minutes
+  const marketClose = 16 * 60;      // 4:00 PM = 960 minutes
+
+  // Also check if it's a weekday (Mon-Fri)
+  const etDayFormatter = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    weekday: 'short',
+  });
+  const dayOfWeek = etDayFormatter.format(now);
+  const isWeekday = !['Sat', 'Sun'].includes(dayOfWeek);
+
+  return isWeekday && totalMinutes >= marketOpen && totalMinutes < marketClose;
+}
+
+/**
+ * Get today's opening NAV snapshot (for intraday Day P&L calculation)
+ * @param userId - Optional user ID to filter by
+ */
+export async function getTodayOpeningSnapshot(userId?: string): Promise<{ date: string; nav: number } | null> {
   if (!db) return null;
 
   try {
     const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 
+    const conditions = [
+      eq(navSnapshots.date, today),
+      eq(navSnapshots.snapshotType, 'opening')
+    ];
+
+    if (userId) {
+      conditions.push(eq(navSnapshots.userId, userId));
+    }
+
     const [snapshot] = await db
       .select()
       .from(navSnapshots)
-      .where(and(
-        eq(navSnapshots.date, today),
-        eq(navSnapshots.snapshotType, 'opening')
-      ))
+      .where(and(...conditions))
       .limit(1);
 
     if (!snapshot) return null;
@@ -170,24 +207,68 @@ export async function getTodayOpeningSnapshot(): Promise<{ date: string; nav: nu
 }
 
 /**
- * Get the most recent closing NAV snapshot (for after-hours Day P&L)
- * Returns yesterday's closing NAV, or most recent available
+ * Get today's closing NAV snapshot (for after-hours Day P&L calculation)
+ * @param userId - Optional user ID to filter by
  */
-export async function getPreviousClosingSnapshot(): Promise<{ date: string; nav: number } | null> {
+export async function getTodayClosingSnapshot(userId?: string): Promise<{ date: string; nav: number } | null> {
   if (!db) return null;
 
   try {
     const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
 
-    // Get the most recent closing snapshot that's NOT today
+    const conditions = [
+      eq(navSnapshots.date, today),
+      eq(navSnapshots.snapshotType, 'closing')
+    ];
+
+    if (userId) {
+      conditions.push(eq(navSnapshots.userId, userId));
+    }
+
+    const [snapshot] = await db
+      .select()
+      .from(navSnapshots)
+      .where(and(...conditions))
+      .limit(1);
+
+    if (!snapshot) return null;
+
+    return {
+      date: snapshot.date,
+      nav: parseFloat(snapshot.nav as any) || 0,
+    };
+  } catch (error) {
+    console.error('[NavSnapshot] Error getting closing snapshot:', error);
+    return null;
+  }
+}
+
+/**
+ * Get the most recent closing NAV snapshot (for after-hours Day P&L)
+ * Returns yesterday's closing NAV, or most recent available
+ * @param userId - Optional user ID to filter by
+ */
+export async function getPreviousClosingSnapshot(userId?: string): Promise<{ date: string; nav: number } | null> {
+  if (!db) return null;
+
+  try {
+    const today = new Date().toLocaleDateString('en-CA', { timeZone: 'America/New_York' });
+
+    // Build conditions
+    const conditions = [eq(navSnapshots.snapshotType, 'closing')];
+    if (userId) {
+      conditions.push(eq(navSnapshots.userId, userId));
+    }
+
+    // Get the most recent closing snapshots
     const closingSnapshots = await db
       .select()
       .from(navSnapshots)
-      .where(eq(navSnapshots.snapshotType, 'closing'))
+      .where(and(...conditions))
       .orderBy(desc(navSnapshots.date))
       .limit(2);
 
-    // Find the first one that's not today
+    // Find the first one that's not today (previous day's closing)
     const previousSnapshot = closingSnapshots.find(s => s.date !== today) || closingSnapshots[0];
 
     if (!previousSnapshot) return null;
