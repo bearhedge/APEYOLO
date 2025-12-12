@@ -494,9 +494,9 @@ export function Portfolio() {
       }
       totalMaxLoss += positionMaxLoss;
 
-      // Implied notional: qty * strike * 100
+      // Implied notional: qty * strike * 100 * USD_TO_HKD (HKD)
       const strike = parseStrikeFromSymbol(p.symbol || '');
-      totalNotional += qty * strike * 100;
+      totalNotional += qty * strike * 100 * USD_TO_HKD;
 
       // Weighted DTE
       const dte = calculateDTE(p.symbol || '');
@@ -700,7 +700,7 @@ export function Portfolio() {
             testId="margin-used-row3"
           />
           <StatCard
-            label="Implied Notional"
+            label="Implied Notional (HKD)"
             value={positionMetrics.impliedNotional > 0 ? formatCurrency(positionMetrics.impliedNotional) : '--'}
             icon={<Activity className="w-5 h-5 text-cyan-500" />}
             testId="implied-notional"

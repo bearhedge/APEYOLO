@@ -610,13 +610,13 @@ export function TrackRecord() {
               KPIs
             </TabsTrigger>
             <TabsTrigger value="daily-balance" className="data-[state=active]:bg-white data-[state=active]:text-black">
-              Daily NAV
+              NAV
             </TabsTrigger>
             <TabsTrigger value="cashflows" className="data-[state=active]:bg-white data-[state=active]:text-black">
               Cashflows
             </TabsTrigger>
             <TabsTrigger value="history" className="data-[state=active]:bg-white data-[state=active]:text-black">
-              All Trades
+              Trades
             </TabsTrigger>
           </TabsList>
 
@@ -685,10 +685,10 @@ export function TrackRecord() {
             </div>
           </TabsContent>
 
-          {/* Daily NAV Tab */}
+          {/* NAV Tab */}
           <TabsContent value="daily-balance">
             <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
-              <h3 className="text-lg font-semibold mb-6">Daily NAV</h3>
+              <h3 className="text-lg font-semibold mb-6">NAV</h3>
 
               {/* Summary Cards */}
               <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
@@ -902,11 +902,11 @@ export function TrackRecord() {
             </div>
           </TabsContent>
 
-          {/* All Trades Tab */}
+          {/* Trades Tab */}
           <TabsContent value="history">
             <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="text-lg font-semibold">All Trades</h3>
+                <h3 className="text-lg font-semibold">Trades</h3>
                 <div className="flex items-center gap-4 text-sm text-silver">
                   <span>Realized (HKD): <span className={totalRealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}>{formatHKD(totalRealizedPnl, true)}</span></span>
                   <span>Unrealized (HKD): <span className={totalUnrealizedPnl >= 0 ? 'text-green-400' : 'text-red-400'}>{formatHKD(totalUnrealizedPnl, true)}</span></span>
