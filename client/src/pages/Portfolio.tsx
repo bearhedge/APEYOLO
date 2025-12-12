@@ -523,8 +523,7 @@ export function Portfolio() {
       header: 'P/L (HKD)',
       accessor: (row: Position) => {
         const upl = toNum(row.upl);
-        const hkd = upl * USD_TO_HKD;
-        const isProfit = hkd >= 0;
+        const isProfit = upl >= 0;
         return (
           <span className={isProfit ? 'text-green-400 font-medium' : 'text-red-400 font-medium'}>
             {isProfit ? '+' : ''}{formatHKD(upl)}
