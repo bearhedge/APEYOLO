@@ -1134,7 +1134,9 @@ class IbkrClient {
             upl: getValue(p?.unrealizedPnl),
             iv: getValue(p?.impVol) * 100,  // Convert to percentage
             delta: getValue(p?.delta),
+            gamma: getValue(p?.gamma),
             theta: getValue(p?.theta),
+            vega: getValue(p?.vega),
             margin: getValue(p?.margin),
             openedAt: new Date().toISOString(),
             status: 'OPEN' as const,

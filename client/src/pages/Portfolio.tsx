@@ -46,10 +46,14 @@ const formatCurrency = (value: any, includeSign = false): string => {
   return formatted;
 };
 
-// Helper to format HKD values (data is already in HKD, no conversion needed)
-const formatHKD = (value: any, includeSign = false): string => {
-  const hkd = toNum(value);
-  if (value === null || value === undefined) return '-';
+// USD to HKD conversion rate
+const USD_TO_HKD = 7.8;
+
+// Helper to format USD values converted to HKD
+const formatHKD = (usdValue: any, includeSign = false): string => {
+  const usd = toNum(usdValue);
+  if (usdValue === null || usdValue === undefined) return '-';
+  const hkd = usd * USD_TO_HKD;
   const formatted = `$${Math.abs(hkd).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   if (includeSign) {
     return hkd >= 0 ? `+${formatted}` : `-${formatted.substring(1)}`;
@@ -396,13 +400,26 @@ export function Portfolio() {
     queries: underlyingSymbols.map(symbol => ({
       queryKey: ['/api/broker/test-market', symbol],
       queryFn: async () => {
-        const res = await fetch(`/api/broker/test-market/${symbol}`, { credentials: 'include' });
-        if (!res.ok) return null;
-        const data = await res.json();
-        return { symbol, price: data?.data?.price || 0 };
+        try {
+          const res = await fetch(`/api/broker/test-market/${symbol}`, { credentials: 'include' });
+          if (!res.ok) {
+            console.warn(`[Portfolio] Failed to fetch price for ${symbol}: HTTP ${res.status}`);
+            return { symbol, price: 0 };
+          }
+          const data = await res.json();
+          const price = data?.data?.price || 0;
+          if (price > 0) {
+            console.log(`[Portfolio] Got ${symbol} price: $${price}`);
+          }
+          return { symbol, price };
+        } catch (err) {
+          console.error(`[Portfolio] Error fetching price for ${symbol}:`, err);
+          return { symbol, price: 0 };
+        }
       },
       refetchInterval: 10000, // Refresh every 10s
       staleTime: 5000,
+      retry: 2, // Retry twice on failure
     })),
   });
 
@@ -533,6 +550,14 @@ export function Portfolio() {
       className: 'tabular-nums'
     },
     {
+      header: 'DTE',
+      accessor: (row: Position) => {
+        const dte = calculateDTE(row.symbol || '');
+        return dte > 0 ? dte.toFixed(1) : '-';
+      },
+      className: 'tabular-nums text-silver'
+    },
+    {
       header: 'Delta',
       accessor: (row: Position) => {
         // Use per-contract delta from positionMetrics (not position-level)
@@ -554,28 +579,47 @@ export function Portfolio() {
     {
       header: 'Gamma',
       accessor: (row: Position) => {
+        // Use calculated Greeks from positionMetrics (Black-Scholes)
         const greeks = positionMetrics.positionGreeks.get(row.id);
-        return greeks ? formatGreek(greeks.gammaPerContract) : '-';
+        if (greeks) return formatGreek(greeks.gammaPerContract);
+        // Fallback to IBKR gamma if available
+        const ibkrGamma = toNum(row.gamma);
+        if (ibkrGamma !== 0) return formatGreek(ibkrGamma);
+        return '-';
       },
       className: 'tabular-nums text-silver'
     },
     {
       header: 'Theta',
       accessor: (row: Position) => {
+        // Use calculated Greeks from positionMetrics (Black-Scholes)
         const greeks = positionMetrics.positionGreeks.get(row.id);
-        if (!greeks) return '-';
-        // Format theta as currency (daily $ value per contract)
-        const theta = greeks.thetaPerContract;
-        const formatted = `$${Math.abs(theta).toFixed(2)}`;
-        return theta >= 0 ? `+${formatted}` : `-${formatted.substring(1)}`;
+        if (greeks) {
+          // Format theta as currency (daily $ value per contract)
+          const theta = greeks.thetaPerContract;
+          const formatted = `$${Math.abs(theta).toFixed(2)}`;
+          return theta >= 0 ? `+${formatted}` : `-${formatted.substring(1)}`;
+        }
+        // Fallback to IBKR theta if available
+        const ibkrTheta = toNum(row.theta);
+        if (ibkrTheta !== 0) {
+          const formatted = `$${Math.abs(ibkrTheta).toFixed(2)}`;
+          return ibkrTheta >= 0 ? `+${formatted}` : `-${formatted.substring(1)}`;
+        }
+        return '-';
       },
       className: 'tabular-nums text-silver'
     },
     {
       header: 'Vega',
       accessor: (row: Position) => {
+        // Use calculated Greeks from positionMetrics (Black-Scholes)
         const greeks = positionMetrics.positionGreeks.get(row.id);
-        return greeks ? formatGreek(greeks.vegaPerContract) : '-';
+        if (greeks) return formatGreek(greeks.vegaPerContract);
+        // Fallback to IBKR vega if available
+        const ibkrVega = toNum(row.vega);
+        if (ibkrVega !== 0) return formatGreek(ibkrVega);
+        return '-';
       },
       className: 'tabular-nums text-silver'
     },
@@ -639,8 +683,8 @@ export function Portfolio() {
             testId="settled-cash"
           />
           <StatCard
-            label="Day P&L (HKD)"
-            value={accountError ? '--' : accountLoading ? 'Loading...' : formatCurrency(account?.dayPnL, true)}
+            label="Day P&L"
+            value={accountError ? '--' : accountLoading ? 'Loading...' : formatHKD(account?.dayPnL, true)}
             icon={<ArrowUpDown className={`w-5 h-5 ${(account?.dayPnL ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}`} />}
             testId="day-pnl"
           />
@@ -683,7 +727,7 @@ export function Portfolio() {
         {/* Account Summary Cards - Row 3: Position Risk Metrics */}
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           <StatCard
-            label="Max Loss (HKD)"
+            label="Max Loss"
             value={positionMetrics.maxLoss > 0 ? formatHKD(positionMetrics.maxLoss) : '--'}
             icon={<AlertTriangle className="w-5 h-5 text-red-500" />}
             testId="max-loss"
