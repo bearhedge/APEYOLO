@@ -2,12 +2,12 @@ import { Link, useLocation } from 'wouter';
 import { Bot, Briefcase, BarChart2, List, Settings, Zap, Trophy, Coins } from 'lucide-react';
 
 const navItems = [
+  { path: '/defi', label: 'DeFi', icon: Coins },         // Mandate + attestations first
   { path: '/agent', label: 'Agent', icon: Bot },
   { path: '/jobs', label: 'Jobs', icon: List },
   { path: '/engine', label: 'Engine', icon: Zap },
   { path: '/portfolio', label: 'Portfolio', icon: Briefcase },
   { path: '/track-record', label: 'Track', icon: Trophy },
-  { path: '/defi', label: 'DeFi', icon: Coins },
   { path: '/data', label: 'Data', icon: BarChart2 },
   { path: '/settings', label: 'Settings', icon: Settings },
 ];

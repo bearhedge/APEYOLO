@@ -2,14 +2,15 @@
  * DeFi Page
  *
  * On-chain records of trading track records on Solana.
- * Simplified design with 3 sections: Create Record, Records Table, Info Box
+ * Sections: Trading Mandate, Create Record, Records Table, Info Box
  */
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useWallet } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { LeftNav } from '@/components/LeftNav';
 import { DataTable } from '@/components/DataTable';
+import { MandateCard } from '@/components/MandateCard';
 import {
   ShieldCheck,
   Calendar,
@@ -20,8 +21,12 @@ import {
   Zap,
   Info,
   Lock,
+  Shield,
+  Plus,
+  AlertCircle,
 } from 'lucide-react';
 import type { AttestationData, AttestationPeriod, OnChainAttestation } from '@shared/types/defi';
+import type { Mandate, Violation, CreateMandateRequest } from '@shared/types/mandate';
 import { useWalletContext } from '@/components/WalletProvider';
 import {
   getExplorerUrl,
@@ -40,15 +45,96 @@ interface PeriodOption {
   dateRange?: string;
 }
 
+// Default mandate values for new creation
+const DEFAULT_MANDATE: CreateMandateRequest = {
+  allowedSymbols: ['SPY', 'SPX'],
+  strategyType: 'SELL',
+  minDelta: 0.20,
+  maxDelta: 0.35,
+  maxDailyLossPercent: 0.02, // 2%
+  noOvernightPositions: true,
+  exitDeadline: '15:55',
+  tradingWindowStart: '12:00',
+  tradingWindowEnd: '14:00',
+};
+
 export function DeFi() {
   const { connected } = useWallet();
   const { attestations, loading: attestationsLoading, cluster } = useWalletContext();
 
-  // Local state
+  // Mandate state
+  const [mandate, setMandate] = useState<Mandate | null>(null);
+  const [violations, setViolations] = useState<Violation[]>([]);
+  const [violationCount, setViolationCount] = useState(0);
+  const [monthlyViolations, setMonthlyViolations] = useState(0);
+  const [mandateLoading, setMandateLoading] = useState(true);
+  const [showCreateMandate, setShowCreateMandate] = useState(false);
+  const [createMandateLoading, setCreateMandateLoading] = useState(false);
+  const [createMandateError, setCreateMandateError] = useState<string | null>(null);
+  const [confirmText, setConfirmText] = useState('');
+
+  // Local state for attestation
   const [selectedPeriod, setSelectedPeriod] = useState<AttestationPeriod>('last_week');
   const [showPeriodDropdown, setShowPeriodDropdown] = useState(false);
   const [previewData, setPreviewData] = useState<AttestationData | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
+
+  // Fetch mandate data on mount
+  useEffect(() => {
+    fetchMandate();
+  }, []);
+
+  const fetchMandate = async () => {
+    setMandateLoading(true);
+    try {
+      const response = await fetch('/api/defi/mandate', {
+        credentials: 'include',
+      });
+      const result = await response.json();
+      if (result.success) {
+        setMandate(result.mandate);
+        setViolations(result.violations || []);
+        setViolationCount(result.violationCount || 0);
+        setMonthlyViolations(result.monthlyViolations || 0);
+      }
+    } catch (error) {
+      console.error('Error fetching mandate:', error);
+    } finally {
+      setMandateLoading(false);
+    }
+  };
+
+  const handleCreateMandate = async () => {
+    if (confirmText !== 'I UNDERSTAND') {
+      setCreateMandateError('Please type "I UNDERSTAND" to confirm');
+      return;
+    }
+
+    setCreateMandateLoading(true);
+    setCreateMandateError(null);
+
+    try {
+      const response = await fetch('/api/defi/mandate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify(DEFAULT_MANDATE),
+      });
+
+      const result = await response.json();
+      if (result.success) {
+        setMandate(result.mandate);
+        setShowCreateMandate(false);
+        setConfirmText('');
+      } else {
+        setCreateMandateError(result.error || 'Failed to create mandate');
+      }
+    } catch (error: any) {
+      setCreateMandateError(error.message || 'Failed to create mandate');
+    } finally {
+      setCreateMandateLoading(false);
+    }
+  };
 
   // Get period options with date ranges
   const periodOptions = useMemo((): PeriodOption[] => {
@@ -171,10 +257,148 @@ export function DeFi() {
         <div className="mb-6">
           <h1 className="text-2xl font-bold tracking-wide">DEFI</h1>
           <p className="text-silver text-sm mt-1">
-            {connected
-              ? 'Create on-chain records of your trading track record'
-              : 'Connect wallet to create on-chain records of your trading track record'}
+            Trading mandates and on-chain attestations
           </p>
+        </div>
+
+        {/* Section 0: Trading Mandate */}
+        <div className="mb-6">
+          {mandateLoading ? (
+            <div className="bg-charcoal rounded-2xl p-12 border border-white/10 flex items-center justify-center">
+              <Loader2 className="w-6 h-6 animate-spin text-silver" />
+            </div>
+          ) : mandate ? (
+            <MandateCard
+              mandate={mandate}
+              violations={violations}
+              violationCount={violationCount}
+              monthlyViolations={monthlyViolations}
+              cluster={cluster}
+            />
+          ) : showCreateMandate ? (
+            /* Create Mandate Form */
+            <div className="bg-charcoal rounded-2xl border border-white/10 overflow-hidden">
+              <div className="border-b border-white/10 p-6">
+                <div className="flex items-center gap-3 mb-2">
+                  <Shield className="w-6 h-6 text-electric" />
+                  <h2 className="text-lg font-semibold">Create Trading Mandate</h2>
+                </div>
+                <p className="text-silver text-sm">
+                  Establish binding trading rules that cannot be modified once created.
+                </p>
+              </div>
+
+              <div className="p-6 space-y-6">
+                {/* Preview of Rules */}
+                <div className="bg-black/50 rounded-xl p-5 border border-white/10">
+                  <h3 className="text-sm font-medium text-silver mb-4 uppercase tracking-wide">Mandate Rules</h3>
+                  <div className="space-y-3 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-silver">Allowed Symbols</span>
+                      <span className="font-medium">SPY, SPX</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-silver">Strategy Type</span>
+                      <span className="font-medium">SELL (Credit Only)</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-silver">Delta Range</span>
+                      <span className="font-medium">0.20 - 0.35</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-silver">Max Daily Loss</span>
+                      <span className="font-medium">2% of NAV</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-silver">Overnight Positions</span>
+                      <span className="font-medium">Not Allowed (Exit by 3:55 PM ET)</span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-silver">Trading Window</span>
+                      <span className="font-medium">12:00 PM - 2:00 PM ET (Guideline)</span>
+                    </div>
+                  </div>
+                </div>
+
+                {/* Warning */}
+                <div className="flex items-start gap-3 p-4 bg-amber-500/10 border border-amber-500/30 rounded-lg">
+                  <AlertCircle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+                  <div>
+                    <p className="text-amber-400 font-medium text-sm mb-1">
+                      This mandate is permanent and cannot be modified
+                    </p>
+                    <p className="text-amber-400/80 text-xs">
+                      Once created, these rules will be enforced on all trades. To change rules, you must deactivate this mandate and create a new one.
+                    </p>
+                  </div>
+                </div>
+
+                {/* Confirmation Input */}
+                <div>
+                  <label className="text-silver text-sm mb-2 block">
+                    Type <span className="font-mono bg-white/10 px-1.5 py-0.5 rounded text-white">I UNDERSTAND</span> to confirm
+                  </label>
+                  <input
+                    type="text"
+                    value={confirmText}
+                    onChange={(e) => setConfirmText(e.target.value)}
+                    placeholder="I UNDERSTAND"
+                    className="w-full px-4 py-3 bg-black border border-white/20 rounded-lg focus:border-electric focus:outline-none transition-colors"
+                  />
+                  {createMandateError && (
+                    <p className="text-red-400 text-sm mt-2">{createMandateError}</p>
+                  )}
+                </div>
+
+                {/* Actions */}
+                <div className="flex items-center justify-between pt-2">
+                  <button
+                    onClick={() => {
+                      setShowCreateMandate(false);
+                      setConfirmText('');
+                      setCreateMandateError(null);
+                    }}
+                    className="px-4 py-2 text-silver hover:text-white transition-colors"
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    onClick={handleCreateMandate}
+                    disabled={createMandateLoading || confirmText !== 'I UNDERSTAND'}
+                    className="px-6 py-2 bg-electric text-black font-medium rounded-lg hover:bg-electric/90 disabled:bg-zinc-600 disabled:text-zinc-400 disabled:cursor-not-allowed flex items-center gap-2"
+                  >
+                    {createMandateLoading ? (
+                      <>
+                        <Loader2 className="w-4 h-4 animate-spin" />
+                        Creating...
+                      </>
+                    ) : (
+                      <>
+                        <Shield className="w-4 h-4" />
+                        Create Mandate
+                      </>
+                    )}
+                  </button>
+                </div>
+              </div>
+            </div>
+          ) : (
+            /* No Mandate - Show Create Button */
+            <div className="bg-charcoal rounded-2xl p-8 border border-white/10 text-center">
+              <Shield className="w-12 h-12 text-zinc-600 mx-auto mb-4" />
+              <h3 className="text-lg font-medium mb-2">No Trading Mandate</h3>
+              <p className="text-silver text-sm mb-6 max-w-md mx-auto">
+                Create a trading mandate to enforce disciplined trading rules. Mandates are permanent and recorded on-chain for transparency.
+              </p>
+              <button
+                onClick={() => setShowCreateMandate(true)}
+                className="px-6 py-2.5 bg-electric text-black font-medium rounded-lg hover:bg-electric/90 inline-flex items-center gap-2"
+              >
+                <Plus className="w-4 h-4" />
+                Create Mandate
+              </button>
+            </div>
+          )}
         </div>
 
         {/* Section 1: Create Record */}

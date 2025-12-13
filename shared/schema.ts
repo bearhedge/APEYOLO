@@ -543,6 +543,88 @@ export type InsertNavSnapshot = z.infer<typeof insertNavSnapshotSchema>;
 
 // ==================== END NAV SNAPSHOTS ====================
 
+// ==================== TRADING MANDATES ====================
+// Blockchain-enforced trading rules for self-discipline and investor transparency
+
+export const tradingMandates = pgTable("trading_mandates", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+
+  // Rules
+  allowedSymbols: jsonb("allowed_symbols").notNull(), // ["SPY", "SPX"]
+  strategyType: text("strategy_type").notNull(), // "SELL"
+  minDelta: decimal("min_delta", { precision: 4, scale: 2 }), // 0.20
+  maxDelta: decimal("max_delta", { precision: 4, scale: 2 }), // 0.35
+  maxDailyLossPercent: decimal("max_daily_loss_percent", { precision: 5, scale: 4 }), // 0.02 = 2%
+  noOvernightPositions: boolean("no_overnight_positions").notNull().default(true),
+  exitDeadline: text("exit_deadline"), // "15:55" (3:55 PM ET)
+  tradingWindowStart: text("trading_window_start"), // "12:00" (guideline only)
+  tradingWindowEnd: text("trading_window_end"), // "14:00" (guideline only)
+
+  // Metadata
+  isActive: boolean("is_active").notNull().default(true),
+  isLocked: boolean("is_locked").notNull().default(true), // Cannot modify once created
+
+  // On-chain commitment (Solana)
+  onChainHash: text("on_chain_hash"), // SHA256 hash of mandate rules
+  solanaSignature: text("solana_signature"), // Transaction signature
+  solanaSlot: bigint("solana_slot", { mode: "number" }), // Slot when committed
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  index("trading_mandates_user_id_idx").on(table.userId),
+  index("trading_mandates_active_idx").on(table.userId, table.isActive),
+]);
+
+export const mandateViolations = pgTable("mandate_violations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  mandateId: varchar("mandate_id").notNull().references(() => tradingMandates.id, { onDelete: "cascade" }),
+
+  // Violation details
+  violationType: text("violation_type").notNull(), // "symbol", "delta", "strategy", "overnight", "daily_loss"
+  attemptedValue: text("attempted_value"), // e.g., "ARM" or "0.45"
+  limitValue: text("limit_value"), // e.g., "SPY,SPX" or "0.35"
+  actionTaken: text("action_taken").notNull(), // "blocked"
+
+  // Context
+  tradeDetails: jsonb("trade_details"), // Full trade context at time of violation
+
+  // On-chain proof (Solana)
+  onChainHash: text("on_chain_hash"), // SHA256 hash of violation details
+  solanaSignature: text("solana_signature"), // Transaction signature
+  solanaSlot: bigint("solana_slot", { mode: "number" }), // Slot when recorded
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  index("mandate_violations_user_id_idx").on(table.userId),
+  index("mandate_violations_mandate_id_idx").on(table.mandateId),
+  index("mandate_violations_created_at_idx").on(table.createdAt),
+]);
+
+export const insertTradingMandateSchema = createInsertSchema(tradingMandates).omit({
+  id: true,
+  createdAt: true,
+  onChainHash: true,
+  solanaSignature: true,
+  solanaSlot: true,
+});
+
+export const insertMandateViolationSchema = createInsertSchema(mandateViolations).omit({
+  id: true,
+  createdAt: true,
+  onChainHash: true,
+  solanaSignature: true,
+  solanaSlot: true,
+});
+
+export type TradingMandate = typeof tradingMandates.$inferSelect;
+export type InsertTradingMandate = z.infer<typeof insertTradingMandateSchema>;
+export type MandateViolation = typeof mandateViolations.$inferSelect;
+export type InsertMandateViolation = z.infer<typeof insertMandateViolationSchema>;
+
+// ==================== END TRADING MANDATES ====================
+
 // Option chain types
 export type OptionData = {
   strike: number;

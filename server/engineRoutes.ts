@@ -14,6 +14,7 @@ import { z } from "zod";
 import { adaptTradingDecision } from "./engine/adapter";
 import { db } from "./db";
 import { paperTrades } from "../shared/schema";
+import { enforceMandate } from "./services/mandateService";
 import type { EngineAnalyzeResponse, TradeProposal, RiskProfile } from "../shared/types/engine";
 
 const router = Router();
@@ -559,8 +560,38 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
       });
     }
 
+    // ================================================
+    // MANDATE ENFORCEMENT - Hard block if violated
+    // ================================================
+    const userId = req.user!.id;
+
+    // Get average delta from trade legs for enforcement check
+    const avgDelta = tradeProposal.legs.reduce((sum, leg) => sum + Math.abs(leg.delta), 0) / tradeProposal.legs.length;
+
+    // Determine trade side (SELL for credit strategies)
+    const tradeSide: 'SELL' | 'BUY' = tradeProposal.legs[0]?.premium > 0 ? 'SELL' : 'BUY';
+
+    // Enforce mandate rules
+    const mandateCheck = await enforceMandate(userId, {
+      symbol: tradeProposal.symbol,
+      side: tradeSide,
+      delta: avgDelta,
+      contracts: tradeProposal.contracts,
+    });
+
+    if (!mandateCheck.allowed) {
+      console.log(`[Engine/execute] MANDATE VIOLATION: ${mandateCheck.reason}`);
+      return res.status(403).json({
+        error: 'Trade blocked by mandate',
+        reason: mandateCheck.reason,
+        violation: mandateCheck.violation,
+        mandateEnforced: true,
+      });
+    }
+    // ================================================
+
     // Multi-tenant: Get broker for the authenticated user
-    const broker = await getBrokerForUser(req.user!.id);
+    const broker = await getBrokerForUser(userId);
     const ibkrOrderIds: string[] = [];
 
     // Place BRACKET orders with IBKR for LIVE trading
@@ -752,6 +783,33 @@ router.post('/execute-trade', requireAuth, async (req, res) => {
         });
       }
     }
+
+    // ================================================
+    // MANDATE ENFORCEMENT - Hard block if violated
+    // ================================================
+    // Determine symbol and delta from decision
+    const symbol = decision.underlyingSymbol || 'SPY';
+    const putDelta = decision.strikes?.putStrike?.delta ? Math.abs(decision.strikes.putStrike.delta) : 0;
+    const callDelta = decision.strikes?.callStrike?.delta ? Math.abs(decision.strikes.callStrike.delta) : 0;
+    const avgDelta = (putDelta + callDelta) / (putDelta && callDelta ? 2 : 1);
+
+    const mandateCheck = await enforceMandate(req.user!.id, {
+      symbol,
+      side: 'SELL', // This endpoint is for selling options (credit strategies)
+      delta: avgDelta,
+      contracts: decision.positionSize?.contracts || 0,
+    });
+
+    if (!mandateCheck.allowed) {
+      console.log(`[Engine/execute-trade] MANDATE VIOLATION: ${mandateCheck.reason}`);
+      return res.status(403).json({
+        error: 'Trade blocked by mandate',
+        reason: mandateCheck.reason,
+        violation: mandateCheck.violation,
+        mandateEnforced: true,
+      });
+    }
+    // ================================================
 
     // Ensure IBKR is ready
     if (broker.status.provider === 'ibkr') {
