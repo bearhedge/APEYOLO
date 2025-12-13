@@ -480,34 +480,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const account = await userBroker.api.getAccount();
       console.log('[API] /api/account: Success, portfolioValue=', account?.portfolioValue, 'netLiq=', account?.netLiquidation);
 
-      // Calculate Day P&L based on market hours:
-      // - During market hours: Current NAV - Today's Opening NAV
-      // - After hours/Pre-market: Current NAV - Yesterday's Closing NAV
-      let dayPnL = 0;
+      // Calculate Day P&L: Latest NAV - Previous Closing NAV (after hours)
+      // or Latest NAV - Opening NAV (during market hours)
       const currentNav = account?.portfolioValue || 0;
       const userId = req.user!.id;
+      let dayPnL = 0;
 
       try {
-        if (isMarketHours()) {
-          const openingSnapshot = await getTodayOpeningSnapshot(userId);
-          if (openingSnapshot && currentNav) {
-            dayPnL = currentNav - openingSnapshot.nav;
-          }
-        } else {
-          const closingSnapshot = await getPreviousClosingSnapshot(userId);
-          if (closingSnapshot && currentNav) {
-            dayPnL = currentNav - closingSnapshot.nav;
-          }
+        const closingSnapshot = await getPreviousClosingSnapshot(userId);
+        if (closingSnapshot && currentNav > 0) {
+          dayPnL = currentNav - closingSnapshot.nav;
         }
       } catch (err) {
         console.error('[API] Day P&L error:', err);
       }
 
-
-      res.json({
-        ...account,
-        dayPnL, // Override with NAV-based calculation
-      });
+      // Build response with explicit dayPnL override
+      const response = { ...account, dayPnL };
+      res.json(response);
     } catch (error: any) {
       console.error('[API] /api/account: FAILED -', error?.message || error);
       const isGatewayError = error?.message?.includes('Gateway') || error?.message?.includes('authenticated');
