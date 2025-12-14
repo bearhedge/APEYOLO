@@ -4,7 +4,7 @@ import { getPositions } from '@/lib/api';
 import { DataTable } from '@/components/DataTable';
 import { LeftNav } from '@/components/LeftNav';
 import { StatCard } from '@/components/StatCard';
-import { DollarSign, TrendingUp, Shield, ArrowUpDown, Wallet, Banknote, BarChart3, Scale, Gauge, AlertTriangle, Calendar, Activity, Clock } from 'lucide-react';
+import { DollarSign, TrendingUp, Shield, ArrowUpDown, Wallet, Banknote, BarChart3, Scale, Gauge, AlertTriangle, Calendar, Activity, Clock, Percent } from 'lucide-react';
 import type { Position } from '@shared/types';
 
 // Universal type coercion helper - handles strings, nulls, objects from IBKR
@@ -616,10 +616,9 @@ export function Portfolio() {
     {
       header: 'Delta*',
       accessor: (row: Position) => {
-        // Stocks have delta of 1 (or -1 for short)
+        // Stocks have delta of 1 per share (or -1 for short) - show per-share delta, not total
         if (row.assetType === 'stock') {
-          const delta = row.side === 'SELL' ? -1 : 1;
-          return formatDelta(delta * toNum(row.qty));
+          return row.side === 'SELL' ? '-1.00' : '1.00';
         }
         // Use per-contract delta from positionMetrics (Black-Scholes estimate)
         const greeks = positionMetrics.positionGreeks.get(row.id);
@@ -806,16 +805,29 @@ export function Portfolio() {
             testId="excess-liquidity"
           />
           <StatCard
-            label="Implied Notional"
-            value={positionMetrics.impliedNotional > 0 ? formatHKD(positionMetrics.impliedNotional) : '--'}
-            icon={<Activity className="w-5 h-5 text-cyan-500" />}
-            testId="implied-notional"
+            label="Est. Daily Interest"
+            value={accountError ? '--' : accountLoading ? 'Loading...' : (() => {
+              // IBKR charges ~6.83% on USD margin (benchmark + 1.5% spread)
+              const marginLoan = Math.abs(Math.min(0, account?.totalCash ?? 0));
+              if (marginLoan === 0) return '--';
+              const annualRate = 0.0683; // ~6.83% for USD
+              const dailyInterest = (marginLoan * annualRate) / 365;
+              return formatCurrency(dailyInterest);
+            })()}
+            icon={<Percent className="w-5 h-5 text-orange-500" />}
+            testId="daily-interest"
           />
           <StatCard
-            label="Days to Expiry"
-            value={positions?.some(p => p.assetType === 'option') && positionMetrics.avgDTE > 0 ? formatDays(positionMetrics.avgDTE) : '--'}
+            label="Est. Monthly Interest"
+            value={accountError ? '--' : accountLoading ? 'Loading...' : (() => {
+              const marginLoan = Math.abs(Math.min(0, account?.totalCash ?? 0));
+              if (marginLoan === 0) return '--';
+              const annualRate = 0.0683;
+              const monthlyInterest = (marginLoan * annualRate) / 12;
+              return formatCurrency(monthlyInterest);
+            })()}
             icon={<Calendar className="w-5 h-5 text-amber-500" />}
-            testId="days-to-expiry"
+            testId="monthly-interest"
           />
           <StatCard
             label="Net Delta"
