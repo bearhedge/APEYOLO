@@ -46,6 +46,14 @@ const formatCurrency = (value: any, includeSign = false): string => {
   return formatted;
 };
 
+// Helper to format currency with sign always shown (for cash balances that can be negative)
+const formatCashBalance = (value: any): string => {
+  const num = toNum(value);
+  if (value === null || value === undefined) return '-';
+  const formatted = `$${Math.abs(num).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  return num >= 0 ? formatted : `-${formatted}`;
+};
+
 // USD to HKD conversion rate
 const USD_TO_HKD = 7.8;
 
@@ -730,16 +738,16 @@ export function Portfolio() {
             testId="buying-power"
           />
           <StatCard
-            label="Total Cash"
-            value={accountError ? '--' : accountLoading ? 'Loading...' : formatCurrency(account?.totalCash)}
-            icon={<Wallet className="w-5 h-5 text-emerald-500" />}
+            label="Cash Balance"
+            value={accountError ? '--' : accountLoading ? 'Loading...' : formatCashBalance(account?.totalCash)}
+            icon={<Wallet className={`w-5 h-5 ${(account?.totalCash ?? 0) >= 0 ? 'text-emerald-500' : 'text-red-500'}`} />}
             testId="total-cash"
           />
           <StatCard
-            label="Settled Cash"
-            value={accountError ? '--' : accountLoading ? 'Loading...' : formatCurrency(account?.settledCash)}
-            icon={<Banknote className="w-5 h-5 text-teal-500" />}
-            testId="settled-cash"
+            label="Margin Loan"
+            value={accountError ? '--' : accountLoading ? 'Loading...' : (account?.totalCash ?? 0) < 0 ? formatCurrency(Math.abs(account?.totalCash ?? 0)) : '--'}
+            icon={<Banknote className="w-5 h-5 text-orange-500" />}
+            testId="margin-loan"
           />
           <StatCard
             label="Day P&L"
@@ -792,10 +800,10 @@ export function Portfolio() {
             testId="max-loss"
           />
           <StatCard
-            label="Margin Used"
-            value={accountError ? '--' : accountLoading ? 'Loading...' : formatCurrency(account?.marginUsed)}
-            icon={<Shield className="w-5 h-5 text-purple-500" />}
-            testId="margin-used-row3"
+            label="Excess Liquidity"
+            value={accountError ? '--' : accountLoading ? 'Loading...' : formatCurrency(account?.excessLiquidity)}
+            icon={<Shield className="w-5 h-5 text-green-500" />}
+            testId="excess-liquidity"
           />
           <StatCard
             label="Implied Notional"
