@@ -503,10 +503,7 @@ export function Portfolio() {
         const stockDelta = p.side === 'SELL' ? -qty : qty;
         netDelta += stockDelta;
         // No Greeks calculation needed for stocks
-
-        // Stock position value for notional (qty * current price)
-        const mark = toNum(p.mark);
-        totalNotional += qty * mark;
+        // Stocks do NOT contribute to Implied Notional (options-only concept)
       } else {
         // Options: calculate Greeks using Black-Scholes
         const greeks = calculateAllGreeks(p, price);
@@ -746,7 +743,7 @@ export function Portfolio() {
           />
           <StatCard
             label="Day P&L"
-            value={accountError ? '--' : accountLoading ? 'Loading...' : formatHKD(account?.dayPnL, true)}
+            value={accountError ? '--' : accountLoading ? 'Loading...' : formatCurrency(account?.dayPnL, true)}
             icon={<ArrowUpDown className={`w-5 h-5 ${(account?.dayPnL ?? 0) >= 0 ? 'text-green-500' : 'text-red-500'}`} />}
             testId="day-pnl"
           />
@@ -808,7 +805,7 @@ export function Portfolio() {
           />
           <StatCard
             label="Days to Expiry"
-            value={positions && positions.length > 0 ? formatDays(positionMetrics.avgDTE) : '--'}
+            value={positions?.some(p => p.assetType === 'option') && positionMetrics.avgDTE > 0 ? formatDays(positionMetrics.avgDTE) : '--'}
             icon={<Calendar className="w-5 h-5 text-amber-500" />}
             testId="days-to-expiry"
           />
