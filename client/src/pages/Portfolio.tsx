@@ -836,16 +836,24 @@ export function Portfolio() {
                 testId="daily-interest"
               />
               <StatCard
-                label="Monthly Interest (Est.)"
+                label="Interest Accrued (Est.)"
                 value={accountError ? '--' : accountLoading ? 'Loading...' : (() => {
                   const marginLoan = Math.abs(Math.min(0, account?.totalCash ?? 0));
                   if (marginLoan === 0) return '--';
-                  const annualRate = 0.065; // ~6.5% for HKD margin
-                  const monthlyInterest = (marginLoan * annualRate) / 12;
-                  return `~${formatCurrency(monthlyInterest)}`;
+                  // Find earliest stock position openedAt date
+                  const stockPositions = positions?.filter(p => p.assetType === 'stock') || [];
+                  if (stockPositions.length === 0) return '--';
+                  const earliestDate = stockPositions.reduce((earliest, p) => {
+                    const opened = new Date(p.openedAt);
+                    return opened < earliest ? opened : earliest;
+                  }, new Date());
+                  const daysHeld = Math.max(1, Math.floor((Date.now() - earliestDate.getTime()) / (1000 * 60 * 60 * 24)));
+                  const annualRate = 0.065;
+                  const accruedInterest = (marginLoan * annualRate * daysHeld) / 365;
+                  return `~${formatCurrency(accruedInterest)} (${daysHeld}d)`;
                 })()}
                 icon={<Calendar className="w-5 h-5 text-amber-500" />}
-                testId="monthly-interest"
+                testId="interest-accrued"
               />
             </>
           )}
