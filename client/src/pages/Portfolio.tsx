@@ -804,31 +804,51 @@ export function Portfolio() {
             icon={<Shield className="w-5 h-5 text-green-500" />}
             testId="excess-liquidity"
           />
-          <StatCard
-            label="Est. Daily Interest"
-            value={accountError ? '--' : accountLoading ? 'Loading...' : (() => {
-              // IBKR charges ~6.83% on USD margin (benchmark + 1.5% spread)
-              const marginLoan = Math.abs(Math.min(0, account?.totalCash ?? 0));
-              if (marginLoan === 0) return '--';
-              const annualRate = 0.0683; // ~6.83% for USD
-              const dailyInterest = (marginLoan * annualRate) / 365;
-              return formatCurrency(dailyInterest);
-            })()}
-            icon={<Percent className="w-5 h-5 text-orange-500" />}
-            testId="daily-interest"
-          />
-          <StatCard
-            label="Est. Monthly Interest"
-            value={accountError ? '--' : accountLoading ? 'Loading...' : (() => {
-              const marginLoan = Math.abs(Math.min(0, account?.totalCash ?? 0));
-              if (marginLoan === 0) return '--';
-              const annualRate = 0.0683;
-              const monthlyInterest = (marginLoan * annualRate) / 12;
-              return formatCurrency(monthlyInterest);
-            })()}
-            icon={<Calendar className="w-5 h-5 text-amber-500" />}
-            testId="monthly-interest"
-          />
+          {/* Show option metrics when options present, interest metrics when stocks only */}
+          {positions?.some(p => p.assetType === 'option') ? (
+            <>
+              <StatCard
+                label="Implied Notional"
+                value={positionMetrics.impliedNotional > 0 ? formatHKD(positionMetrics.impliedNotional) : '--'}
+                icon={<Activity className="w-5 h-5 text-cyan-500" />}
+                testId="implied-notional"
+              />
+              <StatCard
+                label="Days to Expiry"
+                value={positionMetrics.avgDTE > 0 ? formatDays(positionMetrics.avgDTE) : '--'}
+                icon={<Calendar className="w-5 h-5 text-amber-500" />}
+                testId="days-to-expiry"
+              />
+            </>
+          ) : (
+            <>
+              <StatCard
+                label="Daily Interest (Est.)"
+                value={accountError ? '--' : accountLoading ? 'Loading...' : (() => {
+                  // IBKR HKD rate ~6.5% (HIBOR + 1.5% spread), estimate only
+                  const marginLoan = Math.abs(Math.min(0, account?.totalCash ?? 0));
+                  if (marginLoan === 0) return '--';
+                  const annualRate = 0.065; // ~6.5% for HKD margin
+                  const dailyInterest = (marginLoan * annualRate) / 365;
+                  return `~${formatCurrency(dailyInterest)}`;
+                })()}
+                icon={<Percent className="w-5 h-5 text-orange-500" />}
+                testId="daily-interest"
+              />
+              <StatCard
+                label="Monthly Interest (Est.)"
+                value={accountError ? '--' : accountLoading ? 'Loading...' : (() => {
+                  const marginLoan = Math.abs(Math.min(0, account?.totalCash ?? 0));
+                  if (marginLoan === 0) return '--';
+                  const annualRate = 0.065; // ~6.5% for HKD margin
+                  const monthlyInterest = (marginLoan * annualRate) / 12;
+                  return `~${formatCurrency(monthlyInterest)}`;
+                })()}
+                icon={<Calendar className="w-5 h-5 text-amber-500" />}
+                testId="monthly-interest"
+              />
+            </>
+          )}
           <StatCard
             label="Net Delta"
             value={formatDelta(positionMetrics.netDelta)}
