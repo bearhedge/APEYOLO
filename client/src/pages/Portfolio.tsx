@@ -169,10 +169,15 @@ const calculateImpliedVolatility = (
   return sigma;
 };
 
-// Extract underlying symbol from option symbol
-// Input: "ARM   241212P00135000" -> Output: "ARM"
-const getUnderlyingSymbol = (optionSymbol: string): string | null => {
-  const match = optionSymbol.match(/^([A-Z]+)\s+/);
+// Extract underlying symbol from option symbol or stock
+// Input: "ARM   241212P00135000" -> Output: "ARM" (option)
+// Input: "ARM" -> Output: "ARM" (stock)
+const getUnderlyingSymbol = (symbol: string, assetType?: 'option' | 'stock'): string | null => {
+  // For stocks, the symbol itself is the underlying
+  if (assetType === 'stock') return symbol || null;
+
+  // For options, extract from the format "ARM   241212P00135000"
+  const match = symbol.match(/^([A-Z]+)\s+/);
   return match ? match[1] : null;
 };
 
@@ -362,8 +367,12 @@ interface PaperTrade {
 
 // Helper to parse and format IBKR option symbols
 // Input: "ARM   241212P00135000" -> Output: "ARM 12/12 $135 PUT"
-const formatOptionSymbol = (symbol: string): string => {
+// For stocks, just returns the symbol as-is
+const formatOptionSymbol = (symbol: string, assetType?: 'option' | 'stock'): string => {
   if (!symbol) return '-';
+
+  // Stocks: return symbol directly
+  if (assetType === 'stock') return symbol;
 
   // Match pattern: SYMBOL + whitespace + YYMMDD + P/C + strike (in cents)
   const match = symbol.match(/^([A-Z]+)\s+(\d{2})(\d{2})(\d{2})([PC])(\d+)$/);
@@ -394,12 +403,12 @@ export function Portfolio() {
     retry: 2, // Retry twice before giving up
   });
 
-  // Get unique underlying symbols from positions
+  // Get unique underlying symbols from positions (for fetching market data)
   const underlyingSymbols = useMemo(() => {
     if (!positions) return [];
     const symbols = new Set<string>();
     positions.forEach(p => {
-      const underlying = getUnderlyingSymbol(p.symbol || '');
+      const underlying = getUnderlyingSymbol(p.symbol || '', p.assetType);
       if (underlying) symbols.add(underlying);
     });
     return Array.from(symbols);
@@ -484,47 +493,61 @@ export function Portfolio() {
     }>();
 
     positions.forEach(p => {
-      const underlying = getUnderlyingSymbol(p.symbol || '');
+      const underlying = getUnderlyingSymbol(p.symbol || '', p.assetType);
       const price = underlying ? underlyingPrices[underlying] : 0;
-      const greeks = calculateAllGreeks(p, price);
-
-      if (greeks) {
-        netDelta += greeks.delta;
-        netGamma += greeks.gamma;
-        netTheta += greeks.theta;
-        netVega += greeks.vega;
-        positionGreeks.set(p.id, greeks);
-      }
-
-      // Match with paper trade for max loss, with dynamic fallback
-      let positionMaxLoss = 0;
-      if (paperTrades && underlying) {
-        const matchedTrade = paperTrades.find(pt =>
-          pt.symbol === underlying && pt.status === 'open'
-        );
-        if (matchedTrade) {
-          positionMaxLoss = toNum(matchedTrade.maxLoss);
-        }
-      }
-
-      // Fallback: calculate max loss from position data when no paper_trade exists
       const qty = Math.abs(toNum(p.qty));
-      const entryPremium = toNum(p.avg);
-      if (positionMaxLoss === 0 && p.side === 'SELL' && entryPremium > 0 && qty > 0) {
-        // For short options: max loss = 2x entry premium (stop at 100% loss of premium)
-        const stopLossMultiplier = 2;
-        positionMaxLoss = entryPremium * stopLossMultiplier * 100 * qty;
+
+      // Handle stocks vs options differently
+      if (p.assetType === 'stock') {
+        // Stocks: delta = qty (or -qty for short), no other Greeks
+        const stockDelta = p.side === 'SELL' ? -qty : qty;
+        netDelta += stockDelta;
+        // No Greeks calculation needed for stocks
+
+        // Stock position value for notional (qty * current price)
+        const mark = toNum(p.mark);
+        totalNotional += qty * mark;
+      } else {
+        // Options: calculate Greeks using Black-Scholes
+        const greeks = calculateAllGreeks(p, price);
+
+        if (greeks) {
+          netDelta += greeks.delta;
+          netGamma += greeks.gamma;
+          netTheta += greeks.theta;
+          netVega += greeks.vega;
+          positionGreeks.set(p.id, greeks);
+        }
+
+        // Match with paper trade for max loss, with dynamic fallback
+        let positionMaxLoss = 0;
+        if (paperTrades && underlying) {
+          const matchedTrade = paperTrades.find(pt =>
+            pt.symbol === underlying && pt.status === 'open'
+          );
+          if (matchedTrade) {
+            positionMaxLoss = toNum(matchedTrade.maxLoss);
+          }
+        }
+
+        // Fallback: calculate max loss from position data when no paper_trade exists
+        const entryPremium = toNum(p.avg);
+        if (positionMaxLoss === 0 && p.side === 'SELL' && entryPremium > 0 && qty > 0) {
+          // For short options: max loss = 2x entry premium (stop at 100% loss of premium)
+          const stopLossMultiplier = 2;
+          positionMaxLoss = entryPremium * stopLossMultiplier * 100 * qty;
+        }
+        totalMaxLoss += positionMaxLoss;
+
+        // Implied notional: qty * strike * 100
+        const strike = parseStrikeFromSymbol(p.symbol || '');
+        totalNotional += qty * strike * 100;
+
+        // Weighted DTE (only for options)
+        const dte = calculateDTE(p.symbol || '');
+        totalWeight += qty;
+        weightedDTE += dte * qty;
       }
-      totalMaxLoss += positionMaxLoss;
-
-      // Implied notional: qty * strike * 100
-      const strike = parseStrikeFromSymbol(p.symbol || '');
-      totalNotional += qty * strike * 100;
-
-      // Weighted DTE
-      const dte = calculateDTE(p.symbol || '');
-      totalWeight += qty;
-      weightedDTE += dte * qty;
     });
 
     return {
@@ -541,7 +564,20 @@ export function Portfolio() {
 
   // Positions table columns - all fields use accessor functions to avoid object rendering
   const columns = [
-    { header: 'Symbol', accessor: (row: Position) => formatOptionSymbol(row.symbol || ''), sortable: true },
+    {
+      header: 'Type',
+      accessor: (row: Position) => (
+        <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+          row.assetType === 'stock'
+            ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+            : 'bg-purple-500/20 text-purple-400 border border-purple-500/30'
+        }`}>
+          {row.assetType === 'stock' ? 'STK' : 'OPT'}
+        </span>
+      ),
+      className: 'w-16'
+    },
+    { header: 'Symbol', accessor: (row: Position) => formatOptionSymbol(row.symbol || '', row.assetType), sortable: true },
     { header: 'Side', accessor: (row: Position) => row.side === 'SELL' ? 'SHORT' : 'LONG', className: 'text-silver' },
     { header: 'Qty', accessor: (row: Position) => String(toNum(row.qty)), sortable: true, className: 'tabular-nums' },
     { header: 'Entry', accessor: (row: Position) => `$${toNum(row.avg).toFixed(2)}`, className: 'tabular-nums' },
@@ -562,6 +598,8 @@ export function Portfolio() {
     {
       header: 'DTE',
       accessor: (row: Position) => {
+        // Stocks don't have expiration
+        if (row.assetType === 'stock') return '-';
         const dte = calculateDTE(row.symbol || '');
         // -1 indicates invalid symbol (not an option)
         if (dte < 0) return '-';
@@ -573,6 +611,11 @@ export function Portfolio() {
     {
       header: 'Delta*',
       accessor: (row: Position) => {
+        // Stocks have delta of 1 (or -1 for short)
+        if (row.assetType === 'stock') {
+          const delta = row.side === 'SELL' ? -1 : 1;
+          return formatDelta(delta * toNum(row.qty));
+        }
         // Use per-contract delta from positionMetrics (Black-Scholes estimate)
         const greeks = positionMetrics.positionGreeks.get(row.id);
         if (greeks) return formatDelta(greeks.deltaPerContract);
@@ -582,7 +625,7 @@ export function Portfolio() {
         if (ibkrDelta !== 0) return formatDelta(ibkrDelta);
 
         // Otherwise estimate via Black-Scholes using actual underlying price
-        const underlying = getUnderlyingSymbol(row.symbol || '');
+        const underlying = getUnderlyingSymbol(row.symbol || '', row.assetType);
         const underlyingPrice = underlying ? underlyingPrices[underlying] : 0;
         const estimated = estimateDelta(row, underlyingPrice);
         return estimated !== null ? formatDelta(estimated) : '-';
@@ -592,6 +635,8 @@ export function Portfolio() {
     {
       header: 'Gamma*',
       accessor: (row: Position) => {
+        // Stocks don't have gamma
+        if (row.assetType === 'stock') return '-';
         // Use calculated Greeks from positionMetrics (Black-Scholes)
         const greeks = positionMetrics.positionGreeks.get(row.id);
         if (greeks) return formatGreek(greeks.gammaPerContract);
@@ -605,6 +650,8 @@ export function Portfolio() {
     {
       header: 'Theta*',
       accessor: (row: Position) => {
+        // Stocks don't have theta
+        if (row.assetType === 'stock') return '-';
         // Use calculated Greeks from positionMetrics (Black-Scholes)
         const greeks = positionMetrics.positionGreeks.get(row.id);
         if (greeks) {
@@ -626,6 +673,8 @@ export function Portfolio() {
     {
       header: 'Vega*',
       accessor: (row: Position) => {
+        // Stocks don't have vega
+        if (row.assetType === 'stock') return '-';
         // Use calculated Greeks from positionMetrics (Black-Scholes)
         const greeks = positionMetrics.positionGreeks.get(row.id);
         if (greeks) return formatGreek(greeks.vegaPerContract);

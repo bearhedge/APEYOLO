@@ -1102,19 +1102,23 @@ class IbkrClient {
       const items = (resp.data as any[]) || [];
 
       // Map IBKR position data to client Position type with proper numeric coercion
-      // Filter out closed positions (qty=0) and non-option positions
+      // Filter out closed positions (qty=0), include both options (OPT) and stocks (STK)
       const positions: Position[] = (items || [])
         .filter((p) => {
           const position = getValue(p?.position);
-          return p?.assetClass === "OPT" && Math.abs(position) > 0;
+          const assetClass = p?.assetClass;
+          // Include both options and stocks with non-zero positions
+          return (assetClass === "OPT" || assetClass === "STK") && Math.abs(position) > 0;
         })
         .map((p) => {
           const position = getValue(p?.position);
+          const isStock = p?.assetClass === "STK";
 
-          // Extract OCC symbol from contractDesc: "ARM    DEC2025 135 P [ARM   251212P00135000 100]"
-          // The OCC symbol is inside the brackets: "ARM   251212P00135000"
+          // Extract symbol - different handling for stocks vs options
           let symbol = String(p?.symbol || p?.localSymbol || "");
-          if (p?.contractDesc) {
+          if (!isStock && p?.contractDesc) {
+            // For options: Extract OCC symbol from contractDesc: "ARM    DEC2025 135 P [ARM   251212P00135000 100]"
+            // The OCC symbol is inside the brackets: "ARM   251212P00135000"
             const bracketMatch = p.contractDesc.match(/\[([A-Z]+\s+\d+[PC]\d+)\s+\d+\]/);
             if (bracketMatch) {
               symbol = bracketMatch[1];  // e.g., "ARM   251212P00135000"
@@ -1123,20 +1127,23 @@ class IbkrClient {
               symbol = p.contractDesc.split('[')[0].trim() || symbol;
             }
           }
+          // For stocks: just use the symbol directly (e.g., "ARM")
 
           return {
             id: String(p?.conid || randomUUID()),
             symbol,
+            assetType: isStock ? 'stock' as const : 'option' as const,
             side: position < 0 ? 'SELL' as const : 'BUY' as const,
             qty: Math.abs(position),
-            avg: getValue(p?.avgCost) / 100,  // IBKR returns cents, convert to dollars
+            avg: isStock ? getValue(p?.avgCost) : getValue(p?.avgCost) / 100,  // Stocks: dollars, Options: cents to dollars
             mark: getValue(p?.mktPrice || p?.marketPrice),
             upl: getValue(p?.unrealizedPnl),
-            iv: getValue(p?.impVol) * 100,  // Convert to percentage
-            delta: getValue(p?.delta),
-            gamma: getValue(p?.gamma),
-            theta: getValue(p?.theta),
-            vega: getValue(p?.vega),
+            // Stocks don't have Greeks - delta is 1 (stock moves 1:1 with itself), others are 0
+            iv: isStock ? 0 : getValue(p?.impVol) * 100,
+            delta: isStock ? 1 : getValue(p?.delta),
+            gamma: isStock ? 0 : getValue(p?.gamma),
+            theta: isStock ? 0 : getValue(p?.theta),
+            vega: isStock ? 0 : getValue(p?.vega),
             margin: getValue(p?.margin),
             openedAt: new Date().toISOString(),
             status: 'OPEN' as const,

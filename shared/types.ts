@@ -1,6 +1,7 @@
 export type Position = {
   id: string;
   symbol: string;
+  assetType: 'option' | 'stock';
   side: 'BUY' | 'SELL';
   qty: number;
   avg: number;
