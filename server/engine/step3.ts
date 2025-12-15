@@ -208,10 +208,10 @@ function getDeltaTargets(targetDelta: number): {
   };
 }
 
-// Default delta targets - strictly below 0.30
-const DEFAULT_TARGET_DELTA = 0.20;
-const PUT_DELTA_TARGET = { min: -0.25, max: -0.10, ideal: -0.20 };
-const CALL_DELTA_TARGET = { min: 0.10, max: 0.25, ideal: 0.20 };
+// Default delta targets - consistent with mandate (0.10-0.20)
+const DEFAULT_TARGET_DELTA = 0.15;
+const PUT_DELTA_TARGET = { min: -0.20, max: -0.10, ideal: -0.15 };
+const CALL_DELTA_TARGET = { min: 0.10, max: 0.20, ideal: 0.15 };
 
 // =============================================================================
 // Dynamic Contract Sizing (HKD Account)
