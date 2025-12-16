@@ -270,9 +270,6 @@ export function DeFi() {
           ) : mandate ? (
             <MandateCard
               mandate={mandate}
-              violations={violations}
-              violationCount={violationCount}
-              monthlyViolations={monthlyViolations}
               cluster={cluster}
             />
           ) : showCreateMandate ? (

@@ -5,15 +5,11 @@
  * Mandates are permanent once created - cannot be modified, only replaced.
  */
 
-import { ExternalLink, AlertTriangle, CheckCircle, Clock, Shield } from 'lucide-react';
-import type { Mandate, Violation } from '@shared/types/mandate';
+import { ExternalLink, Clock, Shield } from 'lucide-react';
+import type { Mandate } from '@shared/types/mandate';
 
 interface MandateCardProps {
   mandate: Mandate;
-  violations: Violation[];
-  violationCount: number;
-  monthlyViolations: number;
-  onViewViolations?: () => void;
   cluster?: 'devnet' | 'mainnet-beta';
 }
 
@@ -42,10 +38,6 @@ function getExplorerUrl(signature: string, cluster: 'devnet' | 'mainnet-beta' = 
 
 export function MandateCard({
   mandate,
-  violations,
-  violationCount,
-  monthlyViolations,
-  onViewViolations,
   cluster = 'devnet',
 }: MandateCardProps) {
   const isActive = mandate.isActive;
@@ -56,8 +48,8 @@ export function MandateCard({
       <div className="border-b border-white/10 p-8">
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
-            <Shield className="w-6 h-6 text-zinc-300" />
-            <h2 className="text-sm font-semibold tracking-[0.15em] uppercase text-zinc-300">
+            <Shield className="w-7 h-7 text-zinc-300" />
+            <h2 className="text-lg font-semibold tracking-[0.15em] uppercase text-zinc-300">
               Trading Mandate
             </h2>
           </div>
@@ -180,36 +172,6 @@ export function MandateCard({
             </p>
           </div>
         </section>
-      </div>
-
-      {/* Violations Section */}
-      <div className="border-t border-white/10 px-8 py-4">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            {violationCount === 0 ? (
-              <div className="flex items-center gap-2 text-green-400">
-                <CheckCircle className="w-4 h-4" />
-                <span className="text-sm font-medium">No violations</span>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 text-amber-400">
-                <AlertTriangle className="w-4 h-4" />
-                <span className="text-sm font-medium">
-                  {violationCount} violation{violationCount !== 1 ? 's' : ''} total
-                  {monthlyViolations > 0 && ` (${monthlyViolations} this month)`}
-                </span>
-              </div>
-            )}
-          </div>
-          {violationCount > 0 && onViewViolations && (
-            <button
-              onClick={onViewViolations}
-              className="text-sm text-electric hover:underline"
-            >
-              View History
-            </button>
-          )}
-        </div>
       </div>
 
       {/* Signature Section */}
