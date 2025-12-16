@@ -6,7 +6,8 @@
  * Checks: Trading hours, VIX levels, market trend, volatility regime
  */
 
-import { getVIXData, getMarketData } from '../services/marketDataService.js';
+import { getVIXData } from '../services/marketDataService.js';
+import { getBroker } from '../broker/index';
 import { pool } from '../db';
 import type { StepReasoning, StepMetric } from '../../shared/types/engineLog';
 
@@ -175,11 +176,12 @@ export async function analyzeMarketRegime(useRealData: boolean = true, symbol: s
     // 2. Database (last known close price for off-hours)
     console.log(`[Step1] Fetching ${symbol} price...`);
 
-    // Try 1: IBKR market data snapshot
+    // Try 1: IBKR market data snapshot (direct call, no cache)
     try {
       console.log(`[Step1] Trying IBKR market data for ${symbol}...`);
-      const marketData = await getMarketData(symbol);
-      if (marketData.price > 0) {
+      const broker = getBroker();
+      const marketData = await broker.api?.getMarketData(symbol);
+      if (marketData && marketData.price > 0) {
         spyPrice = marketData.price;
         spyChange = marketData.changePercent;
         console.log(`[Step1] ${symbol} from IBKR: $${spyPrice.toFixed(2)}`);
