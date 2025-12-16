@@ -169,8 +169,8 @@ export function SPYChart({
 
   // Refresh data periodically (every 30s for price, chart stays)
   useEffect(() => {
-    const refreshTimer = window.setInterval(fetchSPYData, 30000);
-    return () => window.clearInterval(refreshTimer);
+    const refreshTimer = setInterval(fetchSPYData, 30000);
+    return () => clearInterval(refreshTimer);
   }, [fetchSPYData]);
 
   // Handle range change

@@ -14,11 +14,12 @@ import type { EngineFlowState, ExecutePaperTradeResponse } from '../../../shared
 
 type RiskTier = 'conservative' | 'balanced' | 'aggressive';
 type StopMultiplier = 2 | 3 | 4;
-type TradingSymbol = 'SPY';
+type TradingSymbol = 'SPY' | 'ARM';
 
 // Symbol configuration for display
 const SYMBOL_CONFIG: Record<TradingSymbol, { name: string; label: string; expiration: string }> = {
   SPY: { name: 'SPY', label: 'S&P 500 ETF', expiration: 'Daily' },
+  ARM: { name: 'ARM', label: 'ARM Holdings', expiration: 'Weekly' },
 };
 
 // Execution result state for UI display
@@ -113,7 +114,7 @@ export function Engine() {
           toast.success('Engine analysis complete - Trade opportunity found!', { id: 'engine-execute' });
 
           // If in auto mode and guard rails passed, execute automatically
-          if (executionMode === 'auto' && result.guardRails?.passed && result.tradeProposal) {
+          if (executionMode === 'auto' && result.guardRails?.passed) {
             toast.loading('Auto-executing trade...', { id: 'auto-execute' });
             await executePaperTrade(result.tradeProposal);
             toast.success('Trade executed automatically!', { id: 'auto-execute' });
@@ -161,7 +162,7 @@ export function Engine() {
       toast.success('Engine analysis complete!', { id: 'engine-continue' });
 
       // If in auto mode and guard rails passed, execute automatically
-      if (executionMode === 'auto' && analysis?.guardRails?.passed && analysis.tradeProposal) {
+      if (executionMode === 'auto' && analysis?.guardRails?.passed) {
         toast.loading('Auto-executing trade...', { id: 'auto-execute' });
         await executePaperTrade(analysis.tradeProposal);
         toast.success('Trade executed automatically!', { id: 'auto-execute' });
@@ -451,10 +452,10 @@ export function Engine() {
               summary={getStep1Summary()}
             >
               <Step1Content
-                vix={analysis?.q1MarketRegime?.inputs?.vixValue ?? undefined}
+                vix={analysis?.q1MarketRegime?.inputs?.vixValue}
                 vixRegime={analysis?.q1MarketRegime?.vixRegime as any}
-                spyPrice={analysis?.q1MarketRegime?.inputs?.spyPrice ?? undefined}
-                spyChangePct={analysis?.q1MarketRegime?.inputs?.spyChangePct ?? undefined}
+                spyPrice={analysis?.q1MarketRegime?.inputs?.spyPrice}
+                spyChangePct={analysis?.q1MarketRegime?.inputs?.spyChangePct}
                 tradingWindow={{
                   isOpen: status?.tradingWindowOpen ?? false,
                   reason: status?.tradingWindowReason,

@@ -58,9 +58,8 @@ export function Settings() {
       const response = await fetch('/api/ibkr/status');
       return response.json();
     },
-    refetchInterval: (query) => {
+    refetchInterval: (data) => {
       // Adaptive polling based on connection state
-      const data = query.state.data as { configured?: boolean; connected?: boolean } | undefined;
       if (!data?.configured) return false; // Don't poll if not configured
       if (data?.configured && !data?.connected) return 3000; // 3s when connecting
       return 30000; // 30s when stable

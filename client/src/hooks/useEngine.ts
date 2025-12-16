@@ -509,7 +509,7 @@ export function useEngine() {
     // Fill in any missing steps
     while (steps.length < 5) {
       const stepNames = ['Market Regime', 'Direction', 'Strikes', 'Position Size', 'Exit Rules'];
-      const stepName: string = stepNames[steps.length] || 'Unknown';
+      const stepName = stepNames[steps.length];
       steps.push({
         name: stepName,
         status: 'pending',
