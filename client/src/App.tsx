@@ -188,13 +188,7 @@ function App() {
             <Route path="/engine" component={Engine} />
             <Route path="/portfolio" component={Portfolio} />
             <Route path="/track-record" component={TrackRecord} />
-            <Route path="/smart-contracts" component={DeFi} />
-            <Route path="/defi">
-              <Redirect to="/smart-contracts" />
-            </Route>
-            <Route path="/accountability">
-              <Redirect to="/smart-contracts" />
-            </Route>
+            <Route path="/defi" component={DeFi} />
             <Route path="/data" component={Data} />
             <Route path="/jobs" component={Jobs} />
             <Route path="/settings" component={Settings} />

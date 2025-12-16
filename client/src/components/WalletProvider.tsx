@@ -9,12 +9,9 @@ import { useMemo, ReactNode, createContext, useContext, useState, useEffect, use
 import { ConnectionProvider, WalletProvider as SolanaWalletProvider, useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { WalletModalProvider } from '@solana/wallet-adapter-react-ui';
 import { PhantomWalletAdapter, SolflareWalletAdapter } from '@solana/wallet-adapter-wallets';
-import { clusterApiUrl, Transaction, TransactionInstruction, PublicKey } from '@solana/web3.js';
+import { clusterApiUrl } from '@solana/web3.js';
 import type { SolanaCluster, OnChainAttestation, ProfileSummary, AttestationData } from '@shared/types/defi';
 import { DEFAULT_CLUSTER, computeProfileSummary, truncateAddress } from '@/lib/solana';
-
-// Solana Memo Program ID
-const MEMO_PROGRAM_ID = new PublicKey('MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr');
 
 // Import wallet adapter styles
 import '@solana/wallet-adapter-react-ui/styles.css';
@@ -100,63 +97,22 @@ function WalletContextProvider({ children }: { children: ReactNode }) {
     }
   }, [connected, publicKey, refetchAttestations]);
 
-  // Create attestation on-chain using Memo program
+  // Create attestation on-chain
   const createAttestation = useCallback(async (data: AttestationData): Promise<string> => {
-    if (!publicKey || !signTransaction || !connection) {
+    if (!publicKey || !signTransaction) {
       throw new Error('Wallet not connected');
     }
 
-    // Format memo data - compact but readable
-    // Format: APEYOLO|period|hash|return|trades|violations
-    const memoContent = [
-      'APEYOLO',
-      data.periodLabel.replace(/\s+/g, ''),
-      data.detailsHash,
-      `${data.returnPercent >= 0 ? '+' : ''}${data.returnPercent.toFixed(2)}%`,
-      `${data.tradeCount}trades`,
-      `${data.winCount}W/${data.lossCount}L`,
-    ].join('|');
+    // TODO: Implement actual transaction creation
+    // For now, throw an error since program isn't deployed
+    throw new Error('Solana program not yet deployed. Coming soon!');
 
-    console.log('[WalletProvider] Creating attestation memo:', memoContent);
-
-    // Create memo instruction
-    const memoInstruction = new TransactionInstruction({
-      keys: [{ pubkey: publicKey, isSigner: true, isWritable: false }],
-      programId: MEMO_PROGRAM_ID,
-      data: Buffer.from(memoContent, 'utf-8'),
-    });
-
-    // Build transaction
-    const transaction = new Transaction().add(memoInstruction);
-
-    // Get recent blockhash
-    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
-    transaction.recentBlockhash = blockhash;
-    transaction.feePayer = publicKey;
-
-    // Sign transaction with wallet
-    const signedTransaction = await signTransaction(transaction);
-
-    // Send and confirm
-    const signature = await connection.sendRawTransaction(signedTransaction.serialize(), {
-      skipPreflight: false,
-      preflightCommitment: 'confirmed',
-    });
-
-    // Wait for confirmation
-    await connection.confirmTransaction({
-      signature,
-      blockhash,
-      lastValidBlockHeight,
-    }, 'confirmed');
-
-    console.log('[WalletProvider] Attestation created:', signature);
-
-    // Refetch attestations after successful creation
-    await refetchAttestations();
-
-    return signature;
-  }, [publicKey, signTransaction, connection, refetchAttestations]);
+    // Implementation will be:
+    // 1. Create transaction with attestation instruction
+    // 2. Sign with wallet
+    // 3. Send and confirm
+    // 4. Return transaction signature
+  }, [publicKey, signTransaction, connection]);
 
   const value: WalletContextValue = {
     connected,

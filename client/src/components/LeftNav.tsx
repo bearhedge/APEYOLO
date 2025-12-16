@@ -1,8 +1,8 @@
 import { Link, useLocation } from 'wouter';
-import { Bot, Briefcase, BarChart2, List, Settings, Zap, Trophy, Shield } from 'lucide-react';
+import { Bot, Briefcase, BarChart2, List, Settings, Zap, Trophy, Coins } from 'lucide-react';
 
 const navItems = [
-  { path: '/smart-contracts', label: 'Contracts', icon: Shield },  // Mandate + attestations
+  { path: '/defi', label: 'DeFi', icon: Coins },         // Mandate + attestations first
   { path: '/agent', label: 'Agent', icon: Bot },
   { path: '/jobs', label: 'Jobs', icon: List },
   { path: '/engine', label: 'Engine', icon: Zap },
