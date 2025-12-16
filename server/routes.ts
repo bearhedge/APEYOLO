@@ -480,16 +480,26 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const account = await userBroker.api.getAccount();
       console.log('[API] /api/account: Success, portfolioValue=', account?.portfolioValue, 'netLiq=', account?.netLiquidation);
 
-      // Calculate Day P&L: Latest NAV - Previous Closing NAV (after hours)
-      // or Latest NAV - Opening NAV (during market hours)
+      // Calculate Day P&L:
+      // During market hours: Current NAV - Today's Opening NAV
+      // After hours: Current NAV - Previous Closing NAV
       const currentNav = account?.portfolioValue || 0;
       const userId = req.user!.id;
       let dayPnL = 0;
 
       try {
-        const closingSnapshot = await getPreviousClosingSnapshot(userId);
-        if (closingSnapshot && currentNav > 0) {
-          dayPnL = currentNav - closingSnapshot.nav;
+        // First try today's opening NAV (more accurate during market hours)
+        const openingSnapshot = await getTodayOpeningSnapshot(userId);
+        if (openingSnapshot && currentNav > 0) {
+          dayPnL = currentNav - openingSnapshot.nav;
+          console.log(`[API] Day P&L using opening NAV: ${currentNav} - ${openingSnapshot.nav} = ${dayPnL}`);
+        } else {
+          // Fallback to previous closing (for after-hours or if no opening snapshot today)
+          const closingSnapshot = await getPreviousClosingSnapshot(userId);
+          if (closingSnapshot && currentNav > 0) {
+            dayPnL = currentNav - closingSnapshot.nav;
+            console.log(`[API] Day P&L using closing NAV: ${currentNav} - ${closingSnapshot.nav} = ${dayPnL}`);
+          }
         }
       } catch (err) {
         console.error('[API] Day P&L error:', err);
@@ -500,11 +510,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(response);
     } catch (error: any) {
       console.error('[API] /api/account: FAILED -', error?.message || error);
-      const isGatewayError = error?.message?.includes('Gateway') || error?.message?.includes('authenticated');
-      res.status(isGatewayError ? 503 : 500).json({
-        error: isGatewayError ? 'IBKR connection expired' : 'Failed to fetch account info',
+      const isRetryableError = error?.message?.includes('Gateway') ||
+                               error?.message?.includes('authenticated') ||
+                               error?.message?.includes('unavailable');
+      res.status(isRetryableError ? 503 : 500).json({
+        error: isRetryableError ? 'IBKR connection temporarily unavailable' : 'Failed to fetch account info',
         message: error?.message,
-        retryable: isGatewayError
+        retryable: isRetryableError
       });
     }
   });
@@ -530,11 +542,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(positions);
     } catch (error: any) {
       console.error('[API] /api/positions: FAILED -', error?.message || error);
-      const isGatewayError = error?.message?.includes('Gateway') || error?.message?.includes('authenticated');
-      res.status(isGatewayError ? 503 : 500).json({
-        error: isGatewayError ? 'IBKR connection expired' : 'Failed to fetch positions',
+      const isRetryableError = error?.message?.includes('Gateway') ||
+                               error?.message?.includes('authenticated') ||
+                               error?.message?.includes('unavailable');
+      res.status(isRetryableError ? 503 : 500).json({
+        error: isRetryableError ? 'IBKR connection temporarily unavailable' : 'Failed to fetch positions',
         message: error?.message,
-        retryable: isGatewayError
+        retryable: isRetryableError
       });
     }
   });

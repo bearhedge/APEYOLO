@@ -351,7 +351,7 @@ export async function ensureNavSnapshotJob(): Promise<void> {
         schedule: '15 16 * * 1-5', // 4:15 PM ET on weekdays (after market close)
         timezone: 'America/New_York',
         enabled: true,
-        config: { snapshotType: 'closing' },
+        config: { snapshotType: 'closing', skipMarketCheck: true },
       });
       console.log('[NavSnapshot] Closing snapshot job created');
     }

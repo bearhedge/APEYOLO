@@ -111,7 +111,9 @@ export async function executeJob(
   }
 
   // 3. Check market calendar (unless skipped or manual with force)
-  if (!options?.skipMarketCheck && triggeredBy === 'scheduler') {
+  // Also check job.config.skipMarketCheck for jobs that should run after market close (e.g., closing NAV)
+  const jobConfig = (job.config as Record<string, any>) || {};
+  if (!options?.skipMarketCheck && !jobConfig.skipMarketCheck && triggeredBy === 'scheduler') {
     const marketStatus = getMarketStatus();
     if (!marketStatus.isOpen) {
       console.log(`[JobExecutor] Market closed: ${marketStatus.reason}`);
