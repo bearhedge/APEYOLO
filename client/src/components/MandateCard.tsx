@@ -51,33 +51,33 @@ export function MandateCard({
   const isActive = mandate.isActive;
 
   return (
-    <div className="bg-white dark:bg-charcoal rounded-2xl border border-zinc-200 dark:border-white/10 shadow-lg overflow-hidden">
+    <div className="bg-charcoal rounded-2xl border border-white/10 shadow-lg overflow-hidden">
       {/* Document Header */}
-      <div className="border-b border-zinc-200 dark:border-white/10 p-8">
+      <div className="border-b border-white/10 p-8">
         <div className="flex items-center justify-between mb-6">
           <div className="flex items-center gap-3">
-            <Shield className="w-6 h-6 text-zinc-700 dark:text-zinc-300" />
-            <h2 className="text-sm font-semibold tracking-[0.15em] uppercase text-zinc-700 dark:text-zinc-300">
+            <Shield className="w-6 h-6 text-zinc-300" />
+            <h2 className="text-sm font-semibold tracking-[0.15em] uppercase text-zinc-300">
               Trading Mandate
             </h2>
           </div>
           <div className={`px-3 py-1 text-xs font-medium rounded-full ${
             isActive
-              ? 'bg-green-500/20 text-green-600 dark:text-green-400 border border-green-500/30'
-              : 'bg-zinc-500/20 text-zinc-600 dark:text-zinc-400 border border-zinc-500/30'
+              ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+              : 'bg-zinc-500/20 text-zinc-400 border border-zinc-500/30'
           }`}>
             {isActive ? 'ACTIVE' : 'INACTIVE'}
           </div>
         </div>
 
         <div className="flex items-center justify-between text-sm">
-          <div className="flex items-center gap-2 text-zinc-500 dark:text-silver">
+          <div className="flex items-center gap-2 text-silver">
             <Clock className="w-4 h-4" />
             <span>Effective: {formatDate(mandate.createdAt)}</span>
           </div>
           {mandate.onChainHash && (
             <div className="flex items-center gap-2">
-              <code className="text-xs font-mono text-zinc-500 dark:text-silver bg-zinc-100 dark:bg-white/5 px-2 py-1 rounded">
+              <code className="text-xs font-mono text-silver bg-white/5 px-2 py-1 rounded">
                 {mandate.onChainHash.slice(0, 10)}...{mandate.onChainHash.slice(-6)}
               </code>
               {mandate.solanaSignature && (
@@ -96,15 +96,15 @@ export function MandateCard({
       </div>
 
       {/* Document Body - Legal Articles */}
-      <div className="p-8 space-y-8" style={{ fontFamily: 'Georgia, serif' }}>
+      <div className="p-8 space-y-10" style={{ fontFamily: 'Georgia, serif' }}>
         {/* Article I - Permitted Instruments */}
         <section>
-          <h3 className="text-xs font-semibold tracking-[0.1em] uppercase text-zinc-500 dark:text-silver mb-4">
+          <h3 className="text-xs font-semibold tracking-[0.1em] uppercase text-silver mb-4">
             Article I - Permitted Instruments
           </h3>
-          <div className="space-y-3 text-[15px] leading-[1.8] text-zinc-800 dark:text-zinc-200">
-            <p className="pl-6 relative">
-              <span className="absolute left-0 text-zinc-400 dark:text-zinc-500">1.1</span>
+          <div className="space-y-4 text-[15px] leading-[1.8] text-zinc-200">
+            <p className="pl-8 relative">
+              <span className="absolute left-0 text-zinc-500">1.1</span>
               The Manager shall trade only the following underlyings:
             </p>
             <ul className="pl-12 space-y-1">
@@ -116,8 +116,8 @@ export function MandateCard({
                 </li>
               ))}
             </ul>
-            <p className="pl-6 relative">
-              <span className="absolute left-0 text-zinc-400 dark:text-zinc-500">1.2</span>
+            <p className="pl-8 relative">
+              <span className="absolute left-0 text-zinc-500">1.2</span>
               All other securities are strictly prohibited.
             </p>
           </div>
@@ -125,21 +125,21 @@ export function MandateCard({
 
         {/* Article II - Strategy Constraints */}
         <section>
-          <h3 className="text-xs font-semibold tracking-[0.1em] uppercase text-zinc-500 dark:text-silver mb-4">
+          <h3 className="text-xs font-semibold tracking-[0.1em] uppercase text-silver mb-4">
             Article II - Strategy Constraints
           </h3>
-          <div className="space-y-3 text-[15px] leading-[1.8] text-zinc-800 dark:text-zinc-200">
-            <p className="pl-6 relative">
-              <span className="absolute left-0 text-zinc-400 dark:text-zinc-500">2.1</span>
+          <div className="space-y-4 text-[15px] leading-[1.8] text-zinc-200">
+            <p className="pl-8 relative">
+              <span className="absolute left-0 text-zinc-500">2.1</span>
               Only <span className="font-medium">{mandate.strategyType}</span> (credit) strategies are permitted.
             </p>
-            <p className="pl-6 relative">
-              <span className="absolute left-0 text-zinc-400 dark:text-zinc-500">2.2</span>
+            <p className="pl-8 relative">
+              <span className="absolute left-0 text-zinc-500">2.2</span>
               Delta range: <span className="font-medium">{mandate.minDelta.toFixed(2)} to {mandate.maxDelta.toFixed(2)}</span> (moderate out-of-the-money).
             </p>
             {mandate.tradingWindowStart && mandate.tradingWindowEnd && (
-              <p className="pl-6 relative">
-                <span className="absolute left-0 text-zinc-400 dark:text-zinc-500">2.3</span>
+              <p className="pl-8 relative">
+                <span className="absolute left-0 text-zinc-500">2.3</span>
                 Trading window: <span className="font-medium">{formatTime(mandate.tradingWindowStart)} - {formatTime(mandate.tradingWindowEnd)}</span> (recommended).
               </p>
             )}
@@ -148,20 +148,20 @@ export function MandateCard({
 
         {/* Article III - Risk Management */}
         <section>
-          <h3 className="text-xs font-semibold tracking-[0.1em] uppercase text-zinc-500 dark:text-silver mb-4">
+          <h3 className="text-xs font-semibold tracking-[0.1em] uppercase text-silver mb-4">
             Article III - Risk Management
           </h3>
-          <div className="space-y-3 text-[15px] leading-[1.8] text-zinc-800 dark:text-zinc-200">
+          <div className="space-y-4 text-[15px] leading-[1.8] text-zinc-200">
             {mandate.noOvernightPositions && (
-              <p className="pl-6 relative">
-                <span className="absolute left-0 text-zinc-400 dark:text-zinc-500">3.1</span>
+              <p className="pl-8 relative">
+                <span className="absolute left-0 text-zinc-500">3.1</span>
                 No overnight positions. All positions must be closed by{' '}
                 <span className="font-medium">{mandate.exitDeadline ? formatTime(mandate.exitDeadline) : '3:55 PM ET'}</span>,
                 except 0DTE options expiring same day.
               </p>
             )}
-            <p className="pl-6 relative">
-              <span className="absolute left-0 text-zinc-400 dark:text-zinc-500">3.2</span>
+            <p className="pl-8 relative">
+              <span className="absolute left-0 text-zinc-500">3.2</span>
               Maximum daily loss: <span className="font-medium">{(mandate.maxDailyLossPercent * 100).toFixed(0)}% of NAV</span>.
               Upon reaching this threshold, all trading shall cease for the remainder of the trading day.
             </p>
@@ -170,12 +170,12 @@ export function MandateCard({
 
         {/* Article IV - Immutability */}
         <section>
-          <h3 className="text-xs font-semibold tracking-[0.1em] uppercase text-zinc-500 dark:text-silver mb-4">
+          <h3 className="text-xs font-semibold tracking-[0.1em] uppercase text-silver mb-4">
             Article IV - Immutability
           </h3>
-          <div className="space-y-3 text-[15px] leading-[1.8] text-zinc-800 dark:text-zinc-200">
-            <p className="pl-6 relative">
-              <span className="absolute left-0 text-zinc-400 dark:text-zinc-500">4.1</span>
+          <div className="space-y-4 text-[15px] leading-[1.8] text-zinc-200">
+            <p className="pl-8 relative">
+              <span className="absolute left-0 text-zinc-500">4.1</span>
               This mandate is permanent and cannot be modified. To adopt new rules, a new mandate must be created.
             </p>
           </div>
@@ -183,16 +183,16 @@ export function MandateCard({
       </div>
 
       {/* Violations Section */}
-      <div className="border-t border-zinc-200 dark:border-white/10 px-8 py-4">
+      <div className="border-t border-white/10 px-8 py-4">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
             {violationCount === 0 ? (
-              <div className="flex items-center gap-2 text-green-600 dark:text-green-400">
+              <div className="flex items-center gap-2 text-green-400">
                 <CheckCircle className="w-4 h-4" />
                 <span className="text-sm font-medium">No violations</span>
               </div>
             ) : (
-              <div className="flex items-center gap-2 text-amber-600 dark:text-amber-400">
+              <div className="flex items-center gap-2 text-amber-400">
                 <AlertTriangle className="w-4 h-4" />
                 <span className="text-sm font-medium">
                   {violationCount} violation{violationCount !== 1 ? 's' : ''} total
@@ -213,14 +213,14 @@ export function MandateCard({
       </div>
 
       {/* Signature Section */}
-      <div className="border-t border-zinc-200 dark:border-white/10 px-8 py-6 bg-zinc-50/50 dark:bg-white/5">
-        <div className="text-sm text-zinc-500 dark:text-zinc-400 italic" style={{ fontFamily: 'Georgia, serif' }}>
+      <div className="border-t border-white/10 px-8 py-6 bg-white/5">
+        <div className="text-sm text-zinc-400 italic" style={{ fontFamily: 'Georgia, serif' }}>
           Signed electronically on {formatDate(mandate.createdAt)}
         </div>
         {mandate.onChainHash && (
           <div className="mt-2">
-            <span className="text-xs text-zinc-400 dark:text-zinc-500">Hash: </span>
-            <code className="text-xs font-mono text-zinc-500 dark:text-zinc-400">
+            <span className="text-xs text-zinc-500">Hash: </span>
+            <code className="text-xs font-mono text-zinc-400">
               {mandate.onChainHash}
             </code>
           </div>
