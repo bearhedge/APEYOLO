@@ -33,6 +33,7 @@ interface AccountInfo {
   cushion: number;
   leverage: number;
   excessLiquidity: number;
+  marginLoan: number;
 }
 
 // Helper to format currency values - handles strings, nulls, objects
@@ -82,9 +83,10 @@ const formatMultiplier = (value: any): string => {
 };
 
 // Helper to format delta values - handles strings, nulls, objects
+// Show 3 decimal places for precision (e.g., 0.175 vs 0.185)
 const formatDelta = (value: any): string => {
   if (value === null || value === undefined) return '-';
-  return toNum(value).toFixed(2);
+  return toNum(value).toFixed(3);
 };
 
 // Helper to format Greek values (gamma, theta, vega) with appropriate precision
@@ -744,8 +746,8 @@ export function Portfolio() {
           />
           <StatCard
             label="Margin Loan"
-            value={accountError ? '--' : accountLoading ? 'Loading...' : (account?.totalCash ?? 0) < 0 ? formatCurrency(Math.abs(account?.totalCash ?? 0)) : '--'}
-            icon={<Banknote className="w-5 h-5 text-orange-500" />}
+            value={accountError ? '--' : accountLoading ? 'Loading...' : formatCurrency(account?.marginLoan)}
+            icon={<Banknote className={`w-5 h-5 ${(account?.marginLoan ?? 0) > 0 ? 'text-red-500' : 'text-emerald-500'}`} />}
             testId="margin-loan"
           />
           <StatCard
@@ -804,59 +806,70 @@ export function Portfolio() {
             icon={<Shield className="w-5 h-5 text-green-500" />}
             testId="excess-liquidity"
           />
-          {/* Show option metrics when options present, interest metrics when stocks only */}
-          {positions?.some(p => p.assetType === 'option') ? (
-            <>
-              <StatCard
-                label="Implied Notional"
-                value={positionMetrics.impliedNotional > 0 ? formatHKD(positionMetrics.impliedNotional) : '--'}
-                icon={<Activity className="w-5 h-5 text-cyan-500" />}
-                testId="implied-notional"
-              />
-              <StatCard
-                label="Days to Expiry"
-                value={positionMetrics.avgDTE > 0 ? formatDays(positionMetrics.avgDTE) : '--'}
-                icon={<Calendar className="w-5 h-5 text-amber-500" />}
-                testId="days-to-expiry"
-              />
-            </>
-          ) : (
-            <>
-              <StatCard
-                label="Daily Interest (Est.)"
-                value={accountError ? '--' : accountLoading ? 'Loading...' : (() => {
-                  // IBKR HKD rate ~6.5% (HIBOR + 1.5% spread), estimate only
-                  const marginLoan = Math.abs(Math.min(0, account?.totalCash ?? 0));
-                  if (marginLoan === 0) return '--';
-                  const annualRate = 0.065; // ~6.5% for HKD margin
-                  const dailyInterest = (marginLoan * annualRate) / 365;
-                  return `~${formatCurrency(dailyInterest)}`;
-                })()}
-                icon={<Percent className="w-5 h-5 text-orange-500" />}
-                testId="daily-interest"
-              />
-              <StatCard
-                label="Interest Accrued (Est.)"
-                value={accountError ? '--' : accountLoading ? 'Loading...' : (() => {
-                  const marginLoan = Math.abs(Math.min(0, account?.totalCash ?? 0));
-                  if (marginLoan === 0) return '--';
-                  // Find earliest stock position openedAt date
-                  const stockPositions = positions?.filter(p => p.assetType === 'stock') || [];
-                  if (stockPositions.length === 0) return '--';
-                  const earliestDate = stockPositions.reduce((earliest, p) => {
-                    const opened = new Date(p.openedAt);
-                    return opened < earliest ? opened : earliest;
-                  }, new Date());
-                  const daysHeld = Math.max(1, Math.floor((Date.now() - earliestDate.getTime()) / (1000 * 60 * 60 * 24)));
-                  const annualRate = 0.065;
-                  const accruedInterest = (marginLoan * annualRate * daysHeld) / 365;
-                  return `~${formatCurrency(accruedInterest)} (${daysHeld}d)`;
-                })()}
-                icon={<Calendar className="w-5 h-5 text-amber-500" />}
-                testId="interest-accrued"
-              />
-            </>
-          )}
+          {/* Show metrics based on position type:
+              - No positions: show Implied Notional + Days to Expiry (defaults)
+              - Options exist: show Implied Notional + Days to Expiry with values
+              - Stocks only (on margin): show Daily Interest + Interest Accrued
+          */}
+          {(() => {
+            const hasPositions = positions && positions.length > 0;
+            const hasOptions = positions?.some(p => p.assetType === 'option');
+            const hasStocksOnly = hasPositions && !hasOptions;
+            const marginLoan = Math.abs(Math.min(0, account?.totalCash ?? 0));
+
+            // Show interest metrics ONLY when we have stocks on margin
+            if (hasStocksOnly && marginLoan > 0) {
+              return (
+                <>
+                  <StatCard
+                    label="Daily Interest (Est.)"
+                    value={accountError ? '--' : accountLoading ? 'Loading...' : (() => {
+                      const annualRate = 0.065; // ~6.5% for HKD margin
+                      const dailyInterest = (marginLoan * annualRate) / 365;
+                      return `~${formatCurrency(dailyInterest)}`;
+                    })()}
+                    icon={<Percent className="w-5 h-5 text-orange-500" />}
+                    testId="daily-interest"
+                  />
+                  <StatCard
+                    label="Interest Accrued (Est.)"
+                    value={accountError ? '--' : accountLoading ? 'Loading...' : (() => {
+                      const stockPositions = positions?.filter(p => p.assetType === 'stock') || [];
+                      if (stockPositions.length === 0) return '--';
+                      const earliestDate = stockPositions.reduce((earliest, p) => {
+                        const opened = new Date(p.openedAt);
+                        return opened < earliest ? opened : earliest;
+                      }, new Date());
+                      const daysHeld = Math.max(1, Math.floor((Date.now() - earliestDate.getTime()) / (1000 * 60 * 60 * 24)));
+                      const annualRate = 0.065;
+                      const accruedInterest = (marginLoan * annualRate * daysHeld) / 365;
+                      return `~${formatCurrency(accruedInterest)} (${daysHeld}d)`;
+                    })()}
+                    icon={<Calendar className="w-5 h-5 text-amber-500" />}
+                    testId="interest-accrued"
+                  />
+                </>
+              );
+            }
+
+            // Default: show Implied Notional + Days to Expiry (for options or no positions)
+            return (
+              <>
+                <StatCard
+                  label="Implied Notional"
+                  value={positionMetrics.impliedNotional > 0 ? formatHKD(positionMetrics.impliedNotional) : '--'}
+                  icon={<Activity className="w-5 h-5 text-cyan-500" />}
+                  testId="implied-notional"
+                />
+                <StatCard
+                  label="Days to Expiry"
+                  value={positionMetrics.avgDTE > 0 ? formatDays(positionMetrics.avgDTE) : '--'}
+                  icon={<Calendar className="w-5 h-5 text-amber-500" />}
+                  testId="days-to-expiry"
+                />
+              </>
+            );
+          })()}
           <StatCard
             label="Net Delta"
             value={formatDelta(positionMetrics.netDelta)}

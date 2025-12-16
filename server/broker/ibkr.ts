@@ -1058,7 +1058,7 @@ class IbkrClient {
         settledCash: settledCash || totalCash || availFunds,
         grossPositionValue: grossPosValue,
         maintenanceMargin: grossPosValue > 0 ? maintMargin : 0,
-        cushion: cushion,
+        cushion: grossPosValue > 0 ? cushion : 100,
         leverage: leverage,
         excessLiquidity: excessLiq,
         marginLoan: marginLoan,
