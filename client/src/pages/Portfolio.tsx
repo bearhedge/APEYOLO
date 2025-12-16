@@ -247,11 +247,14 @@ const estimateDelta = (position: Position, underlyingPrice: number): number | nu
 };
 
 // Calculate all Greeks for a position using Black-Scholes
-// Returns { delta, gamma, theta, vega } for per-contract values
+// Returns both per-contract and position-level Greeks
 const calculateAllGreeks = (
   position: Position,
   underlyingPrice: number
-): { delta: number; gamma: number; theta: number; vega: number } | null => {
+): {
+  deltaPerContract: number; gammaPerContract: number; thetaPerContract: number; vegaPerContract: number;
+  delta: number; gamma: number; theta: number; vega: number;
+} | null => {
   if (!underlyingPrice || underlyingPrice <= 0) return null;
 
   // Parse option symbol to extract strike and type

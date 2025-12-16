@@ -229,6 +229,54 @@ export async function enforceMandate(
     };
   }
 
+  // Check 5: Trading time window (after 12 AM HKT)
+  if (mandate.tradingWindowStart) {
+    const timeCheck = checkTradingWindow(mandate.tradingWindowStart);
+    if (!timeCheck.allowed) {
+      return {
+        allowed: false,
+        reason: timeCheck.reason || 'Outside trading window',
+      };
+    }
+  }
+
+  return { allowed: true };
+}
+
+/**
+ * Check if current time is within trading window
+ * Trading allowed AFTER the start time (HKT)
+ */
+function checkTradingWindow(windowStart: string): { allowed: boolean; reason?: string } {
+  const now = new Date();
+
+  // Get current time in Hong Kong
+  const hktTime = now.toLocaleString('en-US', {
+    timeZone: 'Asia/Hong_Kong',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+
+  // Parse times to minutes for comparison
+  const parseTimeToMinutes = (timeStr: string): number => {
+    const [hours, minutes] = timeStr.split(':').map(Number);
+    return hours * 60 + minutes;
+  };
+
+  const currentMinutes = parseTimeToMinutes(hktTime);
+  const startMinutes = parseTimeToMinutes(windowStart);
+
+  // Trading allowed if current time is AFTER start time
+  // Example: windowStart = "00:00" (midnight), currentMinutes >= 0 is always true
+  // This allows trading after midnight HKT
+  if (currentMinutes < startMinutes) {
+    return {
+      allowed: false,
+      reason: `Trading only allowed after ${windowStart} HKT (current: ${hktTime} HKT)`,
+    };
+  }
+
   return { allowed: true };
 }
 

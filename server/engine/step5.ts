@@ -288,6 +288,9 @@ export async function testStep5(): Promise<void> {
     totalMarginRequired: 16020,
     buyingPowerUsed: 16020,
     buyingPowerRemaining: 649980,
+    maxLossPerContract: 50,
+    maxLossTotal: 100,
+    maxLossAllowed: 200,
     reasoning: 'Test sizing'
   };
 

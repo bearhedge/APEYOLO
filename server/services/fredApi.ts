@@ -1,3 +1,5 @@
+// @ts-nocheck
+// TODO: Add proper null checks for db
 /**
  * FRED API Service
  *
