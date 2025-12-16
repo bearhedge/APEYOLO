@@ -986,10 +986,15 @@ class IbkrClient {
   }
 
   async getAccount(): Promise<AccountInfo> {
-    await this.ensureReady();
-    await this.ensureAccountSelected();
+    const maxRetries = 3;
+    const retryDelay = 2000;
     const accountId = this.accountId || process.env.IBKR_ACCOUNT_ID || "";
-    try {
+    let lastError: Error | null = null;
+
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        await this.ensureReady();
+        await this.ensureAccountSelected();
       // CP endpoint - use cookie auth only, no Authorization header
       const resp = await this.http.get(`/v1/api/portfolio/${encodeURIComponent(accountId)}/summary`);
       if (resp.status !== 200) throw new Error(`status ${resp.status}`);
@@ -1031,6 +1036,8 @@ class IbkrClient {
       const leverage = netliq > 0 ? grossPosValue / netliq : 0;
       // Cushion is already a percentage from IBKR (e.g., 0.99 = 99%)
       const cushion = cushionRaw * 100;
+      // Margin loan = borrowed funds = GPV - NLV (when positive, you're borrowing on margin)
+      const marginLoan = Math.max(0, grossPosValue - netliq);
 
       console.log(`[IBKR][getAccount] netliq=${netliq} buyingPwr=${buyingPwr} availFunds=${availFunds} excessLiq=${excessLiq} unrealPnl=${unrealPnl} realPnl=${realPnl} initMargin=${initMargin} totalCash=${totalCash} settledCash=${settledCash} grossPos=${grossPosValue} maintMargin=${maintMargin} cushion=${cushion}% leverage=${leverage.toFixed(2)}x`);
 
@@ -1045,38 +1052,34 @@ class IbkrClient {
         netDelta: getValue(data?.netdelta),
         // Combine unrealized + realized for day P&L
         dayPnL: unrealPnl + realPnl,
-        marginUsed: initMargin,
+        marginUsed: grossPosValue > 0 ? initMargin : 0,
         // New enhanced fields
         totalCash: totalCash || availFunds,
         settledCash: settledCash || totalCash || availFunds,
         grossPositionValue: grossPosValue,
-        maintenanceMargin: maintMargin,
+        maintenanceMargin: grossPosValue > 0 ? maintMargin : 0,
         cushion: cushion,
         leverage: leverage,
         excessLiquidity: excessLiq,
+        marginLoan: marginLoan,
       };
       return info;
-    } catch (err) {
-      // Log the actual error so we can diagnose NAV display issues
-      console.error(`[IBKR][getAccount] ERROR: ${err instanceof Error ? err.message : String(err)}`);
-      // Fallback to zeros if IBKR request fails
-      return {
-        accountNumber: accountId || "",
-        buyingPower: 0,
-        portfolioValue: 0,
-        netLiquidation: 0,
-        netDelta: 0,
-        dayPnL: 0,
-        marginUsed: 0,
-        totalCash: 0,
-        settledCash: 0,
-        grossPositionValue: 0,
-        maintenanceMargin: 0,
-        cushion: 0,
-        leverage: 0,
-        excessLiquidity: 0,
-      };
+      } catch (err) {
+        lastError = err instanceof Error ? err : new Error(String(err));
+        console.error(`[IBKR][getAccount] ERROR (attempt ${attempt}/${maxRetries}): ${lastError.message}`);
+
+        if (attempt < maxRetries) {
+          console.log(`[IBKR][getAccount] Retrying in ${retryDelay}ms...`);
+          await this.sleep(retryDelay);
+          continue;
+        }
+      }
     }
+
+    // All retries failed - throw error instead of returning zeros
+    // This allows the caller to handle the error appropriately (e.g., show loading state)
+    console.error(`[IBKR][getAccount] All ${maxRetries} attempts failed. Last error: ${lastError?.message}`);
+    throw new Error(`IBKR account data unavailable after ${maxRetries} attempts: ${lastError?.message || 'unknown error'}`);
   }
 
   async getPositions(): Promise<Position[]> {

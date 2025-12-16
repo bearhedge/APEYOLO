@@ -481,25 +481,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log('[API] /api/account: Success, portfolioValue=', account?.portfolioValue, 'netLiq=', account?.netLiquidation);
 
       // Calculate Day P&L:
-      // During market hours: Current NAV - Today's Opening NAV
-      // After hours: Current NAV - Previous Closing NAV
+      // If we have today's opening NAV: use current - opening (today's change)
+      // Otherwise: use IBKR's dayPnL (includes realized P&L from expired/closed positions)
       const currentNav = account?.portfolioValue || 0;
       const userId = req.user!.id;
-      let dayPnL = 0;
+      let dayPnL = account?.dayPnL || 0; // Default to IBKR's value
 
       try {
-        // First try today's opening NAV (more accurate during market hours)
+        // Get today's opening NAV snapshot
         const openingSnapshot = await getTodayOpeningSnapshot(userId);
-        if (openingSnapshot && currentNav > 0) {
+        if (openingSnapshot) {
+          // Today's change = current NAV - today's opening NAV
           dayPnL = currentNav - openingSnapshot.nav;
           console.log(`[API] Day P&L using opening NAV: ${currentNav} - ${openingSnapshot.nav} = ${dayPnL}`);
         } else {
-          // Fallback to previous closing (for after-hours or if no opening snapshot today)
-          const closingSnapshot = await getPreviousClosingSnapshot(userId);
-          if (closingSnapshot && currentNav > 0) {
-            dayPnL = currentNav - closingSnapshot.nav;
-            console.log(`[API] Day P&L using closing NAV: ${currentNav} - ${closingSnapshot.nav} = ${dayPnL}`);
-          }
+          // No opening snapshot today - keep IBKR's dayPnL (realized P&L from expired/closed)
+          console.log(`[API] Day P&L using IBKR value (no opening snapshot): ${dayPnL}`);
         }
       } catch (err) {
         console.error('[API] Day P&L error:', err);
