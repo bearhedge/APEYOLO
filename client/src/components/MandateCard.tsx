@@ -176,7 +176,7 @@ export function MandateCard({
 
       {/* Signature Section */}
       <div className="border-t border-white/10 px-8 py-6 bg-white/5">
-        <div className="text-sm text-zinc-400 italic" style={{ fontFamily: 'Georgia, serif' }}>
+        <div className="text-sm text-zinc-400 italic">
           Signed electronically on {formatDate(mandate.createdAt)}
         </div>
         {mandate.onChainHash && (
