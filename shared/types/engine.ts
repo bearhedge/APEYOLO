@@ -64,6 +64,7 @@ export interface Q1MarketRegime {
   riskMultiplier: number;        // 1.0 normal, 0.5 high, 0 extreme
   canTrade: boolean;
   reason: string;
+  vixRegime?: string;            // VIX regime label for display
 
   inputs: {
     vixValue: number | null;
@@ -110,6 +111,9 @@ export interface Q2Direction {
     trend: TrendDirection;
     momentum: number;            // -1.0 to 1.0
     maAlignment: string;         // "SPY > MA50" or "SPY < MA50"
+    spyPrice?: number;           // Current SPY price
+    maFast?: number;             // Fast MA value
+    maSlow?: number;             // Slow MA value
   };
 
   stepNumber: 2;
@@ -307,6 +311,7 @@ export interface Q4Size {
     cashBalance: number;
     riskProfile: RiskProfile;
     premiumPerContract: number;
+    accountValue?: number;       // Account value for display
   };
 
   riskLimits: {

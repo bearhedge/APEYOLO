@@ -634,6 +634,8 @@ export type OptionData = {
   delta: number;
   openInterest: number;
   expiration: string;
+  last?: number;               // Last trade price
+  iv?: number;                 // Implied volatility
 };
 
 export type OptionChainData = {
@@ -641,6 +643,9 @@ export type OptionChainData = {
   underlyingPrice: number;
   underlyingChange: number;
   options: OptionData[];
+  // Convenience accessors for puts/calls
+  puts?: OptionData[];
+  calls?: OptionData[];
 };
 
 // Spread types
@@ -694,4 +699,9 @@ export type AccountInfo = {
   cushion: number;       // % buffer before margin call (excessLiquidity / maintenanceMargin)
   leverage: number;      // grossPositionValue / netLiquidation
   excessLiquidity: number;
+  // Additional fields for IBKR compatibility
+  netLiquidation?: number;  // Net liquidation value (same as portfolioValue)
+  accountId?: string;       // IBKR account ID
+  netValue?: number;        // Net value alias
+  marginLoan?: number;      // Margin loan amount
 };
