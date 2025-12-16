@@ -1,5 +1,3 @@
-// @ts-nocheck
-// TODO: Add proper null checks for db and broker.api
 /**
  * Engine API Routes
  * Provides endpoints for the 5-step trading engine integration with IBKR
@@ -606,14 +604,12 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
         const expiration = tradeProposal.expirationDate.replace(/-/g, '');
         console.log(`[Engine/execute] Using expiration date: ${tradeProposal.expirationDate} → ${expiration}`);
 
-        // Calculate per-leg stop prices (3x each leg's individual premium)
-        // FIX: Previously used portfolio-level stopLossPrice for all legs (bug: both got same 2.22)
-        // Now each leg gets its own stop based on its own premium
+        // Stop loss price from proposal (3x premium by default)
+        const stopPrice = tradeProposal.stopLossPrice;
 
         for (const leg of tradeProposal.legs) {
-          // Per-leg stop: 3x this leg's premium (e.g., PUT $0.70 → stop $2.10)
-          const STOP_MULTIPLIER = 3; // 3x premium (same as step5.ts: 1 + STOP_LOSS_MULTIPLIER)
-          const legStopPrice = leg.premium * STOP_MULTIPLIER;
+          // Calculate per-leg stop price if not available at proposal level
+          const legStopPrice = stopPrice || (leg.premium * 3.5);
 
           // Use bid price for SELL orders (faster fills) or fall back to mid price
           const sellPrice = leg.bid || leg.premium;

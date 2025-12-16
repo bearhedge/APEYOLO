@@ -1,5 +1,3 @@
-// @ts-nocheck
-// TODO: Fix jwt.sign type issue with expiresIn option
 /**
  * Google OAuth Authentication Routes
  * Handles Google OAuth flow for user authentication

@@ -1,5 +1,3 @@
-// @ts-nocheck
-// TODO: Add proper null checks for db and broker.api
 /**
  * Market Data Service
  * Fetches real-time market data from IBKR for SPY, VIX, and options

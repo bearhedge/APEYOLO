@@ -1,5 +1,3 @@
-// @ts-nocheck
-// TODO: Add proper null checks for db
 import {
   type User,
   type InsertUser,

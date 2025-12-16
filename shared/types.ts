@@ -46,9 +46,6 @@ export type BrokerDiag = {
     validate: DiagEntry;
     init: DiagEntry;
   };
-  // Shorthand accessors for top-level status
-  oauth?: number | null;
-  sso?: number | null;
 };
 
 // Legacy type - kept for backwards compatibility

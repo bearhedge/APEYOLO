@@ -1,5 +1,3 @@
-// @ts-nocheck
-// TODO: Add proper null checks for broker.api
 /**
  * 0DTE Position Manager
  *
@@ -20,7 +18,7 @@ import { db } from '../../db';
 import { paperTrades, jobs } from '@shared/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { getBroker } from '../../broker';
-import { ensureIbkrReady, placeCloseOrderByConid } from '../../broker/ibkr';
+import { ensureIbkrReady } from '../../broker/ibkr';
 import { registerJobHandler, type JobResult } from '../jobExecutor';
 import { getETDateString, getETTimeString } from '../marketCalendar';
 import type { Position } from '@shared/types';
@@ -104,16 +102,10 @@ function isOptionITM(optionType: 'PUT' | 'CALL', strike: number, spot: number): 
 
 /**
  * Get option type from symbol
- * IBKR format: "SPY   251215C00684000" or "SPY   251215P00684000"
- * Pattern: [underlying] [YYMMDD][C/P][strike]
  */
 function getOptionType(symbol: string): 'PUT' | 'CALL' | null {
-  // Find the option type character after the 6-digit date (YYMMDD)
-  // This avoids false matches from underlying tickers like "SPY" containing "P"
-  const match = symbol.match(/\d{6}([CP])/);
-  if (match) {
-    return match[1] === 'P' ? 'PUT' : 'CALL';
-  }
+  if (symbol.includes('P')) return 'PUT';
+  if (symbol.includes('C')) return 'CALL';
   return null;
 }
 
@@ -407,15 +399,66 @@ export async function execute0dtePositionManager(): Promise<JobResult> {
 
 /**
  * Submit a market order to close a position
- * Uses the placeCloseOrderByConid helper from ibkr.ts
  */
 async function submitCloseOrder(
   conid: string,
   quantity: number,
   side: 'BUY' | 'SELL'
 ): Promise<{ success: boolean; orderId?: string; error?: string }> {
-  console.log(`[0DTE-Manager] Submitting close order: conid=${conid}, qty=${quantity}, side=${side}`);
-  return placeCloseOrderByConid(parseInt(conid), quantity, side);
+  const broker = getBroker();
+
+  try {
+    // Get the IBKR client directly for order submission
+    const accountId = process.env.IBKR_ACCOUNT_ID || '';
+    if (!accountId) {
+      return { success: false, error: 'IBKR account ID not configured' };
+    }
+
+    // Use the broker's HTTP client to submit order
+    // This is a direct API call since the broker.api.placeOrder is designed for opening positions
+    const { IbkrClient } = await import('../../broker/ibkr');
+    const ibkrClient = IbkrClient.getInstance();
+
+    const orderBody = {
+      orders: [
+        {
+          acctId: accountId,
+          conid: parseInt(conid),
+          orderType: 'MKT',
+          side: side,
+          tif: 'DAY',
+          quantity: quantity,
+        },
+      ],
+    };
+
+    console.log(`[0DTE-Manager] Order payload:`, JSON.stringify(orderBody));
+
+    const url = `/v1/api/iserver/account/${encodeURIComponent(accountId)}/orders`;
+    const response = await (ibkrClient as any).http.post(url, orderBody, {
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    console.log(`[0DTE-Manager] Order response: status=${response.status}, data=`, response.data);
+
+    if (response.status >= 200 && response.status < 300) {
+      // Extract order ID from response
+      let orderId: string | undefined;
+      const raw = response.data;
+
+      if (raw?.order_id) {
+        orderId = String(raw.order_id);
+      } else if (Array.isArray(raw) && raw[0]) {
+        orderId = String(raw[0].order_id || raw[0].orderId || raw[0].id || '');
+      }
+
+      return { success: true, orderId };
+    } else {
+      return { success: false, error: `HTTP ${response.status}: ${JSON.stringify(response.data)}` };
+    }
+  } catch (err: any) {
+    return { success: false, error: err?.message || 'Unknown error' };
+  }
 }
 
 // ============================================

@@ -1,5 +1,3 @@
-// @ts-nocheck
-// TODO: Fix BrokerProvider null check for NakedOptionStrategy
 /**
  * IBKR Trading Strategy Routes
  * Handles naked option selling and other trading strategies

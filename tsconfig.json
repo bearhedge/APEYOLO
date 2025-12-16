@@ -4,11 +4,10 @@
   "compilerOptions": {
     "incremental": true,
     "tsBuildInfoFile": "./node_modules/typescript/tsbuildinfo",
-    "target": "ES2022",
     "noEmit": true,
     "module": "ESNext",
     "strict": true,
-    "lib": ["ES2022", "dom", "dom.iterable"],
+    "lib": ["esnext", "dom", "dom.iterable"],
     "jsx": "preserve",
     "esModuleInterop": true,
     "skipLibCheck": true,

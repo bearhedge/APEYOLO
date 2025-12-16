@@ -1,5 +1,3 @@
-// @ts-nocheck
-// TODO: Add proper null checks for db and broker.api
 /**
  * Historical Data Ingestion Service
  *

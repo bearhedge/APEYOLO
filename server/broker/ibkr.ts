@@ -1,5 +1,3 @@
-// @ts-nocheck
-// TODO: Fix Position and Trade type mappings from IBKR to schema types
 import type {
   AccountInfo,
   OptionChainData,
@@ -2944,14 +2942,13 @@ class IbkrClient {
         return { status: `rejected_${resp.status}`, raw };
       }
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`[IBKR][placeOptionOrder][${reqId}] Error:`, err);
       await storage.createAuditLog({
         eventType: "IBKR_OPTION_ORDER",
-        details: `ERROR: ${errMsg}`,
+        details: `ERROR: ${err.message || 'Unknown error'}`,
         status: "FAILED"
       });
-      return { status: "error", raw: { error: errMsg } };
+      return { status: "error", raw: { error: err.message } };
     }
   }
 
@@ -3013,15 +3010,14 @@ class IbkrClient {
     const stopCOID = `STOP_${reqId.slice(0, 8)}`;
 
     // Build the primary SELL order (parent)
-    // FIX: Changed from LMT to MKT for instant execution (avoids stuck orders when market moves)
     const primaryOrder: any = {
       acctId: accountId,
       conid: optionConid,
-      orderType: 'MKT', // Market order for instant entry
+      orderType: 'LMT',
       side: 'SELL',
       tif: 'DAY',
       quantity: Math.floor(params.quantity),
-      // Note: MKT orders don't need price - removed limitPrice
+      price: params.limitPrice,
       cOID: parentCOID,
     };
 
@@ -3133,8 +3129,8 @@ class IbkrClient {
           symbol: optionSymbol,
           side: 'SELL',
           quantity: params.quantity,
-          orderType: 'MKT', // Changed from LMT to MKT
-          limitPrice: null, // MKT orders don't have limit price
+          orderType: 'LMT',
+          limitPrice: String(params.limitPrice),
           status: 'submitted',
         });
 
@@ -3167,14 +3163,13 @@ class IbkrClient {
         return { status: `rejected_${resp.status}`, raw };
       }
     } catch (err) {
-      const errMsg = err instanceof Error ? err.message : String(err);
       console.error(`[IBKR][placeOptionOrderWithStop][${reqId}] Error:`, err);
       await storage.createAuditLog({
         eventType: "IBKR_BRACKET_ORDER",
-        details: `ERROR: ${errMsg}`,
+        details: `ERROR: ${err.message || 'Unknown error'}`,
         status: "FAILED"
       });
-      return { status: "error", raw: { error: errMsg } };
+      return { status: "error", raw: { error: err.message } };
     }
   }
 
@@ -3198,7 +3193,7 @@ class IbkrClient {
       const subacctResp = await this.http.get(subacctUrl);
       console.log(`[IBKR][OPEN_ORDERS ${reqId}] Subaccounts response: ${subacctResp.status}, data=${JSON.stringify(subacctResp.data).slice(0, 200)}`);
     } catch (err) {
-      console.warn(`[IBKR][OPEN_ORDERS ${reqId}] Portfolio subaccounts init failed (non-fatal):`, err instanceof Error ? err.message : String(err));
+      console.warn(`[IBKR][OPEN_ORDERS ${reqId}] Portfolio subaccounts init failed (non-fatal):`, err.message);
     }
 
     // Expanded status regex to catch ALL possible order states including partial fills and pending states
@@ -3256,7 +3251,7 @@ class IbkrClient {
         return list;
       }
     } catch (err) {
-      console.error(`[IBKR][OPEN_ORDERS ${reqId}] PRIMARY endpoint error:`, err instanceof Error ? err.message : String(err));
+      console.error(`[IBKR][OPEN_ORDERS ${reqId}] PRIMARY endpoint error:`, err.message);
     }
 
     // FALLBACK: Try generic endpoint
@@ -3273,7 +3268,7 @@ class IbkrClient {
         return list;
       }
     } catch (err) {
-      console.error(`[IBKR][OPEN_ORDERS ${reqId}] FALLBACK endpoint error:`, err instanceof Error ? err.message : String(err));
+      console.error(`[IBKR][OPEN_ORDERS ${reqId}] FALLBACK endpoint error:`, err.message);
     }
 
     // LAST RESORT: Try live orders endpoint which may show orders not in regular endpoints
@@ -3290,7 +3285,7 @@ class IbkrClient {
         return list;
       }
     } catch (err) {
-      console.error(`[IBKR][OPEN_ORDERS ${reqId}] LIVE ORDERS endpoint error:`, err instanceof Error ? err.message : String(err));
+      console.error(`[IBKR][OPEN_ORDERS ${reqId}] LIVE ORDERS endpoint error:`, err.message);
     }
 
     console.log(`[IBKR][OPEN_ORDERS ${reqId}] FINAL RESULT: No orders found from any endpoint`);
@@ -3317,7 +3312,7 @@ class IbkrClient {
       }
     } catch (err) {
       console.error(`[IBKR][cancelOrder] Error canceling order ${orderId}:`, err);
-      return { success: false, message: err instanceof Error ? err.message : 'Unknown error' };
+      return { success: false, message: err.message || 'Unknown error' };
     }
   }
 
@@ -3454,7 +3449,7 @@ class IbkrClient {
       return {
         success: false,
         cleared: 0,
-        errors: [err instanceof Error ? err.message : 'Unknown error occurred while cancelling orders']
+        errors: [err.message || 'Unknown error occurred while cancelling orders']
       };
     }
   }
@@ -3612,68 +3607,6 @@ export async function getIbkrCookieString(): Promise<string> {
 export async function resolveSymbolConid(symbol: string): Promise<number | null> {
   if (!activeClient) throw new Error('IBKR client not initialized');
   return activeClient.resolveConid(symbol);
-}
-
-/**
- * Place a close order by conid (for 0DTE position manager)
- * Submits a market order to close a position
- */
-export async function placeCloseOrderByConid(
-  conid: number,
-  quantity: number,
-  side: 'BUY' | 'SELL'
-): Promise<{ success: boolean; orderId?: string; error?: string }> {
-  if (!activeClient) {
-    return { success: false, error: 'IBKR client not initialized' };
-  }
-
-  try {
-    await ensureIbkrReady();
-    const accountId = process.env.IBKR_ACCOUNT_ID || '';
-    if (!accountId) {
-      return { success: false, error: 'IBKR account ID not configured' };
-    }
-
-    const orderBody = {
-      orders: [
-        {
-          acctId: accountId,
-          conid: conid,
-          orderType: 'MKT',
-          side: side,
-          tif: 'DAY',
-          quantity: quantity,
-        },
-      ],
-    };
-
-    console.log(`[IBKR] Close order payload:`, JSON.stringify(orderBody));
-
-    const url = `/v1/api/iserver/account/${encodeURIComponent(accountId)}/orders`;
-    const response = await (activeClient as any).http.post(url, orderBody, {
-      headers: { 'Content-Type': 'application/json' },
-    });
-
-    console.log(`[IBKR] Close order response: status=${response.status}, data=`, response.data);
-
-    if (response.status >= 200 && response.status < 300) {
-      let orderId: string | undefined;
-      const raw = response.data;
-
-      if (raw?.order_id) {
-        orderId = String(raw.order_id);
-      } else if (Array.isArray(raw) && raw[0]) {
-        orderId = String(raw[0].order_id || raw[0].orderId || raw[0].id || '');
-      }
-
-      return { success: true, orderId };
-    } else {
-      return { success: false, error: `HTTP ${response.status}: ${JSON.stringify(response.data)}` };
-    }
-  } catch (err: any) {
-    console.error('[IBKR] Close order error:', err);
-    return { success: false, error: err?.message || 'Unknown error' };
-  }
 }
 
 // Historical data response types

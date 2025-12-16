@@ -1,5 +1,3 @@
-// @ts-nocheck
-// TODO: Fix spread argument in res.json call
 import express, { type Request, type Response, type NextFunction } from "express";
 // Only load .env file in development
 if (process.env.NODE_ENV !== 'production') {

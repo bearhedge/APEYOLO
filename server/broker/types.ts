@@ -31,6 +31,5 @@ export type BrokerStatus = {
   provider: BrokerProviderName;
   env: BrokerEnv;
   connected: boolean;
-  status?: string;  // Current status message
 };
 
