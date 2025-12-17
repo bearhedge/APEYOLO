@@ -37,6 +37,7 @@ import {
   getMTDRange,
   formatPeriodLabel,
 } from '@/lib/solana';
+import { getSasExplorerUrl } from '@/lib/sas-client';
 
 // Period option type for the selector
 interface PeriodOption {
@@ -60,7 +61,17 @@ const DEFAULT_MANDATE: CreateMandateRequest = {
 
 export function DeFi() {
   const { connected } = useWallet();
-  const { attestations, loading: attestationsLoading, cluster } = useWalletContext();
+  const {
+    attestations,
+    loading: attestationsLoading,
+    cluster,
+    // SAS Integration
+    sasReady,
+    sasError,
+    checkingSas,
+    userHasMandate,
+    mandateData,
+  } = useWalletContext();
 
   // Mandate state
   const [mandate, setMandate] = useState<Mandate | null>(null);
@@ -190,12 +201,26 @@ export function DeFi() {
     }
   };
 
-  // Submit attestation to Solana (placeholder for now)
+  // Submit attestation to Solana via SAS
   const handleAttest = async () => {
     if (!previewData || !connected) return;
 
-    // TODO: Implement actual Solana transaction
-    alert('Solana program not yet deployed. Coming soon!');
+    if (!sasReady) {
+      alert(
+        'Solana Attestation Service infrastructure not ready.\n\n' +
+        (sasError || 'Admin setup required: Credential and Schema must be created first.')
+      );
+      return;
+    }
+
+    // TODO: Implement SAS attestation transaction
+    // 1. Create attestation data from previewData
+    // 2. Call createAttestation from WalletProvider
+    // 3. Show success with explorer link
+    alert(
+      'SAS infrastructure detected!\n\n' +
+      'Attestation creation will be enabled once the admin creates the APEYOLO credential and schema on-chain.'
+    );
   };
 
   // Records table columns
@@ -417,13 +442,36 @@ export function DeFi() {
               <FileCheck className="w-5 h-5 text-electric" />
               <h3 className="text-lg font-semibold">Create Record</h3>
             </div>
-            <span className={`px-2 py-1 text-xs rounded-full ${
-              cluster === 'devnet'
-                ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
-                : 'bg-green-500/20 text-green-400 border border-green-500/30'
-            }`}>
-              {cluster === 'devnet' ? 'Devnet' : 'Mainnet'}
-            </span>
+            <div className="flex items-center gap-2">
+              {/* SAS Status Badge */}
+              {checkingSas ? (
+                <span className="px-2 py-1 text-xs rounded-full bg-zinc-500/20 text-zinc-400 border border-zinc-500/30 flex items-center gap-1">
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                  SAS
+                </span>
+              ) : sasReady ? (
+                <span className="px-2 py-1 text-xs rounded-full bg-green-500/20 text-green-400 border border-green-500/30 flex items-center gap-1">
+                  <ShieldCheck className="w-3 h-3" />
+                  SAS Ready
+                </span>
+              ) : (
+                <span
+                  className="px-2 py-1 text-xs rounded-full bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center gap-1 cursor-help"
+                  title={sasError || 'SAS infrastructure not ready'}
+                >
+                  <AlertCircle className="w-3 h-3" />
+                  SAS Pending
+                </span>
+              )}
+              {/* Cluster Badge */}
+              <span className={`px-2 py-1 text-xs rounded-full ${
+                cluster === 'devnet'
+                  ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
+                  : 'bg-green-500/20 text-green-400 border border-green-500/30'
+              }`}>
+                {cluster === 'devnet' ? 'Devnet' : 'Mainnet'}
+              </span>
+            </div>
           </div>
 
           {/* Period Selector */}
@@ -531,11 +579,29 @@ export function DeFi() {
             </button>
             <button
               onClick={handleAttest}
-              disabled={!previewData || !connected}
-              className="px-6 py-2 bg-electric text-black font-medium rounded-lg hover:bg-electric/90 active:bg-electric/80 active:translate-y-px transition-all disabled:bg-zinc-600 disabled:text-zinc-400 disabled:cursor-not-allowed flex items-center gap-2"
+              disabled={!previewData || !connected || checkingSas}
+              className={`px-6 py-2 font-medium rounded-lg transition-all flex items-center gap-2 ${
+                !sasReady && !checkingSas
+                  ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30 hover:bg-amber-500/30'
+                  : 'bg-electric text-black hover:bg-electric/90 active:bg-electric/80 active:translate-y-px disabled:bg-zinc-600 disabled:text-zinc-400'
+              } disabled:cursor-not-allowed`}
             >
-              <Zap className="w-4 h-4" />
-              Create Record
+              {checkingSas ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  Checking SAS...
+                </>
+              ) : !sasReady ? (
+                <>
+                  <AlertCircle className="w-4 h-4" />
+                  SAS Setup Required
+                </>
+              ) : (
+                <>
+                  <Zap className="w-4 h-4" />
+                  Create Record
+                </>
+              )}
             </button>
           </div>
         </div>
@@ -574,8 +640,9 @@ export function DeFi() {
             <div>
               <p className="text-silver text-sm font-medium mb-1">About On-Chain Records</p>
               <p className="text-zinc-500 text-sm leading-relaxed">
-                Each record creates an immutable entry on Solana. The hash allows anyone to verify your trading claims.
-                Build verifiable credentials for DeFi reputation, fund management, or personal benchmarking.
+                Records are created using the <a href="https://attest.solana.com" target="_blank" rel="noopener noreferrer" className="text-electric hover:underline">Solana Attestation Service (SAS)</a>—the
+                official protocol for verifiable credentials on Solana. Each attestation creates an immutable, queryable entry
+                that anyone can verify. Build your on-chain track record for DeFi reputation, fund management, or personal benchmarking.
               </p>
             </div>
           </div>
