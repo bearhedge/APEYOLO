@@ -34,6 +34,7 @@ import engineRoutes from "./engineRoutes.js";
 import marketRoutes from "./marketRoutes.js";
 import jobRoutes, { initializeJobsSystem } from "./jobRoutes.js";
 import defiRoutes from "./defiRoutes.js";
+import agentRoutes from "./agentRoutes.js";
 import { getTodayOpeningSnapshot, getTodayClosingSnapshot, getPreviousClosingSnapshot, isMarketHours } from "./services/navSnapshot.js";
 
 // Helper function to get session from request
@@ -72,6 +73,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Register DeFi routes
   app.use('/api/defi', defiRoutes);
+
+  // Register Agent routes (LLM chat)
+  app.use('/api/agent', agentRoutes);
 
   // ==================== IBKR CREDENTIALS SETTINGS (Multi-Tenant) ====================
 
