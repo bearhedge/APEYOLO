@@ -1,5 +1,24 @@
 import { useState, useEffect } from 'react';
-import { RefreshCw, CheckCircle, XCircle, AlertCircle, Trash2, Key, Eye, EyeOff, Save, Building2 } from 'lucide-react';
+import { RefreshCw, CheckCircle, XCircle, AlertCircle, Trash2, Key, Eye, EyeOff, Save, Building2, Wallet, Copy, Loader2, ExternalLink } from 'lucide-react';
+import { useWallet, useConnection } from '@solana/wallet-adapter-react';
+import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
+import { Transaction, PublicKey } from '@solana/web3.js';
+import { useWalletContext } from '@/components/WalletProvider';
+import {
+  getCreateCredentialInstruction,
+  getCreateSchemaInstruction,
+  deriveCredentialPda,
+  deriveSchemaPda,
+  SOLANA_ATTESTATION_SERVICE_PROGRAM_ADDRESS,
+} from 'sas-lib';
+import { address, type Address } from '@solana/kit';
+import {
+  APEYOLO_CREDENTIAL_NAME,
+  APEYOLO_SCHEMA_NAME,
+  APEYOLO_SCHEMA_VERSION,
+  TRADING_MANDATE_SCHEMA_FIELDS,
+  TRADING_MANDATE_SCHEMA_LAYOUT,
+} from '@/lib/sas-client';
 import { SectionHeader } from '@/components/SectionHeader';
 import { LeftNav } from '@/components/LeftNav';
 import { Button } from '@/components/ui/button';
@@ -47,6 +66,185 @@ export function Settings() {
   const [showPrivateKey, setShowPrivateKey] = useState(false);
   const [credSaveResult, setCredSaveResult] = useState<any>(null);
   const [credTestResult, setCredTestResult] = useState<any>(null);
+
+  // Solana wallet and SAS setup state
+  const { connected: solanaConnected, publicKey: solanaPublicKey, signTransaction, disconnect: disconnectSolana } = useWallet();
+  const { connection: solanaConnection } = useConnection();
+  const { cluster, sasReady } = useWalletContext();
+  const [sasLoading, setSasLoading] = useState(false);
+  const [sasError, setSasError] = useState<string | null>(null);
+  const [sasCredentialAddress, setSasCredentialAddress] = useState<string | null>(null);
+  const [sasSchemaAddress, setSasSchemaAddress] = useState<string | null>(null);
+  const [sasCredentialTx, setSasCredentialTx] = useState<string | null>(null);
+  const [sasSchemaTx, setSasSchemaTx] = useState<string | null>(null);
+  const [sasCopied, setSasCopied] = useState<string | null>(null);
+  const [solBalance, setSolBalance] = useState<number | null>(null);
+
+  const isDevnet = cluster === 'devnet';
+
+  // Fetch SOL balance when wallet connected
+  useEffect(() => {
+    if (solanaConnected && solanaPublicKey && solanaConnection) {
+      solanaConnection.getBalance(solanaPublicKey).then(balance => {
+        setSolBalance(balance / 1e9);
+      }).catch(() => setSolBalance(null));
+    } else {
+      setSolBalance(null);
+    }
+  }, [solanaConnected, solanaPublicKey, solanaConnection]);
+
+  const copyToClipboard = (text: string, label: string) => {
+    navigator.clipboard.writeText(text);
+    setSasCopied(label);
+    setTimeout(() => setSasCopied(null), 2000);
+  };
+
+  const handleCreateCredential = async () => {
+    if (!solanaPublicKey || !signTransaction) {
+      setSasError('Wallet not connected');
+      return;
+    }
+
+    setSasLoading(true);
+    setSasError(null);
+
+    try {
+      const authorityAddress = address(solanaPublicKey.toBase58());
+
+      // Derive credential PDA
+      const [credentialPda] = await deriveCredentialPda({
+        authority: authorityAddress,
+        name: APEYOLO_CREDENTIAL_NAME,
+      });
+
+      // Get the instruction
+      const instruction = getCreateCredentialInstruction({
+        authority: authorityAddress,
+        name: APEYOLO_CREDENTIAL_NAME,
+      });
+
+      // Convert kit instruction to web3.js format
+      const tx = new Transaction();
+      tx.add({
+        keys: instruction.accounts.map((acc: any) => ({
+          pubkey: new PublicKey(acc.address),
+          isSigner: acc.role === 2 || acc.role === 3,
+          isWritable: acc.role === 1 || acc.role === 3,
+        })),
+        programId: new PublicKey(SOLANA_ATTESTATION_SERVICE_PROGRAM_ADDRESS),
+        data: Buffer.from(instruction.data),
+      });
+
+      const { blockhash, lastValidBlockHeight } = await solanaConnection.getLatestBlockhash();
+      tx.recentBlockhash = blockhash;
+      tx.feePayer = solanaPublicKey;
+
+      const signedTx = await signTransaction(tx);
+      const signature = await solanaConnection.sendRawTransaction(signedTx.serialize());
+
+      await solanaConnection.confirmTransaction({
+        signature,
+        blockhash,
+        lastValidBlockHeight,
+      });
+
+      setSasCredentialAddress(credentialPda);
+      setSasCredentialTx(signature);
+    } catch (err: any) {
+      if (err.message?.includes('already in use')) {
+        setSasError('Credential already exists! Proceed to create schema.');
+        const authorityAddress = address(solanaPublicKey.toBase58());
+        const [credentialPda] = await deriveCredentialPda({
+          authority: authorityAddress,
+          name: APEYOLO_CREDENTIAL_NAME,
+        });
+        setSasCredentialAddress(credentialPda);
+        setSasCredentialTx('already-exists');
+      } else {
+        setSasError(err.message || 'Failed to create credential');
+      }
+    } finally {
+      setSasLoading(false);
+    }
+  };
+
+  const handleCreateSchema = async () => {
+    if (!solanaPublicKey || !signTransaction || !sasCredentialAddress) {
+      setSasError('Credential not created yet');
+      return;
+    }
+
+    setSasLoading(true);
+    setSasError(null);
+
+    try {
+      const authorityAddress = address(solanaPublicKey.toBase58());
+      const credentialAddress = sasCredentialAddress as Address;
+
+      const [schemaPda] = await deriveSchemaPda({
+        credential: credentialAddress,
+        name: APEYOLO_SCHEMA_NAME,
+        version: APEYOLO_SCHEMA_VERSION,
+      });
+
+      const instruction = getCreateSchemaInstruction({
+        authority: authorityAddress,
+        credential: credentialAddress,
+        name: APEYOLO_SCHEMA_NAME,
+        version: APEYOLO_SCHEMA_VERSION,
+        fieldNames: TRADING_MANDATE_SCHEMA_FIELDS,
+        fieldLayout: TRADING_MANDATE_SCHEMA_LAYOUT,
+      });
+
+      const tx = new Transaction();
+      tx.add({
+        keys: instruction.accounts.map((acc: any) => ({
+          pubkey: new PublicKey(acc.address),
+          isSigner: acc.role === 2 || acc.role === 3,
+          isWritable: acc.role === 1 || acc.role === 3,
+        })),
+        programId: new PublicKey(SOLANA_ATTESTATION_SERVICE_PROGRAM_ADDRESS),
+        data: Buffer.from(instruction.data),
+      });
+
+      const { blockhash, lastValidBlockHeight } = await solanaConnection.getLatestBlockhash();
+      tx.recentBlockhash = blockhash;
+      tx.feePayer = solanaPublicKey;
+
+      const signedTx = await signTransaction(tx);
+      const signature = await solanaConnection.sendRawTransaction(signedTx.serialize());
+
+      await solanaConnection.confirmTransaction({
+        signature,
+        blockhash,
+        lastValidBlockHeight,
+      });
+
+      setSasSchemaAddress(schemaPda);
+      setSasSchemaTx(signature);
+    } catch (err: any) {
+      if (err.message?.includes('already in use')) {
+        setSasError('Schema already exists! Setup complete.');
+        const credentialAddress = sasCredentialAddress as Address;
+        const [schemaPda] = await deriveSchemaPda({
+          credential: credentialAddress,
+          name: APEYOLO_SCHEMA_NAME,
+          version: APEYOLO_SCHEMA_VERSION,
+        });
+        setSasSchemaAddress(schemaPda);
+        setSasSchemaTx('already-exists');
+      } else {
+        setSasError(err.message || 'Failed to create schema');
+      }
+    } finally {
+      setSasLoading(false);
+    }
+  };
+
+  const getExplorerUrl = (signature: string) => {
+    if (signature === 'already-exists') return null;
+    return `https://explorer.solana.com/tx/${signature}?cluster=${cluster}`;
+  };
 
   // Get queryClient to invalidate NAV header caches when connection status changes
   const queryClient = useQueryClient();
@@ -768,6 +966,217 @@ export function Settings() {
               </div>
             </div>
           </div>
+
+          {/* Solana On-Chain Card */}
+          <div className="bg-charcoal rounded-2xl border border-white/10 shadow-lg overflow-hidden mt-6">
+            {/* Header */}
+            <div className="flex items-center justify-between p-6 border-b border-white/10">
+              <div className="flex items-center gap-3">
+                <Wallet className="w-6 h-6" />
+                <h3 className="text-xl font-semibold">Solana</h3>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className={`px-2 py-1 text-xs rounded-full ${
+                  isDevnet ? 'bg-yellow-500/20 text-yellow-400' : 'bg-green-500/20 text-green-400'
+                }`}>
+                  {isDevnet ? 'Devnet' : 'Mainnet'}
+                </span>
+                {solanaConnected ? (
+                  <CheckCircle className="w-5 h-5 text-green-500" />
+                ) : (
+                  <XCircle className="w-5 h-5 text-zinc-500" />
+                )}
+              </div>
+            </div>
+
+            {/* Wallet Section */}
+            <div className="p-6 border-b border-white/10">
+              <h4 className="text-sm font-medium text-silver uppercase tracking-wider mb-4">Wallet</h4>
+
+              {solanaConnected && solanaPublicKey ? (
+                <>
+                  <div className="grid grid-cols-3 gap-4 mb-4">
+                    <div className="p-3 bg-dark-gray rounded-lg">
+                      <p className="text-xs text-silver mb-1">Address</p>
+                      <p className="text-sm font-mono truncate">{solanaPublicKey.toBase58().slice(0, 8)}...{solanaPublicKey.toBase58().slice(-6)}</p>
+                    </div>
+                    <div className="p-3 bg-dark-gray rounded-lg">
+                      <p className="text-xs text-silver mb-1">Network</p>
+                      <p className={`text-sm ${isDevnet ? 'text-yellow-400' : 'text-green-400'}`}>{isDevnet ? 'Devnet' : 'Mainnet'}</p>
+                    </div>
+                    <div className="p-3 bg-dark-gray rounded-lg">
+                      <p className="text-xs text-silver mb-1">Balance</p>
+                      <p className="text-sm tabular-nums">{solBalance !== null ? `${solBalance.toFixed(4)} SOL` : '—'}</p>
+                    </div>
+                  </div>
+                  <Button onClick={disconnectSolana} className="btn-secondary">
+                    Disconnect Wallet
+                  </Button>
+                </>
+              ) : (
+                <WalletMultiButton className="!bg-electric !text-black hover:!bg-electric/90 !rounded-lg !h-10 !px-6 !font-medium" />
+              )}
+            </div>
+
+            {/* SAS Setup Section - Only show when connected */}
+            {solanaConnected && (
+              <div className="p-6 border-b border-white/10">
+                <h4 className="text-sm font-medium text-silver uppercase tracking-wider mb-4">Attestation Service Setup</h4>
+
+                {/* Step indicators */}
+                <div className="space-y-3 mb-4">
+                  <div className="flex items-center justify-between p-3 bg-dark-gray rounded-lg">
+                    <div className="flex items-center gap-3">
+                      <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs ${
+                        sasCredentialAddress ? 'bg-green-500/20 text-green-400' : 'bg-white/10 text-silver'
+                      }`}>
+                        {sasCredentialAddress ? <CheckCircle className="w-4 h-4" /> : '1'}
+                      </span>
+                      <span>Credential</span>
+                    </div>
+                    {sasCredentialAddress ? (
+                      <div className="flex items-center gap-2">
+                        <code className="text-xs text-silver bg-black/50 px-2 py-1 rounded truncate max-w-[200px]">
+                          {sasCredentialAddress.slice(0, 8)}...
+                        </code>
+                        <button
+                          onClick={() => copyToClipboard(sasCredentialAddress, 'credential')}
+                          className="p-1 hover:bg-white/10 rounded"
+                        >
+                          <Copy className="w-3 h-3 text-silver" />
+                        </button>
+                        {sasCredentialTx && getExplorerUrl(sasCredentialTx) && (
+                          <a href={getExplorerUrl(sasCredentialTx)!} target="_blank" rel="noopener noreferrer" className="p-1 hover:bg-white/10 rounded">
+                            <ExternalLink className="w-3 h-3 text-electric" />
+                          </a>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-silver">Not created</span>
+                    )}
+                  </div>
+
+                  <div className="flex items-center justify-between p-3 bg-dark-gray rounded-lg">
+                    <div className="flex items-center gap-3">
+                      <span className={`w-6 h-6 rounded-full flex items-center justify-center text-xs ${
+                        sasSchemaAddress ? 'bg-green-500/20 text-green-400' : 'bg-white/10 text-silver'
+                      }`}>
+                        {sasSchemaAddress ? <CheckCircle className="w-4 h-4" /> : '2'}
+                      </span>
+                      <span>Schema</span>
+                    </div>
+                    {sasSchemaAddress ? (
+                      <div className="flex items-center gap-2">
+                        <code className="text-xs text-silver bg-black/50 px-2 py-1 rounded truncate max-w-[200px]">
+                          {sasSchemaAddress.slice(0, 8)}...
+                        </code>
+                        <button
+                          onClick={() => copyToClipboard(sasSchemaAddress, 'schema')}
+                          className="p-1 hover:bg-white/10 rounded"
+                        >
+                          <Copy className="w-3 h-3 text-silver" />
+                        </button>
+                        {sasSchemaTx && getExplorerUrl(sasSchemaTx) && (
+                          <a href={getExplorerUrl(sasSchemaTx)!} target="_blank" rel="noopener noreferrer" className="p-1 hover:bg-white/10 rounded">
+                            <ExternalLink className="w-3 h-3 text-electric" />
+                          </a>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-xs text-silver">Not created</span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Error display */}
+                {sasError && (
+                  <div className="p-3 bg-red-900/20 border border-red-500/30 rounded-lg mb-4">
+                    <p className="text-sm text-red-400">{sasError}</p>
+                  </div>
+                )}
+
+                {/* Action buttons */}
+                <div className="flex gap-3">
+                  <Button
+                    onClick={handleCreateCredential}
+                    disabled={!!sasCredentialAddress || sasLoading}
+                    className="btn-primary"
+                  >
+                    {sasLoading && !sasCredentialAddress ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Creating...
+                      </>
+                    ) : sasCredentialAddress ? (
+                      'Credential Created'
+                    ) : (
+                      'Create Credential'
+                    )}
+                  </Button>
+                  <Button
+                    onClick={handleCreateSchema}
+                    disabled={!sasCredentialAddress || !!sasSchemaAddress || sasLoading}
+                    className="btn-secondary"
+                  >
+                    {sasLoading && sasCredentialAddress && !sasSchemaAddress ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Creating...
+                      </>
+                    ) : sasSchemaAddress ? (
+                      'Schema Created'
+                    ) : (
+                      'Create Schema'
+                    )}
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {/* Status Section */}
+            <div className="p-6 bg-dark-gray/50">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-silver">SAS Status:</span>
+                  {sasReady || (sasCredentialAddress && sasSchemaAddress) ? (
+                    <span className="text-sm text-green-400">Ready</span>
+                  ) : (
+                    <span className="text-sm text-amber-400">Setup Required</span>
+                  )}
+                </div>
+                {solanaConnected && solanaPublicKey && (sasCredentialAddress && sasSchemaAddress) && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-silver">Authority:</span>
+                    <code className="text-xs text-silver bg-black/50 px-2 py-1 rounded">
+                      {solanaPublicKey.toBase58().slice(0, 8)}...
+                    </code>
+                    <button
+                      onClick={() => copyToClipboard(solanaPublicKey.toBase58(), 'authority')}
+                      className={`p-1 rounded ${sasCopied === 'authority' ? 'bg-green-500/20 text-green-400' : 'hover:bg-white/10'}`}
+                    >
+                      {sasCopied === 'authority' ? <CheckCircle className="w-3 h-3" /> : <Copy className="w-3 h-3 text-silver" />}
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Success message when setup complete */}
+              {sasCredentialAddress && sasSchemaAddress && (
+                <div className="mt-4 p-3 bg-green-900/20 border border-green-500/30 rounded-lg">
+                  <p className="text-sm text-green-400">
+                    SAS setup complete! Copy the authority address above to update the code.
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* Copied toast */}
+          {sasCopied && (
+            <div className="fixed bottom-6 right-6 bg-green-500 text-white px-4 py-2 rounded-lg shadow-lg z-50">
+              Copied to clipboard!
+            </div>
+          )}
         </div>
       </div>
     </div>

@@ -24,6 +24,13 @@ import {
   type TradingContext,
   type DualBrainResult,
 } from './lib/orchestrator';
+import {
+  parseToolCall,
+  executeToolCall,
+  getToolDefinitions,
+  type ToolCall,
+  type ToolResult,
+} from './lib/agent-tools';
 
 // In-memory store for pending proposals (in production, use Redis or DB)
 const pendingProposals = new Map<string, DualBrainResult>();
@@ -258,12 +265,56 @@ router.post('/chat/stream', requireAuth, async (req: Request, res: Response) => 
       if (chunk.done) {
         // Final parse
         const finalParsed = parseThinkingFromStream(fullContent);
+        const responseContent = finalParsed.response || fullContent;
 
-        res.write(`data: ${JSON.stringify({
-          type: 'done',
-          fullContent: finalParsed.response || fullContent,
-          reasoning: finalParsed.thinking,
-        })}\n\n`);
+        // Check for tool call in response
+        const toolCall = parseToolCall(responseContent);
+
+        if (toolCall) {
+          // Emit action start event
+          res.write(`data: ${JSON.stringify({
+            type: 'status',
+            phase: 'executing',
+          })}\n\n`);
+
+          res.write(`data: ${JSON.stringify({
+            type: 'action',
+            tool: toolCall.tool,
+            args: toolCall.args,
+            status: 'running',
+          })}\n\n`);
+
+          // Execute the tool
+          const toolResult = await executeToolCall(toolCall);
+
+          // Emit action complete event
+          res.write(`data: ${JSON.stringify({
+            type: 'action',
+            tool: toolCall.tool,
+            args: toolCall.args,
+            status: toolResult.success ? 'done' : 'error',
+            result: toolResult.data,
+            error: toolResult.error,
+          })}\n\n`);
+
+          // Emit done with tool result context
+          res.write(`data: ${JSON.stringify({
+            type: 'done',
+            fullContent: responseContent,
+            reasoning: finalParsed.thinking,
+            toolCall: {
+              tool: toolCall.tool,
+              result: toolResult,
+            },
+          })}\n\n`);
+        } else {
+          // No tool call - normal done
+          res.write(`data: ${JSON.stringify({
+            type: 'done',
+            fullContent: responseContent,
+            reasoning: finalParsed.thinking,
+          })}\n\n`);
+        }
 
         // Update status - idle
         res.write(`data: ${JSON.stringify({

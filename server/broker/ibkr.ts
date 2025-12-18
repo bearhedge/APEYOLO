@@ -3111,7 +3111,8 @@ class IbkrClient {
 
       if (Array.isArray(confirmedRaw)) {
         for (const item of confirmedRaw) {
-          if (item.order_id) {
+          // Only accept valid order IDs (IBKR returns -1 for rejected orders)
+          if (item.order_id && Number(item.order_id) > 0) {
             // First order_id is primary, second is stop
             if (!primaryOrderId) {
               primaryOrderId = String(item.order_id);
@@ -3120,8 +3121,23 @@ class IbkrClient {
             }
           }
         }
-      } else if (confirmedRaw?.order_id) {
+      } else if (confirmedRaw?.order_id && Number(confirmedRaw.order_id) > 0) {
         primaryOrderId = String(confirmedRaw.order_id);
+      }
+
+      // Check if primary order failed (no valid order ID returned)
+      if (!primaryOrderId) {
+        console.error(`[IBKR][placeOptionOrderWithStop][${reqId}] Primary order failed - no valid order ID (IBKR may have rejected)`);
+        await storage.createAuditLog({
+          eventType: "IBKR_BRACKET_ORDER",
+          details: `REJECTED: No valid order ID returned (order_id was -1 or missing)`,
+          status: "FAILED"
+        });
+        return {
+          status: "rejected_no_order_id",
+          raw: confirmedRaw,
+          error: "IBKR rejected order - no valid order ID returned (check margin/buying power)"
+        };
       }
 
       const optionSymbol = `${params.symbol}${params.expiration}${params.optionType === 'PUT' ? 'P' : 'C'}${params.strike}`;

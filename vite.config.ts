@@ -3,12 +3,18 @@ import react from "@vitejs/plugin-react";
 import path from "path";
 import { fileURLToPath } from "url";
 import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
+import { nodePolyfills } from "vite-plugin-node-polyfills";
 
 // Node 18 does not provide import.meta.dirname; derive it from import.meta.url
 const rootDir = path.dirname(fileURLToPath(import.meta.url));
 
 export default defineConfig({
   plugins: [
+    // Node.js polyfills for Solana/SAS libraries (Buffer, process, etc.)
+    nodePolyfills({
+      include: ["buffer", "process"],
+      globals: { Buffer: true, process: true },
+    }),
     react(),
     runtimeErrorOverlay(),
     ...(process.env.NODE_ENV !== "production" &&

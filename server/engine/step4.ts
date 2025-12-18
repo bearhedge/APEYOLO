@@ -140,9 +140,8 @@ export async function calculatePositionSize(
     stopMultiplier
   );
 
-  // Get contracts from Step 3's risk assessment (fixed based on VIX regime)
-  // LOW/NORMAL = 2, ELEVATED/HIGH = 1, EXTREME = 0
-  const contracts = strikeSelection.riskAssessment?.contracts || 2;
+  // Fixed 2 contracts per side (override dynamic calculation)
+  const contracts = 2;
 
   // Calculate max loss allowed for validation/display (not for contract count)
   const maxLossPct = MAX_LOSS_PCT[riskProfile];
