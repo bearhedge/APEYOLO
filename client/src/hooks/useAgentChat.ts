@@ -10,6 +10,7 @@
 
 import { useState, useCallback, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useAgentStore, type AgentSSEEvent } from '@/lib/agentStore';
 
 export interface ChatMessage {
   id: string;
@@ -179,9 +180,16 @@ export function useAgentChat(options: UseAgentChatOptions = {}) {
 
   /**
    * Send a message with streaming response
+   * Now also updates the agent store with structured events
    */
   const sendMessageStreaming = useCallback(async (content: string) => {
     if (!content.trim() || isStreaming) return;
+
+    // Get agent store actions
+    const { handleSSEEvent, resetState } = useAgentStore.getState();
+
+    // Reset agent state for new conversation turn
+    resetState();
 
     // Add user message
     const userMessage: ChatMessage = {
@@ -250,21 +258,47 @@ export function useAgentChat(options: UseAgentChatOptions = {}) {
         for (const line of lines) {
           if (line.startsWith('data: ')) {
             try {
-              const data = JSON.parse(line.slice(6));
-              if (data.type === 'chunk' && data.content) {
-                fullContent += data.content;
-                setMessages(prev =>
-                  prev.map(m =>
-                    m.id === assistantId
-                      ? { ...m, content: fullContent }
-                      : m
-                  )
-                );
-              } else if (data.type === 'error') {
-                throw new Error(data.error);
+              const data = JSON.parse(line.slice(6)) as AgentSSEEvent;
+
+              // Forward all events to the agent store
+              handleSSEEvent(data);
+
+              // Handle specific events for chat display
+              switch (data.type) {
+                case 'chunk':
+                  // Response content (not reasoning)
+                  if (data.content) {
+                    fullContent += data.content;
+                    setMessages(prev =>
+                      prev.map(m =>
+                        m.id === assistantId
+                          ? { ...m, content: fullContent }
+                          : m
+                      )
+                    );
+                  }
+                  break;
+
+                case 'done':
+                  // Use fullContent from done event if available
+                  if (data.fullContent) {
+                    setMessages(prev =>
+                      prev.map(m =>
+                        m.id === assistantId
+                          ? { ...m, content: data.fullContent!, isStreaming: false }
+                          : m
+                      )
+                    );
+                  }
+                  break;
+
+                case 'error':
+                  throw new Error(data.error || 'Unknown error');
               }
             } catch (parseError) {
               // Skip non-JSON lines
+              if (parseError instanceof SyntaxError) continue;
+              throw parseError;
             }
           }
         }
@@ -288,6 +322,7 @@ export function useAgentChat(options: UseAgentChatOptions = {}) {
               : m
           )
         );
+        handleSSEEvent({ type: 'status', phase: 'idle' });
       } else {
         // Replace streaming message with error
         setMessages(prev =>
@@ -301,6 +336,7 @@ export function useAgentChat(options: UseAgentChatOptions = {}) {
               : m
           )
         );
+        handleSSEEvent({ type: 'error', error: error.message });
       }
     } finally {
       setIsStreaming(false);

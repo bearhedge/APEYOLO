@@ -3,6 +3,7 @@ import { CheckCircle, XCircle, TrendingUp, Shield, Clock, AlertTriangle } from '
 import { getAccount, getDiag } from '@/lib/api';
 import { useStore } from '@/lib/store';
 import { useLocation } from 'wouter';
+import { AgentContextPanel } from './AgentContextPanel';
 
 interface ContextCard {
   title: string;
@@ -12,6 +13,11 @@ interface ContextCard {
 
 export function ContextPanel() {
   const [location] = useLocation();
+
+  // Show agent-specific panel on /agent route
+  if (location === '/agent') {
+    return <AgentContextPanel />;
+  }
 
   const { data: account } = useQuery({
     queryKey: ['/api/account'],

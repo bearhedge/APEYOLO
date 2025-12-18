@@ -130,10 +130,41 @@ router.post('/chat', requireAuth, async (req: Request, res: Response) => {
 });
 
 /**
+ * Parse DeepSeek-R1's <think> blocks from streaming content
+ * Returns thinking content separately from response content
+ */
+function parseThinkingFromStream(fullContent: string): {
+  thinking: string | null;
+  response: string;
+  isThinkingComplete: boolean;
+} {
+  // Check if we have a complete <think>...</think> block
+  const thinkMatch = fullContent.match(/<think>([\s\S]*?)<\/think>/);
+
+  if (thinkMatch) {
+    // Complete thinking block found
+    const thinking = thinkMatch[1].trim();
+    const response = fullContent.replace(/<think>[\s\S]*?<\/think>/, '').trim();
+    return { thinking, response, isThinkingComplete: true };
+  }
+
+  // Check if we're in the middle of a thinking block
+  const openThinkMatch = fullContent.match(/<think>([\s\S]*)$/);
+  if (openThinkMatch) {
+    // Still inside thinking block
+    return { thinking: openThinkMatch[1], response: '', isThinkingComplete: false };
+  }
+
+  // No thinking block, just regular content
+  return { thinking: null, response: fullContent, isThinkingComplete: true };
+}
+
+/**
  * POST /api/agent/chat/stream
  *
  * Send a chat message and receive streaming response.
  * Uses Server-Sent Events (SSE) for real-time streaming.
+ * Parses DeepSeek-R1's <think> blocks and emits them as separate 'reasoning' events.
  * Requires authentication.
  */
 router.post('/chat/stream', requireAuth, async (req: Request, res: Response) => {
@@ -156,21 +187,88 @@ router.post('/chat/stream', requireAuth, async (req: Request, res: Response) => 
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
 
-    // Stream response chunks
+    // Emit status event - agent is now thinking
+    res.write(`data: ${JSON.stringify({
+      type: 'status',
+      phase: 'thinking',
+    })}\n\n`);
+
+    // Stream response chunks with thinking detection
     let fullContent = '';
+    let lastParsed = { thinking: null as string | null, response: '', isThinkingComplete: false };
+    let thinkingEmitted = false;
+    let inThinkingMode = false;
+
     for await (const chunk of streamChatWithLLM({ messages, model, stream: true })) {
       if (chunk.message?.content) {
         fullContent += chunk.message.content;
-        res.write(`data: ${JSON.stringify({
-          type: 'chunk',
-          content: chunk.message.content,
-        })}\n\n`);
+
+        // Parse for thinking blocks
+        const parsed = parseThinkingFromStream(fullContent);
+
+        // Detect when we enter thinking mode
+        if (!inThinkingMode && fullContent.includes('<think>')) {
+          inThinkingMode = true;
+        }
+
+        // Stream reasoning content while inside thinking block
+        if (inThinkingMode && !parsed.isThinkingComplete && parsed.thinking) {
+          // Only emit new thinking content
+          const newThinking = parsed.thinking.slice(lastParsed.thinking?.length || 0);
+          if (newThinking) {
+            res.write(`data: ${JSON.stringify({
+              type: 'reasoning',
+              content: newThinking,
+              isComplete: false,
+            })}\n\n`);
+          }
+        }
+
+        // Emit complete thinking when block closes
+        if (parsed.isThinkingComplete && parsed.thinking && !thinkingEmitted) {
+          res.write(`data: ${JSON.stringify({
+            type: 'reasoning',
+            content: parsed.thinking,
+            isComplete: true,
+          })}\n\n`);
+          thinkingEmitted = true;
+          inThinkingMode = false;
+
+          // Update status - moving from thinking to responding
+          res.write(`data: ${JSON.stringify({
+            type: 'status',
+            phase: 'responding',
+          })}\n\n`);
+        }
+
+        // Stream response content (non-thinking)
+        if (parsed.isThinkingComplete && parsed.response) {
+          const newResponse = parsed.response.slice(lastParsed.response?.length || 0);
+          if (newResponse) {
+            res.write(`data: ${JSON.stringify({
+              type: 'chunk',
+              content: newResponse,
+            })}\n\n`);
+          }
+        }
+
+        lastParsed = parsed;
       }
 
       if (chunk.done) {
+        // Final parse
+        const finalParsed = parseThinkingFromStream(fullContent);
+
         res.write(`data: ${JSON.stringify({
           type: 'done',
-          fullContent,
+          fullContent: finalParsed.response || fullContent,
+          reasoning: finalParsed.thinking,
+        })}\n\n`);
+
+        // Update status - idle
+        res.write(`data: ${JSON.stringify({
+          type: 'status',
+          phase: 'idle',
         })}\n\n`);
       }
     }
@@ -184,6 +282,10 @@ router.post('/chat/stream', requireAuth, async (req: Request, res: Response) => 
       res.write(`data: ${JSON.stringify({
         type: 'error',
         error: error.message || 'Stream error',
+      })}\n\n`);
+      res.write(`data: ${JSON.stringify({
+        type: 'status',
+        phase: 'error',
       })}\n\n`);
       res.end();
     } else {
