@@ -1,5 +1,52 @@
 ## 2025-12-18
 
+### Agent Context Panel - Real-time UI Updates (IN PROGRESS)
+**Session Cut Short Due to API Errors**
+
+#### Completed This Session
+- **Added**: Context SSE event emission after `getMarketData` tool execution
+  - When getMarketData succeeds, server now emits `type: 'context'` event
+  - Contains: `{ spyPrice, vix, marketOpen, lastUpdate }`
+  - Client store should update AgentContextPanel automatically
+
+#### Remaining Tasks (Next Session)
+1. **Fix ReasoningBox Display Logic** in `AgentContextPanel.tsx`
+   - Issue: ReasoningBox shows "No reasoning yet" even when reasoning is received
+   - Fix: Check `reasoningBuffer` from store, not just `displayReasoning`
+   - The `displayReasoning` is the final parsed reasoning, `reasoningBuffer` accumulates during streaming
+
+2. **Expose reasoningBuffer** in `agentStore.ts`
+   - Currently `reasoningBuffer` may not be exposed to components
+   - Components need access to show "Thinking..." during stream
+
+3. **Verify Tool Call Display**
+   - ACTION text appearing in chat is expected if tool also executes
+   - Ensure action results are prominently displayed in the UI
+
+#### Data Flow (After All Fixes)
+```
+User: "what's the SPY price?"
+         ↓
+LLM responds with ACTION: getMarketData()
+         ↓
+Server parses tool call at stream end
+         ↓
+executeToolCall(getMarketData) → Returns { spy: { price: 590.23 }, vix: { level: 15.5 } }
+         ↓
+Server emits SSE: { type: 'context', context: { spyPrice: 590.23, vix: 15.5 } } ← DONE
+         ↓
+Client store updates via handleSSEEvent() → case 'context' → setContext()
+         ↓
+AgentContextPanel re-renders: VIX: 15.50, SPY: $590.23
+```
+
+#### Verification Tests (When Complete)
+1. Ask "what's the SPY price?" - Context panel should update with real price
+2. Reasoning panel should show LLM thinking during response generation
+3. Tool execution results should be visible (either in chat or action panel)
+
+---
+
 ### Agent Operations Panel (Phase 1: Observable Infrastructure)
 - **Added**: AgentContextPanel with 6 boxes for transparent agent operations
   - **CONTEXT** - Market state (VIX, SPY price, positions)

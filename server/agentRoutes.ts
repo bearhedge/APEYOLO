@@ -33,6 +33,51 @@ import {
 } from './lib/agent-tools';
 import { ensureIbkrReady } from './broker/ibkr';
 
+/**
+ * Format tool execution result into a human-readable response for the chat.
+ * This replaces the raw "ACTION: toolName()" text with actual data.
+ */
+function formatToolResponse(tool: string, data: any): string {
+  if (tool === 'getMarketData' && data) {
+    const { spy, vix, market, regime } = data;
+    const parts: string[] = [];
+
+    if (spy?.price) {
+      const changeStr = spy.changePercent
+        ? ` (${spy.changePercent >= 0 ? '+' : ''}${spy.changePercent.toFixed(2)}%)`
+        : '';
+      parts.push(`SPY is at $${spy.price.toFixed(2)}${changeStr}`);
+    }
+
+    if (vix?.level) {
+      const regimeStr = vix.regime ? ` (${vix.regime})` : '';
+      parts.push(`VIX is at ${vix.level.toFixed(2)}${regimeStr}`);
+    }
+
+    if (market) {
+      parts.push(market.isOpen ? 'Market is open' : 'Market is closed (pre-market/after-hours)');
+    }
+
+    if (regime?.reason) {
+      parts.push(regime.reason);
+    }
+
+    return parts.length > 0
+      ? parts.join('. ') + '.'
+      : 'Market data retrieved successfully.';
+  }
+
+  if (tool === 'getPositions' && data) {
+    if (Array.isArray(data) && data.length > 0) {
+      return `Found ${data.length} open position(s).`;
+    }
+    return 'No open positions.';
+  }
+
+  // Default: return JSON for other tools
+  return typeof data === 'object' ? JSON.stringify(data, null, 2) : String(data);
+}
+
 // In-memory store for pending proposals (in production, use Redis or DB)
 const pendingProposals = new Map<string, DualBrainResult>();
 
@@ -313,10 +358,28 @@ router.post('/chat/stream', requireAuth, async (req: Request, res: Response) => 
             error: toolResult.error,
           })}\n\n`);
 
-          // Emit done with tool result context
+          // If getMarketData tool succeeded, emit context event for UI update
+          if (toolCall.tool === 'getMarketData' && toolResult.success && toolResult.data) {
+            const { spy, vix, market } = toolResult.data;
+            res.write(`data: ${JSON.stringify({
+              type: 'context',
+              context: {
+                spyPrice: spy?.price || 0,
+                vix: vix?.level || 0,
+                marketOpen: market?.isOpen || false,
+                lastUpdate: Date.now(),
+              },
+            })}\n\n`);
+          }
+
+          // Emit done with formatted tool result (not raw "ACTION: getMarketData()" text)
+          const formattedContent = toolResult.success
+            ? formatToolResponse(toolCall.tool, toolResult.data)
+            : `Error: ${toolResult.error || 'Tool execution failed'}`;
+
           res.write(`data: ${JSON.stringify({
             type: 'done',
-            fullContent: responseContent,
+            fullContent: formattedContent,
             reasoning: finalParsed.thinking,
             toolCall: {
               tool: toolCall.tool,

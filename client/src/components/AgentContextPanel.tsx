@@ -103,19 +103,23 @@ function ContextBox() {
 
 // Reasoning Box - AI's chain of thought
 function ReasoningBox() {
-  const { reasoning, phase } = useAgentStore();
+  const { reasoning, reasoningBuffer, phase } = useAgentStore();
 
   const isThinking = phase === 'thinking';
+  // Show final reasoning if available, otherwise show streaming buffer
+  const displayReasoning = reasoning || reasoningBuffer;
 
   return (
     <Card title="Reasoning">
       <div className="h-32 overflow-y-auto">
-        {reasoning ? (
+        {displayReasoning ? (
           <p className="text-sm text-silver whitespace-pre-wrap leading-relaxed">
-            {reasoning}
+            {displayReasoning}
+            {/* Show cursor while still streaming */}
+            {isThinking && !reasoning && <span className="animate-pulse">|</span>}
           </p>
         ) : isThinking ? (
-          <p className="text-sm text-silver italic">Thinking...</p>
+          <p className="text-sm text-silver italic animate-pulse">Thinking...</p>
         ) : (
           <p className="text-sm text-silver/50 text-center py-4">
             No reasoning yet

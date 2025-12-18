@@ -2311,7 +2311,7 @@ class IbkrClient {
         throw new Error(`Could not resolve conid for ${symbol}`);
       }
 
-      let snap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${conid}`);
+      let snap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${conid}&outsideRth=true`);
       console.log(`[IBKR][getMarketData][${reqId}] IBKR snapshot response: status=${snap.status} raw=${JSON.stringify(snap.data).slice(0, 500)}`);
 
       // Handle "no bridge" error by re-establishing gateway and retrying
@@ -2319,7 +2319,7 @@ class IbkrClient {
         console.log(`[IBKR][getMarketData][${reqId}] Got "no bridge" error, re-establishing gateway...`);
         await this.establishGateway();
         await new Promise(r => setTimeout(r, 1000)); // Brief pause after reconnect
-        snap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${conid}`);
+        snap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${conid}&outsideRth=true`);
         console.log(`[IBKR][getMarketData][${reqId}] Retry after gateway: status=${snap.status}`);
       }
 
