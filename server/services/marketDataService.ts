@@ -94,25 +94,9 @@ export async function getMarketData(symbol: string): Promise<MarketData> {
 
   const broker = getBroker();
 
-  // Use mock data if not connected to IBKR
-  if (broker.status.provider === 'mock') {
-    const mockData: MarketData = {
-      symbol,
-      price: symbol === 'SPY' ? 450.50 + (Math.random() - 0.5) * 2 :
-             symbol === 'VIX' ? 15.30 + (Math.random() - 0.5) * 0.5 : 100,
-      bid: 0,
-      ask: 0,
-      volume: Math.floor(Math.random() * 1000000),
-      change: (Math.random() - 0.5) * 5,
-      changePercent: (Math.random() - 0.5) * 2,
-      timestamp: new Date()
-    };
-    mockData.bid = mockData.price - 0.01;
-    mockData.ask = mockData.price + 0.01;
-
-    console.log(`[MarketData] Using MOCK data for ${symbol}: $${mockData.price.toFixed(2)}`);
-    cache.set(cacheKey, mockData);
-    return mockData;
+  // NO MOCK DATA: Require real IBKR connection
+  if (broker.status.provider === 'mock' || broker.status.provider === 'none') {
+    throw new Error(`[IBKR] Broker not configured. Cannot fetch market data for ${symbol}. Please configure IBKR credentials.`);
   }
 
   // Ensure IBKR is ready
@@ -166,19 +150,9 @@ export async function getVIXData(): Promise<VIXData> {
 
   const broker = getBroker();
 
-  // Use mock data if not connected to IBKR
-  if (broker.status.provider === 'mock') {
-    const vixData: VIXData = {
-      value: 15.30 + (Math.random() - 0.5) * 0.5,
-      change: (Math.random() - 0.5) * 0.5,
-      changePercent: (Math.random() - 0.5) * 2,
-      high: 16.00,
-      low: 14.50,
-      timestamp: new Date()
-    };
-    console.log(`[MarketData] Using MOCK VIX: ${vixData.value.toFixed(2)}`);
-    cache.set(cacheKey, vixData);
-    return vixData;
+  // NO MOCK DATA: Require real IBKR connection
+  if (broker.status.provider === 'mock' || broker.status.provider === 'none') {
+    throw new Error('[IBKR] Broker not configured. Cannot fetch VIX data. Please configure IBKR credentials.');
   }
 
   try {
@@ -201,20 +175,9 @@ export async function getVIXData(): Promise<VIXData> {
     cache.set(cacheKey, vixData);
     return vixData;
   } catch (error) {
-    console.error('[MarketData] Error fetching VIX from IBKR, using fallback:', error);
-
-    // Fallback to default VIX if IBKR fails
-    const vixData: VIXData = {
-      value: 17.50,
-      change: 0,
-      changePercent: 0,
-      high: 18.00,
-      low: 17.00,
-      timestamp: new Date()
-    };
-
-    cache.set(cacheKey, vixData);
-    return vixData;
+    console.error('[MarketData] Error fetching VIX from IBKR:', error);
+    // NO FALLBACK: Propagate error - require live IBKR data
+    throw new Error(`[IBKR] Failed to fetch VIX data: ${error instanceof Error ? error.message : 'Unknown error'}`);
   }
 }
 
@@ -230,63 +193,14 @@ export async function getOptionChain(
   if (cached) return cached;
 
   const broker = getBroker();
+
+  // NO MOCK DATA: Require real IBKR connection
+  if (broker.status.provider === 'mock' || broker.status.provider === 'none') {
+    throw new Error(`[IBKR] Broker not configured. Cannot fetch option chain for ${symbol}. Please configure IBKR credentials.`);
+  }
+
   const marketData = await getMarketData(symbol);
   const underlyingPrice = marketData.price;
-
-  if (broker.status.provider === 'mock') {
-    // Generate mock option chain
-    const strikes = [];
-    const baseStrike = Math.round(underlyingPrice / 5) * 5;
-
-    for (let i = -10; i <= 10; i++) {
-      strikes.push(baseStrike + i * 5);
-    }
-
-    const calls: OptionContract[] = strikes.map(strike => ({
-      symbol: `${symbol}_${expirationDate}_C_${strike}`,
-      strike,
-      expiration: expirationDate,
-      optionType: 'CALL' as const,
-      bid: Math.max(0, underlyingPrice - strike - 0.5 + Math.random()),
-      ask: Math.max(0, underlyingPrice - strike + 0.5 + Math.random()),
-      last: Math.max(0, underlyingPrice - strike + Math.random()),
-      volume: Math.floor(Math.random() * 1000),
-      openInterest: Math.floor(Math.random() * 5000),
-      delta: strike < underlyingPrice ? 0.5 + (underlyingPrice - strike) / 100 : 0.5 - (strike - underlyingPrice) / 100,
-      gamma: 0.01 + Math.random() * 0.02,
-      theta: -(0.05 + Math.random() * 0.1),
-      vega: 0.1 + Math.random() * 0.2,
-      impliedVolatility: 0.15 + Math.random() * 0.1
-    }));
-
-    const puts: OptionContract[] = strikes.map(strike => ({
-      symbol: `${symbol}_${expirationDate}_P_${strike}`,
-      strike,
-      expiration: expirationDate,
-      optionType: 'PUT' as const,
-      bid: Math.max(0, strike - underlyingPrice - 0.5 + Math.random()),
-      ask: Math.max(0, strike - underlyingPrice + 0.5 + Math.random()),
-      last: Math.max(0, strike - underlyingPrice + Math.random()),
-      volume: Math.floor(Math.random() * 1000),
-      openInterest: Math.floor(Math.random() * 5000),
-      delta: strike > underlyingPrice ? -0.5 + (strike - underlyingPrice) / 100 : -0.5 - (underlyingPrice - strike) / 100,
-      gamma: 0.01 + Math.random() * 0.02,
-      theta: -(0.05 + Math.random() * 0.1),
-      vega: 0.1 + Math.random() * 0.2,
-      impliedVolatility: 0.15 + Math.random() * 0.1
-    }));
-
-    const optionChain: OptionChain = {
-      underlying: symbol,
-      underlyingPrice,
-      expirationDate,
-      calls,
-      puts
-    };
-
-    cache.set(cacheKey, optionChain);
-    return optionChain;
-  }
 
   await ensureIbkrReady();
 

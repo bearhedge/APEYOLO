@@ -31,6 +31,7 @@ import {
   type ToolCall,
   type ToolResult,
 } from './lib/agent-tools';
+import { ensureIbkrReady } from './broker/ibkr';
 
 // In-memory store for pending proposals (in production, use Redis or DB)
 const pendingProposals = new Map<string, DualBrainResult>();
@@ -185,6 +186,21 @@ router.post('/chat/stream', requireAuth, async (req: Request, res: Response) => 
       return res.status(400).json({
         success: false,
         error: 'messages is required and must be a non-empty array',
+      });
+    }
+
+    // FAIL FAST: Ensure IBKR is connected before processing any agent chat
+    // This prevents the agent from operating with mock/stale data
+    try {
+      await ensureIbkrReady();
+      console.log('[AgentRoutes] IBKR connection verified');
+    } catch (ibkrError: any) {
+      console.error('[AgentRoutes] IBKR connection failed:', ibkrError.message);
+      return res.status(503).json({
+        success: false,
+        error: 'IBKR broker not connected. Please check broker configuration.',
+        ibkrError: ibkrError.message,
+        offline: true,
       });
     }
 

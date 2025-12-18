@@ -122,7 +122,7 @@ export default function ChatWindow() {
                 <div className="w-2 h-2 rounded-full bg-green-500" />
                 <span className="text-white">ONLINE</span>
               </div>
-              <div className="text-silver">SPY: $450.23</div>
+              <div className="text-silver">SPY: Live data via IBKR</div>
             </div>
           </div>
         </div>

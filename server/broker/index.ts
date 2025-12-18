@@ -15,30 +15,19 @@ type BrokerBundle = {
 // SINGLETON: Cache IBKR provider to prevent creating new instances on every call
 let cachedIbkrProvider: BrokerProvider | null = null;
 
-// Adapter over existing in-memory storage for the mock provider.
+// Mock provider that throws errors - forces real IBKR connection
+// NO MOCK DATA: All methods throw to ensure IBKR is properly configured
 function createMockProvider(): BrokerProvider {
+  const notConfiguredError = (method: string) =>
+    new Error(`[IBKR] Broker not configured. ${method}() requires real IBKR connection. Please configure IBKR credentials.`);
+
   return {
-    getAccount: () => storage.getAccountInfo(),
-    getPositions: () => storage.getPositions(),
-    getOptionChain: (symbol: string, expiration?: string) => storage.getOptionChain(symbol, expiration),
-    getTrades: () => storage.getTrades(),
-    placeOrder: async (trade: InsertTrade) => {
-      // For mock, placement is handled by routes today; return a simple ack.
-      return { status: "accepted_mock" };
-    },
-    getMarketData: async (symbol: string) => {
-      // Mock market data - returns reasonable defaults
-      return {
-        symbol,
-        price: symbol === 'SPY' ? 600 : 100,
-        bid: symbol === 'SPY' ? 599.95 : 99.95,
-        ask: symbol === 'SPY' ? 600.05 : 100.05,
-        volume: 1000000,
-        change: 0.5,
-        changePercent: 0.08,
-        timestamp: new Date(),
-      };
-    },
+    getAccount: () => { throw notConfiguredError('getAccount'); },
+    getPositions: () => { throw notConfiguredError('getPositions'); },
+    getOptionChain: (symbol: string, expiration?: string) => { throw notConfiguredError('getOptionChain'); },
+    getTrades: () => { throw notConfiguredError('getTrades'); },
+    placeOrder: async (trade: InsertTrade) => { throw notConfiguredError('placeOrder'); },
+    getMarketData: async (symbol: string) => { throw notConfiguredError('getMarketData'); },
   };
 }
 

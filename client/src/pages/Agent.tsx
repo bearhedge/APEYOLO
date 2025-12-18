@@ -2,7 +2,8 @@ import { LeftNav } from '@/components/LeftNav';
 import { ChatCanvas } from '@/components/ChatCanvas';
 import { ContextPanel } from '@/components/ContextPanel';
 import { useAgentChat } from '@/hooks/useAgentChat';
-import { Circle, RefreshCw } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
+import { Circle, RefreshCw, AlertTriangle } from 'lucide-react';
 
 // System prompt for the trading agent - directive style to avoid meta-commentary
 const TRADING_AGENT_PROMPT = `You ARE APEYOLO, an autonomous 0DTE options trading agent.
@@ -37,6 +38,30 @@ RESPONSE STYLE:
 - State observations, then actions
 - If uncertain, say so clearly`;
 
+// Fetch IBKR broker diagnostics
+async function fetchBrokerStatus(): Promise<{ connected: boolean; provider: string; error?: string }> {
+  try {
+    const response = await fetch('/api/broker/diag', { credentials: 'include' });
+    if (!response.ok) {
+      return { connected: false, provider: 'unknown', error: 'Failed to fetch broker status' };
+    }
+    const data = await response.json();
+    // Check if all IBKR phases are successful (status 200)
+    const isConnected = data.success &&
+      data.oauth?.status === 200 &&
+      data.sso?.status === 200 &&
+      data.validate?.status === 200 &&
+      data.init?.status === 200;
+    return {
+      connected: isConnected,
+      provider: data.provider || 'unknown',
+      error: isConnected ? undefined : 'IBKR not fully connected',
+    };
+  } catch (error) {
+    return { connected: false, provider: 'unknown', error: 'Failed to check broker' };
+  }
+}
+
 export function Agent() {
   const {
     isOnline,
@@ -55,13 +80,29 @@ export function Agent() {
     enableStatusPolling: true,
   });
 
+  // IBKR broker status query
+  const brokerQuery = useQuery({
+    queryKey: ['/api/broker/diag'],
+    queryFn: fetchBrokerStatus,
+    refetchInterval: 30000, // Check every 30 seconds
+    staleTime: 10000,
+  });
+
+  const ibkrConnected = brokerQuery.data?.connected ?? false;
+  const ibkrProvider = brokerQuery.data?.provider ?? 'unknown';
+  const ibkrError = brokerQuery.data?.error;
+
+  // Agent can only operate if both LLM and IBKR are connected
+  const canOperate = isOnline && ibkrConnected;
+
   return (
     <div className="flex h-[calc(100vh-64px)]">
       <LeftNav />
       <div className="flex-1 flex flex-col">
         {/* Agent Status Bar */}
         <div className="flex items-center justify-between px-6 py-2 border-b border-white/10 bg-charcoal">
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-4">
+            {/* LLM Status */}
             <div className="flex items-center gap-2">
               <Circle
                 className={`w-2.5 h-2.5 ${
@@ -69,18 +110,40 @@ export function Agent() {
                 }`}
               />
               <span className="text-sm font-medium">
-                {isOnline ? 'Agent Online' : 'Agent Offline'}
+                {isOnline ? 'LLM Online' : 'LLM Offline'}
               </span>
+              {isOnline && model && (
+                <span className="text-xs text-silver">({model})</span>
+              )}
             </div>
-            {isOnline && model && (
-              <span className="text-xs text-silver">
-                Model: {model}
+
+            {/* IBKR Status */}
+            <div className="flex items-center gap-2 border-l border-white/10 pl-4">
+              <Circle
+                className={`w-2.5 h-2.5 ${
+                  ibkrConnected ? 'fill-green-500 text-green-500' : 'fill-red-500 text-red-500'
+                }`}
+              />
+              <span className="text-sm font-medium">
+                {ibkrConnected ? 'IBKR Connected' : 'IBKR Disconnected'}
               </span>
-            )}
-            {!isOnline && statusError && (
-              <span className="text-xs text-red-400">
-                {statusError}
-              </span>
+              {ibkrConnected && ibkrProvider === 'ibkr' && (
+                <span className="text-xs text-silver">(Live)</span>
+              )}
+            </div>
+
+            {/* Warning if not fully operational */}
+            {!canOperate && (
+              <div className="flex items-center gap-1 text-amber-400 text-xs">
+                <AlertTriangle className="w-3.5 h-3.5" />
+                <span>
+                  {!isOnline && !ibkrConnected
+                    ? 'LLM and IBKR required'
+                    : !isOnline
+                    ? 'LLM required'
+                    : 'IBKR required for live data'}
+                </span>
+              </div>
             )}
           </div>
           <div className="flex items-center gap-2">
@@ -106,7 +169,7 @@ export function Agent() {
           messages={messages}
           isStreaming={isStreaming}
           isSending={isSending}
-          isOnline={isOnline}
+          isOnline={canOperate}
           onSend={sendMessageStreaming}
           onCancel={cancelStreaming}
         />
