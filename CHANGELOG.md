@@ -1,3 +1,41 @@
+## 2025-12-18
+
+### Agent Operations Panel (Phase 1: Observable Infrastructure)
+- **Added**: AgentContextPanel with 6 boxes for transparent agent operations
+  - **CONTEXT** - Market state (VIX, SPY price, positions)
+  - **REASONING** - AI's chain of thought (from DeepSeek-R1 `<think>` blocks)
+  - **PLAN** - Steps the agent intends to take
+  - **ACTIONS** - Tool calls in progress with status
+  - **VALIDATION** - Critic (Qwen) assessment status
+  - **STATUS** - Current phase with Start/Stop/Reset controls
+- **Added**: Agent state store (`agentStore.ts`) using Zustand
+  - Real-time state management for agent operations
+  - Handles SSE events: status, reasoning, chunk, action, validation, done, error
+- **Modified**: Server-side `<think>` block parsing in `agentRoutes.ts`
+  - DeepSeek-R1 thinking now extracted and emitted as separate 'reasoning' SSE events
+  - Response content separated from reasoning for clean chat display
+  - Status events track phase transitions: thinking → responding → idle
+- **Updated**: System prompt to eliminate meta-commentary
+  - More directive prompt style prevents "Here's how APEYOLO would respond..." patterns
+  - Defined available tools: getMarketData, getPositions, runEngine, executeTrade, closeTrade
+- **Modified**: ContextPanel to show agent panel on `/agent` route
+- **Integrated**: useAgentChat hook with agent store for SSE event handling
+
+### LLM Connection (Completed Earlier)
+- **Connected**: Ollama via Cloudflare tunnel (`llm.apeyolo.com`)
+- **Models Online**: DeepSeek-R1:70b (Proposer) + Qwen2.5:72b (Critic)
+- **Added**: LLM_TUNNEL_URL secret to Google Cloud
+
+### Files Modified/Created
+- `client/src/components/AgentContextPanel.tsx` - NEW 6-box agent panel
+- `client/src/lib/agentStore.ts` - NEW Zustand store for agent state
+- `client/src/components/ContextPanel.tsx` - Route-aware panel switching
+- `client/src/hooks/useAgentChat.ts` - Agent store integration
+- `client/src/pages/Agent.tsx` - Updated system prompt
+- `server/agentRoutes.ts` - `<think>` parsing, structured SSE events
+
+---
+
 ## 2025-12-10
 
 ### Track Record Page Enhancements
