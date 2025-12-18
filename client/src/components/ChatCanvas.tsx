@@ -11,8 +11,10 @@ interface ChatCanvasProps {
   isStreaming?: boolean;
   /** Whether a message is being sent */
   isSending?: boolean;
-  /** Whether the agent is online */
+  /** Whether the agent is online and can operate */
   isOnline?: boolean;
+  /** Custom reason for being offline (shows in banner) */
+  offlineReason?: string;
   /** Callback to send a message */
   onSend?: (content: string) => void;
   /** Callback to cancel streaming */
@@ -26,6 +28,7 @@ export function ChatCanvas({
   isStreaming = false,
   isSending = false,
   isOnline = false,
+  offlineReason,
   onSend,
   onCancel,
   initialMessage,
@@ -71,7 +74,7 @@ export function ChatCanvas({
           {!isOnline && (
             <div className="p-4 bg-red-900/20 border border-red-500/30 text-center">
               <p className="text-sm text-red-400">
-                Agent is offline. Messages cannot be sent until the connection is restored.
+                {offlineReason || 'Agent is offline. Messages cannot be sent until the connection is restored.'}
               </p>
             </div>
           )}

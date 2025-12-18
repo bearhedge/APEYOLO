@@ -2,7 +2,7 @@ import { LeftNav } from '@/components/LeftNav';
 import { ChatCanvas } from '@/components/ChatCanvas';
 import { ContextPanel } from '@/components/ContextPanel';
 import { useAgentChat } from '@/hooks/useAgentChat';
-import { useQuery } from '@tanstack/react-query';
+import { useBrokerStatus } from '@/hooks/useBrokerStatus';
 import { Circle, RefreshCw, AlertTriangle } from 'lucide-react';
 
 // System prompt for the trading agent - directive style to avoid meta-commentary
@@ -38,30 +38,6 @@ RESPONSE STYLE:
 - State observations, then actions
 - If uncertain, say so clearly`;
 
-// Fetch IBKR broker diagnostics
-async function fetchBrokerStatus(): Promise<{ connected: boolean; provider: string; error?: string }> {
-  try {
-    const response = await fetch('/api/broker/diag', { credentials: 'include' });
-    if (!response.ok) {
-      return { connected: false, provider: 'unknown', error: 'Failed to fetch broker status' };
-    }
-    const data = await response.json();
-    // Check if all IBKR phases are successful (status 200)
-    const isConnected = data.success &&
-      data.oauth?.status === 200 &&
-      data.sso?.status === 200 &&
-      data.validate?.status === 200 &&
-      data.init?.status === 200;
-    return {
-      connected: isConnected,
-      provider: data.provider || 'unknown',
-      error: isConnected ? undefined : 'IBKR not fully connected',
-    };
-  } catch (error) {
-    return { connected: false, provider: 'unknown', error: 'Failed to check broker' };
-  }
-}
-
 export function Agent() {
   const {
     isOnline,
@@ -80,20 +56,30 @@ export function Agent() {
     enableStatusPolling: true,
   });
 
-  // IBKR broker status query
-  const brokerQuery = useQuery({
-    queryKey: ['/api/broker/diag'],
-    queryFn: fetchBrokerStatus,
-    refetchInterval: 30000, // Check every 30 seconds
-    staleTime: 10000,
-  });
-
-  const ibkrConnected = brokerQuery.data?.connected ?? false;
-  const ibkrProvider = brokerQuery.data?.provider ?? 'unknown';
-  const ibkrError = brokerQuery.data?.error;
+  // IBKR broker status - use same hook as Settings/Engine for consistency
+  const {
+    connected: ibkrConnected,
+    provider: ibkrProvider,
+    isConnecting: ibkrIsConnecting,
+    environment: ibkrEnvironment,
+  } = useBrokerStatus();
 
   // Agent can only operate if both LLM and IBKR are connected
   const canOperate = isOnline && ibkrConnected;
+
+  // Generate specific offline reason for better UX
+  const getOfflineReason = () => {
+    if (!isOnline && !ibkrConnected) {
+      return 'LLM and IBKR broker are not connected. Please check your configuration.';
+    }
+    if (!isOnline) {
+      return 'LLM is offline. Please check the agent configuration.';
+    }
+    if (!ibkrConnected) {
+      return 'IBKR broker is not connected. Live market data required for agent operation.';
+    }
+    return undefined;
+  };
 
   return (
     <div className="flex h-[calc(100vh-64px)]">
@@ -121,14 +107,24 @@ export function Agent() {
             <div className="flex items-center gap-2 border-l border-white/10 pl-4">
               <Circle
                 className={`w-2.5 h-2.5 ${
-                  ibkrConnected ? 'fill-green-500 text-green-500' : 'fill-red-500 text-red-500'
+                  ibkrConnected
+                    ? 'fill-green-500 text-green-500'
+                    : ibkrIsConnecting
+                    ? 'fill-yellow-500 text-yellow-500'
+                    : 'fill-red-500 text-red-500'
                 }`}
               />
               <span className="text-sm font-medium">
-                {ibkrConnected ? 'IBKR Connected' : 'IBKR Disconnected'}
+                {ibkrConnected
+                  ? 'IBKR Connected'
+                  : ibkrIsConnecting
+                  ? 'IBKR Connecting...'
+                  : 'IBKR Disconnected'}
               </span>
-              {ibkrConnected && ibkrProvider === 'ibkr' && (
-                <span className="text-xs text-silver">(Live)</span>
+              {ibkrConnected && (
+                <span className="text-xs text-silver">
+                  ({ibkrEnvironment === 'live' ? 'Live' : 'Paper'})
+                </span>
               )}
             </div>
 
@@ -170,6 +166,7 @@ export function Agent() {
           isStreaming={isStreaming}
           isSending={isSending}
           isOnline={canOperate}
+          offlineReason={getOfflineReason()}
           onSend={sendMessageStreaming}
           onCancel={cancelStreaming}
         />
