@@ -245,9 +245,19 @@ const runEngineTool: Tool = {
           direction: result.direction?.direction,
           confidence: result.direction?.confidence,
           strikes: result.strikes && typeof result.strikes === 'object' && !Array.isArray(result.strikes) ? {
-            put: result.strikes.putStrike,
-            call: result.strikes.callStrike,
+            // Put strike details
+            put: result.strikes.putStrike?.strike,
+            putDelta: result.strikes.putStrike?.delta,
+            putBid: result.strikes.putStrike?.bid,
+            putAsk: result.strikes.putStrike?.ask,
+            // Call strike details
+            call: result.strikes.callStrike?.strike,
+            callDelta: result.strikes.callStrike?.delta,
+            callBid: result.strikes.callStrike?.bid,
+            callAsk: result.strikes.callStrike?.ask,
+            // Summary
             premium: result.strikes.expectedPremium,
+            reasoning: result.strikes.reasoning,
           } : null,
           positionSize: result.positionSize ? {
             contracts: result.positionSize.contracts,

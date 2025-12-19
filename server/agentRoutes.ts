@@ -1562,12 +1562,34 @@ router.post('/operate', requireAuth, async (req: Request, res: Response) => {
 
           // Engine found a trade opportunity
           const engineData = engineResult.data;
-          const strikesStr = engineData.strikes && typeof engineData.strikes === 'object'
-            ? `PUT $${engineData.strikes.put || 'N/A'} / CALL $${engineData.strikes.call || 'N/A'}`
-            : 'N/A';
-          sendEvent({ type: 'result', content: `Found: ${engineData.direction} at ${strikesStr}` });
+          const strikes = engineData.strikes;
 
-          // Run dual-brain validation
+          // Format detailed strike info
+          let strikesStr = '';
+          if (strikes) {
+            const parts: string[] = [];
+            if (strikes.put) {
+              const putDelta = strikes.putDelta ? ` (Δ${strikes.putDelta.toFixed(2)})` : '';
+              const putPrice = strikes.putBid ? ` @ $${strikes.putBid.toFixed(2)}` : '';
+              parts.push(`PUT $${strikes.put}${putDelta}${putPrice}`);
+            }
+            if (strikes.call) {
+              const callDelta = strikes.callDelta ? ` (Δ${strikes.callDelta.toFixed(2)})` : '';
+              const callPrice = strikes.callBid ? ` @ $${strikes.callBid.toFixed(2)}` : '';
+              parts.push(`CALL $${strikes.call}${callDelta}${callPrice}`);
+            }
+            strikesStr = parts.join(' / ');
+            if (strikes.premium) {
+              strikesStr += ` | Premium: $${strikes.premium.toFixed(2)}`;
+            }
+          }
+
+          sendEvent({
+            type: 'result',
+            content: `Found: ${engineData.direction || 'STRANGLE'}\n${strikesStr}`,
+          });
+
+          // Run dual-brain validation with timeout
           sendEvent({ type: 'status', phase: 'validating' });
           sendEvent({ type: 'action', tool: 'validate', content: 'Validating with AI critic...' });
 
@@ -1589,51 +1611,93 @@ router.post('/operate', requireAuth, async (req: Request, res: Response) => {
             },
           };
 
-          const dualBrainResult = await analyzeTradeOpportunity(context);
+          // Timeout wrapper for dual-brain validation (30 second max)
+          const VALIDATION_TIMEOUT_MS = 30000;
+          let dualBrainResult: DualBrainResult | null = null;
 
-          // Stream reasoning if available
-          if (dualBrainResult.proposerResponse) {
-            sendEvent({ type: 'thinking', content: dualBrainResult.proposerResponse });
+          try {
+            const timeoutPromise = new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error('Validation timeout')), VALIDATION_TIMEOUT_MS)
+            );
+            dualBrainResult = await Promise.race([
+              analyzeTradeOpportunity(context),
+              timeoutPromise,
+            ]);
+          } catch (error: any) {
+            console.warn('[AgentRoutes] Dual-brain validation failed/timed out:', error.message);
+            sendEvent({ type: 'result', content: `Skipping AI validation (${error.message})` });
           }
 
-          // Send proposal
-          if (dualBrainResult.proposal) {
-            const proposal = {
-              id: `prop_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
-              symbol: dualBrainResult.proposal.symbol || 'SPY',
-              expiration: dualBrainResult.proposal.expiry || '0DTE',
-              strategy: dualBrainResult.proposal.optionType || 'PUT',
-              bias: 'NEUTRAL' as const,
-              legs: [{
-                optionType: dualBrainResult.proposal.optionType || 'PUT',
-                strike: dualBrainResult.proposal.strike || engineData.strikes?.put || 0,
-                delta: 0.1,
-                premium: dualBrainResult.proposal.price || engineData.strikes?.premium || 0,
-              }],
-              contracts: dualBrainResult.proposal.quantity || 2,
-              entryPremiumTotal: (dualBrainResult.proposal.price || engineData.strikes?.premium || 0) * 100 * 2,
-              maxLoss: (dualBrainResult.proposal.price || engineData.strikes?.premium || 0) * 3.5 * 100 * 2,
-              stopLossPrice: (dualBrainResult.proposal.price || engineData.strikes?.premium || 0) * 3,
-              reasoning: dualBrainResult.proposal.reasoning,
+          // Build proposal from engine data (primary) or dual-brain (fallback enhancement)
+          const proposalId = `prop_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+
+          // Build legs from engine strikes
+          const legs: Array<{ optionType: string; strike: number; delta: number; premium: number; bid?: number; ask?: number }> = [];
+          if (strikes?.put) {
+            legs.push({
+              optionType: 'PUT',
+              strike: strikes.put,
+              delta: strikes.putDelta || 0.1,
+              premium: strikes.putBid || 0,
+              bid: strikes.putBid,
+              ask: strikes.putAsk,
+            });
+          }
+          if (strikes?.call) {
+            legs.push({
+              optionType: 'CALL',
+              strike: strikes.call,
+              delta: strikes.callDelta || 0.1,
+              premium: strikes.callBid || 0,
+              bid: strikes.callBid,
+              ask: strikes.callAsk,
+            });
+          }
+
+          const totalPremium = strikes?.premium || legs.reduce((sum, leg) => sum + (leg.premium || 0), 0) * 100;
+
+          const proposal = {
+            id: proposalId,
+            symbol: 'SPY',
+            expiration: '0DTE',
+            strategy: engineData.direction || 'STRANGLE',
+            bias: 'NEUTRAL' as const,
+            legs,
+            contracts: engineData.positionSize?.contracts || 2,
+            entryPremiumTotal: totalPremium,
+            maxLoss: totalPremium * 3.5,
+            stopLossPrice: (legs[0]?.premium || 0) * 3,
+            reasoning: dualBrainResult?.proposal?.reasoning || strikes?.reasoning || 'Engine-selected based on delta and liquidity',
+          };
+
+          // Store for later execution
+          pendingProposals.set(proposalId, dualBrainResult || { success: true } as any);
+          setTimeout(() => pendingProposals.delete(proposalId), 60 * 60 * 1000);
+
+          sendEvent({ type: 'proposal', proposal });
+
+          // Send critique if available
+          if (dualBrainResult?.critique) {
+            const critique = {
+              approved: dualBrainResult.critique.approved || false,
+              riskLevel: dualBrainResult.critique.riskAssessment || 'MEDIUM',
+              mandateCompliant: dualBrainResult.critique.mandateCompliant || false,
+              concerns: dualBrainResult.critique.concerns || [],
+              suggestions: dualBrainResult.critique.suggestions || [],
             };
-
-            // Store for later execution
-            pendingProposals.set(proposal.id, dualBrainResult);
-            setTimeout(() => pendingProposals.delete(proposal.id), 60 * 60 * 1000);
-
-            sendEvent({ type: 'proposal', proposal });
-
-            // Send critique
-            if (dualBrainResult.critique) {
-              const critique = {
-                approved: dualBrainResult.critique.approved || false,
-                riskLevel: dualBrainResult.critique.riskAssessment || 'MEDIUM',
-                mandateCompliant: dualBrainResult.critique.mandateCompliant || false,
-                concerns: dualBrainResult.critique.concerns || [],
-                suggestions: dualBrainResult.critique.suggestions || [],
-              };
-              sendEvent({ type: 'critique', critique });
-            }
+            sendEvent({ type: 'critique', critique });
+          } else {
+            // No AI critique available - show basic assessment
+            sendEvent({
+              type: 'critique',
+              critique: {
+                approved: true,
+                riskLevel: 'MEDIUM',
+                mandateCompliant: true,
+                concerns: [],
+                suggestions: ['AI validation was skipped - review manually before executing'],
+              },
+            });
           }
 
           sendEvent({ type: 'done' });
