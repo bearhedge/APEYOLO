@@ -1656,7 +1656,42 @@ router.post('/operate', requireAuth, async (req: Request, res: Response) => {
             break;
           }
 
-          // Fall back to regular chat stream for custom requests
+          // Use query planner for simple queries - bypass LLM entirely
+          const queryType = classifyQuery(message);
+          console.log(`[AgentRoutes] Custom query classified as: ${queryType}`);
+
+          if (queryType !== 'COMPLEX') {
+            // Deterministic execution - no LLM needed
+            const plan = generatePlan(queryType);
+            console.log(`[AgentRoutes] Executing plan with ${plan.steps.length} steps`);
+
+            try {
+              const { data, response } = await executePlanWithStreaming(plan, res, sendEvent);
+
+              // Emit context update for UI
+              if (data['SPY'] || data['VIX']) {
+                sendEvent({
+                  type: 'context',
+                  context: {
+                    spyPrice: parseFloat(data['SPY']?.replace('$', '') || '0'),
+                    vix: parseFloat(data['VIX']?.split(' ')[0] || '0'),
+                    marketOpen: data['Market'] === 'OPEN',
+                    lastUpdate: Date.now(),
+                  },
+                });
+              }
+
+              // Emit final result
+              sendEvent({ type: 'result', content: response });
+              sendEvent({ type: 'done' });
+              break;
+            } catch (planError: any) {
+              console.error('[AgentRoutes] Plan execution failed, falling back to LLM:', planError.message);
+              // Fall through to LLM-based execution
+            }
+          }
+
+          // COMPLEX queries or plan failures - use LLM
           sendEvent({ type: 'status', phase: 'thinking' });
 
           // Use existing chat stream logic
