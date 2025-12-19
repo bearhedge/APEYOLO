@@ -2329,14 +2329,16 @@ class IbkrClient {
 
       const data = snap.data[0];
       // Field codes: 31=last, 84=bid, 86=ask, 7762=volume, 82=change, 83=changePercent
-      const price = Number(data["31"]) || Number(data.last) || 0;
-      const bid = Number(data["84"]) || Number(data.bid) || price - 0.01;
-      const ask = Number(data["86"]) || Number(data.ask) || price + 0.01;
+      const last = Number(data["31"]) || Number(data.last) || 0;
+      const bid = Number(data["84"]) || Number(data.bid) || last - 0.01;
+      const ask = Number(data["86"]) || Number(data.ask) || last + 0.01;
+      // Use midpoint (mark price) - matches what Google/Yahoo show, more accurate than stale last trade
+      const price = bid > 0 && ask > 0 ? Number(((bid + ask) / 2).toFixed(2)) : last;
       const volume = Number(data["7762"]) || Number(data.volume) || 0;
       const change = Number(data["82"]) || Number(data.change) || 0;
       const changePercent = Number(data["83"]) || Number(data.changePercent) || 0;
 
-      console.log(`[IBKR][getMarketData][${reqId}] ${symbol}: price=${price}, bid=${bid}, ask=${ask}`);
+      console.log(`[IBKR][getMarketData][${reqId}] ${symbol}: last=${last}, bid=${bid}, ask=${ask}, midpoint=${price}`);
 
       return {
         symbol,

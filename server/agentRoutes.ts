@@ -53,25 +53,25 @@ function formatToolResponse(tool: string, data: any): string {
       const changeStr = spy.changePercent
         ? ` (${spy.changePercent >= 0 ? '+' : ''}${spy.changePercent.toFixed(2)}%)`
         : '';
-      parts.push(`SPY is at $${spy.price.toFixed(2)}${changeStr}`);
+      parts.push(`SPY: $${spy.price.toFixed(2)}${changeStr}`);
     }
 
     if (vix?.level) {
       const regimeStr = vix.regime ? ` (${vix.regime})` : '';
-      parts.push(`VIX is at ${vix.level.toFixed(2)}${regimeStr}`);
+      parts.push(`VIX: ${vix.level.toFixed(2)}${regimeStr}`);
     }
 
     if (market) {
-      parts.push(market.isOpen ? 'Market is open' : 'Market is closed (pre-market/after-hours)');
+      parts.push(market.isOpen ? 'Market: OPEN' : 'Market: CLOSED');
     }
 
     if (regime?.reason) {
       parts.push(regime.reason);
     }
 
-    return parts.length > 0
-      ? parts.join('. ') + '.'
-      : 'Market data retrieved successfully.';
+    // Add source attribution
+    const result = parts.length > 0 ? parts.join(' | ') : 'Market data retrieved';
+    return `${result}\n[Source: IBKR real-time data]`;
   }
 
   if (tool === 'getPositions' && data) {
