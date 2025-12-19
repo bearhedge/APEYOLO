@@ -138,6 +138,8 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
   // Refs for tracking streaming activities (to update instead of create new)
   const streamingThinkingIdRef = useRef<string | null>(null);
   const streamingResultIdRef = useRef<string | null>(null);
+  // Track last tool action to mark it done when result arrives
+  const lastToolActionIdRef = useRef<string | null>(null);
 
   // Persist state changes to sessionStorage
   useEffect(() => {
@@ -228,6 +230,7 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
     // Reset streaming refs for new operation
     streamingThinkingIdRef.current = null;
     streamingResultIdRef.current = null;
+    lastToolActionIdRef.current = null;
 
     setIsProcessing(true);
     abortControllerRef.current = new AbortController();
@@ -319,15 +322,22 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
         break;
 
       case 'action':
-        // Tool being called
+        // Tool being called - track the action ID to mark it done later
         if (event.tool && event.content) {
-          addActivity('action', event.content, event.tool, 'running');
+          const id = addActivity('action', event.content, event.tool, 'running');
+          lastToolActionIdRef.current = id;
         }
         break;
 
       case 'result':
         // Tool result - handle streaming updates
         if (event.content) {
+          // Mark the previous tool action as done (if any)
+          if (lastToolActionIdRef.current) {
+            updateActivity(lastToolActionIdRef.current, { status: 'done' });
+            lastToolActionIdRef.current = null;
+          }
+
           if (event.isUpdate || event.isComplete) {
             // Streaming result - update existing or create new
             if (streamingResultIdRef.current) {
@@ -409,9 +419,13 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
         break;
 
       case 'done':
-        // Operation complete - reset streaming refs
+        // Operation complete - reset streaming refs and mark any pending action as done
+        if (lastToolActionIdRef.current) {
+          updateActivity(lastToolActionIdRef.current, { status: 'done' });
+        }
         streamingThinkingIdRef.current = null;
         streamingResultIdRef.current = null;
+        lastToolActionIdRef.current = null;
         break;
     }
   }, [addActivity, updateActivity]);

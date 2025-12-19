@@ -1,11 +1,15 @@
 /**
- * TradeProposalCard - One-click trade execution
+ * TradeProposalCard - Interactive Trade Negotiation
  *
- * Shows a trade proposal with clear metrics and a single EXECUTE button.
- * Adapted from Engine.tsx trade summary pattern.
+ * Shows a trade proposal with:
+ * - Editable strikes (click to adjust)
+ * - Impact preview when modifying
+ * - Agent negotiation messages
+ * - Execute button with approval
  */
 
-import { CheckCircle, XCircle, AlertTriangle, Loader2, Shield } from 'lucide-react';
+import { useState, useCallback } from 'react';
+import { CheckCircle, XCircle, AlertTriangle, Loader2, Shield, Minus, Plus, MessageSquare } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 export interface TradeLeg {
@@ -45,6 +49,21 @@ export interface ExecutionResult {
   timestamp: Date;
 }
 
+export interface ModificationImpact {
+  premiumChange: number;
+  probabilityChange: number;
+  newPremium: number;
+  newProbOTM: number;
+  agentOpinion: 'approve' | 'caution' | 'reject';
+  reasoning: string;
+}
+
+export interface NegotiationMessage {
+  role: 'agent' | 'user';
+  content: string;
+  timestamp: Date;
+}
+
 interface TradeProposalCardProps {
   proposal: TradeProposal;
   critique?: CritiqueResult;
@@ -52,6 +71,96 @@ interface TradeProposalCardProps {
   isExecuting: boolean;
   onExecute: () => void;
   onReject?: () => void;
+  // Negotiation props
+  isNegotiating?: boolean;
+  onModifyStrike?: (legIndex: number, newStrike: number) => Promise<ModificationImpact | null>;
+  negotiationMessages?: NegotiationMessage[];
+}
+
+/**
+ * Strike adjustment component with +/- buttons
+ */
+function StrikeAdjuster({
+  strike,
+  optionType,
+  onAdjust,
+  isLoading,
+  disabled,
+}: {
+  strike: number;
+  optionType: 'PUT' | 'CALL';
+  onAdjust: (newStrike: number) => void;
+  isLoading?: boolean;
+  disabled?: boolean;
+}) {
+  return (
+    <div className="flex items-center gap-1">
+      <button
+        onClick={() => onAdjust(strike - 1)}
+        disabled={disabled || isLoading}
+        className="p-1.5 rounded bg-white/5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        title="Decrease strike"
+      >
+        <Minus className="w-3 h-3" />
+      </button>
+      <span className={`font-mono font-medium px-3 py-1.5 rounded min-w-[80px] text-center ${
+        optionType === 'PUT'
+          ? 'bg-red-500/20 text-red-400 border border-red-500/30'
+          : 'bg-green-500/20 text-green-400 border border-green-500/30'
+      }`}>
+        ${strike}
+      </span>
+      <button
+        onClick={() => onAdjust(strike + 1)}
+        disabled={disabled || isLoading}
+        className="p-1.5 rounded bg-white/5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        title="Increase strike"
+      >
+        <Plus className="w-3 h-3" />
+      </button>
+      {isLoading && <Loader2 className="w-4 h-4 animate-spin text-silver ml-1" />}
+    </div>
+  );
+}
+
+/**
+ * Impact preview when user modifies a strike
+ */
+function ImpactPreview({ impact }: { impact: ModificationImpact }) {
+  return (
+    <div className={`p-3 rounded-lg border ${
+      impact.agentOpinion === 'approve'
+        ? 'bg-green-500/10 border-green-500/20'
+        : impact.agentOpinion === 'caution'
+        ? 'bg-amber-500/10 border-amber-500/20'
+        : 'bg-red-500/10 border-red-500/20'
+    }`}>
+      <div className="flex items-start gap-2 mb-2">
+        {impact.agentOpinion === 'approve' && <CheckCircle className="w-4 h-4 text-green-400 mt-0.5" />}
+        {impact.agentOpinion === 'caution' && <AlertTriangle className="w-4 h-4 text-amber-400 mt-0.5" />}
+        {impact.agentOpinion === 'reject' && <XCircle className="w-4 h-4 text-red-400 mt-0.5" />}
+        <div className="flex-1">
+          <p className="text-sm">{impact.reasoning}</p>
+        </div>
+      </div>
+      <div className="grid grid-cols-2 gap-2 text-xs">
+        <div>
+          <span className="text-silver">Premium:</span>{' '}
+          <span className={impact.premiumChange >= 0 ? 'text-green-400' : 'text-red-400'}>
+            {impact.premiumChange >= 0 ? '+' : ''}{impact.premiumChange.toFixed(0)}
+          </span>
+          <span className="text-silver"> (${impact.newPremium.toFixed(0)})</span>
+        </div>
+        <div>
+          <span className="text-silver">Prob OTM:</span>{' '}
+          <span className={impact.probabilityChange >= 0 ? 'text-green-400' : 'text-red-400'}>
+            {impact.probabilityChange >= 0 ? '+' : ''}{impact.probabilityChange.toFixed(1)}%
+          </span>
+          <span className="text-silver"> ({impact.newProbOTM.toFixed(0)}%)</span>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export function TradeProposalCard({
@@ -61,18 +170,28 @@ export function TradeProposalCard({
   isExecuting,
   onExecute,
   onReject,
+  isNegotiating = false,
+  onModifyStrike,
+  negotiationMessages = [],
 }: TradeProposalCardProps) {
+  const [modifiedLegs, setModifiedLegs] = useState<TradeLeg[]>(proposal.legs);
+  const [pendingImpact, setPendingImpact] = useState<ModificationImpact | null>(null);
+  const [isCalculating, setIsCalculating] = useState(false);
+  const [activeModifyIndex, setActiveModifyIndex] = useState<number | null>(null);
+
   const {
     symbol,
     expiration,
     strategy,
     bias,
-    legs,
     contracts,
     entryPremiumTotal,
     maxLoss,
     stopLossPrice,
   } = proposal;
+
+  // Use modified legs for display
+  const legs = isNegotiating ? modifiedLegs : proposal.legs;
 
   // Calculate probability OTM from average delta
   const avgDelta = legs.reduce((sum, leg) => sum + Math.abs(leg.delta), 0) / legs.length;
@@ -86,9 +205,38 @@ export function TradeProposalCard({
   const strategyLabel = strategy === 'STRANGLE' ? 'SELL STRANGLE' :
     strategy === 'PUT' ? 'SELL PUT' : 'SELL CALL';
 
+  // Handle strike modification
+  const handleStrikeChange = useCallback(async (legIndex: number, newStrike: number) => {
+    if (!onModifyStrike) return;
+
+    setActiveModifyIndex(legIndex);
+    setIsCalculating(true);
+    setPendingImpact(null);
+
+    try {
+      const impact = await onModifyStrike(legIndex, newStrike);
+      if (impact) {
+        setPendingImpact(impact);
+        // Update local state with new strike
+        setModifiedLegs(prev => prev.map((leg, i) =>
+          i === legIndex ? { ...leg, strike: newStrike } : leg
+        ));
+      }
+    } catch (error) {
+      console.error('Failed to calculate impact:', error);
+    } finally {
+      setIsCalculating(false);
+      setActiveModifyIndex(null);
+    }
+  }, [onModifyStrike]);
+
   return (
     <div className={`bg-charcoal rounded-2xl p-6 border shadow-lg ${
-      critique?.approved ? 'border-green-500/30' : 'border-white/10'
+      isNegotiating
+        ? 'border-amber-500/30'
+        : critique?.approved
+        ? 'border-green-500/30'
+        : 'border-white/10'
     }`}>
       {/* Header */}
       <div className="flex items-center justify-between mb-4">
@@ -97,6 +245,12 @@ export function TradeProposalCard({
           <p className="text-sm text-silver">{symbol} {expiration}</p>
         </div>
         <div className="flex items-center gap-2">
+          {isNegotiating && (
+            <span className="text-xs font-medium px-2 py-1 rounded bg-amber-500/20 text-amber-400 flex items-center gap-1">
+              <MessageSquare className="w-3 h-3" />
+              Negotiating
+            </span>
+          )}
           {critique && (
             <span className={`text-xs font-medium px-2 py-1 rounded flex items-center gap-1 ${
               critique.approved
@@ -127,26 +281,60 @@ export function TradeProposalCard({
           </p>
           <ul className={`text-sm space-y-1 ${critique.approved ? 'text-amber-400/80' : 'text-red-400'}`}>
             {critique.concerns.map((concern, i) => (
-              <li key={i}>• {concern}</li>
+              <li key={i}>- {concern}</li>
             ))}
           </ul>
         </div>
       )}
 
-      {/* Strike Selection */}
+      {/* Strike Selection - Editable in negotiating mode */}
       <div className="mb-4 p-3 bg-black/20 rounded-lg">
-        <div className="flex items-center gap-4 text-sm">
+        <div className="flex flex-wrap items-center gap-4">
           {legs.map((leg, i) => (
-            <span key={i} className={`font-mono font-medium ${
-              leg.optionType === 'PUT' ? 'text-red-400' : 'text-green-400'
-            }`}>
-              ${leg.strike} {leg.optionType}
-            </span>
+            isNegotiating && onModifyStrike ? (
+              <div key={i} className="flex items-center gap-2">
+                <span className="text-xs text-silver">{leg.optionType}:</span>
+                <StrikeAdjuster
+                  strike={leg.strike}
+                  optionType={leg.optionType}
+                  onAdjust={(newStrike) => handleStrikeChange(i, newStrike)}
+                  isLoading={isCalculating && activeModifyIndex === i}
+                  disabled={isExecuting}
+                />
+              </div>
+            ) : (
+              <span key={i} className={`font-mono font-medium ${
+                leg.optionType === 'PUT' ? 'text-red-400' : 'text-green-400'
+              }`}>
+                ${leg.strike} {leg.optionType}
+              </span>
+            )
           ))}
-          <span className="text-silver">•</span>
+          <span className="text-silver">-</span>
           <span className="font-mono">{contracts} contracts</span>
         </div>
       </div>
+
+      {/* Impact Preview (when modifying) */}
+      {pendingImpact && (
+        <div className="mb-4">
+          <ImpactPreview impact={pendingImpact} />
+        </div>
+      )}
+
+      {/* Negotiation Messages */}
+      {negotiationMessages.length > 0 && (
+        <div className="mb-4 max-h-32 overflow-y-auto space-y-2 p-3 bg-black/10 rounded-lg">
+          {negotiationMessages.slice(-3).map((msg, i) => (
+            <div key={i} className={`text-sm ${msg.role === 'agent' ? 'text-blue-400' : 'text-white'}`}>
+              <span className="text-xs text-silver mr-2">
+                {msg.role === 'agent' ? 'Agent:' : 'You:'}
+              </span>
+              {msg.content}
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* Key Metrics - 2x2 Grid */}
       <div className="grid grid-cols-2 gap-4 mb-4">
