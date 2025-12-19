@@ -6,12 +6,58 @@
  * - Quick actions (analyze, propose, positions)
  * - Trade proposals and execution
  * - SSE streaming for real-time updates
+ * - State persistence via sessionStorage
  */
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ActivityEntryData, ActivityType } from '@/components/agent/ActivityEntry';
 import type { TradeProposal, CritiqueResult, ExecutionResult } from '@/components/agent/TradeProposalCard';
+
+// =============================================================================
+// Session Storage Helpers (persist state across page navigation)
+// =============================================================================
+
+const STORAGE_KEYS = {
+  activities: 'agent_activities',
+  activeProposal: 'agent_active_proposal',
+  activeCritique: 'agent_active_critique',
+  executionResult: 'agent_execution_result',
+} as const;
+
+function getFromSession<T>(key: string, fallback: T): T {
+  try {
+    const stored = sessionStorage.getItem(key);
+    if (!stored) return fallback;
+    const parsed = JSON.parse(stored);
+    // Special handling for activities - restore Date objects
+    if (key === STORAGE_KEYS.activities && Array.isArray(parsed)) {
+      return parsed.map((a: any) => ({
+        ...a,
+        timestamp: new Date(a.timestamp),
+      })) as T;
+    }
+    return parsed;
+  } catch {
+    return fallback;
+  }
+}
+
+function persistToSession(key: string, data: any): void {
+  try {
+    sessionStorage.setItem(key, JSON.stringify(data));
+  } catch (err) {
+    console.warn('[AgentOperator] Failed to persist to sessionStorage:', err);
+  }
+}
+
+function clearFromSession(key: string): void {
+  try {
+    sessionStorage.removeItem(key);
+  } catch {
+    // Ignore
+  }
+}
 
 // Types
 export type OperationType = 'analyze' | 'propose' | 'positions' | 'execute' | 'custom';
@@ -32,6 +78,9 @@ interface OperateSSEEvent {
   critique?: CritiqueResult;
   executionResult?: ExecutionResult;
   error?: string;
+  // Streaming flags - server sends accumulated content with these flags
+  isUpdate?: boolean;   // Content is accumulated (update existing activity)
+  isComplete?: boolean; // Final content (mark as complete)
 }
 
 /**
@@ -68,13 +117,58 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
   const { enableStatusPolling = true } = options;
 
   const queryClient = useQueryClient();
-  const [activities, setActivities] = useState<ActivityEntryData[]>([]);
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [activeProposal, setActiveProposal] = useState<TradeProposal | null>(null);
-  const [activeCritique, setActiveCritique] = useState<CritiqueResult | null>(null);
-  const [executionResult, setExecutionResult] = useState<ExecutionResult | null>(null);
+
+  // Initialize state from sessionStorage for persistence across navigation
+  const [activities, setActivities] = useState<ActivityEntryData[]>(
+    () => getFromSession(STORAGE_KEYS.activities, [])
+  );
+  const [isProcessing, setIsProcessing] = useState(false); // Don't persist - should reset
+  const [activeProposal, setActiveProposal] = useState<TradeProposal | null>(
+    () => getFromSession(STORAGE_KEYS.activeProposal, null)
+  );
+  const [activeCritique, setActiveCritique] = useState<CritiqueResult | null>(
+    () => getFromSession(STORAGE_KEYS.activeCritique, null)
+  );
+  const [executionResult, setExecutionResult] = useState<ExecutionResult | null>(
+    () => getFromSession(STORAGE_KEYS.executionResult, null)
+  );
   const [isExecuting, setIsExecuting] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
+
+  // Refs for tracking streaming activities (to update instead of create new)
+  const streamingThinkingIdRef = useRef<string | null>(null);
+  const streamingResultIdRef = useRef<string | null>(null);
+
+  // Persist state changes to sessionStorage
+  useEffect(() => {
+    // Keep only last 50 activities to prevent storage overflow
+    const toStore = activities.slice(-50);
+    persistToSession(STORAGE_KEYS.activities, toStore);
+  }, [activities]);
+
+  useEffect(() => {
+    if (activeProposal) {
+      persistToSession(STORAGE_KEYS.activeProposal, activeProposal);
+    } else {
+      clearFromSession(STORAGE_KEYS.activeProposal);
+    }
+  }, [activeProposal]);
+
+  useEffect(() => {
+    if (activeCritique) {
+      persistToSession(STORAGE_KEYS.activeCritique, activeCritique);
+    } else {
+      clearFromSession(STORAGE_KEYS.activeCritique);
+    }
+  }, [activeCritique]);
+
+  useEffect(() => {
+    if (executionResult) {
+      persistToSession(STORAGE_KEYS.executionResult, executionResult);
+    } else {
+      clearFromSession(STORAGE_KEYS.executionResult);
+    }
+  }, [executionResult]);
 
   // Agent status query
   const statusQuery = useQuery<AgentStatus>({
@@ -130,6 +224,10 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
       setActiveCritique(null);
       setExecutionResult(null);
     }
+
+    // Reset streaming refs for new operation
+    streamingThinkingIdRef.current = null;
+    streamingResultIdRef.current = null;
 
     setIsProcessing(true);
     abortControllerRef.current = new AbortController();
@@ -208,6 +306,11 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
 
   /**
    * Handle SSE events from the server
+   *
+   * For streaming events (thinking, result), we:
+   * - Create a new activity on first update (isUpdate=true, no existing ID)
+   * - Update existing activity on subsequent updates (isUpdate=true, has ID)
+   * - Mark as complete on final event (isComplete=true)
    */
   const handleSSEEvent = useCallback((event: OperateSSEEvent, actionId: string) => {
     switch (event.type) {
@@ -223,16 +326,58 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
         break;
 
       case 'result':
-        // Tool result - format and display
+        // Tool result - handle streaming updates
         if (event.content) {
-          addActivity('result', event.content);
+          if (event.isUpdate || event.isComplete) {
+            // Streaming result - update existing or create new
+            if (streamingResultIdRef.current) {
+              // Update existing result activity
+              updateActivity(streamingResultIdRef.current, {
+                content: event.content,
+                status: event.isComplete ? 'done' : 'running',
+              });
+              if (event.isComplete) {
+                streamingResultIdRef.current = null;
+              }
+            } else {
+              // Create new result activity
+              const id = addActivity('result', event.content, undefined, event.isComplete ? 'done' : 'running');
+              if (!event.isComplete) {
+                streamingResultIdRef.current = id;
+              }
+            }
+          } else {
+            // Non-streaming result (e.g., tool output) - just add it
+            addActivity('result', event.content);
+          }
         }
         break;
 
       case 'thinking':
-        // DeepSeek reasoning - always visible
+        // DeepSeek reasoning - handle streaming updates
         if (event.content) {
-          addActivity('thinking', event.content);
+          if (event.isUpdate || event.isComplete) {
+            // Streaming thinking - update existing or create new
+            if (streamingThinkingIdRef.current) {
+              // Update existing thinking activity
+              updateActivity(streamingThinkingIdRef.current, {
+                content: event.content,
+                status: event.isComplete ? 'done' : 'running',
+              });
+              if (event.isComplete) {
+                streamingThinkingIdRef.current = null;
+              }
+            } else {
+              // Create new thinking activity
+              const id = addActivity('thinking', event.content, undefined, event.isComplete ? 'done' : 'running');
+              if (!event.isComplete) {
+                streamingThinkingIdRef.current = id;
+              }
+            }
+          } else {
+            // Non-streaming thinking (e.g., propose operation) - just add it
+            addActivity('thinking', event.content);
+          }
         }
         break;
 
@@ -264,10 +409,12 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
         break;
 
       case 'done':
-        // Operation complete
+        // Operation complete - reset streaming refs
+        streamingThinkingIdRef.current = null;
+        streamingResultIdRef.current = null;
         break;
     }
-  }, [addActivity]);
+  }, [addActivity, updateActivity]);
 
   /**
    * Execute the active proposal
@@ -300,13 +447,15 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
   }, []);
 
   /**
-   * Clear activity history
+   * Clear activity history and sessionStorage
    */
   const clearActivities = useCallback(() => {
     setActivities([]);
     setActiveProposal(null);
     setActiveCritique(null);
     setExecutionResult(null);
+    // Also clear sessionStorage
+    Object.values(STORAGE_KEYS).forEach(clearFromSession);
   }, []);
 
   /**

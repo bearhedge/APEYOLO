@@ -1006,37 +1006,83 @@ Use your tools to help the user. Available tools:
 - getMarketData() - Get VIX, SPY price, market status
 - getPositions() - View current portfolio positions
 - runEngine() - Run the 5-step trading engine
-Be direct and concise.`;
+Be direct and concise. Do not use emojis.`;
 
           const messages: LLMMessage[] = [
             { role: 'system', content: systemPrompt },
             { role: 'user', content: message },
           ];
 
+          // Accumulate content and emit batched updates
           let fullContent = '';
-          for await (const chunk of streamChatWithLLM({ messages, stream: true })) {
-            if (chunk.message?.thinking) {
-              sendEvent({ type: 'thinking', content: chunk.message.thinking });
-            }
-            if (chunk.message?.content) {
-              fullContent += chunk.message.content;
-              sendEvent({ type: 'result', content: chunk.message.content });
-            }
-          }
+          let fullThinking = '';
+          let lastThinkingEmit = 0;
+          let lastContentEmit = 0;
+          const EMIT_INTERVAL_MS = 300; // Emit updates every 300ms for smooth streaming
 
-          // Check for tool call in response
-          const toolCall = parseToolCall(fullContent);
-          if (toolCall) {
-            sendEvent({ type: 'action', tool: toolCall.tool, content: `Executing ${toolCall.tool}...` });
-            const result = await executeToolCall(toolCall);
-            if (result.success) {
-              sendEvent({ type: 'result', content: formatToolResponse(toolCall.tool, result.data) });
-            } else {
-              sendEvent({ type: 'error', error: result.error });
-            }
-          }
+          // Set up timeout protection (2 minutes)
+          const OPERATION_TIMEOUT_MS = 120000;
+          let timeoutReached = false;
+          const timeoutId = setTimeout(() => {
+            timeoutReached = true;
+            sendEvent({ type: 'error', error: 'Operation timed out after 2 minutes' });
+            sendEvent({ type: 'done' });
+          }, OPERATION_TIMEOUT_MS);
 
-          sendEvent({ type: 'done' });
+          try {
+            for await (const chunk of streamChatWithLLM({ messages, stream: true })) {
+              if (timeoutReached) break;
+
+              if (chunk.message?.thinking) {
+                fullThinking += chunk.message.thinking;
+                const now = Date.now();
+                // Emit thinking update at intervals (accumulated, not per-chunk)
+                if (now - lastThinkingEmit > EMIT_INTERVAL_MS) {
+                  sendEvent({ type: 'thinking', content: fullThinking, isUpdate: true });
+                  lastThinkingEmit = now;
+                }
+              }
+              if (chunk.message?.content) {
+                fullContent += chunk.message.content;
+                const now = Date.now();
+                // Emit content update at intervals (accumulated, not per-chunk)
+                if (now - lastContentEmit > EMIT_INTERVAL_MS) {
+                  sendEvent({ type: 'result', content: fullContent, isUpdate: true });
+                  lastContentEmit = now;
+                }
+              }
+            }
+
+            clearTimeout(timeoutId);
+            if (timeoutReached) break;
+
+            // Emit final complete thinking (if any)
+            if (fullThinking) {
+              sendEvent({ type: 'thinking', content: fullThinking, isComplete: true });
+            }
+
+            // Check for tool call in response
+            const toolCall = parseToolCall(fullContent);
+            if (toolCall) {
+              sendEvent({ type: 'action', tool: toolCall.tool, content: `Executing ${toolCall.tool}...` });
+              const result = await executeToolCall(toolCall);
+              if (result.success) {
+                sendEvent({ type: 'result', content: formatToolResponse(toolCall.tool, result.data), isComplete: true });
+              } else {
+                sendEvent({ type: 'error', error: result.error });
+              }
+            } else if (fullContent) {
+              // No tool call - emit final content
+              sendEvent({ type: 'result', content: fullContent, isComplete: true });
+            }
+
+            sendEvent({ type: 'done' });
+          } catch (streamError: any) {
+            clearTimeout(timeoutId);
+            console.error('[AgentRoutes] Stream error in custom operation:', streamError);
+            sendEvent({ type: 'error', error: streamError.message || 'Stream failed' });
+            sendEvent({ type: 'done' });
+          }
           break;
         }
 
