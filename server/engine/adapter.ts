@@ -346,14 +346,43 @@ function adaptExitRules(
 ): Q5Exit {
   const entryPremium = premiumPerContract * 100; // Convert to dollars per contract
 
+  // Use layer2 multiplier if available (from new Layered Defense System)
+  // Otherwise fallback to passed stopMultiplier
+  const actualMultiplier = exit?.layer2?.multiplier ?? stopMultiplier;
+  const actualStopPrice = exit?.stopLossPrice ?? (premiumPerContract * actualMultiplier);
+  const actualStopAmount = exit?.stopLossAmount ?? (entryPremium * actualMultiplier * contracts);
+
+  // Build rules text based on layer system if available
+  let stopLossRule: string;
+  let timeStopRule: string;
+
+  if (exit?.layer1 && exit?.layer2) {
+    // New Layered Defense System
+    const l1Parts: string[] = [];
+    if (exit.layer1.putThreshold !== null) {
+      l1Parts.push(`underlying < $${exit.layer1.putThreshold.toFixed(0)}`);
+    }
+    if (exit.layer1.callThreshold !== null) {
+      l1Parts.push(`underlying > $${exit.layer1.callThreshold.toFixed(0)}`);
+    }
+    const l1Text = l1Parts.length > 0 ? `L1: Exit if ${l1Parts.join(' or ')} for 15 min. ` : '';
+
+    stopLossRule = `${l1Text}L2: Exit at ${actualMultiplier}x premium ($${actualStopPrice.toFixed(2)})`;
+    timeStopRule = 'L3: EOD sweep at 3:55 PM ET';
+  } else {
+    // Legacy single-stop system
+    stopLossRule = `Exit at ${actualMultiplier}x premium ($${actualStopPrice.toFixed(2)})`;
+    timeStopRule = 'Close by 3:30 PM ET if still open';
+  }
+
   return {
     takeProfitPrice: exit?.takeProfitPrice ?? null,
-    stopLossPrice: exit?.stopLossPrice ?? (premiumPerContract * stopMultiplier),
-    stopLossAmount: exit?.stopLossAmount ?? (entryPremium * stopMultiplier * contracts),
-    timeStopEt: '3:30 PM ET', // Fixed time stop for 0DTE
+    stopLossPrice: actualStopPrice,
+    stopLossAmount: actualStopAmount,
+    timeStopEt: exit?.layer1 ? '3:55 PM ET' : '3:30 PM ET', // Layer system uses 3:55
 
     takeProfitPct: null, // Let expire worthless
-    stopLossMultiplier: stopMultiplier,
+    stopLossMultiplier: actualMultiplier,
     maxHoldHours: exit?.maxHoldingTime ?? 24,
 
     inputs: {
@@ -363,9 +392,9 @@ function adaptExitRules(
     },
 
     rules: {
-      stopLossRule: `Exit at ${stopMultiplier}x premium ($${(premiumPerContract * stopMultiplier).toFixed(2)})`,
+      stopLossRule,
       takeProfitRule: 'None - let options expire worthless',
-      timeStopRule: 'Close by 3:30 PM ET if still open',
+      timeStopRule,
     },
 
     stepNumber: 5,
