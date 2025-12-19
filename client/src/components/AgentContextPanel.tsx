@@ -14,29 +14,38 @@ import { useQuery } from '@tanstack/react-query';
 import { getAccount } from '@/lib/api';
 import { useBrokerStatus } from '@/hooks/useBrokerStatus';
 
-// Types for market snapshot (matches yahooFinanceService)
-interface MarketSnapshot {
-  vix: {
-    current: number;
-    level: 'low' | 'normal' | 'elevated' | 'high';
-    change: number;
-    changePercent: number;
-    trend: 'up' | 'down' | 'flat';
-  };
+// Types for IBKR market data (from /api/agent/market)
+interface IBKRMarketData {
+  success: boolean;
   spy: {
     price: number;
     change: number;
     changePercent: number;
-    marketState: 'PRE' | 'REGULAR' | 'POST' | 'CLOSED';
+  } | null;
+  vix: {
+    current: number;
+    regime: string; // LOW, ELEVATED, HIGH, EXTREME
+  } | null;
+  market: {
+    isOpen: boolean;
+    canTrade: boolean;
+    currentTime?: string;
   };
+  regime?: {
+    shouldTrade: boolean;
+    reason: string;
+  };
+  source: 'ibkr';
   timestamp: string;
 }
 
-// Fetch market snapshot (VIX + SPY in one call)
-async function fetchMarketSnapshot(): Promise<MarketSnapshot> {
-  const response = await fetch('/api/market/snapshot');
+// Fetch market data from IBKR (the $10/month data you pay for)
+async function fetchIBKRMarket(): Promise<IBKRMarketData> {
+  const response = await fetch('/api/agent/market', {
+    credentials: 'include',
+  });
   if (!response.ok) {
-    throw new Error('Failed to fetch market snapshot');
+    throw new Error('Failed to fetch IBKR market data');
   }
   return response.json();
 }
@@ -97,10 +106,10 @@ function CompactContextBar() {
     queryFn: getAccount,
   });
   const { data: market } = useQuery({
-    queryKey: ['/api/market/snapshot'],
-    queryFn: fetchMarketSnapshot,
-    refetchInterval: 30000, // Refresh every 30 seconds
-    staleTime: 10000,
+    queryKey: ['/api/agent/market'],
+    queryFn: fetchIBKRMarket,
+    refetchInterval: 15000, // Refresh every 15 seconds (IBKR data is real-time)
+    staleTime: 5000,
   });
 
   return (
@@ -112,7 +121,7 @@ function CompactContextBar() {
         VIX {market?.vix?.current ? market.vix.current.toFixed(1) : '--'}
       </span>
       <span className="tabular-nums">
-        {market?.spy?.marketState || '--'}
+        {market?.market?.isOpen ? 'OPEN' : 'CLOSED'}
       </span>
       <span className="tabular-nums">
         ${account?.nav?.toLocaleString() || '0'}
@@ -154,20 +163,21 @@ function ContextBox() {
     queryFn: getAccount,
   });
   const { data: market, isLoading: marketLoading } = useQuery({
-    queryKey: ['/api/market/snapshot'],
-    queryFn: fetchMarketSnapshot,
-    refetchInterval: 30000, // Refresh every 30 seconds
-    staleTime: 10000,
+    queryKey: ['/api/agent/market'],
+    queryFn: fetchIBKRMarket,
+    refetchInterval: 15000, // Refresh every 15 seconds (IBKR data is real-time)
+    staleTime: 5000,
   });
   const { connected: brokerConnected } = useBrokerStatus();
 
-  // Get VIX level color
-  const getVixColor = (level?: string) => {
-    switch (level) {
-      case 'low': return 'text-green-400';
-      case 'normal': return 'text-blue-400';
-      case 'elevated': return 'text-yellow-400';
-      case 'high': return 'text-red-400';
+  // Get VIX regime color (from IBKR analysis)
+  const getVixColor = (regime?: string) => {
+    switch (regime) {
+      case 'LOW': return 'text-green-400';
+      case 'NORMAL': return 'text-blue-400';
+      case 'ELEVATED': return 'text-yellow-400';
+      case 'HIGH': return 'text-orange-400';
+      case 'EXTREME': return 'text-red-400';
       default: return '';
     }
   };
@@ -177,8 +187,8 @@ function ContextBox() {
       <div className="space-y-2 text-sm">
         <div className="flex justify-between">
           <span className="text-silver">VIX</span>
-          <span className={`font-medium tabular-nums ${getVixColor(market?.vix?.level)}`}>
-            {market?.vix?.current ? `${market.vix.current.toFixed(2)} (${market.vix.level.toUpperCase()})` : '--'}
+          <span className={`font-medium tabular-nums ${getVixColor(market?.vix?.regime)}`}>
+            {market?.vix?.current ? `${market.vix.current.toFixed(2)} (${market.vix.regime})` : '--'}
           </span>
         </div>
         <div className="flex justify-between">
@@ -189,8 +199,8 @@ function ContextBox() {
         </div>
         <div className="flex justify-between">
           <span className="text-silver">Market</span>
-          <span className={`font-medium tabular-nums ${market?.spy?.marketState === 'REGULAR' ? 'text-green-400' : 'text-silver'}`}>
-            {market?.spy?.marketState || '--'}
+          <span className={`font-medium tabular-nums ${market?.market?.isOpen ? 'text-green-400' : 'text-silver'}`}>
+            {market?.market?.isOpen ? (market?.market?.canTrade ? 'OPEN (Can Trade)' : 'OPEN') : 'CLOSED'}
           </span>
         </div>
         <div className="flex justify-between">

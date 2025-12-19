@@ -114,6 +114,55 @@ router.get('/status', async (_req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/agent/market
+ *
+ * Get real-time market data from IBKR (SPY, VIX, positions, account).
+ * This is the primary data source for the Agent UI panel.
+ */
+router.get('/market', requireAuth, async (_req: Request, res: Response) => {
+  try {
+    // Use the agent tool to get IBKR market data
+    const marketResult = await executeToolCall({ tool: 'getMarketData', args: {} });
+
+    if (!marketResult.success) {
+      return res.status(503).json({
+        success: false,
+        error: marketResult.error || 'Failed to fetch IBKR market data',
+      });
+    }
+
+    const { spy, vix, market, regime } = marketResult.data;
+
+    res.json({
+      success: true,
+      spy: spy ? {
+        price: spy.price,
+        change: spy.change,
+        changePercent: spy.changePercent,
+      } : null,
+      vix: vix ? {
+        current: vix.level,
+        regime: vix.regime,
+      } : null,
+      market: {
+        isOpen: market?.isOpen ?? false,
+        canTrade: market?.canTrade ?? false,
+        currentTime: market?.currentTime,
+      },
+      regime: regime,
+      source: 'ibkr',
+      timestamp: new Date().toISOString(),
+    });
+  } catch (error: any) {
+    console.error('[AgentRoutes] Market data error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to fetch market data',
+    });
+  }
+});
+
+/**
  * POST /api/agent/tick
  *
  * Autonomous agent tick - called every 5 minutes by Cloud Scheduler.
