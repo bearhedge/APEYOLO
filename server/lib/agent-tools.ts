@@ -274,7 +274,7 @@ const runEngineTool: Tool = {
  */
 const executeTradeTool: Tool = {
   name: 'executeTrade',
-  description: 'Execute a trade via IBKR. Requires Critic approval first.',
+  description: 'Execute a trade via IBKR. Requires human approval via UI.',
   parameters: {
     symbol: {
       type: 'string',
@@ -307,19 +307,47 @@ const executeTradeTool: Tool = {
       };
     }
 
-    // TODO: Implement actual trade execution
-    // For now, return a placeholder that requires human approval
+    // Check for human approval flag from Operator Console
+    if (!args._approved) {
+      return {
+        success: false,
+        error: 'Trade execution requires human approval. Click EXECUTE in the Operator Console.',
+        data: {
+          proposedTrade: {
+            symbol: args.symbol,
+            side: args.side,
+            strike: args.strike,
+            contracts: args.contracts,
+          },
+          requiresApproval: true,
+        },
+      };
+    }
+
+    // Human approved - log the trade (actual execution goes through Engine page)
+    // TODO: Integrate with the full engineRoutes.execute-paper endpoint
+    console.log('[AgentTools] Trade approved:', {
+      symbol: args.symbol,
+      side: args.side,
+      strike: args.strike,
+      contracts: args.contracts,
+      premium: args.premium,
+    });
+
+    // For now, return success with a note that execution is pending
+    // Full IBKR integration will be added in Phase 2
     return {
-      success: false,
-      error: 'Trade execution requires human approval. Use /api/agent/propose for dual-brain workflow.',
+      success: true,
       data: {
-        proposedTrade: {
-          symbol: args.symbol,
+        message: 'Trade approved - execution pending IBKR integration',
+        tradeId: `trade_${Date.now()}`,
+        trade: {
+          symbol: args.symbol || 'SPY',
           side: args.side,
           strike: args.strike,
-          contracts: args.contracts,
+          contracts: args.contracts || 2,
         },
-        requiresApproval: true,
+        note: 'Full IBKR execution available on Engine page',
       },
     };
   },

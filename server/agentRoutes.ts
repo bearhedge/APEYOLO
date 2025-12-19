@@ -263,24 +263,38 @@ router.post('/chat/stream', requireAuth, async (req: Request, res: Response) => 
 
     // Stream response chunks with thinking detection
     let fullContent = '';
+    let fullReasoning = ''; // Accumulate reasoning from reasoning_content field
     let lastParsed = { thinking: null as string | null, response: '', isThinkingComplete: false };
     let thinkingEmitted = false;
     let inThinkingMode = false;
+    let reasoningFromField = false; // Track if we're getting reasoning from separate field
 
     for await (const chunk of streamChatWithLLM({ messages, model, stream: true })) {
+      // Handle thinking field (DeepSeek-R1 via Ollama with think: true)
+      if (chunk.message?.thinking) {
+        reasoningFromField = true;
+        fullReasoning += chunk.message.thinking;
+        // Stream each reasoning chunk as it arrives
+        res.write(`data: ${JSON.stringify({
+          type: 'reasoning',
+          content: chunk.message.thinking,
+          isComplete: false,
+        })}\n\n`);
+      }
+
       if (chunk.message?.content) {
         fullContent += chunk.message.content;
 
-        // Parse for thinking blocks
+        // Parse for thinking blocks (fallback if no reasoning_content field)
         const parsed = parseThinkingFromStream(fullContent);
 
-        // Detect when we enter thinking mode
-        if (!inThinkingMode && fullContent.includes('<think>')) {
+        // Detect when we enter thinking mode (only if not getting reasoning from field)
+        if (!reasoningFromField && !inThinkingMode && fullContent.includes('<think>')) {
           inThinkingMode = true;
         }
 
-        // Stream reasoning content while inside thinking block
-        if (inThinkingMode && !parsed.isThinkingComplete && parsed.thinking) {
+        // Stream reasoning content while inside thinking block (only if no reasoning_content field)
+        if (!reasoningFromField && inThinkingMode && !parsed.isThinkingComplete && parsed.thinking) {
           // Only emit new thinking content
           const newThinking = parsed.thinking.slice(lastParsed.thinking?.length || 0);
           if (newThinking) {
@@ -292,8 +306,8 @@ router.post('/chat/stream', requireAuth, async (req: Request, res: Response) => 
           }
         }
 
-        // Emit complete thinking when block closes
-        if (parsed.isThinkingComplete && parsed.thinking && !thinkingEmitted) {
+        // Emit complete thinking when block closes (only if using <think> tags)
+        if (!reasoningFromField && parsed.isThinkingComplete && parsed.thinking && !thinkingEmitted) {
           res.write(`data: ${JSON.stringify({
             type: 'reasoning',
             content: parsed.thinking,
@@ -310,8 +324,13 @@ router.post('/chat/stream', requireAuth, async (req: Request, res: Response) => 
         }
 
         // Stream response content (non-thinking)
-        if (parsed.isThinkingComplete && parsed.response) {
-          const newResponse = parsed.response.slice(lastParsed.response?.length || 0);
+        // If using reasoning_content field, all content is response
+        // If using <think> tags, only content after thinking is response
+        const responseContent = reasoningFromField ? fullContent : parsed.response;
+        const lastResponseContent = reasoningFromField ? (lastParsed.response || '') : (lastParsed.response || '');
+
+        if (responseContent) {
+          const newResponse = responseContent.slice(lastResponseContent.length);
           if (newResponse) {
             res.write(`data: ${JSON.stringify({
               type: 'chunk',
@@ -320,13 +339,37 @@ router.post('/chat/stream', requireAuth, async (req: Request, res: Response) => 
           }
         }
 
-        lastParsed = parsed;
+        // Update lastParsed - handle both modes
+        if (reasoningFromField) {
+          lastParsed = { thinking: fullReasoning, response: fullContent, isThinkingComplete: true };
+        } else {
+          lastParsed = parsed;
+        }
       }
 
       if (chunk.done) {
-        // Final parse
+        // Final parse - use reasoning from field if available, otherwise from <think> tags
         const finalParsed = parseThinkingFromStream(fullContent);
-        const responseContent = finalParsed.response || fullContent;
+        const finalReasoning = reasoningFromField ? fullReasoning : finalParsed.thinking;
+        // IMPORTANT: Don't fallback to fullContent - it contains <think> tags!
+        // Strip any remaining <think> tags as safety net
+        const rawResponse = reasoningFromField ? fullContent : finalParsed.response;
+        const responseContent = rawResponse.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+
+        // If we got reasoning from the field, emit final complete event
+        if (reasoningFromField && fullReasoning) {
+          res.write(`data: ${JSON.stringify({
+            type: 'reasoning',
+            content: fullReasoning,
+            isComplete: true,
+          })}\n\n`);
+
+          // Update status - moving from thinking to responding
+          res.write(`data: ${JSON.stringify({
+            type: 'status',
+            phase: 'responding',
+          })}\n\n`);
+        }
 
         // Check for tool call in response
         const toolCall = parseToolCall(responseContent);
@@ -380,7 +423,7 @@ router.post('/chat/stream', requireAuth, async (req: Request, res: Response) => 
           res.write(`data: ${JSON.stringify({
             type: 'done',
             fullContent: formattedContent,
-            reasoning: finalParsed.thinking,
+            reasoning: finalReasoning,
             toolCall: {
               tool: toolCall.tool,
               result: toolResult,
@@ -391,7 +434,7 @@ router.post('/chat/stream', requireAuth, async (req: Request, res: Response) => 
           res.write(`data: ${JSON.stringify({
             type: 'done',
             fullContent: responseContent,
-            reasoning: finalParsed.thinking,
+            reasoning: finalReasoning,
           })}\n\n`);
         }
 
@@ -666,6 +709,360 @@ router.post('/quick', requireAuth, async (req: Request, res: Response) => {
       success: false,
       error: error.message || 'Failed to process quick analysis',
     });
+  }
+});
+
+// ============================================
+// Operator Console Endpoint
+// ============================================
+
+/**
+ * POST /api/agent/operate
+ *
+ * Unified operation endpoint for the Operator Console.
+ * Handles: analyze, propose, positions, execute, custom
+ * Uses SSE for streaming responses.
+ */
+router.post('/operate', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { operation, message, proposalId } = req.body as {
+      operation: 'analyze' | 'propose' | 'positions' | 'execute' | 'custom';
+      message?: string;
+      proposalId?: string;
+    };
+
+    if (!operation) {
+      return res.status(400).json({
+        success: false,
+        error: 'operation is required',
+      });
+    }
+
+    // FAIL FAST: Ensure IBKR is connected for all operations
+    try {
+      await ensureIbkrReady();
+      console.log('[AgentRoutes] IBKR connection verified for operate');
+    } catch (ibkrError: any) {
+      console.error('[AgentRoutes] IBKR connection failed:', ibkrError.message);
+      return res.status(503).json({
+        success: false,
+        error: 'IBKR broker not connected. Please check broker configuration.',
+        ibkrError: ibkrError.message,
+        offline: true,
+      });
+    }
+
+    // Set up SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+
+    const sendEvent = (event: any) => {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    };
+
+    try {
+      switch (operation) {
+        case 'analyze': {
+          sendEvent({ type: 'status', phase: 'analyzing' });
+
+          // Call getMarketData tool
+          sendEvent({ type: 'action', tool: 'getMarketData', content: 'Fetching market data...' });
+          const { executeToolCall } = await import('./lib/agent-tools');
+          const marketResult = await executeToolCall({ tool: 'getMarketData', args: {} });
+
+          if (marketResult.success) {
+            const { spy, vix, market, regime } = marketResult.data;
+            const marketSummary = [
+              spy?.price ? `SPY $${spy.price.toFixed(2)}` : null,
+              vix?.level ? `VIX ${vix.level.toFixed(1)} (${vix.regime || 'N/A'})` : null,
+              market?.isOpen ? 'Market Open' : 'Market Closed',
+            ].filter(Boolean).join(' | ');
+
+            sendEvent({ type: 'result', content: marketSummary });
+          } else {
+            sendEvent({ type: 'error', error: marketResult.error });
+          }
+
+          // Call getPositions tool
+          sendEvent({ type: 'action', tool: 'getPositions', content: 'Checking positions...' });
+          const posResult = await executeToolCall({ tool: 'getPositions', args: {} });
+
+          if (posResult.success) {
+            const { summary, account } = posResult.data;
+            const posSummary = [
+              `${summary.optionCount} option position(s)`,
+              account?.portfolioValue ? `NAV $${account.portfolioValue.toLocaleString()}` : null,
+              account?.dayPnL !== undefined ? `Day P&L ${account.dayPnL >= 0 ? '+' : ''}$${account.dayPnL.toFixed(0)}` : null,
+            ].filter(Boolean).join(' | ');
+
+            sendEvent({ type: 'result', content: posSummary });
+          }
+
+          sendEvent({ type: 'done' });
+          break;
+        }
+
+        case 'propose': {
+          sendEvent({ type: 'status', phase: 'analyzing' });
+
+          // First get market data
+          const { executeToolCall } = await import('./lib/agent-tools');
+          sendEvent({ type: 'action', tool: 'getMarketData', content: 'Analyzing market conditions...' });
+          const marketResult = await executeToolCall({ tool: 'getMarketData', args: {} });
+
+          if (!marketResult.success) {
+            sendEvent({ type: 'error', error: marketResult.error });
+            sendEvent({ type: 'done' });
+            break;
+          }
+
+          const { spy, vix, regime } = marketResult.data;
+          sendEvent({ type: 'result', content: `SPY $${spy?.price?.toFixed(2)} | VIX ${vix?.level?.toFixed(1)}` });
+
+          // Run the trading engine
+          sendEvent({ type: 'status', phase: 'planning' });
+          sendEvent({ type: 'action', tool: 'runEngine', content: 'Running trading engine...' });
+
+          const engineResult = await executeToolCall({ tool: 'runEngine', args: { symbol: 'SPY' } });
+
+          if (!engineResult.success || !engineResult.data?.canTrade) {
+            const reason = engineResult.data?.reason || engineResult.error || 'No trade opportunity found';
+            sendEvent({ type: 'result', content: reason });
+            sendEvent({ type: 'done' });
+            break;
+          }
+
+          // Engine found a trade opportunity
+          const engineData = engineResult.data;
+          sendEvent({ type: 'result', content: `Found: ${engineData.strategy} at ${engineData.strikes?.join(' / ')}` });
+
+          // Run dual-brain validation
+          sendEvent({ type: 'status', phase: 'validating' });
+          sendEvent({ type: 'action', tool: 'validate', content: 'Validating with AI critic...' });
+
+          // Build trading context for dual-brain
+          const context: TradingContext = {
+            spyPrice: spy?.price || 0,
+            vix: vix?.level || 0,
+            positions: [],
+            portfolioValue: 100000,
+            buyingPower: 50000,
+            dayPnL: 0,
+            mandate: {
+              allowedSymbols: ['SPY'],
+              strategyType: 'SELL',
+              minDelta: 0.05,
+              maxDelta: 0.15,
+              maxDailyLossPercent: 2,
+              noOvernightPositions: true,
+            },
+          };
+
+          const dualBrainResult = await analyzeTradeOpportunity(context);
+
+          // Stream reasoning if available
+          if (dualBrainResult.proposerResponse) {
+            sendEvent({ type: 'thinking', content: dualBrainResult.proposerResponse });
+          }
+
+          // Send proposal
+          if (dualBrainResult.proposal) {
+            const proposal = {
+              id: `prop_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`,
+              symbol: dualBrainResult.proposal.symbol || 'SPY',
+              expiration: dualBrainResult.proposal.expiry || '0DTE',
+              strategy: dualBrainResult.proposal.optionType || 'PUT',
+              bias: 'NEUTRAL' as const,
+              legs: [{
+                optionType: dualBrainResult.proposal.optionType || 'PUT',
+                strike: dualBrainResult.proposal.strike || engineData.strikes?.[0] || 0,
+                delta: 0.1,
+                premium: dualBrainResult.proposal.price || engineData.premium || 0,
+              }],
+              contracts: dualBrainResult.proposal.quantity || 2,
+              entryPremiumTotal: (dualBrainResult.proposal.price || engineData.premium || 0) * 100 * 2,
+              maxLoss: (dualBrainResult.proposal.price || engineData.premium || 0) * 3.5 * 100 * 2,
+              stopLossPrice: (dualBrainResult.proposal.price || engineData.premium || 0) * 3,
+              reasoning: dualBrainResult.proposal.reasoning,
+            };
+
+            // Store for later execution
+            pendingProposals.set(proposal.id, dualBrainResult);
+            setTimeout(() => pendingProposals.delete(proposal.id), 60 * 60 * 1000);
+
+            sendEvent({ type: 'proposal', proposal });
+
+            // Send critique
+            if (dualBrainResult.critique) {
+              const critique = {
+                approved: dualBrainResult.critique.approved || false,
+                riskLevel: dualBrainResult.critique.riskAssessment || 'MEDIUM',
+                mandateCompliant: dualBrainResult.critique.mandateCompliant || false,
+                concerns: dualBrainResult.critique.concerns || [],
+                suggestions: dualBrainResult.critique.suggestions || [],
+              };
+              sendEvent({ type: 'critique', critique });
+            }
+          }
+
+          sendEvent({ type: 'done' });
+          break;
+        }
+
+        case 'positions': {
+          sendEvent({ type: 'status', phase: 'analyzing' });
+          sendEvent({ type: 'action', tool: 'getPositions', content: 'Fetching positions...' });
+
+          const { executeToolCall } = await import('./lib/agent-tools');
+          const result = await executeToolCall({ tool: 'getPositions', args: {} });
+
+          if (result.success) {
+            const { summary, account, positions } = result.data;
+            sendEvent({ type: 'result', content: `${summary.totalPositions} position(s) | NAV $${account?.portfolioValue?.toLocaleString() || 'N/A'}` });
+
+            if (positions && positions.length > 0) {
+              const posDetails = positions.map((p: any) =>
+                `${p.symbol} ${p.type}: ${p.quantity} @ $${p.avgCost?.toFixed(2)} (P&L: $${p.unrealizedPnL?.toFixed(0)})`
+              ).join('\n');
+              sendEvent({ type: 'result', content: posDetails });
+            }
+          } else {
+            sendEvent({ type: 'error', error: result.error });
+          }
+
+          sendEvent({ type: 'done' });
+          break;
+        }
+
+        case 'execute': {
+          if (!proposalId) {
+            sendEvent({ type: 'error', error: 'proposalId is required for execution' });
+            sendEvent({ type: 'done' });
+            break;
+          }
+
+          const proposal = pendingProposals.get(proposalId);
+          if (!proposal) {
+            sendEvent({ type: 'error', error: 'Proposal not found or expired' });
+            sendEvent({ type: 'done' });
+            break;
+          }
+
+          sendEvent({ type: 'status', phase: 'executing' });
+          sendEvent({ type: 'action', tool: 'executeTrade', content: 'Submitting order to IBKR...' });
+
+          // Execute the trade
+          const { executeToolCall } = await import('./lib/agent-tools');
+          const result = await executeToolCall({
+            tool: 'executeTrade',
+            args: {
+              _approved: true, // Human approved via UI
+              ...proposal.proposal,
+            },
+          });
+
+          if (result.success) {
+            pendingProposals.delete(proposalId);
+            sendEvent({
+              type: 'execution',
+              executionResult: {
+                success: true,
+                message: 'Order submitted to IBKR',
+                ibkrOrderIds: result.data?.orderIds || [],
+                tradeId: result.data?.tradeId,
+                timestamp: new Date(),
+              },
+            });
+          } else {
+            sendEvent({
+              type: 'execution',
+              executionResult: {
+                success: false,
+                message: result.error || 'Execution failed',
+                timestamp: new Date(),
+              },
+            });
+          }
+
+          sendEvent({ type: 'done' });
+          break;
+        }
+
+        case 'custom': {
+          if (!message) {
+            sendEvent({ type: 'error', error: 'message is required for custom operation' });
+            sendEvent({ type: 'done' });
+            break;
+          }
+
+          // Fall back to regular chat stream for custom requests
+          sendEvent({ type: 'status', phase: 'thinking' });
+
+          // Use existing chat stream logic
+          const systemPrompt = `You ARE APEYOLO, an autonomous 0DTE options trading agent.
+Use your tools to help the user. Available tools:
+- getMarketData() - Get VIX, SPY price, market status
+- getPositions() - View current portfolio positions
+- runEngine() - Run the 5-step trading engine
+Be direct and concise.`;
+
+          const messages: LLMMessage[] = [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: message },
+          ];
+
+          let fullContent = '';
+          for await (const chunk of streamChatWithLLM({ messages, stream: true })) {
+            if (chunk.message?.thinking) {
+              sendEvent({ type: 'thinking', content: chunk.message.thinking });
+            }
+            if (chunk.message?.content) {
+              fullContent += chunk.message.content;
+              sendEvent({ type: 'result', content: chunk.message.content });
+            }
+          }
+
+          // Check for tool call in response
+          const toolCall = parseToolCall(fullContent);
+          if (toolCall) {
+            sendEvent({ type: 'action', tool: toolCall.tool, content: `Executing ${toolCall.tool}...` });
+            const result = await executeToolCall(toolCall);
+            if (result.success) {
+              sendEvent({ type: 'result', content: formatToolResponse(toolCall.tool, result.data) });
+            } else {
+              sendEvent({ type: 'error', error: result.error });
+            }
+          }
+
+          sendEvent({ type: 'done' });
+          break;
+        }
+
+        default:
+          sendEvent({ type: 'error', error: `Unknown operation: ${operation}` });
+          sendEvent({ type: 'done' });
+      }
+    } catch (opError: any) {
+      console.error('[AgentRoutes] Operation error:', opError);
+      sendEvent({ type: 'error', error: opError.message || 'Operation failed' });
+      sendEvent({ type: 'done' });
+    }
+
+    res.end();
+  } catch (error: any) {
+    console.error('[AgentRoutes] Error in operate:', error);
+
+    if (res.headersSent) {
+      res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
+      res.end();
+    } else {
+      res.status(500).json({
+        success: false,
+        error: error.message || 'Failed to process operation',
+      });
+    }
   }
 });
 

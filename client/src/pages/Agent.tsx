@@ -1,77 +1,42 @@
+/**
+ * Agent Page - Operator Console
+ *
+ * Transforms from a chatbot into an operator that executes trading tasks.
+ * "Task First, Chat Second" - primary interaction through action buttons.
+ */
+
 import { LeftNav } from '@/components/LeftNav';
-import { ChatCanvas } from '@/components/ChatCanvas';
-import { ContextPanel } from '@/components/ContextPanel';
-import { useAgentChat } from '@/hooks/useAgentChat';
+import { ActivityFeed } from '@/components/agent/ActivityFeed';
+import { QuickActionsBar, type OperationType } from '@/components/agent/QuickActionsBar';
+import { TradeProposalCard } from '@/components/agent/TradeProposalCard';
+import { useAgentOperator } from '@/hooks/useAgentOperator';
 import { useBrokerStatus } from '@/hooks/useBrokerStatus';
-import { Circle, RefreshCw, AlertTriangle } from 'lucide-react';
-
-// System prompt for the trading agent - directive style to avoid meta-commentary
-const TRADING_AGENT_PROMPT = `You ARE APEYOLO, an autonomous 0DTE options trading agent.
-
-CRITICAL: ALWAYS THINK BEFORE ACTING
-Before taking any action, you MUST reason through your decision inside <think>...</think> tags.
-This is required - never skip the thinking step.
-
-Example format:
-<think>
-User is asking about SPY price. I should fetch current market data to give them accurate info.
-The getMarketData tool will provide VIX, SPY price, and market status.
-</think>
-ACTION: getMarketData()
-
-CRITICAL RULES:
-- ALWAYS use <think>...</think> tags before taking any action
-- Respond directly as APEYOLO. Never explain what you would do - just do it.
-- Never use phrases like "Here's how I would respond", "APEYOLO would say", or "Certainly!"
-- When you want to take action, use the format: ACTION: tool_name(args)
-
-AVAILABLE TOOLS:
-- getMarketData() - Get VIX, SPY price, market status
-- getPositions() - View current portfolio positions
-- runEngine() - Run the 5-step trading engine to find optimal strikes
-- executeTrade(side, strike, contracts) - Submit order to IBKR
-- closeTrade(positionId) - Close an existing position
-
-YOUR CAPABILITIES:
-- Analyze market conditions (VIX level, SPY price, time to expiry)
-- View current positions and P/L in real-time
-- Run the trading engine to find optimal strangle strikes
-- Execute trades within mandate limits
-
-TRADING MANDATE:
-- Max 2 contracts per side
-- Trading hours only (9:30 AM - 4:00 PM ET)
-- 2% max loss rule per trade
-- Critic (Qwen) must approve before execution
-
-RESPONSE STYLE:
-- Always think first inside <think> tags, then act
-- Be concise and direct
-- State observations, then actions
-- If uncertain, say so clearly`;
+import { Circle, RefreshCw, AlertTriangle, Trash2 } from 'lucide-react';
 
 export function Agent() {
   const {
     isOnline,
     model,
-    statusError,
     isCheckingStatus,
-    messages,
-    isStreaming,
-    isSending,
-    sendMessageStreaming,
-    cancelStreaming,
-    clearMessages,
+    activities,
+    isProcessing,
+    activeProposal,
+    activeCritique,
+    executionResult,
+    isExecuting,
+    operate,
+    executeProposal,
+    dismissProposal,
+    stopOperation,
+    clearActivities,
     refreshStatus,
-  } = useAgentChat({
-    systemPrompt: TRADING_AGENT_PROMPT,
+  } = useAgentOperator({
     enableStatusPolling: true,
   });
 
-  // IBKR broker status - use same hook as Settings/Engine for consistency
+  // IBKR broker status
   const {
     connected: ibkrConnected,
-    provider: ibkrProvider,
     isConnecting: ibkrIsConnecting,
     environment: ibkrEnvironment,
   } = useBrokerStatus();
@@ -79,26 +44,18 @@ export function Agent() {
   // Agent can only operate if both LLM and IBKR are connected
   const canOperate = isOnline && ibkrConnected;
 
-  // Generate specific offline reason for better UX
-  const getOfflineReason = () => {
-    if (!isOnline && !ibkrConnected) {
-      return 'LLM and IBKR broker are not connected. Please check your configuration.';
-    }
-    if (!isOnline) {
-      return 'LLM is offline. Please check the agent configuration.';
-    }
-    if (!ibkrConnected) {
-      return 'IBKR broker is not connected. Live market data required for agent operation.';
-    }
-    return undefined;
+  // Handle quick action
+  const handleAction = (action: OperationType, customMessage?: string) => {
+    operate(action, { message: customMessage });
   };
 
   return (
     <div className="flex h-[calc(100vh-64px)]">
       <LeftNav />
+
       <div className="flex-1 flex flex-col">
-        {/* Agent Status Bar */}
-        <div className="flex items-center justify-between px-6 py-2 border-b border-white/10 bg-charcoal">
+        {/* Status Bar */}
+        <div className="flex items-center justify-between px-6 py-3 border-b border-white/10 bg-charcoal">
           <div className="flex items-center gap-4">
             {/* LLM Status */}
             <div className="flex items-center gap-2">
@@ -134,8 +91,12 @@ export function Agent() {
                   : 'IBKR Disconnected'}
               </span>
               {ibkrConnected && (
-                <span className="text-xs text-silver">
-                  ({ibkrEnvironment === 'live' ? 'Live' : 'Paper'})
+                <span className={`text-xs px-1.5 py-0.5 rounded ${
+                  ibkrEnvironment === 'live'
+                    ? 'bg-red-500/20 text-red-400'
+                    : 'bg-blue-500/20 text-blue-400'
+                }`}>
+                  {ibkrEnvironment === 'live' ? 'LIVE' : 'Paper'}
                 </span>
               )}
             </div>
@@ -153,7 +114,17 @@ export function Agent() {
                 </span>
               </div>
             )}
+
+            {/* Processing indicator */}
+            {isProcessing && (
+              <div className="flex items-center gap-2 border-l border-white/10 pl-4">
+                <div className="w-2 h-2 bg-blue-500 rounded-full animate-pulse" />
+                <span className="text-xs text-blue-400">Processing...</span>
+              </div>
+            )}
           </div>
+
+          {/* Controls */}
           <div className="flex items-center gap-2">
             <button
               onClick={refreshStatus}
@@ -164,26 +135,47 @@ export function Agent() {
               <RefreshCw className={`w-4 h-4 ${isCheckingStatus ? 'animate-spin' : ''}`} />
             </button>
             <button
-              onClick={clearMessages}
-              className="text-xs text-silver hover:text-white transition-colors px-2 py-1"
+              onClick={clearActivities}
+              className="p-1.5 text-silver hover:text-white transition-colors"
+              title="Clear activity log"
             >
-              Clear Chat
+              <Trash2 className="w-4 h-4" />
             </button>
           </div>
         </div>
 
-        {/* Chat Canvas */}
-        <ChatCanvas
-          messages={messages}
-          isStreaming={isStreaming}
-          isSending={isSending}
-          isOnline={canOperate}
-          offlineReason={getOfflineReason()}
-          onSend={sendMessageStreaming}
-          onCancel={cancelStreaming}
+        {/* Main Content Area */}
+        <div className="flex-1 flex flex-col overflow-hidden">
+          {/* Activity Feed */}
+          <ActivityFeed
+            activities={activities}
+            isProcessing={isProcessing}
+            emptyMessage="Ready to operate. Use the buttons below to analyze markets or find trades."
+          />
+
+          {/* Trade Proposal Card (when active) */}
+          {activeProposal && (
+            <div className="p-4 border-t border-white/10">
+              <TradeProposalCard
+                proposal={activeProposal}
+                critique={activeCritique ?? undefined}
+                executionResult={executionResult ?? undefined}
+                isExecuting={isExecuting}
+                onExecute={executeProposal}
+                onReject={dismissProposal}
+              />
+            </div>
+          )}
+        </div>
+
+        {/* Quick Actions Bar */}
+        <QuickActionsBar
+          onAction={handleAction}
+          isProcessing={isProcessing}
+          canOperate={canOperate}
+          onStop={stopOperation}
         />
       </div>
-      <ContextPanel />
     </div>
   );
 }
