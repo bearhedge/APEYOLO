@@ -3,12 +3,14 @@
  *
  * Transforms from a chatbot into an operator that executes trading tasks.
  * "Task First, Chat Second" - primary interaction through action buttons.
+ * Supports trade negotiation with interactive strike adjustment.
  */
 
+import { useState, useCallback } from 'react';
 import { LeftNav } from '@/components/LeftNav';
 import { ActivityFeed } from '@/components/agent/ActivityFeed';
 import { QuickActionsBar, type OperationType } from '@/components/agent/QuickActionsBar';
-import { TradeProposalCard } from '@/components/agent/TradeProposalCard';
+import { TradeProposalCard, type ModificationImpact, type NegotiationMessage } from '@/components/agent/TradeProposalCard';
 import { useAgentOperator } from '@/hooks/useAgentOperator';
 import { useBrokerStatus } from '@/hooks/useBrokerStatus';
 import { Circle, RefreshCw, AlertTriangle, Trash2 } from 'lucide-react';
@@ -44,8 +46,64 @@ export function Agent() {
   // Agent can only operate if both LLM and IBKR are connected
   const canOperate = isOnline && ibkrConnected;
 
+  // Negotiation state
+  const [isNegotiating, setIsNegotiating] = useState(true); // Enable negotiation by default when proposal exists
+  const [negotiationMessages, setNegotiationMessages] = useState<NegotiationMessage[]>([]);
+
+  // Handle strike modification - calls /api/agent/negotiate
+  const handleModifyStrike = useCallback(async (legIndex: number, newStrike: number): Promise<ModificationImpact | null> => {
+    if (!activeProposal?.id) return null;
+
+    try {
+      const response = await fetch('/api/agent/negotiate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({
+          proposalId: activeProposal.id,
+          legIndex,
+          newStrike,
+        }),
+      });
+
+      const data = await response.json();
+
+      if (!response.ok || !data.success) {
+        console.error('Negotiate failed:', data.error);
+        return null;
+      }
+
+      // Add agent message to negotiation history
+      if (data.impact?.reasoning) {
+        setNegotiationMessages(prev => [
+          ...prev,
+          {
+            role: 'agent' as const,
+            content: data.impact.reasoning,
+            timestamp: new Date(),
+          },
+        ]);
+      }
+
+      return data.impact as ModificationImpact;
+    } catch (error) {
+      console.error('Failed to negotiate:', error);
+      return null;
+    }
+  }, [activeProposal?.id]);
+
+  // Clear negotiation messages when proposal changes
+  const handleDismissProposal = useCallback(() => {
+    setNegotiationMessages([]);
+    dismissProposal();
+  }, [dismissProposal]);
+
   // Handle quick action
   const handleAction = (action: OperationType, customMessage?: string) => {
+    // Clear previous negotiation messages when starting new action
+    if (action === 'propose') {
+      setNegotiationMessages([]);
+    }
     operate(action, { message: customMessage });
   };
 
@@ -162,7 +220,10 @@ export function Agent() {
                 executionResult={executionResult ?? undefined}
                 isExecuting={isExecuting}
                 onExecute={executeProposal}
-                onReject={dismissProposal}
+                onReject={handleDismissProposal}
+                isNegotiating={isNegotiating}
+                onModifyStrike={handleModifyStrike}
+                negotiationMessages={negotiationMessages}
               />
             </div>
           )}

@@ -32,6 +32,13 @@ import {
   type ToolResult,
 } from './lib/agent-tools';
 import { ensureIbkrReady } from './broker/ibkr';
+import {
+  calculateModificationImpact,
+  generateNegotiationResponse,
+  validateModification,
+  type StrikeModification,
+  type ModificationImpact,
+} from './services/negotiationService';
 
 /**
  * Format tool execution result into a human-readable response for the chat.
@@ -635,6 +642,139 @@ router.post('/reject/:proposalId', requireAuth, async (req: Request, res: Respon
     res.status(500).json({
       success: false,
       error: error.message || 'Failed to reject trade',
+    });
+  }
+});
+
+/**
+ * POST /api/agent/negotiate
+ *
+ * Calculate the impact of a trade modification and get agent pushback.
+ * Used for interactive strike adjustment in the negotiation flow.
+ *
+ * Body:
+ * - proposalId: ID of the proposal being modified
+ * - legIndex: Which leg to modify (0 for PUT in strangle, 1 for CALL)
+ * - newStrike: New strike price
+ */
+router.post('/negotiate', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { proposalId, legIndex, newStrike } = req.body as {
+      proposalId: string;
+      legIndex: number;
+      newStrike: number;
+    };
+
+    if (!proposalId || typeof legIndex !== 'number' || typeof newStrike !== 'number') {
+      return res.status(400).json({
+        success: false,
+        error: 'proposalId, legIndex, and newStrike are required',
+      });
+    }
+
+    const storedResult = pendingProposals.get(proposalId);
+    if (!storedResult) {
+      return res.status(404).json({
+        success: false,
+        error: 'Proposal not found or expired',
+      });
+    }
+
+    const proposal = storedResult.proposal;
+    if (!proposal) {
+      return res.status(400).json({
+        success: false,
+        error: 'Proposal data not found',
+      });
+    }
+
+    // The server-side TradeProposal has a single strike/optionType
+    // legIndex 0 = the main option (PUT or CALL)
+    // For strangles, we'd need to store additional data, but for now support single-leg
+    if (legIndex !== 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'Currently only single-leg proposals supported for negotiation (legIndex must be 0)',
+      });
+    }
+
+    const currentStrike = proposal.strike || 0;
+    const optionType = proposal.optionType || 'PUT';
+    const symbol = proposal.symbol || 'SPY';
+    const currentPremium = (proposal.price || 0) * 100; // Convert to per-contract
+    const currentDelta = 0.10; // Default delta estimate if not stored
+
+    // Get underlying price from market data
+    const { executeToolCall } = await import('./lib/agent-tools');
+    const marketResult = await executeToolCall({ tool: 'getMarketData', args: {} });
+    const underlyingPrice = marketResult.data?.spy?.price || 600;
+
+    // Validate the modification
+    const modification: StrikeModification = {
+      proposalId,
+      legIndex,
+      currentStrike,
+      newStrike,
+      optionType: optionType as 'PUT' | 'CALL',
+      symbol,
+    };
+
+    const validation = validateModification(modification, underlyingPrice);
+    if (!validation.valid) {
+      return res.status(400).json({
+        success: false,
+        error: validation.error,
+      });
+    }
+
+    // Calculate impact
+    const impact = await calculateModificationImpact(
+      modification,
+      currentPremium,
+      currentDelta,
+      underlyingPrice
+    );
+
+    // Generate enhanced response with context
+    const vix = marketResult.data?.vix?.level || 20;
+    const response = await generateNegotiationResponse(modification, impact, {
+      vix,
+      underlyingPrice,
+      totalContracts: proposal.quantity || 2,
+      riskProfile: 'BALANCED', // Could be pulled from user settings
+    });
+
+    // Update the proposal with new strike if agent approves or cautions
+    if (impact.agentOpinion !== 'reject') {
+      // Update the stored proposal's strike and price
+      const newPricePerShare = impact.newPremium / 100; // Convert back to per-share
+
+      pendingProposals.set(proposalId, {
+        ...storedResult,
+        proposal: {
+          ...proposal,
+          strike: newStrike,
+          price: newPricePerShare,
+        },
+      });
+    }
+
+    res.json({
+      success: true,
+      impact: {
+        ...impact,
+        reasoning: response, // Use enhanced response with VIX context
+      },
+      currentStrike: modification.currentStrike,
+      newStrike,
+      legIndex,
+      underlyingPrice,
+    });
+  } catch (error: any) {
+    console.error('[AgentRoutes] Error in negotiate:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to process negotiation',
     });
   }
 });
