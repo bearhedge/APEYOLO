@@ -7,7 +7,6 @@
 
 import { useEffect, useRef } from 'react';
 import { ActivityEntry, type ActivityEntryData } from './ActivityEntry';
-import { ScrollArea } from '@/components/ui/scroll-area';
 
 interface ActivityFeedProps {
   activities: ActivityEntryData[];
@@ -56,27 +55,25 @@ export function ActivityFeed({
   }
 
   return (
-    <ScrollArea className="flex-1" ref={scrollRef}>
-      <div className="p-4 space-y-1">
-        {activities.map((activity) => (
-          <ActivityEntry key={activity.id} entry={activity} />
-        ))}
+    <div className="p-4 space-y-1" ref={scrollRef}>
+      {activities.map((activity) => (
+        <ActivityEntry key={activity.id} entry={activity} />
+      ))}
 
-        {/* Processing indicator */}
-        {isProcessing && (
-          <div className="flex items-center gap-2 py-2 text-silver">
-            <div className="flex gap-1">
-              <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
-              <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
-              <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
-            </div>
-            <span className="text-xs">Processing...</span>
+      {/* Processing indicator */}
+      {isProcessing && (
+        <div className="flex items-center gap-2 py-2 text-silver">
+          <div className="flex gap-1">
+            <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '0ms' }} />
+            <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '150ms' }} />
+            <span className="w-1.5 h-1.5 bg-blue-400 rounded-full animate-bounce" style={{ animationDelay: '300ms' }} />
           </div>
-        )}
+          <span className="text-xs">Processing...</span>
+        </div>
+      )}
 
-        {/* Scroll anchor */}
-        <div ref={bottomRef} />
-      </div>
-    </ScrollArea>
+      {/* Scroll anchor */}
+      <div ref={bottomRef} />
+    </div>
   );
 }

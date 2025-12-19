@@ -206,8 +206,8 @@ export function Agent() {
           </div>
         </div>
 
-        {/* Main Content Area */}
-        <div className="flex-1 flex flex-col overflow-hidden">
+        {/* Main Content Area - scrollable */}
+        <div className="flex-1 flex flex-col overflow-y-auto">
           {/* Activity Feed */}
           <ActivityFeed
             activities={activities}
@@ -217,7 +217,7 @@ export function Agent() {
 
           {/* Trade Proposal Card (when active) */}
           {activeProposal && (
-            <div className="p-4 border-t border-white/10">
+            <div className="p-4 border-t border-white/10 flex-shrink-0">
               <TradeProposalCard
                 proposal={activeProposal}
                 critique={activeCritique ?? undefined}
