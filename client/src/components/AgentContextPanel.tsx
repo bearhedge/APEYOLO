@@ -279,13 +279,12 @@ function ThinkingBox({ expanded }: { expanded: boolean }) {
   );
 }
 
-// Actions Box - Tool calls in progress
+// Actions Box - Tool calls in progress (always shown)
 function ActionsBox() {
-  const { actions } = useAgentStore();
+  const { actions, phase } = useAgentStore();
 
-  const recentActions = actions.slice(-5);
-
-  if (recentActions.length === 0) return null;
+  const recentActions = actions.slice(-8);
+  const isExecuting = phase === 'executing';
 
   const getStatusStyle = (status: string) => {
     switch (status) {
@@ -300,32 +299,52 @@ function ActionsBox() {
     }
   };
 
-  const getStatusText = (status: string) => {
+  const getStatusIcon = (status: string) => {
     switch (status) {
       case 'done':
-        return 'Done';
+        return '✓';
       case 'running':
-        return 'Running';
+        return '⟳';
       case 'error':
-        return 'Error';
+        return '✗';
       default:
-        return 'Pending';
+        return '○';
     }
   };
 
   return (
-    <Card title="Actions">
-      <div className="space-y-1 text-sm max-h-24 overflow-y-auto">
-        {recentActions.map((action) => (
-          <div key={action.id} className="flex items-center justify-between gap-2">
-            <span className="font-mono text-xs truncate flex-1">
-              {action.tool}
-            </span>
-            <span className={`text-xs ${getStatusStyle(action.status)}`}>
-              {getStatusText(action.status)}
-            </span>
+    <Card title="Agent Actions">
+      <div className="space-y-2 text-sm min-h-[80px] max-h-48 overflow-y-auto">
+        {recentActions.length === 0 ? (
+          <div className="text-center py-4 text-silver/50">
+            {isExecuting ? (
+              <div className="flex items-center justify-center gap-2">
+                <span className="w-2 h-2 bg-yellow-400 rounded-full animate-pulse" />
+                <span>Executing...</span>
+              </div>
+            ) : (
+              <span>No actions yet</span>
+            )}
           </div>
-        ))}
+        ) : (
+          recentActions.map((action) => (
+            <div key={action.id} className="flex items-center gap-2 py-1 border-b border-white/5 last:border-0">
+              <span className={`text-xs ${getStatusStyle(action.status)}`}>
+                {getStatusIcon(action.status)}
+              </span>
+              <span className="font-mono text-xs truncate flex-1">
+                {action.tool}
+              </span>
+              <span className={`text-xs ${getStatusStyle(action.status)}`}>
+                {action.status === 'running' && (
+                  <span className="animate-pulse">running</span>
+                )}
+                {action.status === 'done' && 'done'}
+                {action.status === 'error' && 'error'}
+              </span>
+            </div>
+          ))
+        )}
       </div>
     </Card>
   );
@@ -383,41 +402,28 @@ function StatusBox() {
 // ============================================
 
 export function AgentContextPanel() {
-  const { phase, actions } = useAgentStore();
+  const { phase } = useAgentStore();
 
-  // Determine if we're in an active thinking/processing state
-  const isThinking = phase === 'thinking' || phase === 'planning';
-  const isExecuting = phase === 'executing';
-  const hasActions = actions.length > 0;
+  // Determine if we're in an active state
+  const isActive = phase !== 'idle';
 
   return (
     <div className="w-96 h-full flex flex-col bg-charcoal border-l border-white/20">
-      {/* THINKING - Always at top, expands when active */}
-      <div className={`p-4 pb-0 ${isThinking ? 'flex-1 flex flex-col min-h-0' : ''}`}>
-        <ThinkingBox expanded={isThinking} />
+      {/* CONTEXT - Market data at top */}
+      <div className="px-4 pt-4">
+        <ContextBox />
       </div>
 
-      {/* CONTEXT - Compact bar when thinking, full card when idle */}
-      {isThinking ? (
-        <CompactContextBar />
-      ) : (
-        <div className="px-4 pt-4">
-          <ContextBox />
-        </div>
-      )}
+      {/* ACTIONS - Tool execution status (always shown) */}
+      <div className="px-4 pt-4">
+        <ActionsBox />
+      </div>
 
-      {/* ACTIONS - Only show when has actions and not in thinking mode */}
-      {!isThinking && hasActions && (
-        <div className="px-4 pt-4">
-          <ActionsBox />
-        </div>
-      )}
+      {/* Spacer to push status to bottom */}
+      <div className="flex-1" />
 
-      {/* Spacer to push status to bottom when not thinking */}
-      {!isThinking && <div className="flex-1" />}
-
-      {/* STATUS - Minimal when thinking, full when idle */}
-      {isThinking ? (
+      {/* STATUS - Agent status and controls */}
+      {isActive ? (
         <MinimalStatusBar />
       ) : (
         <div className="p-4 pt-4">

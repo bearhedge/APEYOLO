@@ -521,14 +521,8 @@ router.post('/chat/stream', requireAuth, async (req: Request, res: Response) => 
         const rawResponse = reasoningFromField ? fullContent : finalParsed.response;
         const responseContent = rawResponse.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
 
-        // If we got reasoning from the field, emit final complete event
+        // If we had reasoning, update status to responding (reasoning already streamed)
         if (reasoningFromField && fullReasoning) {
-          res.write(`data: ${JSON.stringify({
-            type: 'reasoning',
-            content: fullReasoning,
-            isComplete: true,
-          })}\n\n`);
-
           // Update status - moving from thinking to responding
           res.write(`data: ${JSON.stringify({
             type: 'status',
@@ -595,12 +589,109 @@ router.post('/chat/stream', requireAuth, async (req: Request, res: Response) => 
             },
           })}\n\n`);
         } else {
-          // No tool call - normal done
-          res.write(`data: ${JSON.stringify({
-            type: 'done',
-            fullContent: responseContent,
-            reasoning: finalReasoning,
-          })}\n\n`);
+          // No tool call detected - check if we should auto-execute based on user intent
+          // This is a fallback for when the LLM doesn't output the ACTION: format
+          const lastUserMessage = messages.filter(m => m.role === 'user').pop()?.content || '';
+          const lowerMessage = lastUserMessage.toLowerCase();
+
+          const needsMarketData = /\b(spy|vix|price|market|what.*(is|at)|trading at|quote)\b/i.test(lowerMessage);
+          const needsPositions = /\b(position|portfolio|holding|pnl|p&l)\b/i.test(lowerMessage);
+
+          if (needsMarketData) {
+            // User asked about market data but LLM didn't call tool - auto-execute
+            console.log('[AgentRoutes] Auto-detecting market data request, executing getMarketData');
+
+            res.write(`data: ${JSON.stringify({
+              type: 'status',
+              phase: 'executing',
+            })}\n\n`);
+
+            res.write(`data: ${JSON.stringify({
+              type: 'action',
+              tool: 'getMarketData',
+              args: {},
+              status: 'running',
+            })}\n\n`);
+
+            const marketResult = await executeToolCall({ tool: 'getMarketData', args: {} });
+
+            res.write(`data: ${JSON.stringify({
+              type: 'action',
+              tool: 'getMarketData',
+              args: {},
+              status: marketResult.success ? 'done' : 'error',
+              result: marketResult.data,
+              error: marketResult.error,
+            })}\n\n`);
+
+            if (marketResult.success && marketResult.data) {
+              const { spy, vix, market } = marketResult.data;
+              res.write(`data: ${JSON.stringify({
+                type: 'context',
+                context: {
+                  spyPrice: spy?.price || 0,
+                  vix: vix?.level || 0,
+                  marketOpen: market?.isOpen || false,
+                  lastUpdate: Date.now(),
+                },
+              })}\n\n`);
+            }
+
+            const formattedContent = marketResult.success
+              ? formatToolResponse('getMarketData', marketResult.data)
+              : `Error: ${marketResult.error || 'Failed to get market data'}`;
+
+            res.write(`data: ${JSON.stringify({
+              type: 'done',
+              fullContent: formattedContent,
+              reasoning: finalReasoning,
+              toolCall: { tool: 'getMarketData', result: marketResult },
+            })}\n\n`);
+          } else if (needsPositions) {
+            // User asked about positions but LLM didn't call tool - auto-execute
+            console.log('[AgentRoutes] Auto-detecting positions request, executing getPositions');
+
+            res.write(`data: ${JSON.stringify({
+              type: 'status',
+              phase: 'executing',
+            })}\n\n`);
+
+            res.write(`data: ${JSON.stringify({
+              type: 'action',
+              tool: 'getPositions',
+              args: {},
+              status: 'running',
+            })}\n\n`);
+
+            const posResult = await executeToolCall({ tool: 'getPositions', args: {} });
+
+            res.write(`data: ${JSON.stringify({
+              type: 'action',
+              tool: 'getPositions',
+              args: {},
+              status: posResult.success ? 'done' : 'error',
+              result: posResult.data,
+              error: posResult.error,
+            })}\n\n`);
+
+            const formattedContent = posResult.success
+              ? formatToolResponse('getPositions', posResult.data)
+              : `Error: ${posResult.error || 'Failed to get positions'}`;
+
+            res.write(`data: ${JSON.stringify({
+              type: 'done',
+              fullContent: formattedContent,
+              reasoning: finalReasoning,
+              toolCall: { tool: 'getPositions', result: posResult },
+            })}\n\n`);
+          } else {
+            // Normal response - no tool needed
+            res.write(`data: ${JSON.stringify({
+              type: 'done',
+              fullContent: responseContent,
+              reasoning: finalReasoning,
+            })}\n\n`);
+          }
         }
 
         // Update status - idle

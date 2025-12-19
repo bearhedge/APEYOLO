@@ -246,6 +246,7 @@ export function useAgentChat(options: UseAgentChatOptions = {}) {
       const decoder = new TextDecoder();
       let buffer = '';
       let fullContent = '';
+      let fullReasoning = ''; // Accumulate reasoning for chat display
 
       while (true) {
         const { done, value } = await reader.read();
@@ -260,19 +261,43 @@ export function useAgentChat(options: UseAgentChatOptions = {}) {
             try {
               const data = JSON.parse(line.slice(6)) as AgentSSEEvent;
 
-              // Forward all events to the agent store
-              handleSSEEvent(data);
+              // Only forward action/status events to agent store (for right panel display)
+              // Don't forward reasoning - it will show in the chat instead
+              if (data.type === 'action' || data.type === 'status' || data.type === 'context') {
+                handleSSEEvent(data);
+              }
 
               // Handle specific events for chat display
               switch (data.type) {
-                case 'chunk':
-                  // Response content (not reasoning)
-                  if (data.content) {
-                    fullContent += data.content;
+                case 'reasoning':
+                  // Accumulate reasoning for chat display (don't send to agentStore)
+                  if (data.content && !data.isComplete) {
+                    fullReasoning += data.content;
+                    // Show reasoning in chat as it streams
+                    const displayContent = fullReasoning
+                      ? `<think>\n${fullReasoning}\n</think>\n\n${fullContent}`
+                      : fullContent;
                     setMessages(prev =>
                       prev.map(m =>
                         m.id === assistantId
-                          ? { ...m, content: fullContent }
+                          ? { ...m, content: displayContent }
+                          : m
+                      )
+                    );
+                  }
+                  break;
+
+                case 'chunk':
+                  // Response content (after reasoning)
+                  if (data.content) {
+                    fullContent += data.content;
+                    const displayContent = fullReasoning
+                      ? `<think>\n${fullReasoning}\n</think>\n\n${fullContent}`
+                      : fullContent;
+                    setMessages(prev =>
+                      prev.map(m =>
+                        m.id === assistantId
+                          ? { ...m, content: displayContent }
                           : m
                       )
                     );
@@ -281,15 +306,19 @@ export function useAgentChat(options: UseAgentChatOptions = {}) {
 
                 case 'done':
                   // Use fullContent from done event if available
-                  if (data.fullContent) {
-                    setMessages(prev =>
-                      prev.map(m =>
-                        m.id === assistantId
-                          ? { ...m, content: data.fullContent!, isStreaming: false }
-                          : m
-                      )
-                    );
-                  }
+                  // Include reasoning if present
+                  const finalReasoning = data.reasoning || fullReasoning;
+                  const finalResponse = data.fullContent || fullContent;
+                  const finalDisplay = finalReasoning
+                    ? `<think>\n${finalReasoning}\n</think>\n\n${finalResponse}`
+                    : finalResponse;
+                  setMessages(prev =>
+                    prev.map(m =>
+                      m.id === assistantId
+                        ? { ...m, content: finalDisplay, isStreaming: false }
+                        : m
+                    )
+                  );
                   break;
 
                 case 'error':
