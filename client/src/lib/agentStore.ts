@@ -51,8 +51,19 @@ export interface AgentValidation {
   timestamp: number;
 }
 
+// New types for Manus-style plan/step events
+export interface TaskStep {
+  id: number;
+  description: string;
+  status: 'pending' | 'running' | 'complete' | 'error';
+}
+
+export interface WorkspaceData {
+  [key: string]: string;
+}
+
 export interface AgentSSEEvent {
-  type: 'status' | 'reasoning' | 'chunk' | 'action' | 'validation' | 'done' | 'error' | 'context';
+  type: 'status' | 'reasoning' | 'chunk' | 'action' | 'validation' | 'done' | 'error' | 'context' | 'plan' | 'step' | 'data';
   phase?: AgentPhase;
   content?: string;
   isComplete?: boolean;
@@ -65,6 +76,14 @@ export interface AgentSSEEvent {
   feedback?: string;
   error?: string;
   context?: Partial<AgentContext>;
+  // Plan events
+  steps?: TaskStep[];
+  // Step events
+  stepId?: number;
+  status?: 'pending' | 'running' | 'complete' | 'error';
+  // Data events
+  key?: string;
+  value?: string;
 }
 
 interface AgentState {
@@ -84,6 +103,12 @@ interface AgentState {
 
   // Plan (steps the agent intends to take)
   plan: PlanStep[];
+
+  // Manus-style task steps
+  taskSteps: TaskStep[];
+
+  // Workspace data (key-value pairs from tools)
+  workspaceData: WorkspaceData;
 
   // Actions (tool calls)
   actions: AgentAction[];
@@ -106,6 +131,11 @@ interface AgentState {
   addPlanStep: (step: string) => void;
   updatePlanStep: (index: number, status: PlanStep['status']) => void;
   clearPlan: () => void;
+  setTaskSteps: (steps: TaskStep[]) => void;
+  updateTaskStep: (stepId: number, status: TaskStep['status']) => void;
+  clearTaskSteps: () => void;
+  setWorkspaceData: (key: string, value: string) => void;
+  clearWorkspaceData: () => void;
   addAction: (tool: string, args?: Record<string, any>) => string;
   updateAction: (id: string, update: Partial<AgentAction>) => void;
   setValidation: (status: AgentValidation['status'], feedback?: string) => void;
@@ -135,6 +165,8 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
   reasoningBuffer: '',
   currentResponse: '',
   plan: [],
+  taskSteps: [],
+  workspaceData: {},
   actions: [],
   validation: initialValidation,
   lastMessage: '',
@@ -153,6 +185,8 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
     reasoningBuffer: '',
     currentResponse: '',
     plan: [],
+    taskSteps: [],
+    workspaceData: {},
     actions: [],
     validation: initialValidation,
   }),
@@ -200,6 +234,24 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
   })),
 
   clearPlan: () => set({ plan: [] }),
+
+  // Manus-style task steps
+  setTaskSteps: (steps) => set({ taskSteps: steps }),
+
+  updateTaskStep: (stepId, status) => set((state) => ({
+    taskSteps: state.taskSteps.map((s) =>
+      s.id === stepId ? { ...s, status } : s
+    ),
+  })),
+
+  clearTaskSteps: () => set({ taskSteps: [], workspaceData: {} }),
+
+  // Workspace data
+  setWorkspaceData: (key, value) => set((state) => ({
+    workspaceData: { ...state.workspaceData, [key]: value },
+  })),
+
+  clearWorkspaceData: () => set({ workspaceData: {} }),
 
   addAction: (tool, args) => {
     const id = `action_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
@@ -288,6 +340,27 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
       case 'context':
         if (context) {
           get().setContext(context);
+        }
+        break;
+
+      // Manus-style plan events
+      case 'plan':
+        if (event.steps) {
+          // Clear previous state and set new plan
+          get().clearTaskSteps();
+          get().setTaskSteps(event.steps);
+        }
+        break;
+
+      case 'step':
+        if (event.stepId !== undefined && event.status) {
+          get().updateTaskStep(event.stepId, event.status);
+        }
+        break;
+
+      case 'data':
+        if (event.key && event.value !== undefined) {
+          get().setWorkspaceData(event.key, event.value);
         }
         break;
 

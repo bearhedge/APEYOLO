@@ -40,6 +40,221 @@ import {
   type ModificationImpact,
 } from './services/negotiationService';
 
+// ============================================
+// Query Planner - Manus-style task breakdown
+// ============================================
+
+type QueryType = 'PRICE' | 'MARKET' | 'POSITION' | 'TRADE' | 'COMPLEX';
+
+interface PlanStep {
+  id: number;
+  description: string;
+  tool?: string;
+  args?: Record<string, any>;
+  status: 'pending' | 'running' | 'complete' | 'error';
+}
+
+interface QueryPlan {
+  type: QueryType;
+  steps: PlanStep[];
+}
+
+/**
+ * Classify user query into a type for deterministic planning.
+ * This enables smart, query-aware data retrieval without over-fetching.
+ */
+function classifyQuery(text: string): QueryType {
+  const lower = text.toLowerCase();
+
+  // PRICE - Just wants a quote
+  if (/\b(spy|price|quote|trading at|what.*(spy|price))\b/.test(lower)
+      && !/\b(vix|market|regime|trade|should|find)\b/.test(lower)) {
+    return 'PRICE';
+  }
+
+  // MARKET - Wants market context/conditions
+  if (/\b(market|regime|vix|conditions|should.*(trade|enter)|how.*(look|market))\b/.test(lower)) {
+    return 'MARKET';
+  }
+
+  // POSITION - Wants portfolio info
+  if (/\b(position|p&l|pnl|portfolio|holding|nav|account)\b/.test(lower)) {
+    return 'POSITION';
+  }
+
+  // TRADE - Wants trade opportunity
+  if (/\b(trade|propose|find|entry|opportunity|setup|engine)\b/.test(lower)) {
+    return 'TRADE';
+  }
+
+  // COMPLEX - Let LLM figure it out
+  return 'COMPLEX';
+}
+
+/**
+ * Generate a task plan based on query type.
+ * Returns numbered steps that will be displayed in the UI.
+ */
+function generatePlan(queryType: QueryType): QueryPlan {
+  switch (queryType) {
+    case 'PRICE':
+      return {
+        type: 'PRICE',
+        steps: [
+          { id: 1, description: 'Fetch SPY quote from IBKR', tool: 'getMarketData', status: 'pending' },
+        ],
+      };
+
+    case 'MARKET':
+      return {
+        type: 'MARKET',
+        steps: [
+          { id: 1, description: 'Fetch SPY price', tool: 'getMarketData', status: 'pending' },
+          { id: 2, description: 'Fetch VIX level', tool: 'getMarketData', status: 'pending' },
+          { id: 3, description: 'Analyze market regime', status: 'pending' },
+        ],
+      };
+
+    case 'POSITION':
+      return {
+        type: 'POSITION',
+        steps: [
+          { id: 1, description: 'Fetch portfolio positions', tool: 'getPositions', status: 'pending' },
+          { id: 2, description: 'Calculate P&L', status: 'pending' },
+        ],
+      };
+
+    case 'TRADE':
+      return {
+        type: 'TRADE',
+        steps: [
+          { id: 1, description: 'Fetch market data', tool: 'getMarketData', status: 'pending' },
+          { id: 2, description: 'Check current positions', tool: 'getPositions', status: 'pending' },
+          { id: 3, description: 'Run trading engine', tool: 'runEngine', status: 'pending' },
+          { id: 4, description: 'Generate proposal', status: 'pending' },
+        ],
+      };
+
+    case 'COMPLEX':
+    default:
+      return {
+        type: 'COMPLEX',
+        steps: [
+          { id: 1, description: 'Analyze request', status: 'pending' },
+          { id: 2, description: 'Execute query', status: 'pending' },
+        ],
+      };
+  }
+}
+
+/**
+ * Execute a query plan and stream results.
+ * Emits plan, step, and data events for Manus-style UI.
+ */
+async function executePlanWithStreaming(
+  plan: QueryPlan,
+  res: Response,
+  sendEvent: (event: any) => void
+): Promise<{ data: Record<string, any>; response: string }> {
+  const workspaceData: Record<string, any> = {};
+  let finalResponse = '';
+
+  // Emit the plan
+  sendEvent({
+    type: 'plan',
+    steps: plan.steps.map(s => ({ id: s.id, description: s.description, status: s.status })),
+  });
+
+  // Execute each step
+  for (const step of plan.steps) {
+    // Mark step as running
+    sendEvent({ type: 'step', stepId: step.id, status: 'running' });
+
+    try {
+      if (step.tool) {
+        // Execute the tool
+        const result = await executeToolCall({ tool: step.tool, args: step.args || {} });
+
+        if (result.success && result.data) {
+          // Emit workspace data based on tool
+          if (step.tool === 'getMarketData') {
+            const { spy, vix, market, regime } = result.data;
+            if (spy?.price) {
+              workspaceData['SPY'] = `$${spy.price.toFixed(2)}`;
+              sendEvent({ type: 'data', key: 'SPY', value: `$${spy.price.toFixed(2)}` });
+            }
+            if (spy?.changePercent !== undefined) {
+              const changeStr = `${spy.changePercent >= 0 ? '+' : ''}${spy.changePercent.toFixed(2)}%`;
+              workspaceData['Change'] = changeStr;
+              sendEvent({ type: 'data', key: 'Change', value: changeStr });
+            }
+            if (vix?.level) {
+              workspaceData['VIX'] = `${vix.level.toFixed(2)} (${vix.regime || 'N/A'})`;
+              sendEvent({ type: 'data', key: 'VIX', value: `${vix.level.toFixed(2)} (${vix.regime || 'N/A'})` });
+            }
+            if (market) {
+              workspaceData['Market'] = market.isOpen ? 'OPEN' : 'CLOSED';
+              sendEvent({ type: 'data', key: 'Market', value: market.isOpen ? 'OPEN' : 'CLOSED' });
+            }
+            if (regime) {
+              workspaceData['Regime'] = regime.shouldTrade ? 'FAVORABLE' : 'UNFAVORABLE';
+              sendEvent({ type: 'data', key: 'Regime', value: regime.shouldTrade ? 'FAVORABLE' : 'UNFAVORABLE' });
+            }
+          } else if (step.tool === 'getPositions') {
+            const { summary, account, positions } = result.data;
+            workspaceData['Positions'] = `${summary?.totalPositions || 0} open`;
+            sendEvent({ type: 'data', key: 'Positions', value: `${summary?.totalPositions || 0} open` });
+            if (account?.portfolioValue) {
+              workspaceData['NAV'] = `$${account.portfolioValue.toLocaleString()}`;
+              sendEvent({ type: 'data', key: 'NAV', value: `$${account.portfolioValue.toLocaleString()}` });
+            }
+            if (account?.dayPnL !== undefined) {
+              const pnlStr = `${account.dayPnL >= 0 ? '+' : ''}$${account.dayPnL.toFixed(0)}`;
+              workspaceData['Day P&L'] = pnlStr;
+              sendEvent({ type: 'data', key: 'Day P&L', value: pnlStr });
+            }
+          } else if (step.tool === 'runEngine') {
+            if (result.data.canTrade) {
+              workspaceData['Trade'] = result.data.direction || 'AVAILABLE';
+              sendEvent({ type: 'data', key: 'Trade', value: result.data.direction || 'AVAILABLE' });
+              if (result.data.strikes) {
+                const strikesStr = `PUT $${result.data.strikes.put || 'N/A'} / CALL $${result.data.strikes.call || 'N/A'}`;
+                workspaceData['Strikes'] = strikesStr;
+                sendEvent({ type: 'data', key: 'Strikes', value: strikesStr });
+              }
+            } else {
+              workspaceData['Trade'] = 'NO OPPORTUNITY';
+              sendEvent({ type: 'data', key: 'Trade', value: 'NO OPPORTUNITY' });
+            }
+          }
+        }
+      }
+
+      // Mark step complete
+      sendEvent({ type: 'step', stepId: step.id, status: 'complete' });
+    } catch (error: any) {
+      sendEvent({ type: 'step', stepId: step.id, status: 'error' });
+      console.error(`[QueryPlanner] Step ${step.id} failed:`, error.message);
+    }
+  }
+
+  // Generate final response from workspace data
+  const parts: string[] = [];
+  if (workspaceData['SPY']) parts.push(`SPY: ${workspaceData['SPY']}${workspaceData['Change'] ? ` (${workspaceData['Change']})` : ''}`);
+  if (workspaceData['VIX']) parts.push(`VIX: ${workspaceData['VIX']}`);
+  if (workspaceData['Market']) parts.push(`Market: ${workspaceData['Market']}`);
+  if (workspaceData['Regime']) parts.push(`Regime: ${workspaceData['Regime']}`);
+  if (workspaceData['NAV']) parts.push(`NAV: ${workspaceData['NAV']}`);
+  if (workspaceData['Day P&L']) parts.push(`Day P&L: ${workspaceData['Day P&L']}`);
+  if (workspaceData['Positions']) parts.push(`Positions: ${workspaceData['Positions']}`);
+  if (workspaceData['Trade']) parts.push(`Trade: ${workspaceData['Trade']}`);
+  if (workspaceData['Strikes']) parts.push(`Strikes: ${workspaceData['Strikes']}`);
+
+  finalResponse = parts.join(' | ') + '\n[Source: IBKR real-time data]';
+
+  return { data: workspaceData, response: finalResponse };
+}
+
 /**
  * Format tool execution result into a human-readable response for the chat.
  * This replaces the raw "ACTION: toolName()" text with actual data.
@@ -420,11 +635,63 @@ router.post('/chat/stream', requireAuth, async (req: Request, res: Response) => 
     res.setHeader('Connection', 'keep-alive');
     res.setHeader('X-Accel-Buffering', 'no');
 
+    // Helper to send SSE events
+    const sendEvent = (event: any) => {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    };
+
+    // Get the user's message for query classification
+    const lastUserMessage = messages.filter(m => m.role === 'user').pop()?.content || '';
+
+    // Classify the query and generate a plan
+    const queryType = classifyQuery(lastUserMessage);
+    console.log(`[AgentRoutes] Query classified as: ${queryType}`);
+
+    // For non-COMPLEX queries, use deterministic plan-based execution
+    // This is faster, more reliable, and provides better UI feedback
+    if (queryType !== 'COMPLEX') {
+      const plan = generatePlan(queryType);
+      console.log(`[AgentRoutes] Executing plan with ${plan.steps.length} steps`);
+
+      sendEvent({ type: 'status', phase: 'executing' });
+
+      try {
+        const { data, response } = await executePlanWithStreaming(plan, res, sendEvent);
+
+        // Emit context update for UI
+        if (data['SPY'] || data['VIX']) {
+          sendEvent({
+            type: 'context',
+            context: {
+              spyPrice: parseFloat(data['SPY']?.replace('$', '') || '0'),
+              vix: parseFloat(data['VIX']?.split(' ')[0] || '0'),
+              marketOpen: data['Market'] === 'OPEN',
+              lastUpdate: Date.now(),
+            },
+          });
+        }
+
+        // Emit done with the response
+        sendEvent({
+          type: 'done',
+          fullContent: response,
+        });
+
+        sendEvent({ type: 'status', phase: 'idle' });
+        res.end();
+        return;
+      } catch (planError: any) {
+        console.error('[AgentRoutes] Plan execution failed:', planError.message);
+        // Fall through to LLM-based execution
+      }
+    }
+
+    // For COMPLEX queries or plan failures, use LLM-based execution
     // Emit status event - agent is now thinking
-    res.write(`data: ${JSON.stringify({
+    sendEvent({
       type: 'status',
       phase: 'thinking',
-    })}\n\n`);
+    });
 
     // Stream response chunks with thinking detection
     let fullContent = '';

@@ -261,9 +261,11 @@ export function useAgentChat(options: UseAgentChatOptions = {}) {
             try {
               const data = JSON.parse(line.slice(6)) as AgentSSEEvent;
 
-              // Only forward action/status events to agent store (for right panel display)
+              // Forward relevant events to agent store (for right panel display)
+              // Include plan/step/data events for Manus-style task progress
               // Don't forward reasoning - it will show in the chat instead
-              if (data.type === 'action' || data.type === 'status' || data.type === 'context') {
+              if (data.type === 'action' || data.type === 'status' || data.type === 'context' ||
+                  data.type === 'plan' || data.type === 'step' || data.type === 'data') {
                 handleSSEEvent(data);
               }
 
