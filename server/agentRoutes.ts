@@ -114,6 +114,115 @@ router.get('/status', async (_req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/agent/tick
+ *
+ * Autonomous agent tick - called every 5 minutes by Cloud Scheduler.
+ * Runs the full tick workflow: context -> analysis -> decision.
+ *
+ * Authorization: Bearer token from Cloud Scheduler (AGENT_SECRET env var)
+ * For dev/testing: Also accepts authenticated users
+ */
+router.post('/tick', async (req: Request, res: Response) => {
+  const startTime = Date.now();
+
+  try {
+    // Verify authorization (Cloud Scheduler or authenticated user)
+    const authHeader = req.headers.authorization;
+    const agentSecret = process.env.AGENT_SECRET;
+
+    // Check for Cloud Scheduler bearer token
+    const isSchedulerAuth = authHeader &&
+      agentSecret &&
+      authHeader === `Bearer ${agentSecret}`;
+
+    // Check for user session (for dev/testing)
+    const isUserAuth = !!(req as any).user;
+
+    if (!isSchedulerAuth && !isUserAuth) {
+      console.log('[AgentRoutes] Tick unauthorized - no valid auth');
+      return res.status(401).json({
+        success: false,
+        error: 'Unauthorized - requires Cloud Scheduler token or user session',
+      });
+    }
+
+    console.log(`[AgentRoutes] Tick started (auth: ${isSchedulerAuth ? 'scheduler' : 'user'})`);
+
+    // Import command center dynamically to avoid circular deps
+    const { handleTick } = await import('./lib/command-center');
+
+    // Run the tick workflow
+    const result = await handleTick();
+
+    console.log(`[AgentRoutes] Tick completed in ${result.durationMs}ms: ${result.decision}`);
+
+    res.json({
+      success: true,
+      ...result,
+    });
+  } catch (error: any) {
+    console.error('[AgentRoutes] Tick error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Tick failed',
+      durationMs: Date.now() - startTime,
+    });
+  }
+});
+
+/**
+ * GET /api/agent/tick/stream
+ *
+ * SSE endpoint for streaming tick updates to the UI.
+ * Runs tick with real-time progress updates.
+ */
+router.get('/tick/stream', requireAuth, async (req: Request, res: Response) => {
+  // Set up SSE
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.flushHeaders();
+
+  try {
+    const { handleTickWithStreaming } = await import('./lib/command-center');
+
+    for await (const event of handleTickWithStreaming()) {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    }
+
+    res.write('data: {"type":"done"}\n\n');
+    res.end();
+  } catch (error: any) {
+    res.write(`data: ${JSON.stringify({ type: 'error', content: error.message })}\n\n`);
+    res.end();
+  }
+});
+
+/**
+ * GET /api/agent/tick/history
+ *
+ * Get recent tick history for the UI.
+ */
+router.get('/tick/history', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const limit = parseInt(req.query.limit as string) || 50;
+    const { getTickHistory } = await import('./lib/command-center');
+    const ticks = await getTickHistory(limit);
+
+    res.json({
+      success: true,
+      ticks,
+    });
+  } catch (error: any) {
+    console.error('[AgentRoutes] Tick history error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message,
+    });
+  }
+});
+
+/**
  * POST /api/agent/chat
  *
  * Send a chat message to the LLM and get a response.
@@ -976,7 +1085,10 @@ router.post('/operate', requireAuth, async (req: Request, res: Response) => {
 
           // Engine found a trade opportunity
           const engineData = engineResult.data;
-          sendEvent({ type: 'result', content: `Found: ${engineData.strategy} at ${engineData.strikes?.join(' / ')}` });
+          const strikesStr = engineData.strikes
+            ? `PUT $${engineData.strikes.put} / CALL $${engineData.strikes.call}`
+            : 'N/A';
+          sendEvent({ type: 'result', content: `Found: ${engineData.direction} at ${strikesStr}` });
 
           // Run dual-brain validation
           sendEvent({ type: 'status', phase: 'validating' });
@@ -1017,14 +1129,14 @@ router.post('/operate', requireAuth, async (req: Request, res: Response) => {
               bias: 'NEUTRAL' as const,
               legs: [{
                 optionType: dualBrainResult.proposal.optionType || 'PUT',
-                strike: dualBrainResult.proposal.strike || engineData.strikes?.[0] || 0,
+                strike: dualBrainResult.proposal.strike || engineData.strikes?.put || 0,
                 delta: 0.1,
-                premium: dualBrainResult.proposal.price || engineData.premium || 0,
+                premium: dualBrainResult.proposal.price || engineData.strikes?.premium || 0,
               }],
               contracts: dualBrainResult.proposal.quantity || 2,
-              entryPremiumTotal: (dualBrainResult.proposal.price || engineData.premium || 0) * 100 * 2,
-              maxLoss: (dualBrainResult.proposal.price || engineData.premium || 0) * 3.5 * 100 * 2,
-              stopLossPrice: (dualBrainResult.proposal.price || engineData.premium || 0) * 3,
+              entryPremiumTotal: (dualBrainResult.proposal.price || engineData.strikes?.premium || 0) * 100 * 2,
+              maxLoss: (dualBrainResult.proposal.price || engineData.strikes?.premium || 0) * 3.5 * 100 * 2,
+              stopLossPrice: (dualBrainResult.proposal.price || engineData.strikes?.premium || 0) * 3,
               reasoning: dualBrainResult.proposal.reasoning,
             };
 

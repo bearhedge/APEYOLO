@@ -1,20 +1,45 @@
 /**
  * Agent Context Panel
  *
- * Displays 6 boxes showing the agent's current state:
- * 1. CONTEXT - Market state (VIX, SPY price, positions)
- * 2. REASONING - AI's chain of thought
- * 3. PLAN - Steps the agent intends to take
- * 4. ACTIONS - Tool calls in progress
- * 5. VALIDATION - Critic's assessment
- * 6. STATUS - Current phase with controls
+ * Dynamic panel that adapts based on agent phase:
+ * - During THINKING: Thinking box expands to fill panel, others collapse
+ * - During IDLE: Compact multi-box dashboard view
  *
  * Clean, minimal, professional design - no emojis.
  */
 
+import { useState } from 'react';
 import { useAgentStore, AgentPhase } from '@/lib/agentStore';
 import { useQuery } from '@tanstack/react-query';
 import { getAccount } from '@/lib/api';
+import { useBrokerStatus } from '@/hooks/useBrokerStatus';
+
+// Types for market snapshot (matches yahooFinanceService)
+interface MarketSnapshot {
+  vix: {
+    current: number;
+    level: 'low' | 'normal' | 'elevated' | 'high';
+    change: number;
+    changePercent: number;
+    trend: 'up' | 'down' | 'flat';
+  };
+  spy: {
+    price: number;
+    change: number;
+    changePercent: number;
+    marketState: 'PRE' | 'REGULAR' | 'POST' | 'CLOSED';
+  };
+  timestamp: string;
+}
+
+// Fetch market snapshot (VIX + SPY in one call)
+async function fetchMarketSnapshot(): Promise<MarketSnapshot> {
+  const response = await fetch('/api/market/snapshot');
+  if (!response.ok) {
+    throw new Error('Failed to fetch market snapshot');
+  }
+  return response.json();
+}
 
 // Helper to format phase display
 function formatPhase(phase: AgentPhase): string {
@@ -50,9 +75,9 @@ function getPhaseStyle(phase: AgentPhase): string {
 }
 
 // Card wrapper component
-function Card({ title, children }: { title: string; children: React.ReactNode }) {
+function Card({ title, children, className = '' }: { title: string; children: React.ReactNode; className?: string }) {
   return (
-    <div className="bg-dark-gray p-4 border border-white/20">
+    <div className={`bg-dark-gray p-4 border border-white/20 ${className}`}>
       <div className="flex items-center gap-2 mb-3 pb-2 border-b border-white/10">
         <h3 className="text-xs font-semibold uppercase tracking-wider">{title}</h3>
       </div>
@@ -61,33 +86,117 @@ function Card({ title, children }: { title: string; children: React.ReactNode })
   );
 }
 
-// Context Box - Market state
-function ContextBox() {
-  const { context } = useAgentStore();
+// ============================================
+// COMPACT COMPONENTS (for thinking mode)
+// ============================================
+
+// Compact single-line context bar
+function CompactContextBar() {
   const { data: account } = useQuery({
     queryKey: ['/api/account'],
     queryFn: getAccount,
   });
+  const { data: market } = useQuery({
+    queryKey: ['/api/market/snapshot'],
+    queryFn: fetchMarketSnapshot,
+    refetchInterval: 30000, // Refresh every 30 seconds
+    staleTime: 10000,
+  });
+
+  return (
+    <div className="px-4 py-2 bg-dark-gray/50 border-y border-white/10 text-xs text-silver flex items-center justify-between">
+      <span className="tabular-nums">
+        SPY {market?.spy?.price ? `$${market.spy.price.toFixed(2)}` : '--'}
+      </span>
+      <span className="tabular-nums">
+        VIX {market?.vix?.current ? market.vix.current.toFixed(1) : '--'}
+      </span>
+      <span className="tabular-nums">
+        {market?.spy?.marketState || '--'}
+      </span>
+      <span className="tabular-nums">
+        ${account?.nav?.toLocaleString() || '0'}
+      </span>
+    </div>
+  );
+}
+
+// Minimal status bar with stop button
+function MinimalStatusBar() {
+  const { phase, stopAgent } = useAgentStore();
+
+  return (
+    <div className="px-4 py-3 bg-dark-gray border-t border-white/20 flex items-center justify-between">
+      <span className="flex items-center gap-2">
+        <span className="w-2 h-2 bg-blue-400 rounded-full animate-pulse" />
+        <span className={`text-xs font-medium ${getPhaseStyle(phase).split(' ')[1]}`}>
+          {formatPhase(phase)}
+        </span>
+      </span>
+      <button
+        onClick={stopAgent}
+        className="px-3 py-1 text-xs font-medium text-red-400 hover:text-red-300 hover:bg-red-500/10 rounded transition-colors"
+      >
+        Stop
+      </button>
+    </div>
+  );
+}
+
+// ============================================
+// FULL COMPONENTS (for idle/other modes)
+// ============================================
+
+// Context Box - Market state
+function ContextBox() {
+  const { data: account } = useQuery({
+    queryKey: ['/api/account'],
+    queryFn: getAccount,
+  });
+  const { data: market, isLoading: marketLoading } = useQuery({
+    queryKey: ['/api/market/snapshot'],
+    queryFn: fetchMarketSnapshot,
+    refetchInterval: 30000, // Refresh every 30 seconds
+    staleTime: 10000,
+  });
+  const { connected: brokerConnected } = useBrokerStatus();
+
+  // Get VIX level color
+  const getVixColor = (level?: string) => {
+    switch (level) {
+      case 'low': return 'text-green-400';
+      case 'normal': return 'text-blue-400';
+      case 'elevated': return 'text-yellow-400';
+      case 'high': return 'text-red-400';
+      default: return '';
+    }
+  };
 
   return (
     <Card title="Context">
       <div className="space-y-2 text-sm">
         <div className="flex justify-between">
           <span className="text-silver">VIX</span>
-          <span className="font-medium tabular-nums">
-            {context.vix > 0 ? context.vix.toFixed(2) : '--'}
+          <span className={`font-medium tabular-nums ${getVixColor(market?.vix?.level)}`}>
+            {market?.vix?.current ? `${market.vix.current.toFixed(2)} (${market.vix.level.toUpperCase()})` : '--'}
           </span>
         </div>
         <div className="flex justify-between">
           <span className="text-silver">SPY</span>
           <span className="font-medium tabular-nums">
-            {context.spyPrice > 0 ? `$${context.spyPrice.toFixed(2)}` : '--'}
+            {market?.spy?.price ? `$${market.spy.price.toFixed(2)}` : '--'}
           </span>
         </div>
         <div className="flex justify-between">
-          <span className="text-silver">Positions</span>
-          <span className="font-medium tabular-nums">
-            {context.positions.length > 0 ? `${context.positions.length} open` : 'None'}
+          <span className="text-silver">Market</span>
+          <span className={`font-medium tabular-nums ${market?.spy?.marketState === 'REGULAR' ? 'text-green-400' : 'text-silver'}`}>
+            {market?.spy?.marketState || '--'}
+          </span>
+        </div>
+        <div className="flex justify-between">
+          <span className="text-silver">Broker</span>
+          <span className={`font-medium tabular-nums ${brokerConnected ? 'text-green-400' : 'text-red-400'}`}>
+            {brokerConnected ? 'Connected' : 'Disconnected'}
           </span>
         </div>
         <div className="flex justify-between">
@@ -101,84 +210,62 @@ function ContextBox() {
   );
 }
 
-// Reasoning Box - AI's chain of thought
-function ReasoningBox() {
+// Thinking Box - AI's chain of thought (live streaming from DeepSeek-R1)
+function ThinkingBox({ expanded }: { expanded: boolean }) {
   const { reasoning, reasoningBuffer, phase } = useAgentStore();
+  const [manualExpand, setManualExpand] = useState(false);
 
   const isThinking = phase === 'thinking';
-  // Show final reasoning if available, otherwise show streaming buffer
-  const displayReasoning = reasoning || reasoningBuffer;
+  const displayThinking = reasoning || reasoningBuffer;
+  const isExpanded = expanded || manualExpand;
 
   return (
-    <Card title="Reasoning">
-      <div className="h-32 overflow-y-auto">
-        {displayReasoning ? (
-          <p className="text-sm text-silver whitespace-pre-wrap leading-relaxed">
-            {displayReasoning}
-            {/* Show cursor while still streaming */}
-            {isThinking && !reasoning && <span className="animate-pulse">|</span>}
+    <div
+      className={`bg-dark-gray border border-white/20 flex flex-col transition-all duration-300 ${
+        expanded ? 'flex-1 min-h-0' : ''
+      }`}
+    >
+      {/* Header */}
+      <div
+        className="flex items-center justify-between px-4 py-3 border-b border-white/10 cursor-pointer hover:bg-white/5"
+        onClick={() => !expanded && setManualExpand(!manualExpand)}
+      >
+        <h3 className="text-xs font-semibold uppercase tracking-wider flex items-center gap-2">
+          Thinking
+          {isThinking && (
+            <span className="w-2 h-2 bg-blue-400 rounded-full animate-pulse" />
+          )}
+        </h3>
+        {!expanded && displayThinking && (
+          <span className="text-xs text-silver/50">
+            {manualExpand ? '▼' : '▶'}
+          </span>
+        )}
+      </div>
+
+      {/* Content */}
+      <div
+        className={`overflow-y-auto scrollbar-thin scrollbar-thumb-white/20 px-4 py-3 ${
+          expanded ? 'flex-1' : isExpanded ? 'h-48' : 'h-24'
+        }`}
+      >
+        {displayThinking ? (
+          <p className="text-sm text-silver whitespace-pre-wrap leading-relaxed font-mono">
+            {displayThinking}
+            {isThinking && <span className="animate-pulse text-blue-400">|</span>}
           </p>
         ) : isThinking ? (
-          <p className="text-sm text-silver italic animate-pulse">Thinking...</p>
+          <div className="flex items-center gap-2">
+            <div className="w-2 h-2 bg-blue-400 rounded-full animate-pulse" />
+            <p className="text-sm text-silver">Model is thinking...</p>
+          </div>
         ) : (
           <p className="text-sm text-silver/50 text-center py-4">
-            No reasoning yet
+            Thinking will stream here
           </p>
         )}
       </div>
-    </Card>
-  );
-}
-
-// Plan Box - Steps the agent intends to take
-function PlanBox() {
-  const { plan } = useAgentStore();
-
-  const getStatusIndicator = (status: string) => {
-    switch (status) {
-      case 'done':
-        return '[x]';
-      case 'active':
-        return '[>]';
-      case 'skipped':
-        return '[-]';
-      default:
-        return '[ ]';
-    }
-  };
-
-  const getStatusStyle = (status: string) => {
-    switch (status) {
-      case 'done':
-        return 'text-green-400';
-      case 'active':
-        return 'text-yellow-400';
-      case 'skipped':
-        return 'text-silver/50 line-through';
-      default:
-        return 'text-silver';
-    }
-  };
-
-  return (
-    <Card title="Plan">
-      <div className="h-24 overflow-y-auto">
-        {plan.length > 0 ? (
-          <ul className="space-y-1 text-sm">
-            {plan.map((step, index) => (
-              <li key={index} className={`flex gap-2 ${getStatusStyle(step.status)}`}>
-                <span className="font-mono text-xs">{getStatusIndicator(step.status)}</span>
-                <span>{index + 1}. {step.step}</span>
-              </li>
-            ))}
-          </ul>
-        ) : (
-          <p className="text-sm text-silver/50 text-center py-4">
-            No active plan
-          </p>
-        )}
-      </div>
-    </Card>
+    </div>
   );
 }
 
@@ -186,8 +273,9 @@ function PlanBox() {
 function ActionsBox() {
   const { actions } = useAgentStore();
 
-  // Show last 5 actions
   const recentActions = actions.slice(-5);
+
+  if (recentActions.length === 0) return null;
 
   const getStatusStyle = (status: string) => {
     switch (status) {
@@ -217,83 +305,17 @@ function ActionsBox() {
 
   return (
     <Card title="Actions">
-      <div className="h-24 overflow-y-auto">
-        {recentActions.length > 0 ? (
-          <div className="space-y-1 text-sm">
-            {recentActions.map((action) => (
-              <div key={action.id} className="flex items-center justify-between gap-2">
-                <span className="font-mono text-xs truncate flex-1">
-                  {action.tool}
-                </span>
-                <span className={`text-xs ${getStatusStyle(action.status)}`}>
-                  {getStatusText(action.status)}
-                </span>
-                {action.result && (
-                  <span className="text-xs text-silver truncate max-w-[100px]">
-                    {typeof action.result === 'string'
-                      ? action.result
-                      : JSON.stringify(action.result).slice(0, 20) + '...'}
-                  </span>
-                )}
-              </div>
-            ))}
+      <div className="space-y-1 text-sm max-h-24 overflow-y-auto">
+        {recentActions.map((action) => (
+          <div key={action.id} className="flex items-center justify-between gap-2">
+            <span className="font-mono text-xs truncate flex-1">
+              {action.tool}
+            </span>
+            <span className={`text-xs ${getStatusStyle(action.status)}`}>
+              {getStatusText(action.status)}
+            </span>
           </div>
-        ) : (
-          <p className="text-sm text-silver/50 text-center py-4">
-            No actions yet
-          </p>
-        )}
-      </div>
-    </Card>
-  );
-}
-
-// Validation Box - Critic's assessment
-function ValidationBox() {
-  const { validation } = useAgentStore();
-
-  const getStatusStyle = () => {
-    switch (validation.status) {
-      case 'approved':
-        return 'text-green-400';
-      case 'rejected':
-        return 'text-red-400';
-      case 'pending':
-        return 'text-yellow-400';
-      default:
-        return 'text-silver/50';
-    }
-  };
-
-  const getStatusText = () => {
-    switch (validation.status) {
-      case 'approved':
-        return 'APPROVED';
-      case 'rejected':
-        return 'REJECTED';
-      case 'pending':
-        return 'PENDING';
-      default:
-        return 'Awaiting validation';
-    }
-  };
-
-  return (
-    <Card title="Validation">
-      <div className="space-y-2">
-        <div className={`text-sm font-medium ${getStatusStyle()}`}>
-          {getStatusText()}
-        </div>
-        {validation.feedback && (
-          <p className="text-xs text-silver leading-relaxed">
-            {validation.feedback}
-          </p>
-        )}
-        {validation.status === 'none' && (
-          <p className="text-sm text-silver/50 text-center py-2">
-            No validation required
-          </p>
-        )}
+        ))}
       </div>
     </Card>
   );
@@ -346,18 +368,52 @@ function StatusBox() {
   );
 }
 
-// Main AgentContextPanel component
+// ============================================
+// MAIN COMPONENT
+// ============================================
+
 export function AgentContextPanel() {
+  const { phase, actions } = useAgentStore();
+
+  // Determine if we're in an active thinking/processing state
+  const isThinking = phase === 'thinking' || phase === 'planning';
+  const isExecuting = phase === 'executing';
+  const hasActions = actions.length > 0;
+
   return (
-    <div className="w-96 bg-charcoal border-l border-white/20 overflow-y-auto">
-      <div className="p-4 space-y-4">
-        <ContextBox />
-        <ReasoningBox />
-        <PlanBox />
-        <ActionsBox />
-        <ValidationBox />
-        <StatusBox />
+    <div className="w-96 h-full flex flex-col bg-charcoal border-l border-white/20">
+      {/* THINKING - Always at top, expands when active */}
+      <div className={`p-4 pb-0 ${isThinking ? 'flex-1 flex flex-col min-h-0' : ''}`}>
+        <ThinkingBox expanded={isThinking} />
       </div>
+
+      {/* CONTEXT - Compact bar when thinking, full card when idle */}
+      {isThinking ? (
+        <CompactContextBar />
+      ) : (
+        <div className="px-4 pt-4">
+          <ContextBox />
+        </div>
+      )}
+
+      {/* ACTIONS - Only show when has actions and not in thinking mode */}
+      {!isThinking && hasActions && (
+        <div className="px-4 pt-4">
+          <ActionsBox />
+        </div>
+      )}
+
+      {/* Spacer to push status to bottom when not thinking */}
+      {!isThinking && <div className="flex-1" />}
+
+      {/* STATUS - Minimal when thinking, full when idle */}
+      {isThinking ? (
+        <MinimalStatusBar />
+      ) : (
+        <div className="p-4 pt-4">
+          <StatusBox />
+        </div>
+      )}
     </div>
   );
 }

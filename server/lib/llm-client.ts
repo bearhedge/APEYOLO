@@ -33,6 +33,8 @@ export interface LLMStreamChunk {
   message?: {
     role: 'assistant';
     content: string;
+    // DeepSeek-R1 reasoning tokens (when think: true is enabled)
+    thinking?: string;
   };
   done: boolean;
 }
@@ -46,9 +48,17 @@ export interface LLMStatusResponse {
   error?: string;
 }
 
-// Dual-Brain Model Configuration
-export const PROPOSER_MODEL = process.env.LLM_PROPOSER_MODEL || 'deepseek-r1:70b';
-export const CRITIC_MODEL = process.env.LLM_CRITIC_MODEL || 'qwen2.5:72b';
+// Three-Brain Model Configuration
+// - THINKER (DeepSeek-R1): Deep analysis, strategy, reasoning
+// - PROCESSOR (Qwen 32B): Validation, critique, processing
+// - EXECUTOR (Qwen 7B): Quick checks, monitoring, execution
+export const PROPOSER_MODEL = process.env.LLM_PROPOSER_MODEL || 'deepseek-r1:70b';  // THINKER
+export const CRITIC_MODEL = process.env.LLM_CRITIC_MODEL || 'qwen2.5:72b';          // PROCESSOR
+export const EXECUTOR_MODEL = process.env.LLM_EXECUTOR_MODEL || 'qwen2.5:7b';       // EXECUTOR (fast)
+
+// Aliases for clarity in new code
+export const THINKER_MODEL = PROPOSER_MODEL;
+export const PROCESSOR_MODEL = CRITIC_MODEL;
 
 // Legacy default (for backwards compatibility)
 const DEFAULT_MODEL = process.env.LLM_MODEL || PROPOSER_MODEL;
@@ -150,6 +160,7 @@ export async function chatWithLLM(request: LLMChatRequest): Promise<LLMChatRespo
         model: request.model || DEFAULT_MODEL,
         messages: request.messages,
         stream: false,
+        think: true, // Enable DeepSeek-R1 reasoning output
       }),
       signal: controller.signal,
     });
@@ -197,6 +208,7 @@ export async function* streamChatWithLLM(
         model: request.model || DEFAULT_MODEL,
         messages: request.messages,
         stream: true,
+        think: true, // Enable DeepSeek-R1 reasoning output
       }),
       signal: controller.signal,
     });

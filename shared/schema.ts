@@ -80,6 +80,11 @@ export const trades = pgTable("trades", {
   targetDelta: doublePrecision("target_delta"),
   actualDelta: doublePrecision("actual_delta"),
   contractCount: integer("contract_count"),
+
+  // === AGENT REASONING (for knowledge learning) ===
+  agentReasoning: text("agent_reasoning"),      // DeepSeek's reasoning for this trade
+  criticApproval: boolean("critic_approval"),   // Did Qwen approve?
+  patternId: varchar("pattern_id"),             // Which pattern triggered this trade
 });
 
 export const riskRules = pgTable("risk_rules", {
@@ -624,6 +629,81 @@ export type MandateViolation = typeof mandateViolations.$inferSelect;
 export type InsertMandateViolation = z.infer<typeof insertMandateViolationSchema>;
 
 // ==================== END TRADING MANDATES ====================
+
+// ==================== AGENT KNOWLEDGE BASE ====================
+// Knowledge tables for the autonomous trading agent's learning system
+
+// Patterns - learned market conditions and their outcomes
+export const patterns = pgTable("patterns", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  name: text("name").notNull(),                 // "Low VIX Morning Entry"
+  conditions: jsonb("conditions"),              // { vixMin: 12, vixMax: 18, timeStart: "10:00", timeEnd: "12:00" }
+  recommendation: text("recommendation"),       // "Sell strangles at 0.15 delta"
+  trades: integer("trades").notNull().default(0),
+  wins: integer("wins").notNull().default(0),
+  totalPnl: decimal("total_pnl", { precision: 12, scale: 2 }).notNull().default("0"),
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => [
+  index("patterns_active_idx").on(table.isActive),
+]);
+
+// Lessons - trader insights and agent learnings
+export const lessons = pgTable("lessons", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  content: text("content").notNull(),           // "Close before 3pm on Fridays"
+  source: text("source").notNull(),             // "trader" | "analysis"
+  category: text("category"),                   // "timing" | "risk" | "entry" | "exit"
+  isActive: boolean("is_active").notNull().default(true),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  index("lessons_active_idx").on(table.isActive),
+  index("lessons_source_idx").on(table.source),
+]);
+
+// Agent Ticks - log of every autonomous tick
+export const agentTicks = pgTable("agent_ticks", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  tickTime: timestamp("tick_time").notNull(),
+  marketContext: jsonb("market_context"),       // { vix, spyPrice, hasPosition, marketHours }
+  decision: text("decision").notNull(),         // "WAIT" | "HOLD" | "ANALYZE" | "PROPOSE" | "MANAGE"
+  reasoning: text("reasoning"),                 // DeepSeek's thinking (if called)
+  modelUsed: text("model_used"),                // Which model made the decision
+  proposalId: varchar("proposal_id"),           // Link to paper_trades if proposed
+  durationMs: integer("duration_ms"),           // How long the tick took
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  index("agent_ticks_time_idx").on(table.tickTime),
+  index("agent_ticks_decision_idx").on(table.decision),
+]);
+
+// Insert schemas for knowledge tables
+export const insertPatternSchema = createInsertSchema(patterns).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export const insertLessonSchema = createInsertSchema(lessons).omit({
+  id: true,
+  createdAt: true,
+});
+
+export const insertAgentTickSchema = createInsertSchema(agentTicks).omit({
+  id: true,
+  createdAt: true,
+});
+
+// Types for knowledge tables
+export type Pattern = typeof patterns.$inferSelect;
+export type InsertPattern = z.infer<typeof insertPatternSchema>;
+export type Lesson = typeof lessons.$inferSelect;
+export type InsertLesson = z.infer<typeof insertLessonSchema>;
+export type AgentTick = typeof agentTicks.$inferSelect;
+export type InsertAgentTick = z.infer<typeof insertAgentTickSchema>;
+
+// ==================== END AGENT KNOWLEDGE BASE ====================
 
 // Option chain types
 export type OptionData = {
