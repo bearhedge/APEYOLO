@@ -59,12 +59,82 @@ interface QueryPlan {
   steps: PlanStep[];
 }
 
+// Session context for follow-up query detection
+// Maps session ID to last query type (simple in-memory cache)
+const sessionQueryContext = new Map<string, { type: QueryType; timestamp: number }>();
+const SESSION_CONTEXT_TTL = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Check if text is a follow-up query (e.g., "and now?", "again?", "refresh")
+ */
+function isFollowUpQuery(text: string): boolean {
+  const lower = text.toLowerCase().trim();
+  // Very short queries or common follow-up patterns
+  const followUpPatterns = [
+    /^and now\??$/,
+    /^now\??$/,
+    /^again\??$/,
+    /^refresh$/,
+    /^update$/,
+    /^what about now\??$/,
+    /^how about now\??$/,
+    /^check again$/,
+    /^same$/,
+  ];
+  return followUpPatterns.some(pattern => pattern.test(lower)) || lower.length < 10;
+}
+
+/**
+ * Get last query type for a session
+ */
+function getSessionContext(sessionId: string): QueryType | null {
+  const ctx = sessionQueryContext.get(sessionId);
+  if (!ctx) return null;
+  // Check if context is still valid
+  if (Date.now() - ctx.timestamp > SESSION_CONTEXT_TTL) {
+    sessionQueryContext.delete(sessionId);
+    return null;
+  }
+  return ctx.type;
+}
+
+/**
+ * Store query type for a session
+ */
+function setSessionContext(sessionId: string, type: QueryType): void {
+  sessionQueryContext.set(sessionId, { type, timestamp: Date.now() });
+  // Cleanup old entries periodically
+  if (sessionQueryContext.size > 100) {
+    const now = Date.now();
+    for (const [key, value] of sessionQueryContext.entries()) {
+      if (now - value.timestamp > SESSION_CONTEXT_TTL) {
+        sessionQueryContext.delete(key);
+      }
+    }
+  }
+}
+
 /**
  * Classify user query into a type for deterministic planning.
  * This enables smart, query-aware data retrieval without over-fetching.
+ *
+ * @param text - The user's query text
+ * @param sessionId - Optional session ID for context-aware follow-up detection
  */
-function classifyQuery(text: string): QueryType {
+function classifyQuery(text: string, sessionId?: string): QueryType {
   const lower = text.toLowerCase();
+
+  // Check for follow-up queries first
+  if (sessionId && isFollowUpQuery(text)) {
+    const lastType = getSessionContext(sessionId);
+    if (lastType) {
+      console.log(`[QueryPlanner] Follow-up detected, using last query type: ${lastType}`);
+      return lastType;
+    }
+    // No context - default to PRICE for short queries like "and now?"
+    console.log(`[QueryPlanner] Follow-up detected but no context, defaulting to PRICE`);
+    return 'PRICE';
+  }
 
   // PRICE - Just wants a quote
   if (/\b(spy|price|quote|trading at|what.*(spy|price))\b/.test(lower)
@@ -1657,8 +1727,15 @@ router.post('/operate', requireAuth, async (req: Request, res: Response) => {
           }
 
           // Use query planner for simple queries - bypass LLM entirely
-          const queryType = classifyQuery(message);
+          // Pass user ID as session context for follow-up query detection
+          const sessionId = (req as any).user?.id || 'anonymous';
+          const queryType = classifyQuery(message, sessionId);
           console.log(`[AgentRoutes] Custom query classified as: ${queryType}`);
+
+          // Store this query type for follow-up detection
+          if (queryType !== 'COMPLEX') {
+            setSessionContext(sessionId, queryType);
+          }
 
           if (queryType !== 'COMPLEX') {
             // Deterministic execution - no LLM needed
