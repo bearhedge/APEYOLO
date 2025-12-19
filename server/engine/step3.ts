@@ -128,9 +128,39 @@ export interface RiskAssessment {
 }
 
 /**
+ * Get adaptive delta range based on VIX level
+ * Higher VIX = lower delta (rich premiums even far OTM, stay safe)
+ * Lower VIX = higher delta (need to reach for yield)
+ *
+ * VIX-Based Adaptive Delta Targeting (Conservative Defaults):
+ * - VIX > 25 (High fear):    0.05 - 0.08 (rich premiums at low delta)
+ * - VIX 18-25 (Elevated):    0.08 - 0.12 (decent premiums, moderate caution)
+ * - VIX 12-18 (Normal):      0.10 - 0.15 (balanced yield)
+ * - VIX < 12 (Complacent):   0.12 - 0.18 (need higher delta for thin premiums)
+ *
+ * @param vix - Current VIX level
+ * @returns Delta range { min, max, ideal }
+ */
+export function getAdaptiveDeltaRange(vix: number): { min: number; max: number; ideal: number } {
+  if (vix > 25) {
+    // HIGH FEAR: Rich premiums even at low delta, stay safe
+    return { min: 0.05, max: 0.08, ideal: 0.065 };
+  } else if (vix >= 18) {
+    // ELEVATED: Decent premiums, moderate caution
+    return { min: 0.08, max: 0.12, ideal: 0.10 };
+  } else if (vix >= 12) {
+    // NORMAL: Balanced yield
+    return { min: 0.10, max: 0.15, ideal: 0.125 };
+  } else {
+    // COMPLACENT (VIX < 12): Need higher delta for thin premiums
+    return { min: 0.12, max: 0.18, ideal: 0.15 };
+  }
+}
+
+/**
  * Assess risk based on VIX and determine target delta + position size
  *
- * Delta target is always 0.20 (strictly below 0.30)
+ * Uses VIX-based adaptive delta targeting for higher win rates.
  * Contract sizing: Simple formula based on buying power / margin per contract
  *
  * @param vix - Current VIX level
@@ -145,29 +175,25 @@ export function assessRisk(
   symbol?: string
 ): RiskAssessment {
   let riskRegime: RiskRegime;
-  let targetDelta: number;
   let contracts: number;
   let reasoning: string;
 
-  // Determine VIX regime AND dynamic delta target
-  // LOW/NORMAL: Higher delta (0.175) = more premium, closer to ATM
-  // ELEVATED/HIGH: Lower delta (0.125) = safer, further OTM
-  // EXTREME: No trading
-  if (vix < 17) {
+  // Get adaptive delta range based on VIX
+  const deltaRange = getAdaptiveDeltaRange(vix);
+  const targetDelta = deltaRange.ideal;
+
+  // Determine VIX regime for display/logging
+  // Uses adaptive delta targeting: higher VIX = lower delta (safer)
+  if (vix < 12) {
     riskRegime = 'LOW';
-    targetDelta = 0.175; // Target 0.15-0.20 range
-  } else if (vix < 20) {
+  } else if (vix < 18) {
     riskRegime = 'NORMAL';
-    targetDelta = 0.175; // Target 0.15-0.20 range
   } else if (vix < 25) {
     riskRegime = 'ELEVATED';
-    targetDelta = 0.125; // Target 0.10-0.15 range (safer)
   } else if (vix < 35) {
     riskRegime = 'HIGH';
-    targetDelta = 0.125; // Target 0.10-0.15 range (safer)
   } else {
     riskRegime = 'EXTREME';
-    targetDelta = 0; // No trading
   }
 
   // Calculate contracts from cash (simple formula)
@@ -176,13 +202,13 @@ export function assessRisk(
     const isETF = ETF_SYMBOLS.includes(symbol);
     const marginRate = isETF ? ETF_MARGIN_RATE : STOCK_MARGIN_RATE;
     const marginPerContract = underlyingPrice * 100 * USD_TO_HKD * marginRate;
-    const deltaRange = riskRegime === 'LOW' || riskRegime === 'NORMAL' ? '0.15-0.20' : '0.10-0.15';
-    reasoning = `VIX ${vix.toFixed(1)} (${riskRegime}): ${contracts} contracts, delta ${deltaRange} (cash $${(cash/1000).toFixed(0)}k ÷ $${(marginPerContract/1000).toFixed(0)}k margin)`;
+    const deltaRangeStr = `${deltaRange.min.toFixed(2)}-${deltaRange.max.toFixed(2)}`;
+    reasoning = `VIX ${vix.toFixed(1)} (${riskRegime}): ${contracts} contracts, delta ${deltaRangeStr} (cash $${(cash/1000).toFixed(0)}k ÷ $${(marginPerContract/1000).toFixed(0)}k margin)`;
   } else {
     // Fallback: 2 for SPY, 5 for others (legacy behavior)
     contracts = symbol === 'SPY' ? 2 : 5;
-    const deltaRange = riskRegime === 'LOW' || riskRegime === 'NORMAL' ? '0.15-0.20' : '0.10-0.15';
-    reasoning = `VIX ${vix.toFixed(1)} (${riskRegime}): ${contracts} contracts, delta ${deltaRange} (fallback - no cash data)`;
+    const deltaRangeStr = `${deltaRange.min.toFixed(2)}-${deltaRange.max.toFixed(2)}`;
+    reasoning = `VIX ${vix.toFixed(1)} (${riskRegime}): ${contracts} contracts, delta ${deltaRangeStr} (fallback - no cash data)`;
   }
 
   // EXTREME VIX = no trading

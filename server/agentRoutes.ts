@@ -1134,8 +1134,8 @@ router.post('/operate', requireAuth, async (req: Request, res: Response) => {
 
           // Engine found a trade opportunity
           const engineData = engineResult.data;
-          const strikesStr = engineData.strikes
-            ? `PUT $${engineData.strikes.put} / CALL $${engineData.strikes.call}`
+          const strikesStr = engineData.strikes && typeof engineData.strikes === 'object'
+            ? `PUT $${engineData.strikes.put || 'N/A'} / CALL $${engineData.strikes.call || 'N/A'}`
             : 'N/A';
           sendEvent({ type: 'result', content: `Found: ${engineData.direction} at ${strikesStr}` });
 
@@ -1303,10 +1303,19 @@ router.post('/operate', requireAuth, async (req: Request, res: Response) => {
 
           // Use existing chat stream logic
           const systemPrompt = `You ARE APEYOLO, an autonomous 0DTE options trading agent.
-Use your tools to help the user. Available tools:
-- getMarketData() - Get VIX, SPY price, market status
-- getPositions() - View current portfolio positions
-- runEngine() - Run the 5-step trading engine
+
+CRITICAL: To use a tool, you MUST output EXACTLY this format on its own line:
+ACTION: toolName()
+
+Available tools:
+- ACTION: getMarketData() - Get VIX, SPY price, market status
+- ACTION: getPositions() - View current portfolio positions
+- ACTION: runEngine() - Run the 5-step trading engine
+
+ALWAYS use tools for real data. NEVER make up prices or numbers.
+When user asks about SPY price, VIX, or market data → output: ACTION: getMarketData()
+When user asks about positions or portfolio → output: ACTION: getPositions()
+
 Be direct and concise. Do not use emojis.`;
 
           const messages: LLMMessage[] = [
@@ -1372,9 +1381,35 @@ Be direct and concise. Do not use emojis.`;
               } else {
                 sendEvent({ type: 'error', error: result.error });
               }
-            } else if (fullContent) {
-              // No tool call - emit final content
-              sendEvent({ type: 'result', content: fullContent, isComplete: true });
+            } else {
+              // LLM didn't call a tool - auto-detect if we should call one
+              // This prevents hallucinated data when user asks about prices
+              const lowerMessage = message.toLowerCase();
+              const needsMarketData = /\b(spy|vix|price|market|trading at|what.*(is|s).*at)\b/i.test(lowerMessage);
+              const needsPositions = /\b(position|portfolio|holding|pnl|p&l)\b/i.test(lowerMessage);
+
+              if (needsMarketData) {
+                // User asked about market data but LLM didn't call tool - auto-execute
+                sendEvent({ type: 'action', tool: 'getMarketData', content: 'Fetching real market data...' });
+                const marketResult = await executeToolCall({ tool: 'getMarketData', args: {} });
+                if (marketResult.success) {
+                  sendEvent({ type: 'result', content: formatToolResponse('getMarketData', marketResult.data), isComplete: true });
+                } else {
+                  sendEvent({ type: 'error', error: marketResult.error || 'Failed to get market data' });
+                }
+              } else if (needsPositions) {
+                // User asked about positions but LLM didn't call tool - auto-execute
+                sendEvent({ type: 'action', tool: 'getPositions', content: 'Fetching positions...' });
+                const posResult = await executeToolCall({ tool: 'getPositions', args: {} });
+                if (posResult.success) {
+                  sendEvent({ type: 'result', content: formatToolResponse('getPositions', posResult.data), isComplete: true });
+                } else {
+                  sendEvent({ type: 'error', error: posResult.error || 'Failed to get positions' });
+                }
+              } else if (fullContent) {
+                // No tool needed - emit final content
+                sendEvent({ type: 'result', content: fullContent, isComplete: true });
+              }
             }
 
             sendEvent({ type: 'done' });

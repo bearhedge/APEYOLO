@@ -3080,8 +3080,12 @@ class IbkrClient {
       }
 
       // Check for error responses (IBKR may return 200 with error in body)
+      // IBKR can return errors in multiple formats:
+      // 1. { error: "message" }
+      // 2. { order_status: "Failed", text: "error message" }
       if (Array.isArray(confirmedRaw)) {
         for (const item of confirmedRaw) {
+          // Check for explicit error field
           if (item.error) {
             const errorMsg = item.error || 'Unknown IBKR error';
             console.error(`[IBKR][placeOptionOrderWithStop][${reqId}] IBKR rejected order: ${errorMsg}`);
@@ -3091,6 +3095,17 @@ class IbkrClient {
               status: "FAILED"
             });
             return { status: "rejected_ibkr_error", raw: confirmedRaw, error: errorMsg };
+          }
+          // Check for order_status: "Failed" with text field (e.g., price validation errors)
+          if (item.order_status === 'Failed' && item.text) {
+            const errorMsg = item.text || 'Order failed';
+            console.error(`[IBKR][placeOptionOrderWithStop][${reqId}] IBKR order failed: ${errorMsg}`);
+            await storage.createAuditLog({
+              eventType: "IBKR_BRACKET_ORDER",
+              details: `FAILED: ${errorMsg}`,
+              status: "FAILED"
+            });
+            return { status: "rejected_order_failed", raw: confirmedRaw, error: errorMsg };
           }
         }
       } else if (confirmedRaw?.error) {
@@ -3102,6 +3117,15 @@ class IbkrClient {
           status: "FAILED"
         });
         return { status: "rejected_ibkr_error", raw: confirmedRaw, error: errorMsg };
+      } else if (confirmedRaw?.order_status === 'Failed' && confirmedRaw?.text) {
+        const errorMsg = confirmedRaw.text || 'Order failed';
+        console.error(`[IBKR][placeOptionOrderWithStop][${reqId}] IBKR order failed: ${errorMsg}`);
+        await storage.createAuditLog({
+          eventType: "IBKR_BRACKET_ORDER",
+          details: `FAILED: ${errorMsg}`,
+          status: "FAILED"
+        });
+        return { status: "rejected_order_failed", raw: confirmedRaw, error: errorMsg };
       }
 
       // Parse order IDs from response
@@ -3628,6 +3652,73 @@ export async function getIbkrCookieString(): Promise<string> {
 export async function resolveSymbolConid(symbol: string): Promise<number | null> {
   if (!activeClient) throw new Error('IBKR client not initialized');
   return activeClient.resolveConid(symbol);
+}
+
+/**
+ * Get current VIX (CBOE Volatility Index) value from IBKR
+ * Used for adaptive delta targeting based on market volatility
+ * @returns VIX value (defaults to 15 if unavailable)
+ */
+export async function getVixQuote(): Promise<number> {
+  const DEFAULT_VIX = 15;
+
+  if (!activeClient) {
+    console.warn('[IBKR][getVixQuote] Client not initialized, using default VIX:', DEFAULT_VIX);
+    return DEFAULT_VIX;
+  }
+
+  try {
+    await ensureIbkrReady();
+    const vixConid = await activeClient.resolveConid('VIX');
+
+    if (!vixConid) {
+      console.warn('[IBKR][getVixQuote] Could not resolve VIX conid, using default:', DEFAULT_VIX);
+      return DEFAULT_VIX;
+    }
+
+    const snap = await activeClient.http.get(
+      `/v1/api/iserver/marketdata/snapshot?conids=${vixConid}&outsideRth=true`
+    );
+
+    if (snap.status === 200 && Array.isArray(snap.data) && snap.data.length > 0) {
+      const data = snap.data[0];
+      // Try different fields: "31" (last price), "84" (close), or "last"
+      const vixPrice = data?.["31"] ?? data?.["84"] ?? data?.last;
+
+      if (vixPrice != null && Number(vixPrice) > 0) {
+        const vix = Number(vixPrice);
+        console.log(`[IBKR][getVixQuote] VIX: ${vix.toFixed(2)}`);
+        return vix;
+      }
+    }
+
+    console.warn('[IBKR][getVixQuote] Could not parse VIX from snapshot, using default:', DEFAULT_VIX);
+    return DEFAULT_VIX;
+  } catch (err) {
+    console.error('[IBKR][getVixQuote] Error fetching VIX:', err);
+    return DEFAULT_VIX;
+  }
+}
+
+/**
+ * Get current price of underlying symbol (for exit rule monitoring)
+ * @param symbol - Stock symbol (e.g., 'SPY')
+ * @returns Current price or null if unavailable
+ */
+export async function getUnderlyingPrice(symbol: string): Promise<number | null> {
+  if (!activeClient) {
+    console.warn('[IBKR][getUnderlyingPrice] Client not initialized');
+    return null;
+  }
+
+  try {
+    await ensureIbkrReady();
+    const marketData = await activeClient.getMarketData(symbol);
+    return marketData?.price ?? null;
+  } catch (err) {
+    console.error(`[IBKR][getUnderlyingPrice] Error fetching ${symbol} price:`, err);
+    return null;
+  }
 }
 
 /**

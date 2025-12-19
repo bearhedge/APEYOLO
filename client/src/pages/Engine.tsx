@@ -190,6 +190,11 @@ export function Engine() {
       return;
     }
 
+    // Warn user if in paper mode
+    if (environment !== 'live') {
+      toast('Paper mode: Order goes to paper account, not live', { icon: 'ℹ️' });
+    }
+
     try {
       setIsExecuting(true);
       setExecutionResult(null); // Clear previous result
@@ -220,7 +225,7 @@ export function Engine() {
     } finally {
       setIsExecuting(false);
     }
-  }, [analysis, executePaperTrade]);
+  }, [analysis, executePaperTrade, environment]);
 
   // Helper to derive step status from analysis
   const getStepStatus = (stepNum: number): StepStatus => {
@@ -343,7 +348,9 @@ export function Engine() {
             <div>
               <h1 className="text-3xl font-bold tracking-wide">Engine</h1>
               <p className="text-silver text-sm mt-1">
-                {brokerConnectedFinal ? 'IBKR Live Trading' : 'Simulation Mode'} - {SYMBOL_CONFIG[selectedSymbol].expiration} Options with Stop Loss
+                {brokerConnectedFinal
+                  ? (environment === 'live' ? 'IBKR Live Trading' : 'IBKR Paper Trading')
+                  : 'Simulation Mode'} - {SYMBOL_CONFIG[selectedSymbol].expiration} Options with Stop Loss
               </p>
             </div>
 
@@ -376,8 +383,10 @@ export function Engine() {
           />
           <StatCard
             label="IBKR"
-            value={isConnecting ? 'Connecting...' : (brokerConnectedFinal ? 'Connected' : 'Disconnected')}
-            icon={brokerConnectedFinal ? <Zap className="w-5 h-5 text-green-500" /> : isConnecting ? <RefreshCw className="w-5 h-5 animate-spin" /> : <XCircle className="w-5 h-5 text-red-500" />}
+            value={isConnecting ? 'Connecting...' : (brokerConnectedFinal
+              ? `Connected (${environment === 'live' ? 'Live' : 'Paper'})`
+              : 'Disconnected')}
+            icon={brokerConnectedFinal ? <Zap className={`w-5 h-5 ${environment === 'live' ? 'text-green-500' : 'text-yellow-500'}`} /> : isConnecting ? <RefreshCw className="w-5 h-5 animate-spin" /> : <XCircle className="w-5 h-5 text-red-500" />}
             testId="ibkr-status"
           />
           <StatCard

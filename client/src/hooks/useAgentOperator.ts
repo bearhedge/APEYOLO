@@ -13,6 +13,7 @@ import { useState, useCallback, useRef, useEffect } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ActivityEntryData, ActivityType } from '@/components/agent/ActivityEntry';
 import type { TradeProposal, CritiqueResult, ExecutionResult } from '@/components/agent/TradeProposalCard';
+import { useAgentStore } from '@/lib/agentStore';
 
 // =============================================================================
 // Session Storage Helpers (persist state across page navigation)
@@ -118,10 +119,22 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
 
   const queryClient = useQueryClient();
 
+  // Get store actions for forwarding SSE events to AgentContextPanel
+  const storeHandleSSEEvent = useAgentStore(state => state.handleSSEEvent);
+  const storeSetPhase = useAgentStore(state => state.setPhase);
+  const storeResetState = useAgentStore(state => state.resetState);
+
   // Initialize state from sessionStorage for persistence across navigation
-  const [activities, setActivities] = useState<ActivityEntryData[]>(
-    () => getFromSession(STORAGE_KEYS.activities, [])
-  );
+  // Filter out activities older than 30 minutes to prevent stale data
+  const [activities, setActivities] = useState<ActivityEntryData[]>(() => {
+    const loaded = getFromSession<ActivityEntryData[]>(STORAGE_KEYS.activities, []);
+    const MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
+    const now = Date.now();
+    return loaded.filter(a => {
+      const activityTime = new Date(a.timestamp).getTime();
+      return (now - activityTime) < MAX_AGE_MS;
+    });
+  });
   const [isProcessing, setIsProcessing] = useState(false); // Don't persist - should reset
   const [activeProposal, setActiveProposal] = useState<TradeProposal | null>(
     () => getFromSession(STORAGE_KEYS.activeProposal, null)
@@ -143,6 +156,8 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
 
   // Persist state changes to sessionStorage
   useEffect(() => {
+    // Don't persist empty state (allows clear to work properly)
+    if (activities.length === 0) return;
     // Keep only last 50 activities to prevent storage overflow
     const toStore = activities.slice(-50);
     persistToSession(STORAGE_KEYS.activities, toStore);
@@ -232,6 +247,9 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
     streamingResultIdRef.current = null;
     lastToolActionIdRef.current = null;
 
+    // Reset agent store state for context panel
+    storeResetState();
+
     setIsProcessing(true);
     abortControllerRef.current = new AbortController();
 
@@ -305,7 +323,7 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
       setIsProcessing(false);
       abortControllerRef.current = null;
     }
-  }, [isProcessing, addActivity, updateActivity]);
+  }, [isProcessing, addActivity, updateActivity, storeResetState]);
 
   /**
    * Handle SSE events from the server
@@ -316,6 +334,58 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
    * - Mark as complete on final event (isComplete=true)
    */
   const handleSSEEvent = useCallback((event: OperateSSEEvent, actionId: string) => {
+    // Forward events to agentStore for AgentContextPanel display
+    // Map event types from operator format to store format
+    const forwardToStore = () => {
+      switch (event.type) {
+        case 'status':
+          if (event.phase) {
+            storeSetPhase(event.phase as any);
+          }
+          break;
+        case 'thinking':
+          // Map to reasoning event
+          storeHandleSSEEvent({
+            type: 'reasoning',
+            content: event.content,
+            isComplete: event.isComplete,
+          });
+          break;
+        case 'result':
+          // Map to chunk event for response display
+          storeHandleSSEEvent({
+            type: 'chunk',
+            content: event.content,
+          });
+          break;
+        case 'action':
+          // Forward tool action
+          storeHandleSSEEvent({
+            type: 'action',
+            tool: event.tool,
+            args: event.data,
+          });
+          break;
+        case 'critique':
+          // Map to validation event
+          if (event.critique) {
+            storeHandleSSEEvent({
+              type: 'validation',
+              approved: event.critique.approved,
+              feedback: event.critique.reasoning,
+            });
+          }
+          break;
+        case 'done':
+          storeHandleSSEEvent({ type: 'done' });
+          break;
+        case 'error':
+          storeHandleSSEEvent({ type: 'error', error: event.error });
+          break;
+      }
+    };
+    forwardToStore();
+
     switch (event.type) {
       case 'status':
         // Phase change - could add visual indicator
@@ -428,7 +498,7 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
         lastToolActionIdRef.current = null;
         break;
     }
-  }, [addActivity, updateActivity]);
+  }, [addActivity, updateActivity, storeHandleSSEEvent, storeSetPhase]);
 
   /**
    * Execute the active proposal
@@ -464,12 +534,13 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
    * Clear activity history and sessionStorage
    */
   const clearActivities = useCallback(() => {
+    // Clear sessionStorage FIRST to prevent race condition with persist effect
+    Object.values(STORAGE_KEYS).forEach(clearFromSession);
+    // Then update state
     setActivities([]);
     setActiveProposal(null);
     setActiveCritique(null);
     setExecutionResult(null);
-    // Also clear sessionStorage
-    Object.values(STORAGE_KEYS).forEach(clearFromSession);
   }, []);
 
   /**

@@ -411,7 +411,23 @@ router.get('/analyze', requireAuth, async (req, res) => {
     const stopMult = parseInt(stopMultiplier as string, 10) || 3;
 
     // Multi-tenant: Get broker for the authenticated user
-    const broker = await getBrokerForUser(req.user!.id);
+    // Falls back to shared broker if no per-user credentials exist
+    let broker = await getBrokerForUser(req.user!.id);
+
+    // Fallback to shared broker if per-user broker not available
+    if (!broker.api) {
+      console.log('[Engine/analyze] No per-user broker, falling back to shared broker');
+      broker = getBroker();
+    }
+
+    // Check if we have a valid broker API
+    if (!broker.api) {
+      return res.status(503).json({
+        error: 'Broker not connected',
+        reason: 'No IBKR connection available. Please check broker configuration.',
+        failedStep: null
+      });
+    }
 
     // Ensure IBKR is ready if using it
     if (broker.status.provider === 'ibkr') {
@@ -613,10 +629,12 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
         for (const leg of tradeProposal.legs) {
           // Per-leg stop: 3x this leg's premium (e.g., PUT $0.70 → stop $2.10)
           const STOP_MULTIPLIER = 3; // 3x premium (same as step5.ts: 1 + STOP_LOSS_MULTIPLIER)
-          const legStopPrice = leg.premium * STOP_MULTIPLIER;
+          // Round to nearest cent (0.01) to conform to IBKR minimum price variation
+          const legStopPrice = Math.round(leg.premium * STOP_MULTIPLIER * 100) / 100;
 
           // Use bid price for SELL orders (faster fills) or fall back to mid price
-          const sellPrice = leg.bid || leg.premium;
+          // Round to nearest cent to conform to IBKR minimum price variation
+          const sellPrice = Math.round((leg.bid || leg.premium) * 100) / 100;
 
           const orderResult = await placeOptionOrderWithStop({
             symbol: tradeProposal.symbol,

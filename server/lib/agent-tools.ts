@@ -244,7 +244,7 @@ const runEngineTool: Tool = {
           withinTradingWindow: result.withinTradingWindow,
           direction: result.direction?.direction,
           confidence: result.direction?.confidence,
-          strikes: result.strikes ? {
+          strikes: result.strikes && typeof result.strikes === 'object' && !Array.isArray(result.strikes) ? {
             put: result.strikes.putStrike,
             call: result.strikes.callStrike,
             premium: result.strikes.expectedPremium,

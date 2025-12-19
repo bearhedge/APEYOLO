@@ -11,6 +11,7 @@ import { LeftNav } from '@/components/LeftNav';
 import { ActivityFeed } from '@/components/agent/ActivityFeed';
 import { QuickActionsBar, type OperationType } from '@/components/agent/QuickActionsBar';
 import { TradeProposalCard, type ModificationImpact, type NegotiationMessage } from '@/components/agent/TradeProposalCard';
+import { AgentContextPanel } from '@/components/AgentContextPanel';
 import { useAgentOperator } from '@/hooks/useAgentOperator';
 import { useBrokerStatus } from '@/hooks/useBrokerStatus';
 import { Circle, RefreshCw, AlertTriangle, Trash2 } from 'lucide-react';
@@ -111,8 +112,11 @@ export function Agent() {
     <div className="flex h-[calc(100vh-64px)]">
       <LeftNav />
 
-      <div className="flex-1 flex flex-col">
-        {/* Status Bar */}
+      {/* Main content + Right panel container */}
+      <div className="flex-1 flex">
+        {/* Main content column */}
+        <div className="flex-1 flex flex-col min-w-0">
+          {/* Status Bar */}
         <div className="flex items-center justify-between px-6 py-3 border-b border-white/10 bg-charcoal">
           <div className="flex items-center gap-4">
             {/* LLM Status */}
@@ -236,6 +240,10 @@ export function Agent() {
           canOperate={canOperate}
           onStop={stopOperation}
         />
+        </div>
+
+        {/* Right Panel - Agent Context & Reasoning */}
+        <AgentContextPanel />
       </div>
     </div>
   );
