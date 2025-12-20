@@ -30,6 +30,7 @@ interface IBKRMarketData {
     isOpen: boolean;
     canTrade: boolean;
     currentTime?: string;
+    reason?: string;  // e.g., "Weekend - market closed"
   };
   regime?: {
     shouldTrade: boolean;
@@ -100,17 +101,29 @@ function APEYOLOWorkspace() {
 
   // Merge workspace data with fallback market data
   const displayData: Record<string, string> = { ...workspaceData };
+  const isMarketClosed = market?.market && !market.market.isOpen;
 
   // If workspace is empty, show default market data
   if (Object.keys(displayData).length === 0) {
     if (market?.spy?.price) {
-      displayData['SPY'] = `$${market.spy.price.toFixed(2)}`;
+      // Label as "Last Close" when market is closed
+      const spyLabel = isMarketClosed ? 'SPY (Last)' : 'SPY';
+      displayData[spyLabel] = `$${market.spy.price.toFixed(2)}`;
     }
     if (market?.vix?.current) {
-      displayData['VIX'] = `${market.vix.current.toFixed(2)} (${market.vix.regime || 'N/A'})`;
+      // Label as "Last Close" when market is closed
+      const vixLabel = isMarketClosed ? 'VIX (Last)' : 'VIX';
+      displayData[vixLabel] = `${market.vix.current.toFixed(2)} (${market.vix.regime || 'N/A'})`;
     }
     if (market?.market) {
-      displayData['Market'] = market.market.isOpen ? 'OPEN' : 'CLOSED';
+      // Show status with reason when closed
+      if (market.market.isOpen) {
+        displayData['Market'] = 'OPEN';
+      } else {
+        // Extract short reason (e.g., "Weekend" from "Weekend - market closed")
+        const shortReason = market.market.reason?.split(' - ')[0] || 'CLOSED';
+        displayData['Market'] = shortReason;
+      }
     }
     displayData['Broker'] = brokerConnected ? 'Connected' : 'Disconnected';
     if (account?.nav) {

@@ -1918,9 +1918,13 @@ Be direct and concise. Do not use emojis.`;
             } else {
               // LLM didn't call a tool - auto-detect if we should call one
               // This prevents hallucinated data when user asks about prices
+              // IMPORTANT: Only trigger for clear market data queries, not general questions
               const lowerMessage = message.toLowerCase();
-              const needsMarketData = /\b(spy|vix|price|market|trading at|what.*(is|s).*at)\b/i.test(lowerMessage);
-              const needsPositions = /\b(position|portfolio|holding|pnl|p&l)\b/i.test(lowerMessage);
+              // Match specific trading queries: "spy", "vix", "price", "market" or "what is SPY/VIX at"
+              // Avoid matching general questions like "what should I do at 3pm"
+              const needsMarketData = /\b(spy|vix|stock price|option price|current price|market data)\b/i.test(lowerMessage) ||
+                                     /\bwhat('s| is| are) (spy|vix|the market) (at|trading|doing)\b/i.test(lowerMessage);
+              const needsPositions = /\b(position|portfolio|holding|pnl|p&l|my trades)\b/i.test(lowerMessage);
 
               if (needsMarketData) {
                 // User asked about market data but LLM didn't call tool - auto-execute

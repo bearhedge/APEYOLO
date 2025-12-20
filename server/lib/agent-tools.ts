@@ -7,6 +7,7 @@
 
 import { getBroker } from '../broker';
 import { analyzeMarketRegime } from '../engine/step1';
+import { getMarketStatus } from '../services/marketCalendar';
 
 // =============================================================================
 // Tool Types
@@ -65,6 +66,9 @@ const getMarketDataTool: Tool = {
       // Analyze market regime for additional context
       const regime = await analyzeMarketRegime(true, 'SPY');
 
+      // Use marketCalendar for accurate market open/closed status
+      const marketStatus = getMarketStatus();
+
       return {
         success: true,
         data: {
@@ -78,9 +82,10 @@ const getMarketDataTool: Tool = {
             regime: regime.volatilityRegime,
           } : null,
           market: {
-            isOpen: regime.withinTradingWindow,
+            isOpen: marketStatus.isOpen,  // Use proper market calendar
             canTrade: regime.canExecute,
-            currentTime: regime.metadata?.currentTime,
+            currentTime: marketStatus.currentTimeET,
+            reason: marketStatus.reason,  // Include reason (weekend, holiday, pre/post market)
           },
           regime: {
             shouldTrade: regime.shouldTrade,
