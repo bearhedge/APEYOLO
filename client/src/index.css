@@ -59,6 +59,47 @@
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
+/* Bloomberg Terminal Colors */
+.bg-terminal {
+  background-color: #0a0a0a;
+}
+
+.bg-terminal-panel {
+  background-color: #111111;
+}
+
+.border-terminal {
+  border-color: #1a1a1a;
+}
+
+.text-terminal-bright {
+  color: #f5f5f5;
+}
+
+.text-terminal-dim {
+  color: #888888;
+}
+
+.text-bloomberg-green {
+  color: #00d26a;
+}
+
+.text-bloomberg-red {
+  color: #ff4757;
+}
+
+.text-bloomberg-amber {
+  color: #ffa502;
+}
+
+.text-bloomberg-blue {
+  color: #0095ff;
+}
+
+.terminal-grid {
+  border: 1px solid #1a1a1a;
+}
+
 /* Card Styles - Rectangular & Technical */
 .card-monochrome {
   @apply bg-charcoal p-6 border border-white/20;
