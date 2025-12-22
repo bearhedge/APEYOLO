@@ -259,6 +259,21 @@ router.post('/:id/run', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * GET /api/jobs/position-monitor/status - Get position monitor session status
+ * Shows aggregated monitoring data without spamming job runs
+ */
+router.get('/position-monitor/status', async (_req: Request, res: Response) => {
+  try {
+    const { getMonitorSessionStatus } = await import('./services/jobs/positionMonitor');
+    const status = getMonitorSessionStatus();
+    res.json({ ok: true, ...status });
+  } catch (error: any) {
+    console.error('[JobRoutes] Position monitor status error:', error);
+    res.status(500).json({ ok: false, error: error.message });
+  }
+});
+
 // ============================================
 // Initialization
 // ============================================
@@ -268,6 +283,7 @@ router.post('/:id/run', async (req: Request, res: Response) => {
  *
  * Active jobs:
  * - nav-snapshot-opening (9:30 AM ET) - Day P&L baseline
+ * - position-monitor (every 5 min) - 3-Layer Defense monitoring
  * - 0dte-position-manager (3:55 PM ET) - Close risky 0DTE positions
  * - economic-calendar-refresh (monthly) - FRED data
  */
@@ -287,6 +303,11 @@ export async function initializeJobsSystem(): Promise<void> {
   const { init0dtePositionManagerJob, ensure0dtePositionManagerJob } = await import('./services/jobs/0dtePositionManager');
   init0dtePositionManagerJob();
   await ensure0dtePositionManagerJob();
+
+  // Position monitor (every 5 min during market hours - 3-layer defense)
+  const { initPositionMonitorJob, ensurePositionMonitorJob } = await import('./services/jobs/positionMonitor');
+  initPositionMonitorJob();
+  await ensurePositionMonitorJob();
 
   // Seed default jobs in database
   await seedDefaultJobs();

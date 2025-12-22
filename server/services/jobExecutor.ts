@@ -166,30 +166,62 @@ export async function executeJob(
   const durationMs = Date.now() - startTime;
   const status = result.success ? 'success' : result.skipped ? 'skipped' : 'failed';
 
-  // 8. Update job run record with result
-  const [updatedRun] = await db
-    .update(jobRuns)
-    .set({
-      status,
+  // 8. Handle aggregated logging - delete running record if routine check
+  // Jobs with aggregateLogs: true in config will only create records for significant events
+  const shouldAggregate = jobConfig.aggregateLogs === true && result.skipped && result.success;
+
+  let updatedRun: JobRun;
+
+  if (shouldAggregate) {
+    // Delete the running record - this was a routine check, don't spam the logs
+    await db.delete(jobRuns).where(eq(jobRuns.id, runningRecord.id));
+    console.log(`[JobExecutor] Job ${jobId} routine check aggregated (no log entry)`);
+
+    // Still update job's lastRunAt but don't create a job run record
+    await db
+      .update(jobs)
+      .set({
+        lastRunAt: new Date(),
+        lastRunStatus: 'success',
+        updatedAt: new Date(),
+      })
+      .where(eq(jobs.id, jobId));
+
+    // Return a synthetic job run for the caller
+    updatedRun = {
+      ...runningRecord,
+      status: 'success',
       endedAt: new Date(),
       durationMs,
-      result: result.data ? result.data : null,
-      error: result.error || result.reason || null,
-    })
-    .where(eq(jobRuns.id, runningRecord.id))
-    .returning();
+      result: result.data || null,
+      error: null,
+    } as JobRun;
+  } else {
+    // Normal case - update job run record with result
+    [updatedRun] = await db
+      .update(jobRuns)
+      .set({
+        status,
+        endedAt: new Date(),
+        durationMs,
+        result: result.data ? result.data : null,
+        error: result.error || result.reason || null,
+      })
+      .where(eq(jobRuns.id, runningRecord.id))
+      .returning();
 
-  // 9. Update job's lastRunAt and lastRunStatus
-  await db
-    .update(jobs)
-    .set({
-      lastRunAt: new Date(),
-      lastRunStatus: status,
-      updatedAt: new Date(),
-    })
-    .where(eq(jobs.id, jobId));
+    // Update job's lastRunAt and lastRunStatus
+    await db
+      .update(jobs)
+      .set({
+        lastRunAt: new Date(),
+        lastRunStatus: status,
+        updatedAt: new Date(),
+      })
+      .where(eq(jobs.id, jobId));
 
-  console.log(`[JobExecutor] Job ${jobId} completed: ${status} (${durationMs}ms)`);
+    console.log(`[JobExecutor] Job ${jobId} completed: ${status} (${durationMs}ms)`);
+  }
 
   return updatedRun;
 }
