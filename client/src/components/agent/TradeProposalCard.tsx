@@ -174,7 +174,7 @@ export function TradeProposalCard({
   onModifyStrike,
   negotiationMessages = [],
 }: TradeProposalCardProps) {
-  const [modifiedLegs, setModifiedLegs] = useState<TradeLeg[]>(proposal.legs);
+  // Local state for UI feedback only (impact preview, loading states)
   const [pendingImpact, setPendingImpact] = useState<ModificationImpact | null>(null);
   const [isCalculating, setIsCalculating] = useState(false);
   const [activeModifyIndex, setActiveModifyIndex] = useState<number | null>(null);
@@ -188,15 +188,16 @@ export function TradeProposalCard({
     entryPremiumTotal,
     maxLoss,
     stopLossPrice,
+    legs, // Use legs directly from proposal (parent updates it via updateProposal)
   } = proposal;
-
-  // Use modified legs for display
-  const legs = isNegotiating ? modifiedLegs : proposal.legs;
 
   // Calculate probability OTM from average delta
   const avgDelta = legs.reduce((sum, leg) => sum + Math.abs(leg.delta), 0) / legs.length;
   const probOTM = ((1 - avgDelta) * 100).toFixed(0);
   const riskReward = (maxLoss / entryPremiumTotal).toFixed(1);
+
+  // Calculate per-contract premium (sum of all legs' premiums)
+  const premiumPerContract = legs.reduce((sum, leg) => sum + leg.premium, 0);
 
   // Determine if execution is allowed
   const canExecute = critique?.approved && critique?.mandateCompliant && !executionResult?.success;
@@ -206,6 +207,7 @@ export function TradeProposalCard({
     strategy === 'PUT' ? 'SELL PUT' : 'SELL CALL';
 
   // Handle strike modification
+  // Parent (Agent.tsx) updates the proposal via updateProposal() when server returns new values
   const handleStrikeChange = useCallback(async (legIndex: number, newStrike: number) => {
     if (!onModifyStrike) return;
 
@@ -217,10 +219,7 @@ export function TradeProposalCard({
       const impact = await onModifyStrike(legIndex, newStrike);
       if (impact) {
         setPendingImpact(impact);
-        // Update local state with new strike
-        setModifiedLegs(prev => prev.map((leg, i) =>
-          i === legIndex ? { ...leg, strike: newStrike } : leg
-        ));
+        // Note: Parent updates proposal.legs via updateProposal(), so we don't need local state
       }
     } catch (error) {
       console.error('Failed to calculate impact:', error);
@@ -342,6 +341,11 @@ export function TradeProposalCard({
           <p className="text-xs text-silver mb-1">Max Profit (Premium)</p>
           <p className="text-lg font-semibold text-green-400">
             ${entryPremiumTotal.toFixed(0)}
+            {contracts > 1 && premiumPerContract > 0 && (
+              <span className="text-xs text-silver ml-1">
+                (${premiumPerContract.toFixed(0)}/contract)
+              </span>
+            )}
           </p>
         </div>
         <div className="p-3 bg-black/20 rounded-lg">

@@ -33,6 +33,7 @@ export function Agent() {
     stopOperation,
     clearActivities,
     refreshStatus,
+    updateProposal,
   } = useAgentOperator({
     enableStatusPolling: true,
   });
@@ -74,6 +75,17 @@ export function Agent() {
         return null;
       }
 
+      // Update the active proposal with new values from server
+      // This refreshes premium, maxLoss, stopLoss, etc.
+      if (data.updatedProposal) {
+        updateProposal({
+          legs: data.updatedProposal.legs,
+          entryPremiumTotal: data.updatedProposal.entryPremiumTotal,
+          maxLoss: data.updatedProposal.maxLoss,
+          stopLossPrice: data.updatedProposal.stopLossPrice,
+        });
+      }
+
       // Add agent message to negotiation history
       if (data.impact?.reasoning) {
         setNegotiationMessages(prev => [
@@ -91,7 +103,7 @@ export function Agent() {
       console.error('Failed to negotiate:', error);
       return null;
     }
-  }, [activeProposal?.id]);
+  }, [activeProposal?.id, updateProposal]);
 
   // Clear negotiation messages when proposal changes
   const handleDismissProposal = useCallback(() => {

@@ -1274,21 +1274,29 @@ router.post('/negotiate', requireAuth, async (req: Request, res: Response) => {
       });
     }
 
-    // The server-side TradeProposal has a single strike/optionType
-    // legIndex 0 = the main option (PUT or CALL)
-    // For strangles, we'd need to store additional data, but for now support single-leg
-    if (legIndex !== 0) {
+    // Support legIndex 0 (PUT) or 1 (CALL) for strangle negotiations
+    // The server-side TradeProposal stores the primary leg info; client tracks both legs
+    if (legIndex < 0 || legIndex > 1) {
       return res.status(400).json({
         success: false,
-        error: 'Currently only single-leg proposals supported for negotiation (legIndex must be 0)',
+        error: 'legIndex must be 0 (PUT) or 1 (CALL)',
       });
     }
 
-    const currentStrike = proposal.strike || 0;
-    const optionType = proposal.optionType || 'PUT';
+    // Get leg data from the structured proposal with legs array
+    const leg = proposal.legs?.[legIndex];
+    if (!leg) {
+      return res.status(400).json({
+        success: false,
+        error: `Leg not found at index ${legIndex}`,
+      });
+    }
+
+    const currentStrike = leg.strike;
+    const optionType = leg.optionType as 'PUT' | 'CALL';
     const symbol = proposal.symbol || 'SPY';
-    const currentPremium = (proposal.price || 0) * 100; // Convert to per-contract
-    const currentDelta = 0.10; // Default delta estimate if not stored
+    const currentPremium = (leg.premium || 0) * 100; // Convert to per-contract (leg.premium is per-share)
+    const currentDelta = Math.abs(leg.delta) || 0.10; // Use actual delta from leg
 
     // Get underlying price from market data
     const { executeToolCall } = await import('./lib/agent-tools');
@@ -1323,28 +1331,46 @@ router.post('/negotiate', requireAuth, async (req: Request, res: Response) => {
 
     // Generate enhanced response with context
     const vix = marketResult.data?.vix?.level || 20;
+    const contracts = proposal.contracts || 2;
     const response = await generateNegotiationResponse(modification, impact, {
       vix,
       underlyingPrice,
-      totalContracts: proposal.quantity || 2,
+      totalContracts: contracts,
       riskProfile: 'BALANCED', // Could be pulled from user settings
     });
 
-    // Update the proposal with new strike if agent approves or cautions
+    // Calculate new premium per share from impact
+    const newPremiumPerShare = impact.newPremium / 100;
+
+    // Build updated legs array with new strike and premium for the modified leg
+    const updatedLegs = proposal.legs.map((l: any, i: number) =>
+      i === legIndex
+        ? { ...l, strike: newStrike, premium: newPremiumPerShare, delta: impact.newDelta || l.delta }
+        : l
+    );
+
+    // Recalculate all derived values
+    const newEntryPremiumTotal = updatedLegs.reduce((sum: number, l: any) => sum + (l.premium || 0), 0) * 100 * contracts;
+    const newMaxLoss = newEntryPremiumTotal * 3.5;
+    const newStopLossPrice = (updatedLegs[0]?.premium || 0) * 3;
+
+    // Update the proposal with new leg data if agent approves or cautions
     if (impact.agentOpinion !== 'reject') {
-      // Update the stored proposal's strike and price
-      const newPricePerShare = impact.newPremium / 100; // Convert back to per-share
+      const updatedProposal = {
+        ...proposal,
+        legs: updatedLegs,
+        entryPremiumTotal: newEntryPremiumTotal,
+        maxLoss: newMaxLoss,
+        stopLossPrice: newStopLossPrice,
+      };
 
       pendingProposals.set(proposalId, {
         ...storedResult,
-        proposal: {
-          ...proposal,
-          strike: newStrike,
-          price: newPricePerShare,
-        },
+        proposal: updatedProposal,
       });
     }
 
+    // Return impact AND updated proposal data for client to refresh UI
     res.json({
       success: true,
       impact: {
@@ -1355,6 +1381,13 @@ router.post('/negotiate', requireAuth, async (req: Request, res: Response) => {
       newStrike,
       legIndex,
       underlyingPrice,
+      // Include updated proposal data for UI refresh
+      updatedProposal: {
+        legs: updatedLegs,
+        entryPremiumTotal: newEntryPremiumTotal,
+        maxLoss: newMaxLoss,
+        stopLossPrice: newStopLossPrice,
+      },
     });
   } catch (error: any) {
     console.error('[AgentRoutes] Error in negotiate:', error);
@@ -1670,8 +1703,13 @@ router.post('/operate', requireAuth, async (req: Request, res: Response) => {
             reasoning: dualBrainResult?.proposal?.reasoning || strikes?.reasoning || 'Engine-selected based on delta and liquidity',
           };
 
-          // Store for later execution
-          pendingProposals.set(proposalId, dualBrainResult || { success: true } as any);
+          // Store the structured proposal (with legs array) for negotiation
+          // NOTE: Store our constructed proposal, not dualBrainResult which has wrong structure
+          pendingProposals.set(proposalId, {
+            proposal,  // The constructed proposal with legs, entryPremiumTotal, etc.
+            critique: dualBrainResult?.critique,
+            success: true,
+          } as any);
           setTimeout(() => pendingProposals.delete(proposalId), 60 * 60 * 1000);
 
           sendEvent({ type: 'proposal', proposal });

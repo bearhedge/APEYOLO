@@ -126,14 +126,14 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
 
   // Initialize state from sessionStorage for persistence across navigation
   // Filter out activities older than 30 minutes to prevent stale data
+  // IMPORTANT: Convert timestamp strings back to Date objects (JSON serialization loses Date type)
   const [activities, setActivities] = useState<ActivityEntryData[]>(() => {
     const loaded = getFromSession<ActivityEntryData[]>(STORAGE_KEYS.activities, []);
     const MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
     const now = Date.now();
-    return loaded.filter(a => {
-      const activityTime = new Date(a.timestamp).getTime();
-      return (now - activityTime) < MAX_AGE_MS;
-    });
+    return loaded
+      .map(a => ({ ...a, timestamp: new Date(a.timestamp) })) // Convert string to Date
+      .filter(a => (now - a.timestamp.getTime()) < MAX_AGE_MS);
   });
   const [isProcessing, setIsProcessing] = useState(false); // Don't persist - should reset
   const [activeProposal, setActiveProposal] = useState<TradeProposal | null>(
@@ -143,7 +143,11 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
     () => getFromSession(STORAGE_KEYS.activeCritique, null)
   );
   const [executionResult, setExecutionResult] = useState<ExecutionResult | null>(
-    () => getFromSession(STORAGE_KEYS.executionResult, null)
+    () => {
+      const loaded = getFromSession<ExecutionResult | null>(STORAGE_KEYS.executionResult, null);
+      // Convert timestamp string back to Date (JSON serialization loses Date type)
+      return loaded ? { ...loaded, timestamp: new Date(loaded.timestamp) } : null;
+    }
   );
   const [isExecuting, setIsExecuting] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
@@ -550,6 +554,13 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
     queryClient.invalidateQueries({ queryKey: ['/api/agent/status'] });
   }, [queryClient]);
 
+  /**
+   * Update active proposal with partial data (e.g., after strike modification)
+   */
+  const updateProposal = useCallback((updates: Partial<TradeProposal>) => {
+    setActiveProposal(prev => prev ? { ...prev, ...updates } : null);
+  }, []);
+
   return {
     // Status
     isOnline: statusQuery.data?.online ?? false,
@@ -574,5 +585,6 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
     stopOperation,
     clearActivities,
     refreshStatus,
+    updateProposal,
   };
 }
