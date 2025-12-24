@@ -488,6 +488,7 @@ export function Portfolio() {
         netGamma: 0,
         netTheta: 0,
         netVega: 0,
+        totalPnL: 0,
         positionGreeks: new Map<string, {
           deltaPerContract: number; gammaPerContract: number; thetaPerContract: number; vegaPerContract: number;
           delta: number; gamma: number; theta: number; vega: number;
@@ -500,6 +501,7 @@ export function Portfolio() {
     let weightedDTE = 0;
     let totalWeight = 0;
     let netDelta = 0, netGamma = 0, netTheta = 0, netVega = 0;
+    let totalPnL = 0; // Sum of all position P/L
     const positionGreeks = new Map<string, {
       deltaPerContract: number; gammaPerContract: number; thetaPerContract: number; vegaPerContract: number;
       delta: number; gamma: number; theta: number; vega: number;
@@ -509,6 +511,9 @@ export function Portfolio() {
       const underlying = getUnderlyingSymbol(p.symbol || '', p.assetType);
       const price = underlying ? underlyingPrices[underlying] : 0;
       const qty = Math.abs(toNum(p.qty));
+
+      // Accumulate total P/L
+      totalPnL += toNum(p.upl);
 
       // Handle stocks vs options differently
       if (p.assetType === 'stock') {
@@ -568,6 +573,7 @@ export function Portfolio() {
       netGamma,
       netTheta,
       netVega,
+      totalPnL,
       positionGreeks,
     };
   }, [positions, underlyingPrices, paperTrades]);
@@ -887,11 +893,48 @@ export function Portfolio() {
             <h3 className="text-lg font-semibold">Open Positions</h3>
           </div>
           {positions && positions.length > 0 ? (
-            <DataTable
-              data={positions}
-              columns={columns}
-              testId="table-portfolio-positions"
-            />
+            <>
+              <DataTable
+                data={positions}
+                columns={columns}
+                testId="table-portfolio-positions"
+              />
+              {/* Totals Row */}
+              <div className="border-t-2 border-white/20 mt-0">
+                <table className="table-monochrome w-full">
+                  <tbody>
+                    <tr className="bg-white/5 font-semibold">
+                      <td className="w-16"></td>
+                      <td className="text-white">TOTAL</td>
+                      <td></td>
+                      <td className="tabular-nums"></td>
+                      <td className="tabular-nums"></td>
+                      <td className="tabular-nums"></td>
+                      <td className={`tabular-nums font-medium ${positionMetrics.totalPnL >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {positionMetrics.totalPnL >= 0 ? '+' : ''}{formatHKD(positionMetrics.totalPnL)}
+                      </td>
+                      <td className="tabular-nums text-silver"></td>
+                      <td className={`tabular-nums font-medium ${positionMetrics.netDelta >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+                        {formatDelta(positionMetrics.netDelta)}
+                      </td>
+                      <td className="tabular-nums text-silver font-medium">
+                        {formatGreek(positionMetrics.netGamma)}
+                      </td>
+                      <td className="tabular-nums text-silver font-medium">
+                        {(() => {
+                          const theta = positionMetrics.netTheta;
+                          const formatted = `$${Math.abs(theta).toFixed(2)}`;
+                          return theta >= 0 ? `+${formatted}` : `-${formatted.substring(1)}`;
+                        })()}
+                      </td>
+                      <td className="tabular-nums text-silver font-medium">
+                        {formatGreek(positionMetrics.netVega)}
+                      </td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            </>
           ) : (
             <div className="text-center py-12">
               <p className="text-silver">No open positions</p>
