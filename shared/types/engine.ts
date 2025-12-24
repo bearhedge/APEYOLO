@@ -461,12 +461,15 @@ export interface ExecutePaperTradeResponse {
 // Analyze Request Options
 // =============================================================================
 
+export type StrategyPreference = 'strangle' | 'put-only' | 'call-only';
+
 export interface AnalyzeOptions {
   riskTier?: 'conservative' | 'balanced' | 'aggressive';
   stopMultiplier?: 2 | 3 | 4;
   deltaMin?: number;
   deltaMax?: number;
   symbol?: 'SPY' | 'ARM';  // Trading symbol selection
+  strategy?: StrategyPreference;  // Force PUT-only, CALL-only, or auto STRANGLE
 }
 
 // =============================================================================

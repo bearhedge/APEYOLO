@@ -10,7 +10,7 @@ import { useEngine } from '@/hooks/useEngine';
 import { useBrokerStatus } from '@/hooks/useBrokerStatus';
 import EngineLog from '@/components/EngineLog';
 import toast from 'react-hot-toast';
-import type { EngineFlowState, ExecutePaperTradeResponse } from '../../../shared/types/engine';
+import type { EngineFlowState, ExecutePaperTradeResponse, StrategyPreference } from '../../../shared/types/engine';
 
 type RiskTier = 'conservative' | 'balanced' | 'aggressive';
 type StopMultiplier = 2 | 3 | 4;
@@ -55,6 +55,7 @@ export function Engine() {
   const [riskTier, setRiskTier] = useState<RiskTier>('balanced');
   const [stopMultiplier, setStopMultiplier] = useState<StopMultiplier>(3);
   const [selectedSymbol, setSelectedSymbol] = useState<TradingSymbol>('SPY');
+  const [strategyPreference, setStrategyPreference] = useState<StrategyPreference>('strangle');
 
   // Gated flow state
   const [engineFlowState, setEngineFlowState] = useState<EngineFlowState>('idle');
@@ -93,7 +94,7 @@ export function Engine() {
       toast.loading('Running engine analysis (Steps 1-3)...', { id: 'engine-execute' });
 
       // Run the actual analysis - enhanced logs come from backend
-      const result = await analyzeEngine({ riskTier, stopMultiplier, symbol: selectedSymbol });
+      const result = await analyzeEngine({ riskTier, stopMultiplier, symbol: selectedSymbol, strategy: strategyPreference });
 
       if (result.canTrade) {
         // Check if we have smart candidates for interactive selection
@@ -136,7 +137,7 @@ export function Engine() {
     } finally {
       setIsExecuting(false);
     }
-  }, [analyzeEngine, riskTier, stopMultiplier, selectedSymbol, executionMode, executePaperTrade]);
+  }, [analyzeEngine, riskTier, stopMultiplier, selectedSymbol, strategyPreference, executionMode, executePaperTrade]);
 
   // Handle user confirming strike selection (continue to Steps 4-5)
   const handleConfirmSelection = useCallback(async () => {
@@ -409,6 +410,18 @@ export function Engine() {
           <div className="flex items-center justify-between mb-4">
             <h3 className="text-lg font-semibold">Decision Process</h3>
             <div className="flex items-center gap-3">
+              {/* Strategy selector */}
+              <select
+                value={strategyPreference}
+                onChange={(e) => setStrategyPreference(e.target.value as StrategyPreference)}
+                disabled={isExecuting || engineFlowState === 'awaiting_selection'}
+                className="px-3 py-2 bg-charcoal border border-white/10 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-white/20 disabled:opacity-50"
+              >
+                <option value="strangle">Strangle</option>
+                <option value="put-only">PUT Only</option>
+                <option value="call-only">CALL Only</option>
+              </select>
+
               {/* Engine state indicator */}
               {engineFlowState !== 'idle' && engineFlowState !== 'complete' && (
                 <span className={`text-sm px-2 py-1 rounded ${

@@ -7,6 +7,7 @@
  */
 
 import { useState, useCallback } from 'react';
+import toast from 'react-hot-toast';
 import { LeftNav } from '@/components/LeftNav';
 import { ActivityFeed } from '@/components/agent/ActivityFeed';
 import { QuickActionsBar, type OperationType } from '@/components/agent/QuickActionsBar';
@@ -15,6 +16,7 @@ import { AgentContextPanel } from '@/components/AgentContextPanel';
 import { useAgentOperator } from '@/hooks/useAgentOperator';
 import { useBrokerStatus } from '@/hooks/useBrokerStatus';
 import { Circle, RefreshCw, AlertTriangle, Trash2 } from 'lucide-react';
+import type { StrategyPreference } from '@shared/types/engine';
 
 export function Agent() {
   const {
@@ -52,6 +54,9 @@ export function Agent() {
   const [isNegotiating, setIsNegotiating] = useState(true); // Enable negotiation by default when proposal exists
   const [negotiationMessages, setNegotiationMessages] = useState<NegotiationMessage[]>([]);
 
+  // Strategy preference state (PUT-only, CALL-only, or Strangle)
+  const [strategyPreference, setStrategyPreference] = useState<StrategyPreference>('strangle');
+
   // Handle strike modification - calls /api/agent/negotiate
   const handleModifyStrike = useCallback(async (legIndex: number, newStrike: number): Promise<ModificationImpact | null> => {
     if (!activeProposal?.id) return null;
@@ -72,6 +77,7 @@ export function Agent() {
 
       if (!response.ok || !data.success) {
         console.error('Negotiate failed:', data.error);
+        toast.error(data.error || 'Failed to adjust strike');
         return null;
       }
 
@@ -112,12 +118,12 @@ export function Agent() {
   }, [dismissProposal]);
 
   // Handle quick action
-  const handleAction = (action: OperationType, customMessage?: string) => {
+  const handleAction = (action: OperationType, options?: { message?: string; strategy?: StrategyPreference }) => {
     // Clear previous negotiation messages when starting new action
     if (action === 'propose') {
       setNegotiationMessages([]);
     }
-    operate(action, { message: customMessage });
+    operate(action, { message: options?.message, strategy: options?.strategy });
   };
 
   return (
@@ -251,6 +257,8 @@ export function Agent() {
           isProcessing={isProcessing}
           canOperate={canOperate}
           onStop={stopOperation}
+          strategy={strategyPreference}
+          onStrategyChange={setStrategyPreference}
         />
         </div>
 

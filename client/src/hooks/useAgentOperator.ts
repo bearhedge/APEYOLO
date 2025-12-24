@@ -14,6 +14,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { ActivityEntryData, ActivityType } from '@/components/agent/ActivityEntry';
 import type { TradeProposal, CritiqueResult, ExecutionResult } from '@/components/agent/TradeProposalCard';
 import { useAgentStore } from '@/lib/agentStore';
+import type { StrategyPreference } from '@shared/types/engine';
 
 // =============================================================================
 // Session Storage Helpers (persist state across page navigation)
@@ -235,7 +236,7 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
    */
   const operate = useCallback(async (
     operation: OperationType,
-    params?: { message?: string; proposalId?: string }
+    params?: { message?: string; proposalId?: string; strategy?: StrategyPreference }
   ) => {
     if (isProcessing && operation !== 'execute') return;
 
@@ -257,10 +258,12 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
     setIsProcessing(true);
     abortControllerRef.current = new AbortController();
 
-    // Add initial activity
+    // Add initial activity with strategy info if proposing
     const actionLabels: Record<OperationType, string> = {
       analyze: 'Analyzing market conditions...',
-      propose: 'Finding trading opportunity...',
+      propose: params?.strategy && params.strategy !== 'strangle'
+        ? `Finding ${params.strategy === 'put-only' ? 'PUT' : 'CALL'} opportunity...`
+        : 'Finding trading opportunity...',
       positions: 'Fetching current positions...',
       execute: 'Executing trade...',
       custom: 'Processing request...',
@@ -277,6 +280,7 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
           operation,
           message: params?.message,
           proposalId: params?.proposalId,
+          strategy: params?.strategy,  // Pass strategy to backend
         }),
         signal: abortControllerRef.current.signal,
       });

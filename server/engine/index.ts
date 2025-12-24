@@ -82,6 +82,11 @@ export interface AuditEntry {
 export type ExpirationMode = '0DTE' | 'WEEKLY';
 
 /**
+ * Strategy preference for single-leg trades
+ */
+export type StrategyPreference = 'strangle' | 'put-only' | 'call-only';
+
+/**
  * Engine configuration
  */
 export interface EngineConfig {
@@ -90,6 +95,7 @@ export interface EngineConfig {
   expirationMode?: ExpirationMode; // '0DTE' for same-day, 'WEEKLY' for Friday expiry
   underlyingPrice?: number; // If not provided, will fetch from market
   mockMode?: boolean;       // Use mock data for testing
+  forcedStrategy?: StrategyPreference; // Force PUT-only or CALL-only instead of auto
 }
 
 /**
@@ -286,10 +292,12 @@ export class TradingEngine {
     // Step 2: Direction Selection
     let direction: DirectionDecision;
     stepStartTime = Date.now();
-    console.log('\n[Engine] Step 2 START: Direction Selection');
+    const forcedStrategy = this.config.forcedStrategy;
+    const strategyLabel = forcedStrategy === 'put-only' ? 'PUT-only' : forcedStrategy === 'call-only' ? 'CALL-only' : 'Auto';
+    console.log(`\n[Engine] Step 2 START: Direction Selection (${strategyLabel})`);
     try {
-      // Pass symbol and expirationMode for timeframe-adapted analysis
-      direction = await selectDirection(marketRegime, symbol, expirationMode as Step2ExpirationMode);
+      // Pass symbol, expirationMode, and forcedStrategy for timeframe-adapted analysis
+      direction = await selectDirection(marketRegime, symbol, expirationMode as Step2ExpirationMode, undefined, forcedStrategy);
       console.log(`[Engine] Step 2 COMPLETE (${Date.now() - stepStartTime}ms)`);
     } catch (error: any) {
       const stepDuration = Date.now() - stepStartTime;

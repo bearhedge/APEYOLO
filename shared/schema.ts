@@ -363,6 +363,10 @@ export const paperTrades = pgTable("paper_trades", {
   userId: varchar("user_id").references(() => users.id),
   fullProposal: jsonb("full_proposal"),   // Complete TradeProposal JSON for audit
 
+  // Validation (for P&L verification against actual spot prices)
+  spotPriceAtClose: decimal("spot_price_at_close", { precision: 10, scale: 2 }),
+  validationStatus: text("validation_status").default("pending"),  // pending | verified | discrepancy
+
   createdAt: timestamp("created_at").notNull().defaultNow(),
   closedAt: timestamp("closed_at"),
 });

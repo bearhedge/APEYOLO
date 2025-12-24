@@ -280,6 +280,10 @@ export function useEngine() {
       if (options?.symbol) {
         params.set('symbol', options.symbol);
       }
+      // Add strategy parameter if provided (for PUT-only or CALL-only)
+      if (options?.strategy) {
+        params.set('strategy', options.strategy);
+      }
 
       const response = await fetch(`/api/engine/analyze?${params}`, {
         credentials: 'include',

@@ -393,13 +393,16 @@ router.post('/execute', requireAuth, async (req, res) => {
 // This is the NEW endpoint that returns the EngineAnalyzeResponse format
 router.get('/analyze', requireAuth, async (req, res) => {
   try {
-    const { riskTier = 'balanced', stopMultiplier = '3' } = req.query;
+    const { riskTier = 'balanced', stopMultiplier = '3', strategy } = req.query;
 
     // Get symbol from query params, default to SPY
     const requestedSymbol = ((req.query.symbol as string) || 'SPY').toUpperCase() as TradingSymbol;
     const symbol = SYMBOL_CONFIG[requestedSymbol] ? requestedSymbol : 'SPY';
     const symbolConfig = SYMBOL_CONFIG[symbol];
     const expirationMode = symbolConfig.expirationMode;
+
+    // Parse strategy preference (PUT-only, CALL-only, or strangle)
+    const strategyPreference = strategy as 'strangle' | 'put-only' | 'call-only' | undefined;
 
     // Map riskTier to riskProfile
     const riskProfileMap: Record<string, RiskProfile> = {
@@ -454,10 +457,11 @@ router.get('/analyze', requireAuth, async (req, res) => {
       console.error(`[Engine/analyze] Error fetching ${symbol} price:`, error);
     }
 
-    // Create or get engine instance - recreate if symbol or risk profile changed
+    // Create or get engine instance - recreate if symbol, risk profile, or strategy changed
     const needNewInstance = !engineInstance ||
       engineInstance['config'].riskProfile !== riskProfile ||
-      engineInstance['config'].underlyingSymbol !== symbol;
+      engineInstance['config'].underlyingSymbol !== symbol ||
+      engineInstance['config'].forcedStrategy !== strategyPreference;
 
     if (needNewInstance) {
       engineInstance = new TradingEngine({
@@ -465,7 +469,8 @@ router.get('/analyze', requireAuth, async (req, res) => {
         underlyingSymbol: symbol,
         expirationMode,
         underlyingPrice,
-        mockMode: broker.status.provider === 'mock'
+        mockMode: broker.status.provider === 'mock',
+        forcedStrategy: strategyPreference,  // Pass strategy preference
       });
     } else {
       engineInstance['config'].underlyingPrice = underlyingPrice;

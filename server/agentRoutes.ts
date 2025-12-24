@@ -1313,7 +1313,11 @@ router.post('/negotiate', requireAuth, async (req: Request, res: Response) => {
       symbol,
     };
 
-    const validation = validateModification(modification, underlyingPrice);
+    // Validate with override allowed for negotiation (allows ±2 strikes closer to ATM)
+    const validation = validateModification(modification, underlyingPrice, {
+      allowOverride: true,
+      maxOverrideDistance: 0, // Allow right up to ATM, but not ITM
+    });
     if (!validation.valid) {
       return res.status(400).json({
         success: false,
@@ -1376,6 +1380,7 @@ router.post('/negotiate', requireAuth, async (req: Request, res: Response) => {
       impact: {
         ...impact,
         reasoning: response, // Use enhanced response with VIX context
+        warning: validation.warning, // Include validation warning if strike is close to ATM
       },
       currentStrike: modification.currentStrike,
       newStrike,
@@ -1484,10 +1489,11 @@ router.post('/quick', requireAuth, async (req: Request, res: Response) => {
  */
 router.post('/operate', requireAuth, async (req: Request, res: Response) => {
   try {
-    const { operation, message, proposalId } = req.body as {
+    const { operation, message, proposalId, strategy } = req.body as {
       operation: 'analyze' | 'propose' | 'positions' | 'execute' | 'custom';
       message?: string;
       proposalId?: string;
+      strategy?: 'strangle' | 'put-only' | 'call-only';
     };
 
     if (!operation) {
@@ -1582,9 +1588,10 @@ router.post('/operate', requireAuth, async (req: Request, res: Response) => {
 
           // Run the trading engine
           sendEvent({ type: 'status', phase: 'planning' });
-          sendEvent({ type: 'action', tool: 'runEngine', content: 'Running trading engine...' });
+          const strategyLabel = strategy === 'put-only' ? 'PUT-only' : strategy === 'call-only' ? 'CALL-only' : 'Strangle';
+          sendEvent({ type: 'action', tool: 'runEngine', content: `Running ${strategyLabel} strategy...` });
 
-          const engineResult = await executeToolCall({ tool: 'runEngine', args: { symbol: 'SPY' } });
+          const engineResult = await executeToolCall({ tool: 'runEngine', args: { symbol: 'SPY', strategy } });
 
           if (!engineResult.success || !engineResult.data?.canTrade) {
             const reason = engineResult.data?.reason || engineResult.error || 'No trade opportunity found';

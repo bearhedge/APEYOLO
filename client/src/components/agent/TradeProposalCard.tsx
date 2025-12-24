@@ -56,6 +56,7 @@ export interface ModificationImpact {
   newProbOTM: number;
   agentOpinion: 'approve' | 'caution' | 'reject';
   reasoning: string;
+  warning?: string; // Validation warning (e.g., strike is close to ATM)
 }
 
 export interface NegotiationMessage {
@@ -98,10 +99,10 @@ function StrikeAdjuster({
       <button
         onClick={() => onAdjust(strike - 1)}
         disabled={disabled || isLoading}
-        className="p-1.5 rounded bg-white/5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-        title="Decrease strike"
+        className="p-2 rounded bg-white/10 hover:bg-white/20 border border-white/20 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        title="Decrease strike by $1"
       >
-        <Minus className="w-3 h-3" />
+        <Minus className="w-4 h-4" />
       </button>
       <span className={`font-mono font-medium px-3 py-1.5 rounded min-w-[80px] text-center ${
         optionType === 'PUT'
@@ -113,10 +114,10 @@ function StrikeAdjuster({
       <button
         onClick={() => onAdjust(strike + 1)}
         disabled={disabled || isLoading}
-        className="p-1.5 rounded bg-white/5 hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-        title="Increase strike"
+        className="p-2 rounded bg-white/10 hover:bg-white/20 border border-white/20 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+        title="Increase strike by $1"
       >
-        <Plus className="w-3 h-3" />
+        <Plus className="w-4 h-4" />
       </button>
       {isLoading && <Loader2 className="w-4 h-4 animate-spin text-silver ml-1" />}
     </div>
@@ -135,6 +136,13 @@ function ImpactPreview({ impact }: { impact: ModificationImpact }) {
         ? 'bg-amber-500/10 border-amber-500/20'
         : 'bg-red-500/10 border-red-500/20'
     }`}>
+      {/* Show validation warning if present */}
+      {impact.warning && (
+        <div className="flex items-center gap-2 mb-2 p-2 bg-amber-500/10 rounded border border-amber-500/20">
+          <AlertTriangle className="w-3 h-3 text-amber-400 flex-shrink-0" />
+          <span className="text-xs text-amber-400">{impact.warning}</span>
+        </div>
+      )}
       <div className="flex items-start gap-2 mb-2">
         {impact.agentOpinion === 'approve' && <CheckCircle className="w-4 h-4 text-green-400 mt-0.5" />}
         {impact.agentOpinion === 'caution' && <AlertTriangle className="w-4 h-4 text-amber-400 mt-0.5" />}
@@ -190,6 +198,9 @@ export function TradeProposalCard({
     stopLossPrice,
     legs, // Use legs directly from proposal (parent updates it via updateProposal)
   } = proposal;
+
+  // Debug: Log negotiation state
+  console.log('[TradeProposalCard] isNegotiating:', isNegotiating, 'onModifyStrike:', !!onModifyStrike, 'legs:', legs?.length, legs);
 
   // Calculate probability OTM from average delta
   const avgDelta = legs.reduce((sum, leg) => sum + Math.abs(leg.delta), 0) / legs.length;

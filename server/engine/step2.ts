@@ -206,6 +206,11 @@ function calculateConfidence(trend: 'UP' | 'DOWN' | 'SIDEWAYS', lastBars: number
 }
 
 /**
+ * Strategy preference for single-leg trades
+ */
+export type StrategyPreference = 'strangle' | 'put-only' | 'call-only';
+
+/**
  * Main function: Select trading direction based on MA strategy
  * Timeframe-adapted for different expiration modes (0DTE vs WEEKLY)
  *
@@ -213,13 +218,15 @@ function calculateConfidence(trend: 'UP' | 'DOWN' | 'SIDEWAYS', lastBars: number
  * @param symbol - Trading symbol (SPY, ARM, etc.)
  * @param expirationMode - Expiration mode (0DTE or WEEKLY)
  * @param mockDirection - Optional mock direction for testing
+ * @param forcedStrategy - Optional strategy override (put-only, call-only, or strangle)
  * @returns Direction decision with reasoning
  */
 export async function selectDirection(
   marketRegime: MarketRegime,
   symbol: string = 'SPY',
   expirationMode: ExpirationMode = '0DTE',
-  mockDirection?: TradeDirection
+  mockDirection?: TradeDirection,
+  forcedStrategy?: StrategyPreference
 ): Promise<DirectionDecision> {
   // Get timeframe configuration based on expiration mode
   const config = TIMEFRAME_CONFIG[expirationMode];
@@ -240,6 +247,34 @@ export async function selectDirection(
       stepMetrics: [
         { label: 'Mode', value: 'Testing', status: 'warning' },
         { label: 'Confidence', value: '80%', status: 'normal' }
+      ]
+    };
+  }
+
+  // If forced strategy provided (user override)
+  if (forcedStrategy && forcedStrategy !== 'strangle') {
+    const direction: TradeDirection = forcedStrategy === 'put-only' ? 'PUT' : 'CALL';
+    const directionLabel = direction === 'PUT' ? 'Bullish (sell PUT)' : 'Bearish (sell CALL)';
+    console.log(`[Step2] Using FORCED strategy: ${forcedStrategy} → ${direction}`);
+    return {
+      direction,
+      confidence: 0.85, // High confidence since user explicitly chose
+      reasoning: `User selected ${forcedStrategy} strategy - Selling ${direction} only`,
+      signals: {
+        trend: direction === 'PUT' ? 'UP' : 'DOWN', // Implied bias from strategy choice
+        momentum: 0,
+        strength: 0,
+      },
+      stepReasoning: [
+        { question: 'Strategy source?', answer: `USER OVERRIDE (${forcedStrategy})` },
+        { question: 'What strategy?', answer: `SELL ${direction} (${directionLabel})` },
+        { question: 'Why this direction?', answer: 'User explicitly selected single-leg strategy based on market view' }
+      ],
+      stepMetrics: [
+        { label: 'Mode', value: 'User Override', status: 'normal' },
+        { label: 'Strategy', value: forcedStrategy.toUpperCase(), status: 'normal' },
+        { label: 'Direction', value: direction, status: 'normal' },
+        { label: 'Confidence', value: '85%', status: 'normal' }
       ]
     };
   }

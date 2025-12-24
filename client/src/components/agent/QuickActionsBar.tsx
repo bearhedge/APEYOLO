@@ -6,7 +6,7 @@
  */
 
 import { useState } from 'react';
-import { BarChart3, Search, Briefcase, MessageSquare, Square } from 'lucide-react';
+import { BarChart3, Search, Briefcase, MessageSquare, Square, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -15,15 +15,31 @@ import {
   DialogTitle,
   DialogFooter,
 } from '@/components/ui/dialog';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 import { Textarea } from '@/components/ui/textarea';
+import type { StrategyPreference } from '@shared/types/engine';
 
 export type OperationType = 'analyze' | 'propose' | 'positions' | 'custom';
 
+// Strategy display labels
+const STRATEGY_LABELS: Record<StrategyPreference, string> = {
+  'strangle': 'Strangle',
+  'put-only': 'PUT Only',
+  'call-only': 'CALL Only',
+};
+
 interface QuickActionsBarProps {
-  onAction: (action: OperationType, customMessage?: string) => void;
+  onAction: (action: OperationType, options?: { message?: string; strategy?: StrategyPreference }) => void;
   isProcessing: boolean;
   canOperate: boolean;
   onStop?: () => void;
+  strategy?: StrategyPreference;
+  onStrategyChange?: (strategy: StrategyPreference) => void;
 }
 
 export function QuickActionsBar({
@@ -31,56 +47,94 @@ export function QuickActionsBar({
   isProcessing,
   canOperate,
   onStop,
+  strategy = 'strangle',
+  onStrategyChange,
 }: QuickActionsBarProps) {
   const [customDialogOpen, setCustomDialogOpen] = useState(false);
   const [customMessage, setCustomMessage] = useState('');
 
   const handleCustomSubmit = () => {
     if (customMessage.trim()) {
-      onAction('custom', customMessage.trim());
+      onAction('custom', { message: customMessage.trim() });
       setCustomMessage('');
       setCustomDialogOpen(false);
     }
   };
 
-  const actions = [
-    {
-      id: 'analyze' as const,
-      label: 'Analyze Market',
-      icon: BarChart3,
-      description: 'Fetch market data and assess conditions',
-    },
-    {
-      id: 'propose' as const,
-      label: 'Find Trade',
-      icon: Search,
-      description: 'Run engine and find trading opportunity',
-    },
-    {
-      id: 'positions' as const,
-      label: 'Positions',
-      icon: Briefcase,
-      description: 'Check current portfolio',
-    },
-  ];
+  const handleFindTrade = () => {
+    onAction('propose', { strategy });
+  };
 
   return (
     <>
       <div className="border-t border-white/10 bg-charcoal p-4">
         <div className="flex items-center gap-3">
-          {/* Main action buttons */}
-          {actions.map((action) => (
+          {/* Analyze Market button */}
+          <Button
+            onClick={() => onAction('analyze')}
+            disabled={!canOperate || isProcessing}
+            variant="outline"
+            className="flex-1 h-12 bg-white/5 border-white/10 hover:bg-white/10 hover:border-white/20 disabled:opacity-50"
+          >
+            <BarChart3 className="w-4 h-4 mr-2" />
+            Analyze Market
+          </Button>
+
+          {/* Find Trade button with strategy selector */}
+          <div className="flex-1 flex items-center gap-0">
             <Button
-              key={action.id}
-              onClick={() => onAction(action.id)}
+              onClick={handleFindTrade}
               disabled={!canOperate || isProcessing}
               variant="outline"
-              className="flex-1 h-12 bg-white/5 border-white/10 hover:bg-white/10 hover:border-white/20 disabled:opacity-50"
+              className="flex-1 h-12 bg-white/5 border-white/10 hover:bg-white/10 hover:border-white/20 disabled:opacity-50 rounded-r-none border-r-0"
             >
-              <action.icon className="w-4 h-4 mr-2" />
-              {action.label}
+              <Search className="w-4 h-4 mr-2" />
+              Find Trade
             </Button>
-          ))}
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  disabled={!canOperate || isProcessing}
+                  variant="outline"
+                  className="h-12 px-3 bg-white/5 border-white/10 hover:bg-white/10 hover:border-white/20 disabled:opacity-50 rounded-l-none"
+                >
+                  <span className="text-xs mr-1">{STRATEGY_LABELS[strategy]}</span>
+                  <ChevronDown className="w-3 h-3" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="bg-charcoal border-white/10">
+                <DropdownMenuItem
+                  onClick={() => onStrategyChange?.('strangle')}
+                  className={strategy === 'strangle' ? 'bg-white/10' : ''}
+                >
+                  Strangle (PUT + CALL)
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => onStrategyChange?.('put-only')}
+                  className={strategy === 'put-only' ? 'bg-white/10' : ''}
+                >
+                  PUT Only (Bullish)
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() => onStrategyChange?.('call-only')}
+                  className={strategy === 'call-only' ? 'bg-white/10' : ''}
+                >
+                  CALL Only (Bearish)
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+
+          {/* Positions button */}
+          <Button
+            onClick={() => onAction('positions')}
+            disabled={!canOperate || isProcessing}
+            variant="outline"
+            className="flex-1 h-12 bg-white/5 border-white/10 hover:bg-white/10 hover:border-white/20 disabled:opacity-50"
+          >
+            <Briefcase className="w-4 h-4 mr-2" />
+            Positions
+          </Button>
 
           {/* Custom request button */}
           <Button

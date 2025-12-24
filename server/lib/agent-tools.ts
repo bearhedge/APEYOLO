@@ -188,6 +188,12 @@ const runEngineTool: Tool = {
       description: 'Risk profile for position sizing',
       enum: ['CONSERVATIVE', 'BALANCED', 'AGGRESSIVE'],
     },
+    strategy: {
+      type: 'string',
+      required: false,
+      description: 'Force a specific strategy instead of auto-detecting',
+      enum: ['strangle', 'put-only', 'call-only'],
+    },
   },
   execute: async (args): Promise<ToolResult> => {
     try {
@@ -197,6 +203,7 @@ const runEngineTool: Tool = {
 
       const symbol = args.symbol || 'SPY';
       const riskProfile = args.riskProfile || 'BALANCED';
+      const strategy = args.strategy as 'strangle' | 'put-only' | 'call-only' | undefined;
 
       // Get current underlying price
       let underlyingPrice = 600; // Default fallback
@@ -237,6 +244,7 @@ const runEngineTool: Tool = {
         underlyingSymbol: symbol,
         underlyingPrice,
         mockMode: !api, // Use mock if no broker
+        forcedStrategy: strategy, // Force PUT-only or CALL-only if specified
       });
 
       const result = await engine.executeTradingDecision(accountInfo);

@@ -6,13 +6,14 @@
  */
 
 import { useState, useMemo, useEffect } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { useWallet } from '@solana/wallet-adapter-react';
-import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
+// Note: WalletMultiButton removed - using global connect button in top nav
 import { LeftNav } from '@/components/LeftNav';
 import { MandateSummary } from '@/components/defi/MandateSummary';
-import { PerformanceGrid } from '@/components/defi/PerformanceGrid';
+import { PeriodSummaryTable } from '@/components/defi/PeriodSummaryTable';
+import { TradeLogTable } from '@/components/defi/TradeLogTable';
 import { AttestationControls } from '@/components/defi/AttestationControls';
-import { RecordsTable } from '@/components/defi/RecordsTable';
 import {
   Loader2,
   Shield,
@@ -23,6 +24,58 @@ import type { AttestationData, AttestationPeriod } from '@shared/types/defi';
 import type { Mandate, CreateMandateRequest } from '@shared/types/mandate';
 import { useWalletContext } from '@/components/WalletProvider';
 import { formatUSD } from '@/lib/solana';
+
+// Performance data types
+interface PeriodMetrics {
+  returnPercent: number;
+  pnlUsd: number;
+  tradeCount: number;
+  winRate: number;
+}
+
+interface PerformanceData {
+  mtd: PeriodMetrics;
+  ytd: PeriodMetrics;
+  all: PeriodMetrics;
+}
+
+// Trade log types (all monetary values in HKD)
+interface Trade {
+  id: string;
+  date: string;
+  dateFormatted: string;
+  symbol: string;
+  strategy: string;
+  contracts: number;
+  putStrike: number | null;
+  callStrike: number | null;
+  leg1Premium: number | null;
+  leg2Premium: number | null;
+  entryPremium: number | null;
+  exitPremium: number | null;
+  entryTime: string | null;
+  exitTime: string | null;
+  status: string;
+  exitReason?: string;
+  realizedPnl: number;
+  realizedPnlUSD?: number;
+  returnPercent: number;
+  // NAV data (in HKD)
+  openingNav?: number | null;
+  closingNav?: number | null;
+  navChange?: number | null;
+  dailyReturnPct?: number | null;
+  // Notional values (in HKD)
+  putNotionalHKD?: number | null;
+  callNotionalHKD?: number | null;
+  totalNotionalHKD?: number | null;
+  // Validation data
+  spotPriceAtClose?: number | null;
+  validationStatus?: 'verified' | 'pending' | 'discrepancy';
+  marginRequired?: number | null;
+  maxLoss?: number | null;
+  entrySpy?: number | null;
+}
 
 // Default mandate values for new creation
 const DEFAULT_MANDATE: CreateMandateRequest = {
@@ -47,6 +100,37 @@ export function DeFi() {
     sasError,
     checkingSas,
   } = useWalletContext();
+
+  // Fetch real performance data from trades (not just attestations)
+  const { data: performanceResponse, isLoading: performanceLoading } = useQuery<{
+    success: boolean;
+    data?: PerformanceData;
+  }>({
+    queryKey: ['/api/defi/performance'],
+    queryFn: async () => {
+      const response = await fetch('/api/defi/performance', { credentials: 'include' });
+      return response.json();
+    },
+    staleTime: 60_000, // Refresh every minute
+  });
+
+  const performanceData = performanceResponse?.data;
+
+  // Fetch trade log
+  const { data: tradesResponse, isLoading: tradesLoading } = useQuery<{
+    success: boolean;
+    trades?: Trade[];
+    count?: number;
+  }>({
+    queryKey: ['/api/defi/trades'],
+    queryFn: async () => {
+      const response = await fetch('/api/defi/trades', { credentials: 'include' });
+      return response.json();
+    },
+    staleTime: 60_000,
+  });
+
+  const trades = tradesResponse?.trades || [];
 
   // Mandate state
   const [mandate, setMandate] = useState<Mandate | null>(null);
@@ -149,48 +233,52 @@ export function DeFi() {
     alert('SAS attestation coming soon');
   };
 
-  // Compute performance rows from attestations
-  const performanceRows = useMemo(() => {
-    if (attestations.length === 0) return [];
+  // Compute performance rows with on-chain attestation status
+  const periodSummaryRows = useMemo(() => {
+    if (!performanceData) return [];
 
-    const totalReturn = attestations.reduce((sum, a) => sum + (a.data.returnPercent || 0), 0);
-    const totalPnl = attestations.reduce((sum, a) => sum + (a.data.pnlUsd || 0), 0);
-    const totalTrades = attestations.reduce((sum, a) => sum + (a.data.tradeCount || 0), 0);
-    const avgWinRate = attestations.reduce((sum, a) => sum + (a.data.winRate || 0), 0) / attestations.length;
-
-    // Find most recent MTD attestation
-    const mtdAtt = attestations.find(a => a.data.periodLabel?.toLowerCase().includes('mtd'));
-
-    const rows = [];
-
-    if (mtdAtt) {
-      rows.push({
-        label: 'MTD',
-        returnPercent: mtdAtt.data.returnPercent,
-        pnlUsd: mtdAtt.data.pnlUsd,
-        tradeCount: mtdAtt.data.tradeCount,
-        winRate: mtdAtt.data.winRate,
+    // Check attestations by matching period label or date range
+    const findAttestation = (period: string) => {
+      // Try to match by period label in the attestation data
+      return attestations.find(a => {
+        const label = a.data?.periodLabel?.toUpperCase() || '';
+        if (period === 'MTD' && (label.includes('MTD') || label.includes('MONTH'))) return true;
+        if (period === 'YTD' && (label.includes('YTD') || label.includes('YEAR'))) return true;
+        if (period === 'ALL' && label.includes('ALL')) return true;
+        return false;
       });
-    }
+    };
 
-    rows.push({
-      label: 'YTD',
-      returnPercent: totalReturn,
-      pnlUsd: totalPnl,
-      tradeCount: totalTrades,
-      winRate: avgWinRate,
-    });
-
-    rows.push({
-      label: 'ALL',
-      returnPercent: totalReturn,
-      pnlUsd: totalPnl,
-      tradeCount: totalTrades,
-      winRate: avgWinRate,
-    });
-
-    return rows;
-  }, [attestations]);
+    return [
+      {
+        period: 'MTD',
+        returnPercent: performanceData.mtd.returnPercent,
+        pnlUsd: performanceData.mtd.pnlUsd,
+        tradeCount: performanceData.mtd.tradeCount,
+        winRate: performanceData.mtd.winRate,
+        isAttested: !!findAttestation('MTD'),
+        txHash: findAttestation('MTD')?.txSignature,
+      },
+      {
+        period: 'YTD',
+        returnPercent: performanceData.ytd.returnPercent,
+        pnlUsd: performanceData.ytd.pnlUsd,
+        tradeCount: performanceData.ytd.tradeCount,
+        winRate: performanceData.ytd.winRate,
+        isAttested: !!findAttestation('YTD'),
+        txHash: findAttestation('YTD')?.txSignature,
+      },
+      {
+        period: 'ALL',
+        returnPercent: performanceData.all.returnPercent,
+        pnlUsd: performanceData.all.pnlUsd,
+        tradeCount: performanceData.all.tradeCount,
+        winRate: performanceData.all.winRate,
+        isAttested: !!findAttestation('ALL'),
+        txHash: findAttestation('ALL')?.txSignature,
+      },
+    ];
+  }, [performanceData, attestations]);
 
   return (
     <div className="flex h-[calc(100vh-64px)]">
@@ -212,21 +300,11 @@ export function DeFi() {
             </span>
           </div>
 
-          <div className="flex items-center gap-4">
-            {connected ? (
-              <div className="flex items-center gap-2 text-xs text-bloomberg-green">
-                <Wallet className="w-3 h-3" />
-                <span>Connected</span>
-              </div>
-            ) : (
-              <WalletMultiButton className="!bg-bloomberg-blue !text-black !text-xs !h-8 !px-3 !rounded-none !font-medium" />
-            )}
-          </div>
         </div>
 
         {/* Main Content - Two Column Grid */}
         <div className="h-[calc(100%-48px)] overflow-y-auto p-4">
-          <div className="grid grid-cols-12 gap-4 max-w-7xl">
+          <div className="grid grid-cols-12 gap-4 w-full">
 
             {/* Left Column - Controls (4 cols) */}
             <div className="col-span-4 space-y-4">
@@ -308,15 +386,25 @@ export function DeFi() {
 
             {/* Right Column - Data Display (8 cols) */}
             <div className="col-span-8 space-y-4">
-              <PerformanceGrid
-                rows={performanceRows}
-                loading={attestationsLoading}
+              <PeriodSummaryTable
+                rows={periodSummaryRows}
+                cluster={cluster}
+                loading={performanceLoading}
+                onAttest={(period) => {
+                  // Set period for attestation preview
+                  // Note: For YTD and ALL, we use 'custom' which allows date range selection
+                  const periodToType: Record<string, AttestationPeriod> = {
+                    'MTD': 'mtd',
+                    'YTD': 'custom',  // Custom date range for YTD
+                    'ALL': 'custom',  // Custom date range for ALL
+                  };
+                  setSelectedPeriod(periodToType[period] || 'last_month');
+                }}
               />
 
-              <RecordsTable
-                records={attestations}
-                cluster={cluster}
-                loading={attestationsLoading}
+              <TradeLogTable
+                trades={trades}
+                loading={tradesLoading}
               />
             </div>
           </div>

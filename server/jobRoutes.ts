@@ -285,6 +285,7 @@ router.get('/position-monitor/status', async (_req: Request, res: Response) => {
  * - nav-snapshot-opening (9:30 AM ET) - Day P&L baseline
  * - position-monitor (every 5 min) - 3-Layer Defense monitoring
  * - 0dte-position-manager (3:55 PM ET) - Close risky 0DTE positions
+ * - trade-monitor (every 30 min) - Mark expired trades with realized P&L
  * - economic-calendar-refresh (monthly) - FRED data
  */
 export async function initializeJobsSystem(): Promise<void> {
@@ -308,6 +309,11 @@ export async function initializeJobsSystem(): Promise<void> {
   const { initPositionMonitorJob, ensurePositionMonitorJob } = await import('./services/jobs/positionMonitor');
   initPositionMonitorJob();
   await ensurePositionMonitorJob();
+
+  // Trade monitor (marks expired trades as 'expired' with realized P&L)
+  const { initTradeMonitorJob, ensureTradeMonitorJob } = await import('./services/tradeMonitor');
+  initTradeMonitorJob();
+  await ensureTradeMonitorJob();
 
   // Seed default jobs in database
   await seedDefaultJobs();

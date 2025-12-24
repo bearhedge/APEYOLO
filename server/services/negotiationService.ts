@@ -233,34 +233,59 @@ export async function generateNegotiationResponse(
 
 /**
  * Validate that a proposed modification is within guardrails
+ *
+ * @param modification - The strike modification details
+ * @param underlyingPrice - Current underlying price
+ * @param options - Optional override settings for negotiation
+ *   - allowOverride: When true, allows strikes closer to ATM (returns warning instead of error)
+ *   - maxOverrideDistance: How close to ATM is allowed when override is enabled (default: 0)
  */
 export function validateModification(
   modification: StrikeModification,
-  underlyingPrice: number
-): { valid: boolean; error?: string } {
+  underlyingPrice: number,
+  options?: { allowOverride?: boolean; maxOverrideDistance?: number }
+): { valid: boolean; error?: string; warning?: string } {
   const { newStrike, optionType } = modification;
+  const { allowOverride = false, maxOverrideDistance = 0 } = options || {};
 
   // Check strike is reasonable relative to underlying
   const maxDistance = underlyingPrice * 0.15; // Max 15% from underlying
+  const minOTMDistance = 2; // Minimum $2 OTM normally required
 
   if (optionType === 'PUT') {
+    // Hard limit: PUT must be below underlying (no override)
     if (newStrike > underlyingPrice) {
       return { valid: false, error: 'PUT strike must be below current price' };
     }
+    // Hard limit: Not more than 15% OTM
     if (underlyingPrice - newStrike > maxDistance) {
       return { valid: false, error: 'Strike is too far OTM (>15% from underlying)' };
     }
-    if (underlyingPrice - newStrike < 2) {
+    // Soft limit: Must be at least $2 OTM (can be overridden during negotiation)
+    const distanceFromATM = underlyingPrice - newStrike;
+    if (distanceFromATM < minOTMDistance) {
+      if (allowOverride && distanceFromATM >= maxOverrideDistance) {
+        // Allow but warn - strike is close to ATM
+        return { valid: true, warning: `Strike is only $${distanceFromATM.toFixed(0)} OTM (close to ATM)` };
+      }
       return { valid: false, error: 'Strike is too close to ATM (must be at least $2 OTM)' };
     }
   } else {
+    // Hard limit: CALL must be above underlying (no override)
     if (newStrike < underlyingPrice) {
       return { valid: false, error: 'CALL strike must be above current price' };
     }
+    // Hard limit: Not more than 15% OTM
     if (newStrike - underlyingPrice > maxDistance) {
       return { valid: false, error: 'Strike is too far OTM (>15% from underlying)' };
     }
-    if (newStrike - underlyingPrice < 2) {
+    // Soft limit: Must be at least $2 OTM (can be overridden during negotiation)
+    const distanceFromATM = newStrike - underlyingPrice;
+    if (distanceFromATM < minOTMDistance) {
+      if (allowOverride && distanceFromATM >= maxOverrideDistance) {
+        // Allow but warn - strike is close to ATM
+        return { valid: true, warning: `Strike is only $${distanceFromATM.toFixed(0)} OTM (close to ATM)` };
+      }
       return { valid: false, error: 'Strike is too close to ATM (must be at least $2 OTM)' };
     }
   }
