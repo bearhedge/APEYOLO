@@ -560,9 +560,16 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
 
   /**
    * Update active proposal with partial data (e.g., after strike modification)
+   * Creates new array references to ensure React detects the change
    */
   const updateProposal = useCallback((updates: Partial<TradeProposal>) => {
-    setActiveProposal(prev => prev ? { ...prev, ...updates } : null);
+    setActiveProposal(prev => {
+      if (!prev) return null;
+      // Create new legs array to ensure React detects the change
+      const newLegs = updates.legs ? [...updates.legs] : prev.legs;
+      console.log('[useAgentOperator] updateProposal:', { updates, prevLegs: prev.legs, newLegs });
+      return { ...prev, ...updates, legs: newLegs };
+    });
   }, []);
 
   return {

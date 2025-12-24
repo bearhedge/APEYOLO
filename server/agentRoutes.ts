@@ -1358,21 +1358,20 @@ router.post('/negotiate', requireAuth, async (req: Request, res: Response) => {
     const newMaxLoss = newEntryPremiumTotal * 3.5;
     const newStopLossPrice = (updatedLegs[0]?.premium || 0) * 3;
 
-    // Update the proposal with new leg data if agent approves or cautions
-    if (impact.agentOpinion !== 'reject') {
-      const updatedProposal = {
-        ...proposal,
-        legs: updatedLegs,
-        entryPremiumTotal: newEntryPremiumTotal,
-        maxLoss: newMaxLoss,
-        stopLossPrice: newStopLossPrice,
-      };
+    // Always update the proposal with new leg data (even if agent warns/rejects)
+    // User is allowed to make the adjustment - agent opinion is just advisory
+    const updatedProposal = {
+      ...proposal,
+      legs: updatedLegs,
+      entryPremiumTotal: newEntryPremiumTotal,
+      maxLoss: newMaxLoss,
+      stopLossPrice: newStopLossPrice,
+    };
 
-      pendingProposals.set(proposalId, {
-        ...storedResult,
-        proposal: updatedProposal,
-      });
-    }
+    pendingProposals.set(proposalId, {
+      ...storedResult,
+      proposal: updatedProposal,
+    });
 
     // Return impact AND updated proposal data for client to refresh UI
     res.json({

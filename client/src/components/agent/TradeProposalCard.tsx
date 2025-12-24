@@ -11,6 +11,7 @@
 import { useState, useCallback } from 'react';
 import { CheckCircle, XCircle, AlertTriangle, Loader2, Shield, Minus, Plus, MessageSquare } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import toast from 'react-hot-toast';
 
 export interface TradeLeg {
   optionType: 'PUT' | 'CALL';
@@ -186,6 +187,8 @@ export function TradeProposalCard({
   const [pendingImpact, setPendingImpact] = useState<ModificationImpact | null>(null);
   const [isCalculating, setIsCalculating] = useState(false);
   const [activeModifyIndex, setActiveModifyIndex] = useState<number | null>(null);
+  // Track adjustments per leg - limit 1 adjustment per side
+  const [adjustmentsMade, setAdjustmentsMade] = useState<Record<number, number>>({});
 
   const {
     symbol,
@@ -222,6 +225,13 @@ export function TradeProposalCard({
   const handleStrikeChange = useCallback(async (legIndex: number, newStrike: number) => {
     if (!onModifyStrike) return;
 
+    // Check if this leg has already been adjusted
+    const currentAdjustments = adjustmentsMade[legIndex] || 0;
+    if (currentAdjustments >= 1) {
+      toast.error('Only one adjustment allowed per leg');
+      return;
+    }
+
     setActiveModifyIndex(legIndex);
     setIsCalculating(true);
     setPendingImpact(null);
@@ -230,6 +240,8 @@ export function TradeProposalCard({
       const impact = await onModifyStrike(legIndex, newStrike);
       if (impact) {
         setPendingImpact(impact);
+        // Track that this leg has been adjusted
+        setAdjustmentsMade(prev => ({ ...prev, [legIndex]: currentAdjustments + 1 }));
         // Note: Parent updates proposal.legs via updateProposal(), so we don't need local state
       }
     } catch (error) {
@@ -238,7 +250,7 @@ export function TradeProposalCard({
       setIsCalculating(false);
       setActiveModifyIndex(null);
     }
-  }, [onModifyStrike]);
+  }, [onModifyStrike, adjustmentsMade]);
 
   return (
     <div className={`bg-charcoal rounded-2xl p-6 border shadow-lg ${
@@ -309,8 +321,11 @@ export function TradeProposalCard({
                   optionType={leg.optionType}
                   onAdjust={(newStrike) => handleStrikeChange(i, newStrike)}
                   isLoading={isCalculating && activeModifyIndex === i}
-                  disabled={isExecuting}
+                  disabled={isExecuting || (adjustmentsMade[i] || 0) >= 1}
                 />
+                {(adjustmentsMade[i] || 0) >= 1 && (
+                  <span className="text-xs text-silver/50">(adjusted)</span>
+                )}
               </div>
             ) : (
               <span key={i} className={`font-mono font-medium ${

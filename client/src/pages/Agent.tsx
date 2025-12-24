@@ -74,6 +74,7 @@ export function Agent() {
       });
 
       const data = await response.json();
+      console.log('[Agent] negotiate response:', data);
 
       if (!response.ok || !data.success) {
         console.error('Negotiate failed:', data.error);
@@ -84,12 +85,15 @@ export function Agent() {
       // Update the active proposal with new values from server
       // This refreshes premium, maxLoss, stopLoss, etc.
       if (data.updatedProposal) {
+        console.log('[Agent] Updating proposal with:', data.updatedProposal);
         updateProposal({
           legs: data.updatedProposal.legs,
           entryPremiumTotal: data.updatedProposal.entryPremiumTotal,
           maxLoss: data.updatedProposal.maxLoss,
           stopLossPrice: data.updatedProposal.stopLossPrice,
         });
+      } else {
+        console.warn('[Agent] No updatedProposal in response');
       }
 
       // Add agent message to negotiation history
