@@ -11,9 +11,10 @@ interface DataTableProps<T> {
   data: T[];
   columns: Column<T>[];
   testId?: string;
+  footer?: React.ReactNode; // Optional footer row content
 }
 
-export function DataTable<T extends Record<string, any>>({ data, columns, testId }: DataTableProps<T>) {
+export function DataTable<T extends Record<string, any>>({ data, columns, testId, footer }: DataTableProps<T>) {
   const [sortKey, setSortKey] = useState<keyof T | null>(null);
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
 
@@ -81,6 +82,11 @@ export function DataTable<T extends Record<string, any>>({ data, columns, testId
             </tr>
           ))}
         </tbody>
+        {footer && (
+          <tfoot className="border-t-2 border-white/20 bg-white/5">
+            {footer}
+          </tfoot>
+        )}
       </table>
     </div>
   );
