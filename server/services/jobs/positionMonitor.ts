@@ -23,7 +23,7 @@ import { eq, and, sql, gte } from 'drizzle-orm';
 import { getBroker } from '../../broker';
 import { ensureIbkrReady } from '../../broker/ibkr';
 import { registerJobHandler, type JobResult } from '../jobExecutor';
-import { getETDateString, getETTimeString, isMarketOpen } from '../marketCalendar';
+import { getETDateString, getETTimeString, isMarketOpen, isEarlyCloseDay, getMarketStatus } from '../marketCalendar';
 import { monitorPosition, defineExitRules, type ExitRules, type MonitorResult } from '../../engine/step5';
 import type { Position } from '@shared/types';
 
@@ -176,13 +176,18 @@ export async function executePositionMonitor(): Promise<JobResult> {
 
   // Check if market is open (only monitor during market hours)
   if (!isMarketOpen()) {
-    console.log('[PositionMonitor] Market closed, skipping');
-    results.summary = 'Market closed - skipped';
+    const marketStatus = getMarketStatus();
+    const { isEarlyClose, reason: earlyCloseReason } = isEarlyCloseDay();
+    const earlyCloseNote = isEarlyClose ? ` (${earlyCloseReason})` : '';
+
+    console.log(`[PositionMonitor] ${marketStatus.reason}${earlyCloseNote}, skipping`);
+    results.summary = `${marketStatus.reason}${earlyCloseNote} - skipped`;
+
     // Don't count this as a check or create a job run
     return {
       success: true,
       skipped: true,
-      reason: 'Market closed',
+      reason: marketStatus.reason + earlyCloseNote,
       data: results
     };
   }

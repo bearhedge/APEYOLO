@@ -22,7 +22,7 @@ import { eq, and, sql } from 'drizzle-orm';
 import { getBroker } from '../../broker';
 import { ensureIbkrReady, placeCloseOrderByConid } from '../../broker/ibkr';
 import { registerJobHandler, type JobResult } from '../jobExecutor';
-import { getETDateString, getETTimeString } from '../marketCalendar';
+import { getETDateString, getETTimeString, getExitDeadline, isEarlyCloseDay, formatTimeForDisplay } from '../marketCalendar';
 import type { Position } from '@shared/types';
 
 // ============================================
@@ -133,9 +133,10 @@ function getUnderlying(symbol: string): string {
  * Execute the 0DTE position manager
  */
 export async function execute0dtePositionManager(): Promise<JobResult> {
+  const now = new Date();
   const results: JobResults = {
-    timestamp: new Date().toISOString(),
-    timeET: getETTimeString(new Date()),
+    timestamp: now.toISOString(),
+    timeET: getETTimeString(now),
     positionsChecked: 0,
     positionsAtRisk: [],
     closeResults: [],
@@ -144,6 +145,31 @@ export async function execute0dtePositionManager(): Promise<JobResult> {
   };
 
   console.log(`[0DTE-Manager] Starting at ${results.timeET} ET...`);
+
+  // Time validation: Skip if we're not at the right time for today's market close
+  // This handles the case where cron runs at 3:55 PM but it's an early close day (should be 12:55 PM)
+  const expectedTriggerTime = getExitDeadline(now);
+  const currentTimeET = results.timeET;
+
+  // Parse times to minutes for comparison
+  const [expectedHour, expectedMin] = expectedTriggerTime.split(':').map(Number);
+  const [currentHour, currentMin] = currentTimeET.split(':').map(Number);
+  const expectedMinutes = expectedHour * 60 + expectedMin;
+  const currentMinutes = currentHour * 60 + currentMin;
+
+  // If we're more than 10 minutes off from expected trigger time, skip
+  // This allows for some scheduling variance while catching wrong-time triggers
+  if (Math.abs(currentMinutes - expectedMinutes) > 10) {
+    const { isEarlyClose, reason } = isEarlyCloseDay(now);
+    const expectedDisplay = formatTimeForDisplay(expectedTriggerTime);
+    const message = isEarlyClose
+      ? `Skipped: Early close day (${reason}). Expected ${expectedDisplay}, triggered at ${currentTimeET} ET`
+      : `Skipped: Wrong time. Expected ${expectedDisplay}, triggered at ${currentTimeET} ET`;
+
+    console.log(`[0DTE-Manager] ${message}`);
+    results.summary = message;
+    return { success: true, data: results };
+  }
 
   if (!db) {
     results.errors.push('Database not available');
@@ -439,16 +465,20 @@ export function init0dtePositionManagerJob(): void {
 }
 
 /**
- * Create the job in the database if it doesn't exist
+ * Create the jobs in the database if they don't exist
+ * Creates two schedules:
+ * - Normal days: 3:55 PM ET
+ * - Early close days: 12:55 PM ET (time validation will skip the 3:55 PM run)
  */
 export async function ensure0dtePositionManagerJob(): Promise<void> {
   if (!db) return;
 
   try {
+    // Check for normal schedule (3:55 PM)
     const [existingJob] = await db.select().from(jobs).where(eq(jobs.id, '0dte-position-manager')).limit(1);
 
     if (!existingJob) {
-      console.log('[0DTE-Manager] Creating job in database...');
+      console.log('[0DTE-Manager] Creating normal schedule job (3:55 PM ET)...');
       await db.insert(jobs).values({
         id: '0dte-position-manager',
         name: '0DTE Position Manager',
@@ -462,9 +492,31 @@ export async function ensure0dtePositionManagerJob(): Promise<void> {
           maxRetries: MAX_RETRY_ATTEMPTS,
         },
       });
-      console.log('[0DTE-Manager] Job created successfully');
+      console.log('[0DTE-Manager] Normal schedule job created');
+    }
+
+    // Check for early close schedule (12:55 PM)
+    const [existingEarlyJob] = await db.select().from(jobs).where(eq(jobs.id, '0dte-position-manager-early')).limit(1);
+
+    if (!existingEarlyJob) {
+      console.log('[0DTE-Manager] Creating early close schedule job (12:55 PM ET)...');
+      await db.insert(jobs).values({
+        id: '0dte-position-manager-early',
+        name: '0DTE Position Manager (Early Close)',
+        description: 'Auto-close risky 0DTE positions (delta > 0.30) at 12:55 PM ET on early close days (Christmas Eve, day after Thanksgiving, etc.)',
+        type: '0dte-position-manager',
+        schedule: '55 12 * * 1-5', // 12:55 PM ET on weekdays
+        timezone: 'America/New_York',
+        enabled: true,
+        config: {
+          deltaThreshold: DELTA_THRESHOLD,
+          maxRetries: MAX_RETRY_ATTEMPTS,
+          earlyCloseSchedule: true,
+        },
+      });
+      console.log('[0DTE-Manager] Early close schedule job created');
     }
   } catch (err) {
-    console.warn('[0DTE-Manager] Could not ensure job exists:', err);
+    console.warn('[0DTE-Manager] Could not ensure jobs exist:', err);
   }
 }

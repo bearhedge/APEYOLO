@@ -14,13 +14,14 @@
  *   - Example: Sold at $0.70 → Exit if premium hits $4.20
  *
  * Layer 3: EOD SWEEP (Final Safety Net)
- *   - Trigger: 3:55pm ET
+ *   - Trigger: 5 min before market close (3:55 PM ET normal, 12:55 PM ET early close)
  *   - Handled by: 0dtePositionManager.ts (already exists)
  */
 
 import { StrikeSelection } from './step3';
 import { PositionSize } from './step4';
 import type { StepReasoning, StepMetric } from '../../shared/types/engineLog';
+import { getExitDeadline, formatTimeForDisplay, isEarlyCloseDay } from '../services/marketCalendar';
 
 // =============================================================================
 // LAYER 1: Underlying Price Stop Configuration
@@ -293,8 +294,10 @@ export async function defineExitRules(
   // Layer 2 reasoning
   reasoning += `L2 (Backup): Exit if premium hits $${layer2.stopLossPrice.toFixed(2)} (6x entry). `;
 
-  // Layer 3 note
-  reasoning += `L3: EOD sweep at 3:55pm ET.`;
+  // Layer 3 note - dynamic based on early close status
+  const eodSweepTime = formatTimeForDisplay(getExitDeadline());
+  const { isEarlyClose, reason: earlyCloseReason } = isEarlyCloseDay();
+  reasoning += `L3: EOD sweep at ${eodSweepTime}${isEarlyClose ? ` (${earlyCloseReason})` : ''}.`;
 
   if (!hasPremiumData) {
     reasoning = `⚠️ Premium is $0 (market may be closed). ` + reasoning;
@@ -323,7 +326,7 @@ export async function defineExitRules(
     },
     {
       question: 'Layer 3: EOD sweep?',
-      answer: '3:55pm ET - close ITM or high-delta positions'
+      answer: `${eodSweepTime} - close ITM or high-delta positions${isEarlyClose ? ` (${earlyCloseReason})` : ''}`
     },
     {
       question: 'Take profit strategy?',
@@ -360,8 +363,8 @@ export async function defineExitRules(
     },
     {
       label: 'L3: EOD Sweep',
-      value: '3:55pm ET',
-      status: 'normal'
+      value: eodSweepTime,
+      status: isEarlyClose ? 'warning' : 'normal'
     },
     {
       label: 'Premium Data',
@@ -535,7 +538,7 @@ export async function testStep5(): Promise<void> {
   console.log(`Layer 2 (Wide Premium Stop):`);
   console.log(`  Stop price: $${exitRules.layer2.stopLossPrice} (6x entry)`);
   console.log(`  Max loss: $${exitRules.layer2.stopLossAmount}`);
-  console.log(`Layer 3: EOD sweep at 3:55pm ET`);
+  console.log(`Layer 3: EOD sweep at ${formatTimeForDisplay(getExitDeadline())}`);
   console.log(`\nReasoning: ${exitRules.reasoning}`);
 
   // Test position scenarios

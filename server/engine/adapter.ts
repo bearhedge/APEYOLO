@@ -18,6 +18,7 @@ import { DirectionDecision, TradeDirection } from './step2.ts';
 import { StrikeSelection, Strike, getExpirationDate, ExpirationMode } from './step3.ts';
 import { PositionSize, RiskProfile } from './step4.ts';
 import { ExitRules } from './step5.ts';
+import { getTradingWindow, getExitDeadline, formatTimeForDisplay, isEarlyCloseDay } from '../services/marketCalendar';
 import type {
   EngineAnalyzeResponse,
   Q1MarketRegime,
@@ -367,19 +368,34 @@ function adaptExitRules(
     }
     const l1Text = l1Parts.length > 0 ? `L1: Exit if ${l1Parts.join(' or ')} for 15 min. ` : '';
 
+    // Get dynamic EOD sweep time based on early close status
+    const eodSweepTime = formatTimeForDisplay(getExitDeadline());
+    const { isEarlyClose, reason: earlyCloseReason } = isEarlyCloseDay();
+    const eodSweepNote = isEarlyClose ? ` (${earlyCloseReason})` : '';
+
     stopLossRule = `${l1Text}L2: Exit at ${actualMultiplier}x premium ($${actualStopPrice.toFixed(2)})`;
-    timeStopRule = 'L3: EOD sweep at 3:55 PM ET';
+    timeStopRule = `L3: EOD sweep at ${eodSweepTime}${eodSweepNote}`;
   } else {
-    // Legacy single-stop system
+    // Legacy single-stop system - also use dynamic time (30 min before EOD sweep)
+    const exitDeadlineStr = getExitDeadline();
+    const [hours, mins] = exitDeadlineStr.split(':').map(Number);
+    const legacyMinutes = hours * 60 + mins - 25; // 25 min earlier than EOD sweep
+    const legacyHours = Math.floor(legacyMinutes / 60);
+    const legacyMins = legacyMinutes % 60;
+    const legacyTime = formatTimeForDisplay(`${String(legacyHours).padStart(2, '0')}:${String(legacyMins).padStart(2, '0')}`);
+
     stopLossRule = `Exit at ${actualMultiplier}x premium ($${actualStopPrice.toFixed(2)})`;
-    timeStopRule = 'Close by 3:30 PM ET if still open';
+    timeStopRule = `Close by ${legacyTime} if still open`;
   }
+
+  // Get dynamic time for response
+  const eodSweepTimeForResponse = formatTimeForDisplay(getExitDeadline());
 
   return {
     takeProfitPrice: exit?.takeProfitPrice ?? null,
     stopLossPrice: actualStopPrice,
     stopLossAmount: actualStopAmount,
-    timeStopEt: exit?.layer1 ? '3:55 PM ET' : '3:30 PM ET', // Layer system uses 3:55
+    timeStopEt: eodSweepTimeForResponse,
 
     takeProfitPct: null, // Let expire worthless
     stopLossMultiplier: actualMultiplier,
@@ -525,6 +541,7 @@ function getETTimeComponents(date: Date = new Date()): { hour: number; minute: n
 
 /**
  * Get trading window status
+ * Uses dynamic window based on early close days
  */
 function getTradingWindowStatus(): TradingWindowStatus {
   const now = new Date();
@@ -533,13 +550,17 @@ function getTradingWindowStatus(): TradingWindowStatus {
   const { hour, minute, dayOfWeek } = getETTimeComponents(now);
   const currentMinutes = hour * 60 + minute;
 
-  const windowStart = 11 * 60; // 11:00 AM
-  const windowEnd = 13 * 60;   // 1:00 PM
+  // Get dynamic trading window based on early close status
+  const { start, end } = getTradingWindow(now);
+  const [startHour, startMin] = start.split(':').map(Number);
+  const [endHour, endMin] = end.split(':').map(Number);
+  const windowStartMinutes = startHour * 60 + startMin;
+  const windowEndMinutes = endHour * 60 + endMin;
 
   // Weekday check disabled for testing - allow any day
   // const isWeekday = dayOfWeek >= 1 && dayOfWeek <= 5;
 
-  const isOpen = currentMinutes >= windowStart && currentMinutes < windowEnd;
+  const isOpen = currentMinutes >= windowStartMinutes && currentMinutes < windowEndMinutes;
 
   // Format current time string
   const timeStr = new Intl.DateTimeFormat('en-US', {
@@ -549,14 +570,22 @@ function getTradingWindowStatus(): TradingWindowStatus {
     hour12: true
   }).format(now);
 
+  // Format window times for display
+  const windowStartDisplay = formatTimeForDisplay(start);
+  const windowEndDisplay = formatTimeForDisplay(end);
+
+  // Check if early close day
+  const { isEarlyClose, reason: earlyCloseReason } = isEarlyCloseDay(now);
+  const earlyCloseNote = isEarlyClose ? ` (${earlyCloseReason})` : '';
+
   return {
     isOpen,
     currentTimeEt: timeStr,
-    windowStart: '11:00 AM ET',
-    windowEnd: '1:00 PM ET',
+    windowStart: windowStartDisplay,
+    windowEnd: windowEndDisplay,
     reason: isOpen
-      ? 'Trading window is open'
-      : `Trading window closed. Open 11:00 AM - 1:00 PM ET`,
+      ? `Trading window is open${earlyCloseNote}`
+      : `Trading window closed. Open ${windowStartDisplay} - ${windowEndDisplay}${earlyCloseNote}`,
   };
 }
 

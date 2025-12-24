@@ -357,3 +357,39 @@ export function getJobTriggerTime(date: Date = new Date()): string {
 
   return `${String(triggerHours).padStart(2, '0')}:${String(triggerMinutes).padStart(2, '0')}`;
 }
+
+/**
+ * Get the exit deadline for positions on a given date
+ * Returns "15:55" (3:55 PM ET) on normal days, "12:55" on early close days
+ * This is 5 minutes before market close.
+ */
+export function getExitDeadline(date: Date = new Date()): string {
+  return getJobTriggerTime(date);
+}
+
+/**
+ * Get the trading window for a given date
+ * On early close days, the window starts earlier and ends earlier
+ * to allow trades to be executed and have time to close before market close.
+ */
+export function getTradingWindow(date: Date = new Date()): { start: string; end: string } {
+  const { isEarlyClose } = isEarlyCloseDay(date);
+  if (isEarlyClose) {
+    // Early close: 10:00 AM - 12:30 PM ET (2.5 hour window)
+    // Ends 30 min before 1 PM close to allow exits
+    return { start: '10:00', end: '12:30' };
+  }
+  // Normal day: 11:00 AM - 1:00 PM ET (2 hour window)
+  return { start: '11:00', end: '13:00' };
+}
+
+/**
+ * Format time string (HH:MM) for human-readable display
+ * e.g., "15:55" -> "3:55 PM ET"
+ */
+export function formatTimeForDisplay(timeStr: string): string {
+  const [hours, minutes] = timeStr.split(':').map(Number);
+  const period = hours >= 12 ? 'PM' : 'AM';
+  const displayHours = hours > 12 ? hours - 12 : hours === 0 ? 12 : hours;
+  return `${displayHours}:${minutes.toString().padStart(2, '0')} ${period} ET`;
+}

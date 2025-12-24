@@ -5,7 +5,9 @@
  * Automated execution service for the 5-step trading engine
  *
  * Features:
- * - Auto-starts during trading window (11:00 AM - 1:00 PM ET, weekdays)
+ * - Auto-starts during trading window (dynamic based on market close time)
+ *   - Normal days: 11:00 AM - 1:00 PM ET
+ *   - Early close days (Christmas Eve, etc.): 10:00 AM - 12:30 PM ET
  * - Runs analysis every configurable interval (default: 5 minutes)
  * - Auto-executes trades when 5-step decision passes all guard rails
  * - Respects daily trade limit
@@ -16,6 +18,7 @@ import { TradingEngine } from '../engine/index';
 import { getBroker } from '../broker/index';
 import { ensureIbkrReady, placePaperOptionOrder } from '../broker/ibkr';
 import { storage } from '../storage';
+import { getTradingWindow, isEarlyCloseDay, formatTimeForDisplay } from './marketCalendar';
 
 // Scheduler configuration
 export interface SchedulerConfig {
@@ -161,13 +164,16 @@ class EngineScheduler {
 
   /**
    * Check if current time is within trading window
+   * Uses dynamic window based on early close days
    */
   private isInTradingWindow(): boolean {
     const now = new Date();
 
     // Convert to ET (EST/EDT)
     const etTime = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
-    const hour = etTime.getHours();
+    const currentHour = etTime.getHours();
+    const currentMinute = etTime.getMinutes();
+    const currentMinutes = currentHour * 60 + currentMinute;
     const dayOfWeek = etTime.getDay(); // 0 = Sunday, 6 = Saturday
 
     // Check if weekday (Mon-Fri)
@@ -175,8 +181,21 @@ class EngineScheduler {
       return false;
     }
 
+    // Get dynamic trading window based on early close status
+    const { start, end } = getTradingWindow(now);
+    const [startHour, startMin] = start.split(':').map(Number);
+    const [endHour, endMin] = end.split(':').map(Number);
+    const windowStartMinutes = startHour * 60 + startMin;
+    const windowEndMinutes = endHour * 60 + endMin;
+
+    // Log early close status for visibility
+    const { isEarlyClose, reason } = isEarlyCloseDay(now);
+    if (isEarlyClose) {
+      console.log(`[EngineScheduler] Early close day: ${reason}. Trading window: ${formatTimeForDisplay(start)} - ${formatTimeForDisplay(end)}`);
+    }
+
     // Check if within trading window
-    return hour >= this.config.tradingWindowStart && hour < this.config.tradingWindowEnd;
+    return currentMinutes >= windowStartMinutes && currentMinutes < windowEndMinutes;
   }
 
   /**
