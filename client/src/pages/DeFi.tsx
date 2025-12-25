@@ -29,6 +29,7 @@ import { formatUSD } from '@/lib/solana';
 interface PeriodMetrics {
   returnPercent: number;
   pnlUsd: number;
+  pnlHkd?: number;  // HKD value for display (matches Trade Log)
   tradeCount: number;
   winRate: number;
 }
@@ -254,6 +255,7 @@ export function DeFi() {
         period: 'MTD',
         returnPercent: performanceData.mtd.returnPercent,
         pnlUsd: performanceData.mtd.pnlUsd,
+        pnlHkd: performanceData.mtd.pnlHkd,
         tradeCount: performanceData.mtd.tradeCount,
         winRate: performanceData.mtd.winRate,
         isAttested: !!findAttestation('MTD'),
@@ -263,6 +265,7 @@ export function DeFi() {
         period: 'YTD',
         returnPercent: performanceData.ytd.returnPercent,
         pnlUsd: performanceData.ytd.pnlUsd,
+        pnlHkd: performanceData.ytd.pnlHkd,
         tradeCount: performanceData.ytd.tradeCount,
         winRate: performanceData.ytd.winRate,
         isAttested: !!findAttestation('YTD'),
@@ -272,6 +275,7 @@ export function DeFi() {
         period: 'ALL',
         returnPercent: performanceData.all.returnPercent,
         pnlUsd: performanceData.all.pnlUsd,
+        pnlHkd: performanceData.all.pnlHkd,
         tradeCount: performanceData.all.tradeCount,
         winRate: performanceData.all.winRate,
         isAttested: !!findAttestation('ALL'),

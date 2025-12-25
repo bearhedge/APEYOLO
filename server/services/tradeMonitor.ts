@@ -12,7 +12,7 @@
  */
 
 import { db } from '../db';
-import { paperTrades } from '@shared/schema';
+import { paperTrades, type Trade } from '@shared/schema';
 import { eq, and, isNull, lt } from 'drizzle-orm';
 import { getBroker } from '../broker';
 import { ensureIbkrReady } from '../broker/ibkr';
@@ -44,6 +44,78 @@ interface IbkrPosition {
 }
 
 // ============================================
+// Helper: Match IBKR execution to a trade
+// ============================================
+
+/**
+ * Find matching IBKR trade executions for a paper trade.
+ * Matches by underlying symbol and strike price in the OCC symbol format.
+ */
+function findMatchingExecutions(
+  trade: OpenTrade,
+  ibkrTrades: Trade[],
+  leg1Strike: number | null,
+  leg2Strike: number | null
+): Trade[] {
+  return ibkrTrades.filter((exec) => {
+    const execSymbol = exec.symbol || '';
+    const underlying = trade.symbol;
+
+    // Must be for the same underlying
+    if (!execSymbol.startsWith(underlying)) return false;
+
+    // Check if strike matches either leg (OCC format: "SPY   251219P00590000")
+    // Strike is encoded as 8 digits with 3 decimal places: 590.000 = 00590000
+    if (leg1Strike) {
+      const strikeStr = leg1Strike.toFixed(0).padStart(5, '0') + '000';
+      if (execSymbol.includes(strikeStr)) return true;
+    }
+    if (leg2Strike) {
+      const strikeStr = leg2Strike.toFixed(0).padStart(5, '0') + '000';
+      if (execSymbol.includes(strikeStr)) return true;
+    }
+
+    return false;
+  });
+}
+
+/**
+ * Calculate actual P&L from IBKR trade executions.
+ * For sold options: P&L = entry premium - exit cost
+ */
+function calculateRealizedPnl(
+  entryPremium: number,
+  executions: Trade[],
+  contracts: number
+): { exitPrice: number; realizedPnl: number } {
+  if (executions.length === 0) {
+    // No executions found - assume full premium kept (expired worthless or data unavailable)
+    return { exitPrice: 0, realizedPnl: entryPremium };
+  }
+
+  // Sum up the exit costs from all matching executions
+  // For BUY orders (closing a short position), this is what we paid
+  let totalExitCost = 0;
+  let totalQuantity = 0;
+
+  for (const exec of executions) {
+    const fillPrice = exec.entryFillPrice || 0;
+    const qty = exec.quantity || 0;
+    // Options are quoted per share, multiply by 100 for contract value
+    totalExitCost += fillPrice * qty * 100;
+    totalQuantity += qty;
+  }
+
+  // Average exit price per contract
+  const avgExitPrice = totalQuantity > 0 ? totalExitCost / (totalQuantity * 100) : 0;
+
+  // For sold options: P&L = premium received - cost to close
+  const realizedPnl = entryPremium - totalExitCost;
+
+  return { exitPrice: avgExitPrice, realizedPnl };
+}
+
+// ============================================
 // Trade Monitoring Logic
 // ============================================
 
@@ -71,13 +143,16 @@ export async function monitorOpenTrades(): Promise<JobResult> {
 
     console.log(`[TradeMonitor] Found ${openTrades.length} open trades`);
 
-    // 2. Get current positions from IBKR
+    // 2. Get current positions and recent trades from IBKR
     const broker = getBroker();
     let ibkrPositions: IbkrPosition[] = [];
+    let ibkrTrades: Trade[] = [];
 
     if (broker.status.provider === 'ibkr') {
       try {
         await ensureIbkrReady();
+
+        // Get current open positions
         const positions = await broker.api.getPositions();
         ibkrPositions = positions.map((p: any) => ({
           conid: p.id,
@@ -87,8 +162,12 @@ export async function monitorOpenTrades(): Promise<JobResult> {
           unrealizedPnl: p.upl,
         }));
         console.log(`[TradeMonitor] IBKR positions: ${ibkrPositions.length}`);
+
+        // Get recent trade executions (for P&L calculation)
+        ibkrTrades = await broker.api.getTrades();
+        console.log(`[TradeMonitor] IBKR trade executions: ${ibkrTrades.length}`);
       } catch (err) {
-        console.warn('[TradeMonitor] Could not fetch IBKR positions:', err);
+        console.warn('[TradeMonitor] Could not fetch IBKR data:', err);
       }
     }
 
@@ -154,21 +233,30 @@ export async function monitorOpenTrades(): Promise<JobResult> {
       if (!hasOpenPosition && ibkrPositions.length > 0) {
         console.log(`[TradeMonitor] Trade CLOSED (position not found): ${tradeInfo}`);
 
-        // Position is closed - calculate realized P&L
-        // This means the options were either:
-        // 1. Bought back (closed manually or via stop loss)
-        // 2. Assigned (rare for OTM options)
-        //
-        // Without fill data, we estimate based on entry premium
-        // TODO: Get actual fill price from IBKR trades API
+        // Position is closed - calculate realized P&L from actual IBKR executions
         const entryPremium = parseFloat(trade.entryPremiumTotal as any) || 0;
+        const contracts = trade.contracts || 1;
+
+        // Find matching trade executions from IBKR
+        const matchingExecs = findMatchingExecutions(trade, ibkrTrades, leg1Strike, leg2Strike);
+        console.log(`[TradeMonitor] Found ${matchingExecs.length} matching executions for ${tradeInfo}`);
+
+        // Calculate actual P&L from executions
+        const { exitPrice, realizedPnl } = calculateRealizedPnl(entryPremium, matchingExecs, contracts);
+
+        const exitReason = matchingExecs.length > 0
+          ? 'Closed via IBKR'
+          : 'Position closed (no fill data)';
+
+        console.log(`[TradeMonitor] ${tradeInfo}: entry=$${entryPremium.toFixed(2)}, exit=$${exitPrice.toFixed(4)}, P&L=$${realizedPnl.toFixed(2)}`);
 
         await db
           .update(paperTrades)
           .set({
             status: 'closed',
-            exitReason: 'Position closed',
-            realizedPnl: entryPremium.toString(), // Estimate - full premium (update with actual when available)
+            exitPrice: exitPrice.toString(),
+            exitReason,
+            realizedPnl: realizedPnl.toString(),
             closedAt: new Date(),
           })
           .where(eq(paperTrades.id, trade.id));

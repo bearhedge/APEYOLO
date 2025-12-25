@@ -12,6 +12,7 @@ interface PeriodRow {
   period: string;
   returnPercent: number;
   pnlUsd: number;
+  pnlHkd?: number;  // HKD value for display
   tradeCount: number;
   winRate: number;
   isAttested?: boolean;
@@ -76,9 +77,9 @@ export function PeriodSummaryTable({ rows, cluster, loading, onAttest }: PeriodS
             {row.returnPercent >= 0 ? '+' : ''}{row.returnPercent.toFixed(2)}%
           </div>
           <div className={`text-right tabular-nums ${
-            row.pnlUsd >= 0 ? 'text-bloomberg-green' : 'text-bloomberg-red'
+            (row.pnlHkd ?? row.pnlUsd) >= 0 ? 'text-bloomberg-green' : 'text-bloomberg-red'
           }`}>
-            {row.pnlUsd >= 0 ? '+' : ''}{formatUSD(row.pnlUsd)}
+            {(row.pnlHkd ?? row.pnlUsd) >= 0 ? '+' : ''}${Math.round(row.pnlHkd ?? row.pnlUsd).toLocaleString()}
           </div>
           <div className="text-right tabular-nums text-terminal-bright">
             {row.tradeCount}

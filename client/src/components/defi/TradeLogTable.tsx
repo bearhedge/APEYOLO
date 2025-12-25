@@ -27,6 +27,12 @@ interface Trade {
   realizedPnl: number;
   realizedPnlUSD?: number;
   returnPercent: number;
+  // NEW: Days held and outcome
+  daysHeld?: number | null;
+  outcome?: 'win' | 'loss' | 'breakeven' | 'open';
+  entryNav?: number | null;
+  premiumReceived?: number | null;
+  costToClose?: number | null;
   // NAV data (in HKD)
   openingNav?: number | null;
   closingNav?: number | null;
@@ -88,6 +94,27 @@ function getStatusColor(status: string): string {
 
 function formatStatus(status: string): string {
   return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+function formatDaysHeld(days: number | null | undefined): string {
+  if (days === null || days === undefined) return '—';
+  if (days === 0) return '0d';
+  return `${days}d`;
+}
+
+function OutcomeBadge({ outcome }: { outcome?: string }) {
+  switch (outcome) {
+    case 'win':
+      return <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-bloomberg-green/20 text-bloomberg-green">W</span>;
+    case 'loss':
+      return <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-bloomberg-red/20 text-bloomberg-red">L</span>;
+    case 'breakeven':
+      return <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-terminal-dim/20 text-terminal-dim">BE</span>;
+    case 'open':
+      return <span className="px-1.5 py-0.5 rounded text-xs font-medium bg-bloomberg-amber/20 text-bloomberg-amber">—</span>;
+    default:
+      return <span className="text-terminal-dim">—</span>;
+  }
 }
 
 function ValidationIcon({ status }: { status?: string }) {
@@ -318,18 +345,19 @@ export function TradeLogTable({ trades, loading }: TradeLogTableProps) {
           <table className="w-full table-auto">
             <thead>
               <tr className="border-b border-terminal text-xs text-terminal-dim uppercase tracking-wide">
-                <th className="px-3 py-2.5 text-center font-normal whitespace-nowrap">Day</th>
+                <th className="px-3 py-2.5 text-center font-normal whitespace-nowrap">#</th>
                 <th className="px-3 py-2.5 text-left font-normal whitespace-nowrap">Date</th>
+                <th className="px-3 py-2.5 text-right font-normal whitespace-nowrap">Open NAV</th>
+                <th className="px-3 py-2.5 text-right font-normal whitespace-nowrap">Close NAV</th>
+                <th className="px-3 py-2.5 text-center font-normal whitespace-nowrap">Days</th>
                 <th className="px-3 py-2.5 text-left font-normal whitespace-nowrap">Sym</th>
-                <th className="px-3 py-2.5 text-center font-normal whitespace-nowrap">Total Qty</th>
+                <th className="px-3 py-2.5 text-center font-normal whitespace-nowrap">Qty</th>
                 <th className="px-3 py-2.5 text-right font-normal whitespace-nowrap">Strikes</th>
                 <th className="px-3 py-2.5 text-right font-normal whitespace-nowrap">Notional</th>
                 <th className="px-3 py-2.5 text-right font-normal whitespace-nowrap">Premium</th>
                 <th className="px-3 py-2.5 text-right font-normal whitespace-nowrap">P&L</th>
                 <th className="px-3 py-2.5 text-right font-normal whitespace-nowrap">Return</th>
-                <th className="px-3 py-2.5 text-right font-normal whitespace-nowrap">Open NAV</th>
-                <th className="px-3 py-2.5 text-right font-normal whitespace-nowrap">Close NAV</th>
-                <th className="px-3 py-2.5 text-right font-normal whitespace-nowrap">Day Ret</th>
+                <th className="px-3 py-2.5 text-center font-normal whitespace-nowrap">W/L</th>
                 <th className="px-3 py-2.5 text-center font-normal whitespace-nowrap">Status</th>
                 <th className="px-3 py-2.5 text-center font-normal whitespace-nowrap">✓</th>
               </tr>
@@ -345,6 +373,15 @@ export function TradeLogTable({ trades, loading }: TradeLogTableProps) {
                 >
                   <td className="px-3 py-2.5 text-center text-bloomberg-amber font-medium">{trades.length - i}</td>
                   <td className="px-3 py-2.5 text-terminal-dim whitespace-nowrap">{trade.dateFormatted}</td>
+                  <td className="px-3 py-2.5 text-right text-terminal-bright tabular-nums whitespace-nowrap">
+                    {trade.openingNav ? `$${Math.round(trade.openingNav).toLocaleString()}` : '—'}
+                  </td>
+                  <td className="px-3 py-2.5 text-right text-terminal-bright tabular-nums whitespace-nowrap">
+                    {trade.closingNav ? `$${Math.round(trade.closingNav).toLocaleString()}` : '—'}
+                  </td>
+                  <td className="px-3 py-2.5 text-center text-terminal-dim tabular-nums">
+                    {formatDaysHeld(trade.daysHeld)}
+                  </td>
                   <td className="px-3 py-2.5 text-terminal-bright font-medium">{trade.symbol}</td>
                   <td className="px-3 py-2.5 text-center text-terminal-bright">{trade.contracts}</td>
                   <td className="px-3 py-2.5 text-right text-terminal-dim tabular-nums whitespace-nowrap">
@@ -370,18 +407,8 @@ export function TradeLogTable({ trades, loading }: TradeLogTableProps) {
                       <>{trade.returnPercent >= 0 ? '+' : ''}{trade.returnPercent.toFixed(2)}%</>
                     )}
                   </td>
-                  <td className="px-3 py-2.5 text-right tabular-nums text-terminal-dim whitespace-nowrap">
-                    {formatHKD(trade.openingNav)}
-                  </td>
-                  <td className="px-3 py-2.5 text-right tabular-nums text-terminal-dim whitespace-nowrap">
-                    {formatHKD(trade.closingNav)}
-                  </td>
-                  <td className={`px-3 py-2.5 text-right tabular-nums whitespace-nowrap ${
-                    (trade.dailyReturnPct ?? 0) >= 0 ? 'text-bloomberg-green' : 'text-bloomberg-red'
-                  }`}>
-                    {trade.dailyReturnPct !== null && trade.dailyReturnPct !== undefined ? (
-                      <>{trade.dailyReturnPct >= 0 ? '+' : ''}{trade.dailyReturnPct.toFixed(2)}%</>
-                    ) : '—'}
+                  <td className="px-3 py-2.5 text-center">
+                    <OutcomeBadge outcome={trade.outcome} />
                   </td>
                   <td className={`px-3 py-2.5 text-center ${getStatusColor(trade.status)}`}>
                     {formatStatus(trade.status)}

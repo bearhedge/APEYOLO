@@ -35,6 +35,7 @@ const router = Router();
 interface PeriodMetrics {
   returnPercent: number;
   pnlUsd: number;
+  pnlHkd: number;
   tradeCount: number;
   winRate: number;
 }
@@ -117,9 +118,14 @@ router.get('/performance', async (_req: Request, res: Response) => {
       }).length;
       const winRate = closedCount > 0 ? winCount / closedCount : 0;
 
+      // Convert to HKD for consistency with Trade Log
+      const USD_TO_HKD = 7.8;
+      const pnlHkd = pnlUsd * USD_TO_HKD;
+
       return {
         returnPercent,
         pnlUsd,
+        pnlHkd,  // Add HKD value for display
         tradeCount,
         winRate,
       };
@@ -200,7 +206,6 @@ router.get('/trades', async (req: Request, res: Response) => {
     // Transform to trade log format
     const tradeLog = trades.map(t => {
       const pnl = parseFloat(t.realizedPnl as any) || 0;
-      const returnPercent = currentNav > 0 ? (pnl / currentNav) * 100 : 0;
       const createdAt = new Date(t.createdAt!);
       const dateStr = createdAt.toISOString().split('T')[0];
 
@@ -209,6 +214,23 @@ router.get('/trades', async (req: Request, res: Response) => {
       const closingNav = navByDateType.get(`${dateStr}-closing`) || null;
       const navChange = openingNav && closingNav ? closingNav - openingNav : null;
       const dailyReturnPct = openingNav && navChange !== null ? (navChange / openingNav) * 100 : null;
+
+      // FIX: Use entry NAV for return % calculation (not current NAV)
+      const entryNav = openingNav || currentNav;
+      const returnPercent = entryNav > 0 ? (pnl / entryNav) * 100 : 0;
+
+      // Calculate days held (createdAt to closedAt)
+      const closedAt = t.closedAt ? new Date(t.closedAt) : null;
+      const daysHeld = closedAt
+        ? Math.max(0, Math.ceil((closedAt.getTime() - createdAt.getTime()) / (1000 * 60 * 60 * 24)))
+        : null;
+
+      // Determine trade outcome
+      const outcome: 'win' | 'loss' | 'breakeven' | 'open' =
+        t.status === 'open' ? 'open'
+        : pnl > 0 ? 'win'
+        : pnl < 0 ? 'loss'
+        : 'breakeven';
 
       // USD to HKD conversion rate
       const USD_TO_HKD = 7.8;
@@ -268,12 +290,16 @@ router.get('/trades', async (req: Request, res: Response) => {
         exitPremium: t.exitPrice ? parseFloat(t.exitPrice as any) * USD_TO_HKD : (t.status === 'expired' || t.status === 'closed' ? 0 : null),
         entryTime: formatTimeET(createdAt),
         exitTime,
-        // Status and P&L (in HKD)
+        // Status, outcome and P&L (in HKD)
         status: t.status,
+        outcome,
         exitReason: t.exitReason,
         realizedPnl: pnl * USD_TO_HKD,
         realizedPnlUSD: pnl,
         returnPercent,
+        // NEW: Days held and entry NAV used for return calculation
+        daysHeld,
+        entryNav,
         // NAV data for this trade's date (already HKD in database)
         openingNav,
         closingNav,
@@ -283,6 +309,9 @@ router.get('/trades', async (req: Request, res: Response) => {
         putNotionalHKD,
         callNotionalHKD,
         totalNotionalHKD,
+        // Premium clarity
+        premiumReceived: t.entryPremiumTotal ? parseFloat(t.entryPremiumTotal as any) : null,
+        costToClose: t.exitPrice ? parseFloat(t.exitPrice as any) : null,
         // Validation data
         spotPriceAtClose: t.spotPriceAtClose ? parseFloat(t.spotPriceAtClose as any) : null,
         validationStatus: t.validationStatus || 'pending',
@@ -729,6 +758,99 @@ router.post('/violation/:id/record', requireAuth, async (req: Request, res: Resp
     res.status(500).json({
       success: false,
       error: error.message || 'Failed to record violation on Solana',
+    });
+  }
+});
+
+// ============================================
+// Trade Data Backfill Endpoints
+// ============================================
+
+import { backfillClosedTrades, backfillSingleTrade, fixExpiredTrades } from './services/backfillTrades';
+
+/**
+ * POST /api/defi/backfill-trades
+ *
+ * Backfill closed trades with actual IBKR execution data.
+ * Corrects P&L calculations for trades that were closed with estimated values.
+ */
+router.post('/backfill-trades', requireAuth, async (_req: Request, res: Response) => {
+  try {
+    const result = await backfillClosedTrades();
+
+    res.json({
+      success: result.success,
+      data: {
+        processed: result.processed,
+        updated: result.updated,
+        skipped: result.skipped,
+        errors: result.errors,
+      },
+    });
+  } catch (error: any) {
+    console.error('[DefiRoutes] Error backfilling trades:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to backfill trades',
+    });
+  }
+});
+
+/**
+ * POST /api/defi/fix-expired-trades
+ *
+ * Fix expired trades that have null/0 realizedPnl.
+ * For expired options, the full premium is kept (they expired worthless).
+ */
+router.post('/fix-expired-trades', requireAuth, async (_req: Request, res: Response) => {
+  try {
+    const result = await fixExpiredTrades();
+
+    res.json({
+      success: result.success,
+      data: {
+        processed: result.processed,
+        updated: result.updated,
+        skipped: result.skipped,
+        errors: result.errors,
+      },
+    });
+  } catch (error: any) {
+    console.error('[DefiRoutes] Error fixing expired trades:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to fix expired trades',
+    });
+  }
+});
+
+/**
+ * POST /api/defi/backfill-trade/:id
+ *
+ * Backfill a single trade by ID.
+ */
+router.post('/backfill-trade/:id', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const tradeId = req.params.id;
+
+    if (!tradeId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Trade ID is required',
+      });
+    }
+
+    const result = await backfillSingleTrade(tradeId);
+
+    res.json({
+      success: result.success,
+      message: result.message,
+    });
+  } catch (error: any) {
+    console.error('[DefiRoutes] Error backfilling single trade:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to backfill trade',
     });
   }
 });
