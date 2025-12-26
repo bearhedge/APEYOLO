@@ -207,7 +207,14 @@ router.get('/trades', async (req: Request, res: Response) => {
     const tradeLog = trades.map(t => {
       const pnl = parseFloat(t.realizedPnl as any) || 0;
       const createdAt = new Date(t.createdAt!);
-      const dateStr = createdAt.toISOString().split('T')[0];
+
+      // Use ET timezone for date matching (NAV snapshots are in ET)
+      const dateStr = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/New_York',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      }).format(createdAt);
 
       // Look up NAV for this trade's date
       const openingNav = navByDateType.get(`${dateStr}-opening`) || null;
