@@ -1121,16 +1121,20 @@ router.post('/propose', requireAuth, async (req: Request, res: Response) => {
       // Clean up old proposals after 1 hour
       setTimeout(() => pendingProposals.delete(proposalId), 60 * 60 * 1000);
 
+      // eslint-disable-next-line @typescript-eslint/no-unused-vars
+      const { success: _, ...resultWithoutSuccess } = result as any;
       return res.json({
         success: true,
         proposalId,
-        ...result,
+        ...resultWithoutSuccess,
       });
     }
 
+    // eslint-disable-next-line @typescript-eslint/no-unused-vars
+    const { success: _, ...resultWithoutSuccess } = result as any;
     res.json({
       success: true,
-      ...result,
+      ...resultWithoutSuccess,
     });
   } catch (error: any) {
     console.error('[AgentRoutes] Error in propose:', error);
@@ -1347,7 +1351,7 @@ router.post('/negotiate', requireAuth, async (req: Request, res: Response) => {
     const newPremiumPerShare = impact.newPremium / 100;
 
     // Build updated legs array with new strike and premium for the modified leg
-    const updatedLegs = proposal.legs.map((l: any, i: number) =>
+    const updatedLegs = (proposal.legs || []).map((l: any, i: number) =>
       i === legIndex
         ? { ...l, strike: newStrike, premium: newPremiumPerShare, delta: impact.newDelta || l.delta }
         : l
@@ -2025,6 +2029,83 @@ Be direct and concise. Do not use emojis.`;
       res.status(500).json({
         success: false,
         error: error.message || 'Failed to process operation',
+      });
+    }
+  }
+});
+
+// ============================================
+// 5-Layer Agent Orchestration Endpoint
+// ============================================
+
+/**
+ * POST /api/agent/v2/chat/stream
+ *
+ * New 5-layer agent architecture with streaming.
+ * Uses: Orchestrator -> Planner -> Executor -> Critic -> Memory
+ */
+router.post('/v2/chat/stream', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { message, conversationId } = req.body as {
+      message: string;
+      conversationId?: string;
+    };
+
+    if (!message) {
+      return res.status(400).json({
+        success: false,
+        error: 'message is required',
+      });
+    }
+
+    // FAIL FAST: Ensure IBKR is connected
+    try {
+      await ensureIbkrReady();
+    } catch (ibkrError: any) {
+      return res.status(503).json({
+        success: false,
+        error: 'IBKR broker not connected',
+        offline: true,
+      });
+    }
+
+    // Set up SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+
+    const sendEvent = (event: unknown) => {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    };
+
+    // Initialize tools and create orchestrator
+    const { initializeTools, createAgentOrchestrator } = await import('./lib/agent');
+    initializeTools();
+    const orchestrator = createAgentOrchestrator();
+
+    // Run the agent
+    const userId = (req as any).user?.id || 'anonymous';
+
+    for await (const event of orchestrator.run({
+      userMessage: message,
+      userId,
+      conversationId,
+    })) {
+      sendEvent(event);
+    }
+
+    res.end();
+  } catch (error: any) {
+    console.error('[AgentRoutes] V2 stream error:', error);
+
+    if (res.headersSent) {
+      res.write(`data: ${JSON.stringify({ type: 'error', error: error.message })}\n\n`);
+      res.end();
+    } else {
+      res.status(500).json({
+        success: false,
+        error: error.message || 'Agent error',
       });
     }
   }
