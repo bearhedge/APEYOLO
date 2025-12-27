@@ -18,3 +18,7 @@ export { ToolRegistry, getToolRegistry } from './registry';
 export { marketTool } from './market';
 export { positionsTool } from './positions';
 export { engineTool } from './engine';
+
+// LLM tool calling exports
+export { thinkDeeply, type ThinkDeeplyArgs, type ThinkDeeplyResult } from './think-deeply';
+export { AGENT_TOOLS, type ToolExecutors } from './definitions';

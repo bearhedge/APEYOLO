@@ -4,13 +4,21 @@ import {
   SafetyLimits,
   DEFAULT_SAFETY_LIMITS,
   AgentEvent,
-  ExecutionPlan,
 } from './types';
-import { AgentPlanner, getAgentPlanner } from './planner';
-import { AgentExecutor } from './executor';
-import { ToolRegistry, getToolRegistry } from './tools/registry';
 import { AgentMemory, getAgentMemory } from './memory';
-import { streamWithProposer, type LLMMessage } from '../llm-client';
+import {
+  chatWithTools,
+  LLMMessage,
+  LLMToolMessage,
+  LLMAssistantMessage,
+  ToolCall,
+} from '../llm-client';
+import { AGENT_TOOLS } from './tools/definitions';
+import { thinkDeeply } from './tools/think-deeply';
+import { toolRegistry } from '../agent-tools';
+
+// Orchestrator model - fast and capable
+const ORCHESTRATOR_MODEL = process.env.LLM_ORCHESTRATOR_MODEL || 'qwen2.5:32b';
 
 export interface RunInput {
   userMessage: string;
@@ -20,32 +28,24 @@ export interface RunInput {
 
 export class AgentOrchestrator {
   private state: OrchestratorState = 'IDLE';
-  private planner: AgentPlanner;
-  private registry: ToolRegistry;
   private memory: AgentMemory;
   private limits: SafetyLimits;
   private toolCallCount: number = 0;
   private startTime: number = 0;
 
-  constructor(
-    registry?: ToolRegistry,
-    limits?: Partial<SafetyLimits>
-  ) {
-    this.registry = registry || getToolRegistry();
-    this.planner = getAgentPlanner();
+  constructor(limits?: Partial<SafetyLimits>) {
     this.memory = getAgentMemory();
     this.limits = { ...DEFAULT_SAFETY_LIMITS, ...limits };
   }
 
   /**
    * Run the agent for a user message.
-   * Yields events for streaming to the frontend.
+   * Uses native Ollama tool calling - the model decides what tools to use.
    */
   async *run(input: RunInput): AsyncGenerator<AgentEvent> {
     this.startTime = Date.now();
     this.toolCallCount = 0;
 
-    // Get or create conversation
     const conversationId = this.memory.getOrCreateConversation(
       input.userId,
       input.conversationId
@@ -58,34 +58,30 @@ export class AgentOrchestrator {
     });
 
     try {
-      // IDLE -> PLANNING
       yield* this.transitionTo('PLANNING');
 
-      // Create execution plan
-      const context = this.memory.getMessages(conversationId, 5);
-      const cachedMarket = this.memory.getCachedSnapshot(conversationId, 'market');
-      const cachedPositions = this.memory.getCachedSnapshot(conversationId, 'positions');
+      // Build conversation history
+      const history = this.memory.getMessages(conversationId, 10);
+      const messages: (LLMMessage | LLMToolMessage | LLMAssistantMessage)[] = [
+        {
+          role: 'system',
+          content: this.getSystemPrompt(),
+        },
+        ...history.map(m => ({
+          role: m.role as 'user' | 'assistant',
+          content: m.content,
+        })),
+      ];
 
-      const plan = await this.planner.createPlan({
-        userMessage: input.userMessage,
-        conversationContext: context,
-        cachedMarketData: cachedMarket,
-        cachedPositions: cachedPositions,
-      });
-
-      yield { type: 'plan_ready', plan };
-
-      // Log plan to audit
-      this.memory.logAudit(conversationId, 'plan', plan);
-
-      // PLANNING -> EXECUTING
       yield* this.transitionTo('EXECUTING');
 
-      // Execute plan and collect observations
-      const executor = new AgentExecutor(this.registry);
-      const toolResults: Array<{ tool: string; result: unknown }> = [];
+      // Tool calling loop
+      let iteration = 0;
+      const maxIterations = this.limits.maxLoopIterations;
 
-      for await (const event of executor.execute(plan.steps, conversationId)) {
+      while (iteration < maxIterations) {
+        iteration++;
+
         // Check timeout
         if (Date.now() - this.startTime > this.limits.requestTimeoutMs) {
           yield { type: 'error', error: 'Request timeout', recoverable: false };
@@ -94,155 +90,156 @@ export class AgentOrchestrator {
           return;
         }
 
-        // Track tool calls
-        if (event.type === 'tool_done' || event.type === 'tool_error') {
-          this.toolCallCount++;
-          if (this.toolCallCount > this.limits.maxToolCalls) {
-            yield { type: 'error', error: 'Max tool calls exceeded', recoverable: false };
-            yield* this.transitionTo('ERROR');
-            yield* this.transitionTo('IDLE');
-            return;
+        yield { type: 'thought', content: `Iteration ${iteration}: Asking model what to do...` };
+
+        // Call model with tools
+        const response = await chatWithTools({
+          model: ORCHESTRATOR_MODEL,
+          messages,
+          tools: AGENT_TOOLS,
+          think: false, // Orchestrator doesn't need deep thinking
+        });
+
+        // Add assistant message to history
+        messages.push(response.message);
+
+        // Check for tool calls
+        if (response.message.tool_calls && response.message.tool_calls.length > 0) {
+          yield* this.transitionTo('EXECUTING');
+
+          // Execute each tool call
+          for (const toolCall of response.message.tool_calls) {
+            this.toolCallCount++;
+            if (this.toolCallCount > this.limits.maxToolCalls) {
+              yield { type: 'error', error: 'Max tool calls exceeded', recoverable: false };
+              yield* this.transitionTo('ERROR');
+              yield* this.transitionTo('IDLE');
+              return;
+            }
+
+            yield { type: 'tool_start', tool: toolCall.function.name };
+
+            try {
+              const result = await this.executeTool(toolCall);
+              const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
+
+              yield {
+                type: 'tool_done',
+                tool: toolCall.function.name,
+                result,
+                durationMs: Date.now() - this.startTime,
+              };
+
+              // Add tool result to messages
+              messages.push({
+                role: 'tool',
+                tool_name: toolCall.function.name,
+                content: resultStr,
+              });
+            } catch (error) {
+              const errorMsg = error instanceof Error ? error.message : 'Tool error';
+              yield { type: 'tool_error', tool: toolCall.function.name, error: errorMsg };
+
+              messages.push({
+                role: 'tool',
+                tool_name: toolCall.function.name,
+                content: `Error: ${errorMsg}`,
+              });
+            }
           }
-        }
+        } else {
+          // No tool calls - model is ready to respond
+          yield* this.transitionTo('RESPONDING');
 
-        // Handle validation step
-        if (event.type === 'validation_start' && plan.requiresValidation) {
-          yield* this.transitionTo('VALIDATING');
-        }
+          const content = response.message.content || '';
 
-        yield event;
+          // Stream the response
+          yield { type: 'response_chunk', content };
 
-        // Collect tool results for LLM context
-        if (event.type === 'tool_done') {
-          toolResults.push({ tool: event.tool as string, result: event.result });
+          // Save to memory
+          this.memory.addMessage(conversationId, {
+            role: 'assistant',
+            content,
+          });
 
-          // Cache tool results
-          if (event.tool === 'getMarketData') {
-            this.memory.cacheSnapshot(conversationId, 'market', event.result);
-          } else if (event.tool === 'getPositions') {
-            this.memory.cacheSnapshot(conversationId, 'positions', event.result);
-          }
+          yield { type: 'done', finalResponse: content };
+          yield* this.transitionTo('IDLE');
+          return;
         }
       }
 
-      // EXECUTING -> RESPONDING
-      yield* this.transitionTo('RESPONDING');
-
-      // Generate LLM response with tool context
-      yield* this.generateResponse(input.userMessage, plan, toolResults, conversationId);
-
-      // RESPONDING -> IDLE
+      // Max iterations reached
+      yield { type: 'error', error: 'Max iterations reached', recoverable: false };
+      yield* this.transitionTo('ERROR');
       yield* this.transitionTo('IDLE');
 
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       yield { type: 'error', error: errorMessage, recoverable: false };
-
       this.memory.logAudit(conversationId, 'error', { error: errorMessage });
-
       yield* this.transitionTo('ERROR');
       yield* this.transitionTo('IDLE');
     }
+  }
+
+  /**
+   * Execute a tool call and return the result.
+   */
+  private async executeTool(toolCall: ToolCall): Promise<unknown> {
+    const { name, arguments: args } = toolCall.function;
+
+    switch (name) {
+      case 'get_market_data': {
+        const result = await toolRegistry.getMarketData.execute({});
+        if (!result.success) throw new Error(result.error || 'Failed to get market data');
+        return result.data;
+      }
+
+      case 'get_positions': {
+        const result = await toolRegistry.getPositions.execute({});
+        if (!result.success) throw new Error(result.error || 'Failed to get positions');
+        return result.data;
+      }
+
+      case 'run_engine': {
+        const result = await toolRegistry.runEngine.execute(args);
+        if (!result.success) throw new Error(result.error || 'Failed to run engine');
+        return result.data;
+      }
+
+      case 'think_deeply': {
+        const { query, context } = args as { query: string; context?: string };
+        return await thinkDeeply({ query, context });
+      }
+
+      default:
+        throw new Error(`Unknown tool: ${name}`);
+    }
+  }
+
+  private getSystemPrompt(): string {
+    return `You are a 0DTE SPY options trading assistant. You help users with market analysis, portfolio management, and finding trading opportunities.
+
+You have these tools available:
+- get_market_data: Get current SPY price, VIX, and market status
+- get_positions: Get the user's current positions and P&L
+- run_engine: Find 0DTE strangle trade opportunities
+- think_deeply: Use deep analysis for complex questions
+
+Guidelines:
+- For simple greetings, respond directly without tools
+- For market questions, use get_market_data
+- For portfolio questions, use get_positions
+- For trade requests, use run_engine
+- For complex analysis or risk assessment, use think_deeply
+- Be concise and helpful
+- Always use real data from tools, never make up numbers`;
   }
 
   private async *transitionTo(newState: OrchestratorState): AsyncGenerator<AgentEvent> {
     const from = this.state;
     this.state = newState;
     yield { type: 'state_change', from, to: newState };
-  }
-
-  /**
-   * Generate a natural language response using the LLM.
-   * Takes the user's question and tool results as context.
-   */
-  private async *generateResponse(
-    userMessage: string,
-    plan: ExecutionPlan,
-    toolResults: Array<{ tool: string; result: unknown }>,
-    conversationId: string
-  ): AsyncGenerator<AgentEvent> {
-    // Build context from tool results
-    const toolContext = toolResults.map(({ tool, result }) => {
-      return `[${tool}]: ${JSON.stringify(result, null, 2)}`;
-    }).join('\n\n');
-
-    // System prompt for the trading agent
-    const systemPrompt = `You are an expert options trading assistant for a 0DTE SPY strangle strategy.
-Your role is to help the user understand market conditions, positions, and trading opportunities.
-
-Based on the tool data provided, give a clear, concise response to the user's question.
-Be specific with numbers and data from the tools. If suggesting trades, explain the reasoning.
-
-Keep responses focused and actionable. Avoid unnecessary preambles.`;
-
-    // Build messages
-    const messages: LLMMessage[] = [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: `Question: ${userMessage}\n\nData from tools:\n${toolContext}` },
-    ];
-
-    let fullResponse = '';
-
-    try {
-      // Stream response from LLM
-      for await (const chunk of streamWithProposer(messages)) {
-        if (chunk.message?.content) {
-          fullResponse += chunk.message.content;
-          yield { type: 'response_chunk', content: chunk.message.content };
-        }
-
-        // Also emit thinking tokens if available (DeepSeek-R1)
-        if (chunk.message?.thinking) {
-          yield { type: 'thought', content: chunk.message.thinking };
-        }
-      }
-
-      // Save assistant response to memory
-      this.memory.addMessage(conversationId, {
-        role: 'assistant',
-        content: fullResponse,
-      });
-
-      // Final done event with complete response
-      yield { type: 'done', finalResponse: fullResponse };
-
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'LLM error';
-      console.error('[Orchestrator] LLM error:', errorMessage);
-
-      // Fallback: return a basic response from tool data
-      const fallbackResponse = this.formatFallbackResponse(toolResults);
-      yield { type: 'response_chunk', content: fallbackResponse };
-      yield { type: 'done', finalResponse: fallbackResponse };
-    }
-  }
-
-  /**
-   * Format a basic response when LLM is unavailable
-   */
-  private formatFallbackResponse(toolResults: Array<{ tool: string; result: unknown }>): string {
-    const parts: string[] = [];
-
-    for (const { tool, result } of toolResults) {
-      if (tool === 'getMarketData' && result) {
-        const data = result as { spy?: { price?: number }; vix?: { level?: number }; market?: { isOpen?: boolean } };
-        if (data.spy?.price) parts.push(`SPY: $${data.spy.price.toFixed(2)}`);
-        if (data.vix?.level) parts.push(`VIX: ${data.vix.level.toFixed(2)}`);
-        if (data.market) parts.push(`Market: ${data.market.isOpen ? 'Open' : 'Closed'}`);
-      } else if (tool === 'getPositions' && result) {
-        const data = result as { summary?: { openPositionCount?: number; totalPnl?: number } };
-        if (data.summary) {
-          parts.push(`Positions: ${data.summary.openPositionCount || 0}`);
-          if (data.summary.totalPnl !== undefined) {
-            parts.push(`P&L: $${data.summary.totalPnl.toFixed(2)}`);
-          }
-        }
-      }
-    }
-
-    return parts.length > 0
-      ? parts.join(' | ') + '\n\n(LLM unavailable - showing raw data)'
-      : 'Data retrieved. LLM unavailable for analysis.';
   }
 
   getState(): OrchestratorState {
@@ -254,5 +251,5 @@ Keep responses focused and actionable. Avoid unnecessary preambles.`;
 export function createAgentOrchestrator(
   limits?: Partial<SafetyLimits>
 ): AgentOrchestrator {
-  return new AgentOrchestrator(getToolRegistry(), limits);
+  return new AgentOrchestrator(limits);
 }

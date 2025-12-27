@@ -48,6 +48,58 @@ export interface LLMStatusResponse {
   error?: string;
 }
 
+// Tool calling types (Ollama native format)
+export interface ToolFunction {
+  name: string;
+  description: string;
+  parameters: {
+    type: 'object';
+    properties: Record<string, {
+      type: string;
+      description: string;
+    }>;
+    required?: string[];
+  };
+}
+
+export interface Tool {
+  type: 'function';
+  function: ToolFunction;
+}
+
+export interface ToolCall {
+  function: {
+    name: string;
+    arguments: Record<string, unknown>;
+  };
+}
+
+export interface LLMToolMessage {
+  role: 'tool';
+  tool_name: string;
+  content: string;
+}
+
+export interface LLMAssistantMessage {
+  role: 'assistant';
+  content: string;
+  thinking?: string;
+  tool_calls?: ToolCall[];
+}
+
+export interface ChatWithToolsRequest {
+  model: string;
+  messages: (LLMMessage | LLMToolMessage | LLMAssistantMessage)[];
+  tools?: Tool[];
+  stream?: boolean;
+  think?: boolean;
+}
+
+export interface ChatWithToolsResponse {
+  message: LLMAssistantMessage;
+  done: boolean;
+}
+
 // Three-Brain Model Configuration
 // - THINKER (DeepSeek-R1): Deep analysis, strategy, reasoning
 // - PROCESSOR (Qwen 32B): Validation, critique, processing
@@ -327,4 +379,144 @@ export function streamWithCritic(messages: LLMMessage[]) {
     model: CRITIC_MODEL,
     stream: true,
   });
+}
+
+// ============================================
+// Tool Calling Functions (Ollama Native)
+// ============================================
+
+/**
+ * Chat with LLM using native tool calling.
+ * The model decides what tools to call based on the query.
+ */
+export async function chatWithTools(request: ChatWithToolsRequest): Promise<ChatWithToolsResponse> {
+  const tunnelUrl = getTunnelUrl();
+
+  if (!tunnelUrl) {
+    throw new Error('LLM_TUNNEL_URL not configured');
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`${tunnelUrl}/api/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: request.model,
+        messages: request.messages,
+        tools: request.tools,
+        stream: false,
+        think: request.think ?? false,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`LLM request failed: ${response.status} - ${errorText}`);
+    }
+
+    const data = await response.json();
+    return {
+      message: {
+        role: 'assistant',
+        content: data.message?.content || '',
+        thinking: data.message?.thinking,
+        tool_calls: data.message?.tool_calls,
+      },
+      done: data.done ?? true,
+    };
+  } catch (error: any) {
+    clearTimeout(timeout);
+    if (error.name === 'AbortError') {
+      throw new Error('LLM request timeout');
+    }
+    throw error;
+  }
+}
+
+/**
+ * Stream chat with LLM using native tool calling.
+ */
+export async function* streamChatWithTools(
+  request: ChatWithToolsRequest
+): AsyncGenerator<{ content?: string; thinking?: string; tool_calls?: ToolCall[]; done: boolean }> {
+  const tunnelUrl = getTunnelUrl();
+
+  if (!tunnelUrl) {
+    throw new Error('LLM_TUNNEL_URL not configured');
+  }
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`${tunnelUrl}/api/chat`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: request.model,
+        messages: request.messages,
+        tools: request.tools,
+        stream: true,
+        think: request.think ?? false,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeout);
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(`LLM request failed: ${response.status} - ${errorText}`);
+    }
+
+    if (!response.body) {
+      throw new Error('No response body');
+    }
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop() || '';
+
+      for (const line of lines) {
+        if (line.trim()) {
+          try {
+            const chunk = JSON.parse(line);
+            yield {
+              content: chunk.message?.content,
+              thinking: chunk.message?.thinking,
+              tool_calls: chunk.message?.tool_calls,
+              done: chunk.done ?? false,
+            };
+            if (chunk.done) return;
+          } catch {
+            // Skip non-JSON lines
+          }
+        }
+      }
+    }
+  } catch (error: any) {
+    clearTimeout(timeout);
+    if (error.name === 'AbortError') {
+      throw new Error('LLM request timeout');
+    }
+    throw error;
+  }
 }
