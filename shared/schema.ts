@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { pgTable, text, varchar, decimal, integer, timestamp, boolean, jsonb, bigint, index, doublePrecision } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, decimal, integer, timestamp, boolean, jsonb, bigint, index, doublePrecision, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -474,29 +474,29 @@ export type InsertOptionChainSnapshot = z.infer<typeof insertOptionChainSnapshot
 // OHLC comes from WebSocket when available, otherwise snapshot_only from HTTP
 
 export const optionBars = pgTable('option_bars', {
-  id: uuid('id').primaryKey().defaultRandom(),
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
   symbol: text('symbol').notNull(),
-  strike: numeric('strike', { precision: 10, scale: 2 }).notNull(),
+  strike: decimal('strike', { precision: 10, scale: 2 }).notNull(),
   expiry: text('expiry').notNull(), // YYYYMMDD format
   optionType: text('option_type').notNull(), // 'PUT' | 'CALL'
   intervalStart: timestamp('interval_start').notNull(),
 
   // OHLC (from WebSocket tick tracking)
-  open: numeric('open', { precision: 10, scale: 4 }),
-  high: numeric('high', { precision: 10, scale: 4 }),
-  low: numeric('low', { precision: 10, scale: 4 }),
-  close: numeric('close', { precision: 10, scale: 4 }),
+  open: decimal('open', { precision: 10, scale: 4 }),
+  high: decimal('high', { precision: 10, scale: 4 }),
+  low: decimal('low', { precision: 10, scale: 4 }),
+  close: decimal('close', { precision: 10, scale: 4 }),
 
   // Snapshot data (always captured)
-  bidClose: numeric('bid_close', { precision: 10, scale: 4 }),
-  askClose: numeric('ask_close', { precision: 10, scale: 4 }),
+  bidClose: decimal('bid_close', { precision: 10, scale: 4 }),
+  askClose: decimal('ask_close', { precision: 10, scale: 4 }),
 
   // Greeks at close
-  delta: numeric('delta', { precision: 8, scale: 6 }),
-  gamma: numeric('gamma', { precision: 8, scale: 6 }),
-  theta: numeric('theta', { precision: 8, scale: 6 }),
-  vega: numeric('vega', { precision: 8, scale: 6 }),
-  iv: numeric('iv', { precision: 8, scale: 6 }),
+  delta: decimal('delta', { precision: 8, scale: 6 }),
+  gamma: decimal('gamma', { precision: 8, scale: 6 }),
+  theta: decimal('theta', { precision: 8, scale: 6 }),
+  vega: decimal('vega', { precision: 8, scale: 6 }),
+  iv: decimal('iv', { precision: 8, scale: 6 }),
   openInterest: integer('open_interest'),
 
   // Data quality tracking
@@ -504,8 +504,8 @@ export const optionBars = pgTable('option_bars', {
   tickCount: integer('tick_count').default(0),
 
   // Underlying context
-  underlyingPrice: numeric('underlying_price', { precision: 10, scale: 4 }),
-  vix: numeric('vix', { precision: 8, scale: 4 }),
+  underlyingPrice: decimal('underlying_price', { precision: 10, scale: 4 }),
+  vix: decimal('vix', { precision: 8, scale: 4 }),
 
   createdAt: timestamp('created_at').defaultNow(),
 }, (table) => ([
