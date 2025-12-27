@@ -15,7 +15,7 @@ import { requireAuth } from "./auth";
 import { z } from "zod";
 import { adaptTradingDecision } from "./engine/adapter";
 import { db } from "./db";
-import { paperTrades } from "../shared/schema";
+import { paperTrades, orders } from "../shared/schema";
 import { enforceMandate } from "./services/mandateService";
 import type { EngineAnalyzeResponse, TradeProposal, RiskProfile } from "../shared/types/engine";
 
@@ -665,6 +665,47 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
           }
 
           console.log(`[Engine/execute] ${leg.optionType} BRACKET order: SELL @ $${sellPrice}, STOP @ $${legStopPrice}`, orderResult);
+
+          // Create order records in orders table to track fill times
+          const now = new Date();
+          const optionSymbol = `${tradeProposal.symbol} ${leg.optionType} ${leg.strike}`;
+
+          if (orderResult.primaryOrderId && db) {
+            try {
+              await db.insert(orders).values({
+                userId,
+                ibkrOrderId: orderResult.primaryOrderId,
+                symbol: optionSymbol,
+                side: 'SELL',
+                quantity: tradeProposal.contracts,
+                orderType: 'LMT',
+                limitPrice: sellPrice.toString(),
+                status: 'filled',
+                filledAt: now, // Record fill time for holding calculation
+              });
+              console.log(`[Engine/execute] Created order record for primary order ${orderResult.primaryOrderId}`);
+            } catch (dbErr) {
+              console.warn(`[Engine/execute] Could not create order record:`, dbErr);
+            }
+          }
+
+          if (orderResult.stopOrderId && db) {
+            try {
+              await db.insert(orders).values({
+                userId,
+                ibkrOrderId: orderResult.stopOrderId,
+                symbol: optionSymbol,
+                side: 'BUY', // Stop order is a BUY to close
+                quantity: tradeProposal.contracts,
+                orderType: 'STP',
+                limitPrice: legStopPrice.toString(),
+                status: 'pending', // Stop order is pending until triggered
+              });
+              console.log(`[Engine/execute] Created order record for stop order ${orderResult.stopOrderId}`);
+            } catch (dbErr) {
+              console.warn(`[Engine/execute] Could not create order record:`, dbErr);
+            }
+          }
         }
       } catch (orderErr: any) {
         console.error('[Engine/execute] IBKR bracket order error:', orderErr);

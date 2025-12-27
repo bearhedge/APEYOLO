@@ -12,8 +12,8 @@
  */
 
 import { db } from '../db';
-import { paperTrades, type Trade } from '@shared/schema';
-import { eq, and, isNull, lt } from 'drizzle-orm';
+import { paperTrades, orders, type Trade } from '@shared/schema';
+import { eq, and, isNull, lt, inArray } from 'drizzle-orm';
 import { getBroker } from '../broker';
 import { ensureIbkrReady } from '../broker/ibkr';
 import { registerJobHandler, type JobResult } from './jobExecutor';
@@ -250,6 +250,8 @@ export async function monitorOpenTrades(): Promise<JobResult> {
 
         console.log(`[TradeMonitor] ${tradeInfo}: entry=$${entryPremium.toFixed(2)}, exit=$${exitPrice.toFixed(4)}, P&L=$${realizedPnl.toFixed(2)}`);
 
+        const now = new Date();
+
         await db
           .update(paperTrades)
           .set({
@@ -257,9 +259,28 @@ export async function monitorOpenTrades(): Promise<JobResult> {
             exitPrice: exitPrice.toString(),
             exitReason,
             realizedPnl: realizedPnl.toString(),
-            closedAt: new Date(),
+            closedAt: now,
           })
           .where(eq(paperTrades.id, trade.id));
+
+        // Update stop order(s) with fill time for holding time calculation
+        const orderIds = trade.ibkrOrderIds as string[] | null;
+        if (orderIds?.length) {
+          try {
+            // Update all stop orders (typically index 1+ in the array)
+            // Entry orders are at index 0, stops are at 1, 2, etc.
+            const stopOrderIds = orderIds.slice(1);
+            if (stopOrderIds.length > 0) {
+              await db
+                .update(orders)
+                .set({ status: 'filled', filledAt: now })
+                .where(inArray(orders.ibkrOrderId, stopOrderIds));
+              console.log(`[TradeMonitor] Updated ${stopOrderIds.length} stop order(s) with fill time`);
+            }
+          } catch (orderErr) {
+            console.warn(`[TradeMonitor] Could not update order records:`, orderErr);
+          }
+        }
 
         closedCount++;
       }
@@ -325,14 +346,20 @@ export async function ensureTradeMonitorJob(): Promise<void> {
         schedule: desiredSchedule,
         timezone: 'America/New_York',
         enabled: true,
-        config: {},
+        config: { skipMarketCheck: true },  // Allow job to run after market close
       });
       console.log('[TradeMonitor] Job created successfully');
-    } else if (existingJob.schedule !== desiredSchedule) {
-      // Update schedule if it has changed
-      console.log(`[TradeMonitor] Updating schedule from ${existingJob.schedule} to ${desiredSchedule}`);
-      await db.update(jobs).set({ schedule: desiredSchedule }).where(eq(jobs.id, 'trade-monitor'));
-      console.log('[TradeMonitor] Schedule updated successfully');
+    } else {
+      // Update config to ensure skipMarketCheck is enabled
+      const currentConfig = existingJob.config as Record<string, any> || {};
+      if (!currentConfig.skipMarketCheck || existingJob.schedule !== desiredSchedule) {
+        console.log('[TradeMonitor] Updating job config with skipMarketCheck: true');
+        await db.update(jobs).set({
+          schedule: desiredSchedule,
+          config: { ...currentConfig, skipMarketCheck: true }
+        }).where(eq(jobs.id, 'trade-monitor'));
+        console.log('[TradeMonitor] Job config updated successfully');
+      }
     }
   } catch (err) {
     console.warn('[TradeMonitor] Could not ensure job exists:', err);

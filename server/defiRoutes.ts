@@ -23,8 +23,8 @@ import { requireAuth } from './auth';
 import type { AttestationPeriod } from '@shared/types/defi';
 import type { CreateMandateRequest } from '@shared/types/mandate';
 import { db } from './db';
-import { paperTrades, navSnapshots } from '@shared/schema';
-import { eq, and, gte, lte, desc, asc } from 'drizzle-orm';
+import { paperTrades, navSnapshots, orders } from '@shared/schema';
+import { eq, and, gte, lte, desc, asc, inArray } from 'drizzle-orm';
 
 const router = Router();
 
@@ -247,6 +247,30 @@ router.get('/trades', async (req: Request, res: Response) => {
       .orderBy(desc(paperTrades.createdAt))
       .limit(limit);
 
+    // Collect all IBKR order IDs from trades to look up fill times
+    const allOrderIds: string[] = [];
+    for (const trade of trades) {
+      const orderIds = trade.ibkrOrderIds as string[] | null;
+      if (orderIds?.length) {
+        allOrderIds.push(...orderIds);
+      }
+    }
+
+    // Query orders table for fill times
+    const orderFillTimes = new Map<string, Date>();
+    if (allOrderIds.length > 0) {
+      const orderRecords = await db
+        .select({ ibkrOrderId: orders.ibkrOrderId, filledAt: orders.filledAt })
+        .from(orders)
+        .where(inArray(orders.ibkrOrderId, allOrderIds));
+
+      for (const order of orderRecords) {
+        if (order.ibkrOrderId && order.filledAt) {
+          orderFillTimes.set(order.ibkrOrderId, new Date(order.filledAt));
+        }
+      }
+    }
+
     // Get all NAV snapshots for lookup
     const navData = await db
       .select()
@@ -308,10 +332,44 @@ router.get('/trades', async (req: Request, res: Response) => {
       const entryNav = openingNav || currentNav;
       const returnPercent = entryNav > 0 ? (pnl / entryNav) * 100 : 0;
 
-      // Calculate holding time in minutes (createdAt to closedAt)
-      const closedAt = t.closedAt ? new Date(t.closedAt) : null;
-      const holdingMinutes = closedAt
-        ? Math.max(0, Math.round((closedAt.getTime() - createdAt.getTime()) / (1000 * 60)))
+      // Calculate holding time in minutes using actual IBKR fill times
+      // - Stopped out: Use actual exit fill time from IBKR orders table
+      // - Expired/Exercised: Use 4:00 PM ET (market close) on the trade date
+      // - Holding time should be ~100-300 minutes max (a few hours)
+      const ibkrOrderIds = t.ibkrOrderIds as string[] | null;
+      let entryFillTime: Date | null = null;
+      let exitFillTime: Date | null = null;
+
+      // Get entry fill time from orders table
+      if (ibkrOrderIds?.length) {
+        entryFillTime = orderFillTimes.get(ibkrOrderIds[0]) || null;
+        // For stopped out trades, get exit fill time from orders
+        if (ibkrOrderIds.length > 1) {
+          exitFillTime = orderFillTimes.get(ibkrOrderIds[1]) || null;
+        }
+      }
+
+      // For expired/exercised trades, use 4:00 PM ET as exit time
+      const derivedStatus = deriveDisplayStatus(t.status, t.exitReason);
+      if (derivedStatus === 'expired' || derivedStatus === 'exercised') {
+        // Use market close (4:00 PM ET) on the trade's expiration date or closed date
+        const exitDate = t.closedAt ? new Date(t.closedAt) : createdAt;
+        const exitDateStr = new Intl.DateTimeFormat('en-CA', {
+          timeZone: 'America/New_York',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit'
+        }).format(exitDate);
+        // 4:00 PM ET = 16:00 in ET timezone
+        exitFillTime = new Date(`${exitDateStr}T16:00:00-05:00`);
+      }
+
+      // Fallback to database timestamps if no fill times available
+      const effectiveEntryTime = entryFillTime || createdAt;
+      const effectiveExitTime = exitFillTime || (t.closedAt ? new Date(t.closedAt) : null);
+
+      const holdingMinutes = effectiveExitTime
+        ? Math.max(0, Math.round((effectiveExitTime.getTime() - effectiveEntryTime.getTime()) / (1000 * 60)))
         : null;
 
       // Determine trade outcome (based on actual P&L)
