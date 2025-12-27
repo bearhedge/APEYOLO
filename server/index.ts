@@ -8,6 +8,7 @@ if (process.env.NODE_ENV !== 'production') {
 import { registerRoutes } from "./routes";
 import { serveStatic, log } from "./utils"; // Production-safe utilities
 import { testDatabaseConnection } from "./db";
+import { startFiveMinuteCapture } from "./services/jobs/fiveMinuteDataCapture";
 
 const app = express();
 app.use(express.json());
@@ -69,5 +70,8 @@ app.use((req, res, next) => {
 
   server.listen(port, "0.0.0.0", () => {
     log(`serving on port ${port}`);
+
+    // Start the 5-minute option data capture scheduler
+    startFiveMinuteCapture();
   });
 })();
