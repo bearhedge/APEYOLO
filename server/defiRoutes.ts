@@ -364,13 +364,20 @@ router.get('/trades', async (req: Request, res: Response) => {
         exitFillTime = new Date(`${exitDateStr}T16:00:00-05:00`);
       }
 
-      // Fallback to database timestamps if no fill times available
-      const effectiveEntryTime = entryFillTime || createdAt;
-      const effectiveExitTime = exitFillTime || (t.closedAt ? new Date(t.closedAt) : null);
+      // Only calculate holdingMinutes if we have ACTUAL fill times from orders table
+      // For expired/exercised trades, we use 4:00 PM ET as exit time (set above)
+      // If no real entry fill time exists, show N/A (null) - don't use fake data
+      let holdingMinutes: number | null = null;
 
-      const holdingMinutes = effectiveExitTime
-        ? Math.max(0, Math.round((effectiveExitTime.getTime() - effectiveEntryTime.getTime()) / (1000 * 60)))
-        : null;
+      if (entryFillTime && exitFillTime) {
+        // We have actual fill times from orders table
+        holdingMinutes = Math.max(0, Math.round((exitFillTime.getTime() - entryFillTime.getTime()) / (1000 * 60)));
+      } else if (derivedStatus === 'expired' || derivedStatus === 'exercised') {
+        // For expired/exercised without entry fill time, still show N/A
+        // (exitFillTime is set to 4PM but we need entryFillTime too)
+        holdingMinutes = null;
+      }
+      // Otherwise holdingMinutes stays null - will show "—" in UI
 
       // Determine trade outcome (based on actual P&L)
       const outcome: 'win' | 'loss' | 'breakeven' | 'open' =

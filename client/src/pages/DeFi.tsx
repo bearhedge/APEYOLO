@@ -112,7 +112,8 @@ export function DeFi() {
       const response = await fetch('/api/defi/performance', { credentials: 'include' });
       return response.json();
     },
-    staleTime: 60_000, // Refresh every minute
+    staleTime: 60_000,
+    refetchInterval: 60_000, // Auto-refresh every 60 seconds
   });
 
   const performanceData = performanceResponse?.data;
@@ -129,6 +130,7 @@ export function DeFi() {
       return response.json();
     },
     staleTime: 60_000,
+    refetchInterval: 60_000, // Auto-refresh every 60 seconds
   });
 
   const trades = tradesResponse?.trades || [];
