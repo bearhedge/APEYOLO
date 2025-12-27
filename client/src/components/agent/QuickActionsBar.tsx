@@ -5,26 +5,17 @@
  * "Task First, Chat Second" - primary interaction through actions.
  */
 
-import { useState } from 'react';
-import { BarChart3, Search, Briefcase, MessageSquare, Square, ChevronDown } from 'lucide-react';
+import { BarChart3, Search, Briefcase, Square, ChevronDown } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import {
-  Dialog,
-  DialogContent,
-  DialogHeader,
-  DialogTitle,
-  DialogFooter,
-} from '@/components/ui/dialog';
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { Textarea } from '@/components/ui/textarea';
 import type { StrategyPreference } from '@shared/types/engine';
 
-export type OperationType = 'analyze' | 'propose' | 'positions' | 'custom';
+export type OperationType = 'analyze' | 'propose' | 'positions';
 
 // Strategy display labels
 const STRATEGY_LABELS: Record<StrategyPreference, string> = {
@@ -50,23 +41,11 @@ export function QuickActionsBar({
   strategy = 'strangle',
   onStrategyChange,
 }: QuickActionsBarProps) {
-  const [customDialogOpen, setCustomDialogOpen] = useState(false);
-  const [customMessage, setCustomMessage] = useState('');
-
-  const handleCustomSubmit = () => {
-    if (customMessage.trim()) {
-      onAction('custom', { message: customMessage.trim() });
-      setCustomMessage('');
-      setCustomDialogOpen(false);
-    }
-  };
-
   const handleFindTrade = () => {
     onAction('propose', { strategy });
   };
 
   return (
-    <>
       <div className="border-t border-white/10 bg-charcoal p-4">
         <div className="flex items-center gap-3">
           {/* Analyze Market button */}
@@ -136,17 +115,6 @@ export function QuickActionsBar({
             Positions
           </Button>
 
-          {/* Custom request button */}
-          <Button
-            onClick={() => setCustomDialogOpen(true)}
-            disabled={!canOperate || isProcessing}
-            variant="ghost"
-            className="h-12 px-4 text-silver hover:text-white hover:bg-white/5"
-          >
-            <MessageSquare className="w-4 h-4 mr-2" />
-            Custom
-          </Button>
-
           {/* Stop button - only visible when processing */}
           {isProcessing && onStop && (
             <Button
@@ -167,46 +135,5 @@ export function QuickActionsBar({
           </p>
         )}
       </div>
-
-      {/* Custom request dialog */}
-      <Dialog open={customDialogOpen} onOpenChange={setCustomDialogOpen}>
-        <DialogContent className="bg-charcoal border-white/10">
-          <DialogHeader>
-            <DialogTitle>Custom Request</DialogTitle>
-          </DialogHeader>
-          <div className="py-4">
-            <Textarea
-              placeholder="Ask the agent anything..."
-              value={customMessage}
-              onChange={(e) => setCustomMessage(e.target.value)}
-              className="min-h-[120px] bg-black/30 border-white/10 resize-none"
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' && !e.shiftKey) {
-                  e.preventDefault();
-                  handleCustomSubmit();
-                }
-              }}
-            />
-            <p className="text-xs text-silver mt-2">
-              Press Enter to send, Shift+Enter for new line
-            </p>
-          </div>
-          <DialogFooter>
-            <Button
-              variant="ghost"
-              onClick={() => setCustomDialogOpen(false)}
-            >
-              Cancel
-            </Button>
-            <Button
-              onClick={handleCustomSubmit}
-              disabled={!customMessage.trim()}
-            >
-              Send
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </>
   );
 }

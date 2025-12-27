@@ -24,9 +24,49 @@ import type { AttestationPeriod } from '@shared/types/defi';
 import type { CreateMandateRequest } from '@shared/types/mandate';
 import { db } from './db';
 import { paperTrades, navSnapshots } from '@shared/schema';
-import { eq, and, gte, lte, desc } from 'drizzle-orm';
+import { eq, and, gte, lte, desc, asc } from 'drizzle-orm';
 
 const router = Router();
+
+// ============================================
+// Constants
+// ============================================
+
+// Fixed baseline date for performance calculations (user's trading start date)
+const BASELINE_DATE = '2024-12-16';
+
+// ============================================
+// Helper Functions
+// ============================================
+
+/**
+ * Derive display status from database status and exitReason
+ * Returns: 'expired' | 'stopped out' | 'exercised' | 'open'
+ */
+function deriveDisplayStatus(dbStatus: string, exitReason: string | null): string {
+  if (dbStatus === 'open') return 'open';
+  if (!exitReason) return dbStatus === 'expired' ? 'expired' : 'stopped out';
+
+  const reason = exitReason.toLowerCase();
+
+  // ITM/assignment → exercised
+  if (reason.includes('itm') || reason.includes('assigned') || reason.includes('exercised')) {
+    return 'exercised';
+  }
+
+  // Auto-closed/layer 1/layer 2/stop → stopped out
+  if (reason.includes('auto-closed') || reason.includes('layer 1') ||
+      reason.includes('layer 2') || reason.includes('stop')) {
+    return 'stopped out';
+  }
+
+  // Expired
+  if (reason.includes('expired') || dbStatus === 'expired') {
+    return 'expired';
+  }
+
+  return 'stopped out';
+}
 
 // ============================================
 // Performance Data Types
@@ -79,14 +119,29 @@ router.get('/performance', async (_req: Request, res: Response) => {
       const startStr = startDate.toISOString().split('T')[0];
 
       // Get starting NAV for return % calculation
+      // Always use fixed BASELINE_DATE for consistent return calculations
+      let navStart = 0;
+
+      // Get NAV at/before the baseline date (Dec 16, 2024)
       const [startNav] = await db!
         .select()
         .from(navSnapshots)
-        .where(lte(navSnapshots.date, startStr))
+        .where(lte(navSnapshots.date, BASELINE_DATE))
         .orderBy(desc(navSnapshots.date))
         .limit(1);
 
-      const navStart = startNav ? parseFloat(startNav.nav as any) || 0 : 0;
+      if (startNav) {
+        navStart = parseFloat(startNav.nav as any) || 0;
+      } else {
+        // Fallback: use earliest NAV snapshot at or after baseline
+        const [firstNav] = await db!
+          .select()
+          .from(navSnapshots)
+          .where(gte(navSnapshots.date, BASELINE_DATE))
+          .orderBy(asc(navSnapshots.date))
+          .limit(1);
+        navStart = firstNav ? parseFloat(firstNav.nav as any) || 0 : 0;
+      }
 
       // Get ALL trades for this period (for counting)
       const allTrades = await db!
@@ -97,30 +152,41 @@ router.get('/performance', async (_req: Request, res: Response) => {
           lte(paperTrades.createdAt, endDate)
         ));
 
-      // Filter to closed/expired trades (for P&L calculation)
+      // Filter to closed/expired trades (for win rate calculation)
       const trades = allTrades.filter(t => t.status === 'closed' || t.status === 'expired');
 
-      // Calculate P&L from actual trade results (NOT NAV delta)
-      const pnlUsd = trades.reduce((sum, t) => {
-        const realized = parseFloat(t.realizedPnl as any) || 0;
-        return sum + realized;
-      }, 0);
+      // Get ending NAV for the period (most recent closing NAV)
+      const endStr = endDate.toISOString().split('T')[0];
+      const [endNav] = await db!
+        .select()
+        .from(navSnapshots)
+        .where(and(
+          lte(navSnapshots.date, endStr),
+          eq(navSnapshots.snapshotType, 'closing')
+        ))
+        .orderBy(desc(navSnapshots.date))
+        .limit(1);
 
-      // Calculate return % = P&L / starting NAV
-      const returnPercent = navStart > 0 ? (pnlUsd / navStart) * 100 : 0;
+      const navEnd = endNav ? parseFloat(endNav.nav as any) || 0 : 0;
+
+      // FIX: Calculate P&L from NAV delta (more accurate than summing trade P&L)
+      // NAV is stored in HKD
+      const USD_TO_HKD = 7.8;
+      const pnlHkd = navEnd > 0 && navStart > 0 ? navEnd - navStart : 0;
+      const pnlUsd = pnlHkd / USD_TO_HKD;
+
+      // Calculate return % = (End NAV - Start NAV) / Start NAV
+      const returnPercent = navStart > 0 ? (pnlHkd / navStart) * 100 : 0;
 
       // Win/loss stats (from closed/expired trades only)
       const tradeCount = allTrades.length;  // Total trades in period
       const closedCount = trades.length;     // Closed/expired trades
+      // Count wins based on trade's database P&L (or could use NAV change per trade)
       const winCount = trades.filter(t => {
         const realized = parseFloat(t.realizedPnl as any) || 0;
         return realized > 0;
       }).length;
       const winRate = closedCount > 0 ? winCount / closedCount : 0;
-
-      // Convert to HKD for consistency with Trade Log
-      const USD_TO_HKD = 7.8;
-      const pnlHkd = pnlUsd * USD_TO_HKD;
 
       return {
         returnPercent,
@@ -205,7 +271,7 @@ router.get('/trades', async (req: Request, res: Response) => {
 
     // Transform to trade log format
     const tradeLog = trades.map(t => {
-      const pnl = parseFloat(t.realizedPnl as any) || 0;
+      const dbPnl = parseFloat(t.realizedPnl as any) || 0;
       const createdAt = new Date(t.createdAt!);
 
       // Use ET timezone for date matching (NAV snapshots are in ET)
@@ -218,9 +284,21 @@ router.get('/trades', async (req: Request, res: Response) => {
 
       // Look up NAV for this trade's date
       const openingNav = navByDateType.get(`${dateStr}-opening`) || null;
-      const closingNav = navByDateType.get(`${dateStr}-closing`) || null;
+      // Only show closing NAV for closed/expired trades (not for open trades)
+      const closingNav = t.status !== 'open'
+        ? (navByDateType.get(`${dateStr}-closing`) || null)
+        : null;
       const navChange = openingNav && closingNav ? closingNav - openingNav : null;
       const dailyReturnPct = openingNav && navChange !== null ? (navChange / openingNav) * 100 : null;
+
+      // FIX: For closed/expired trades, use NAV delta as P&L (more accurate than IBKR assumption)
+      // NAV is stored in HKD, so navChange is already in HKD
+      // Convert to USD for consistency with other P&L values
+      const USD_TO_HKD = 7.8;
+      const navBasedPnlUSD = navChange !== null ? navChange / USD_TO_HKD : null;
+
+      // Use NAV-based P&L for closed/expired trades when available, otherwise use database value
+      const pnl = (t.status !== 'open' && navBasedPnlUSD !== null) ? navBasedPnlUSD : dbPnl;
 
       // FIX: Use entry NAV for return % calculation (not current NAV)
       const entryNav = openingNav || currentNav;
@@ -232,15 +310,12 @@ router.get('/trades', async (req: Request, res: Response) => {
         ? Math.max(0, Math.ceil((closedAt.getTime() - createdAt.getTime()) / (1000 * 60 * 60 * 24)))
         : null;
 
-      // Determine trade outcome
+      // Determine trade outcome (based on actual P&L)
       const outcome: 'win' | 'loss' | 'breakeven' | 'open' =
         t.status === 'open' ? 'open'
         : pnl > 0 ? 'win'
         : pnl < 0 ? 'loss'
         : 'breakeven';
-
-      // USD to HKD conversion rate
-      const USD_TO_HKD = 7.8;
 
       // Get contract count and leg details
       const contracts = t.contracts || 1;
@@ -298,7 +373,7 @@ router.get('/trades', async (req: Request, res: Response) => {
         entryTime: formatTimeET(createdAt),
         exitTime,
         // Status, outcome and P&L (in HKD)
-        status: t.status,
+        status: deriveDisplayStatus(t.status, t.exitReason),
         outcome,
         exitReason: t.exitReason,
         realizedPnl: pnl * USD_TO_HKD,

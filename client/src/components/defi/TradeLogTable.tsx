@@ -55,9 +55,11 @@ interface TradeLogTableProps {
   loading?: boolean;
 }
 
-function formatHKD(value: number | null | undefined): string {
+function formatHKD(value: number | null | undefined, useBrackets = false): string {
   if (value === null || value === undefined) return '—';
-  return `$${value.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+  const absValue = Math.abs(value);
+  const formatted = `$${absValue.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
+  return (useBrackets && value < 0) ? `(${formatted})` : formatted;
 }
 
 function formatNotionalM(value: number | null | undefined): string {
@@ -83,10 +85,12 @@ function getStatusColor(status: string): string {
   switch (status) {
     case 'expired':
       return 'text-bloomberg-green';
-    case 'closed':
-      return 'text-bloomberg-blue';
-    case 'open':
+    case 'stopped out':
       return 'text-bloomberg-amber';
+    case 'exercised':
+      return 'text-bloomberg-red';
+    case 'open':
+      return 'text-bloomberg-blue';
     default:
       return 'text-terminal-dim';
   }
@@ -126,6 +130,34 @@ function ValidationIcon({ status }: { status?: string }) {
     default:
       return <Clock className="w-3.5 h-3.5 text-terminal-dim" />;
   }
+}
+
+/**
+ * Get explanation for why there's a P&L discrepancy
+ */
+function getDiscrepancyExplanation(trade: Trade): string {
+  const reason = trade.exitReason?.toLowerCase() || '';
+
+  // Stopped out before expiration
+  if (reason.includes('auto-closed') || reason.includes('layer')) {
+    return 'Position was stopped out before expiration';
+  }
+
+  // ITM scenarios
+  if (trade.spotPriceAtClose && trade.putStrike && trade.spotPriceAtClose < trade.putStrike) {
+    return 'Put was in-the-money at expiration (assignment)';
+  }
+  if (trade.spotPriceAtClose && trade.callStrike && trade.spotPriceAtClose > trade.callStrike) {
+    return 'Call was in-the-money at expiration (assignment)';
+  }
+
+  // Missing data
+  if (reason.includes('no fill data')) {
+    return 'Exit price estimated (IBKR fill data unavailable)';
+  }
+
+  // Default explanation
+  return 'NAV-based P&L includes all portfolio activity for this day';
 }
 
 // Validation Modal Component
@@ -250,27 +282,34 @@ function ValidationModal({ trade, onClose }: { trade: Trade; onClose: () => void
                 <div>
                   <div className="text-terminal-dim text-xs">Expected P&L (HKD)</div>
                   <div className={expectedPnlHKD >= 0 ? 'text-bloomberg-green' : 'text-bloomberg-red'}>
-                    {expectedPnlHKD >= 0 ? '+' : ''}{formatHKD(expectedPnlHKD)}
+                    {formatHKD(expectedPnlHKD, true)}
                   </div>
                 </div>
                 <div>
                   <div className="text-terminal-dim text-xs">Actual P&L (HKD)</div>
                   <div className={trade.realizedPnl >= 0 ? 'text-bloomberg-green' : 'text-bloomberg-red'}>
-                    {trade.realizedPnl >= 0 ? '+' : ''}{formatHKD(trade.realizedPnl)}
+                    {formatHKD(trade.realizedPnl, true)}
                   </div>
                 </div>
               </div>
 
-              <div className="border-t border-terminal pt-2 mt-2 flex items-center gap-2">
-                <span className="text-terminal-dim text-xs">Validation:</span>
-                {pnlMatch ? (
-                  <span className="flex items-center gap-1 text-bloomberg-green">
-                    <Check className="w-4 h-4" /> Match
-                  </span>
-                ) : (
-                  <span className="flex items-center gap-1 text-bloomberg-red">
-                    <AlertCircle className="w-4 h-4" /> Discrepancy (Δ {formatHKD(Math.abs((trade.realizedPnl || 0) - expectedPnlHKD))})
-                  </span>
+              <div className="border-t border-terminal pt-2 mt-2">
+                <div className="flex items-center gap-2">
+                  <span className="text-terminal-dim text-xs">Validation:</span>
+                  {pnlMatch ? (
+                    <span className="flex items-center gap-1 text-bloomberg-green">
+                      <Check className="w-4 h-4" /> Match
+                    </span>
+                  ) : (
+                    <span className="flex items-center gap-1 text-bloomberg-red">
+                      <AlertCircle className="w-4 h-4" /> Discrepancy (Δ {formatHKD(Math.abs((trade.realizedPnl || 0) - expectedPnlHKD))})
+                    </span>
+                  )}
+                </div>
+                {!pnlMatch && (
+                  <div className="text-xs text-terminal-dim italic mt-1">
+                    {getDiscrepancyExplanation(trade)}
+                  </div>
                 )}
               </div>
             </div>
@@ -292,13 +331,17 @@ function ValidationModal({ trade, onClose }: { trade: Trade; onClose: () => void
                 <div>
                   <div className="text-terminal-dim text-xs">NAV Change</div>
                   <div className={(trade.navChange ?? 0) >= 0 ? 'text-bloomberg-green' : 'text-bloomberg-red'}>
-                    {(trade.navChange ?? 0) >= 0 ? '+' : ''}{formatHKD(trade.navChange)}
+                    {formatHKD(trade.navChange, true)}
                   </div>
                 </div>
                 <div>
                   <div className="text-terminal-dim text-xs">Daily Return</div>
                   <div className={(trade.dailyReturnPct ?? 0) >= 0 ? 'text-bloomberg-green' : 'text-bloomberg-red'}>
-                    {(trade.dailyReturnPct ?? 0) >= 0 ? '+' : ''}{trade.dailyReturnPct?.toFixed(2) || '—'}%
+                    {trade.dailyReturnPct != null ? (
+                      trade.dailyReturnPct < 0
+                        ? `(${Math.abs(trade.dailyReturnPct).toFixed(2)}%)`
+                        : `${trade.dailyReturnPct.toFixed(2)}%`
+                    ) : '—'}
                   </div>
                 </div>
               </div>
@@ -396,15 +439,15 @@ export function TradeLogTable({ trades, loading }: TradeLogTableProps) {
                   <td className={`px-3 py-2.5 text-right tabular-nums font-medium whitespace-nowrap ${
                     trade.realizedPnl >= 0 ? 'text-bloomberg-green' : 'text-bloomberg-red'
                   }`}>
-                    {trade.status === 'open' ? '—' : (
-                      <>{trade.realizedPnl >= 0 ? '+' : ''}{formatHKD(trade.realizedPnl)}</>
-                    )}
+                    {trade.status === 'open' ? '—' : formatHKD(trade.realizedPnl, true)}
                   </td>
                   <td className={`px-3 py-2.5 text-right tabular-nums whitespace-nowrap ${
                     trade.returnPercent >= 0 ? 'text-bloomberg-green' : 'text-bloomberg-red'
                   }`}>
                     {trade.status === 'open' ? '—' : (
-                      <>{trade.returnPercent >= 0 ? '+' : ''}{trade.returnPercent.toFixed(2)}%</>
+                      trade.returnPercent < 0
+                        ? `(${Math.abs(trade.returnPercent).toFixed(2)}%)`
+                        : `${trade.returnPercent.toFixed(2)}%`
                     )}
                   </td>
                   <td className="px-3 py-2.5 text-center">

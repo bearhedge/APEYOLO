@@ -74,12 +74,16 @@ export function PeriodSummaryTable({ rows, cluster, loading, onAttest }: PeriodS
           <div className={`text-right tabular-nums font-medium ${
             row.returnPercent >= 0 ? 'text-bloomberg-green' : 'text-bloomberg-red'
           }`}>
-            {row.returnPercent >= 0 ? '+' : ''}{row.returnPercent.toFixed(2)}%
+            {row.returnPercent < 0
+              ? `(${Math.abs(row.returnPercent).toFixed(2)}%)`
+              : `${row.returnPercent.toFixed(2)}%`}
           </div>
           <div className={`text-right tabular-nums ${
             (row.pnlHkd ?? row.pnlUsd) >= 0 ? 'text-bloomberg-green' : 'text-bloomberg-red'
           }`}>
-            {(row.pnlHkd ?? row.pnlUsd) >= 0 ? '+' : ''}${Math.round(row.pnlHkd ?? row.pnlUsd).toLocaleString()}
+            {(row.pnlHkd ?? row.pnlUsd) < 0
+              ? `($${Math.abs(Math.round(row.pnlHkd ?? row.pnlUsd)).toLocaleString()})`
+              : `$${Math.round(row.pnlHkd ?? row.pnlUsd).toLocaleString()}`}
           </div>
           <div className="text-right tabular-nums text-terminal-bright">
             {row.tradeCount}
