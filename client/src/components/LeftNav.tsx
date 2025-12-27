@@ -3,12 +3,12 @@ import { Bot, Briefcase, BarChart2, List, Settings, Zap, Trophy, Coins } from 'l
 
 const navItems = [
   { path: '/agent', label: 'Agent', icon: Bot },         // Primary interface
+  { path: '/dd', label: 'DD', icon: BarChart2 },
   { path: '/defi', label: 'DeFi', icon: Coins },
   { path: '/jobs', label: 'Jobs', icon: List },
   { path: '/engine', label: 'Engine', icon: Zap },
   { path: '/portfolio', label: 'Portfolio', icon: Briefcase },
   { path: '/track-record', label: 'Track', icon: Trophy },
-  { path: '/data', label: 'Data', icon: BarChart2 },
   { path: '/settings', label: 'Settings', icon: Settings },
 ];
 

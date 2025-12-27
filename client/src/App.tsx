@@ -12,7 +12,7 @@ import { Engine } from "@/pages/Engine";
 import { Portfolio } from "@/pages/Portfolio";
 import { TrackRecord } from "@/pages/TrackRecord";
 import { DeFi } from "@/pages/DeFi";
-import { Data } from "@/pages/Data";
+import { DD } from "@/pages/DD";
 import { Jobs } from "@/pages/Jobs";
 import { Settings } from "@/pages/Settings";
 import { WalletProvider, useWalletContext } from "@/components/WalletProvider";
@@ -189,7 +189,7 @@ function App() {
             <Route path="/portfolio" component={Portfolio} />
             <Route path="/track-record" component={TrackRecord} />
             <Route path="/defi" component={DeFi} />
-            <Route path="/data" component={Data} />
+            <Route path="/dd" component={DD} />
             <Route path="/jobs" component={Jobs} />
             <Route path="/settings" component={Settings} />
             {/* Redirects for old routes */}
