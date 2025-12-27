@@ -55,13 +55,14 @@ export function useAgentV2() {
   const abortControllerRef = useRef<AbortController | null>(null);
 
   // Get agent store actions for context panel updates
-  const { handleSSEEvent, resetState } = useAgentStore.getState();
+  const { handleSSEEvent, resetState, addActivityEntry, addBrowserScreenshot, clearActivityLog } = useAgentStore.getState();
 
   const sendMessage = useCallback(async (content: string) => {
     if (!content.trim() || isStreaming) return;
 
     // Reset state for new message
     resetState();
+    clearActivityLog();
     setPlan(null);
 
     // Add user message
@@ -141,6 +142,14 @@ export function useAgentV2() {
                     type: 'status',
                     phase: phaseMap[(event.to as string)] || 'idle',
                   });
+                  // Add to activity log
+                  addActivityEntry({
+                    id: `${Date.now()}-state-${event.to}`,
+                    timestamp: Date.now(),
+                    eventType: 'state_change',
+                    title: `State: ${event.from} → ${event.to}`,
+                    isExpandable: false,
+                  });
                   break;
 
                 case 'plan_ready':
@@ -173,7 +182,14 @@ export function useAgentV2() {
                   break;
 
                 case 'thought':
-                  // Could display in reasoning panel
+                  // Add thought to activity log
+                  addActivityEntry({
+                    id: `${Date.now()}-thought`,
+                    timestamp: Date.now(),
+                    eventType: 'thought',
+                    title: (event.content as string)?.slice(0, 60) + ((event.content as string)?.length > 60 ? '...' : ''),
+                    isExpandable: false,
+                  });
                   break;
 
                 case 'tool_start':
@@ -183,6 +199,14 @@ export function useAgentV2() {
                     status: 'running',
                     content: `Executing ${event.tool}...`,
                   });
+                  // Add to activity log
+                  addActivityEntry({
+                    id: `${Date.now()}-tool-${event.tool}`,
+                    timestamp: Date.now(),
+                    eventType: 'tool_start',
+                    title: `Calling ${event.tool}`,
+                    isExpandable: false,
+                  });
                   break;
 
                 case 'tool_done':
@@ -191,6 +215,16 @@ export function useAgentV2() {
                     tool: event.tool as string,
                     status: 'complete' as const,
                     result: event.result,
+                  });
+                  // Add to activity log
+                  addActivityEntry({
+                    id: `${Date.now()}-tool-${event.tool}-done`,
+                    timestamp: Date.now(),
+                    eventType: 'tool_done',
+                    title: `${event.tool} completed`,
+                    summary: `${event.durationMs || 0}ms`,
+                    details: { result: event.result, durationMs: event.durationMs as number },
+                    isExpandable: true,
                   });
                   // Update context panel with tool results
                   if (event.tool === 'getMarketData' && event.result) {
@@ -211,12 +245,30 @@ export function useAgentV2() {
                   }
                   break;
 
+                case 'browser_screenshot':
+                  // Handle browser screenshot event
+                  if (event.data) {
+                    const screenshotData = event.data as { base64: string; url: string; timestamp: number };
+                    addBrowserScreenshot(screenshotData);
+                  }
+                  break;
+
                 case 'tool_error':
                   handleSSEEvent({
                     type: 'action',
                     tool: event.tool as string,
                     status: 'error',
                     error: event.error as string,
+                  });
+                  // Add to activity log
+                  addActivityEntry({
+                    id: `${Date.now()}-tool-${event.tool}-error`,
+                    timestamp: Date.now(),
+                    eventType: 'tool_error',
+                    title: `${event.tool} failed`,
+                    summary: 'error',
+                    details: { result: { error: event.error } },
+                    isExpandable: true,
                   });
                   break;
 

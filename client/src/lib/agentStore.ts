@@ -62,6 +62,30 @@ export interface WorkspaceData {
   [key: string]: string;
 }
 
+// Activity Log Entry for UI display (matches server type)
+export interface ActivityLogEntry {
+  id: string;
+  timestamp: number;
+  eventType: string;
+  title: string;
+  summary?: string;
+  details?: {
+    args?: Record<string, unknown>;
+    result?: unknown;
+    durationMs?: number;
+    reasoning?: string;
+    screenshotBase64?: string;
+    url?: string;
+  };
+  isExpandable: boolean;
+}
+
+export interface BrowserScreenshot {
+  base64: string;
+  url: string;
+  timestamp: number;
+}
+
 export interface AgentSSEEvent {
   type: 'status' | 'reasoning' | 'chunk' | 'action' | 'validation' | 'done' | 'error' | 'context' | 'plan' | 'step' | 'data';
   phase?: AgentPhase;
@@ -110,6 +134,10 @@ interface AgentState {
   // Workspace data (key-value pairs from tools)
   workspaceData: WorkspaceData;
 
+  // Activity log (Manus-style event visibility)
+  activityLog: ActivityLogEntry[];
+  browserScreenshots: BrowserScreenshot[];
+
   // Actions (tool calls)
   actions: AgentAction[];
 
@@ -136,6 +164,9 @@ interface AgentState {
   clearTaskSteps: () => void;
   setWorkspaceData: (key: string, value: string) => void;
   clearWorkspaceData: () => void;
+  addActivityEntry: (entry: ActivityLogEntry) => void;
+  addBrowserScreenshot: (screenshot: BrowserScreenshot) => void;
+  clearActivityLog: () => void;
   addAction: (tool: string, args?: Record<string, any>) => string;
   updateAction: (id: string, update: Partial<AgentAction>) => void;
   setValidation: (status: AgentValidation['status'], feedback?: string) => void;
@@ -167,6 +198,8 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
   plan: [],
   taskSteps: [],
   workspaceData: {},
+  activityLog: [],
+  browserScreenshots: [],
   actions: [],
   validation: initialValidation,
   lastMessage: '',
@@ -252,6 +285,17 @@ export const useAgentStore = create<AgentState>()((set, get) => ({
   })),
 
   clearWorkspaceData: () => set({ workspaceData: {} }),
+
+  // Activity log
+  addActivityEntry: (entry) => set((state) => ({
+    activityLog: [...state.activityLog, entry].slice(-50), // Keep last 50
+  })),
+
+  addBrowserScreenshot: (screenshot) => set((state) => ({
+    browserScreenshots: [...state.browserScreenshots, screenshot].slice(-10),
+  })),
+
+  clearActivityLog: () => set({ activityLog: [], browserScreenshots: [] }),
 
   addAction: (tool, args) => {
     const id = `action_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
