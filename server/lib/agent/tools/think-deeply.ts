@@ -1,5 +1,8 @@
 // server/lib/agent/tools/think-deeply.ts
-import { chatWithLLM, PROPOSER_MODEL, LLMMessage } from '../../llm-client';
+import { chatWithLLM, LLMMessage } from '../../llm-client';
+
+// Use Qwen 72B for deep thinking (faster than DeepSeek-R1)
+const THINKING_MODEL = process.env.LLM_THINKING_MODEL || 'qwen2.5:72b';
 
 export interface ThinkDeeplyArgs {
   query: string;
@@ -38,7 +41,7 @@ CONCLUSION:
 
   const response = await chatWithLLM({
     messages,
-    model: PROPOSER_MODEL, // DeepSeek-R1:70b
+    model: THINKING_MODEL, // Qwen 72B (faster than DeepSeek)
     stream: false,
   });
 

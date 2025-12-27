@@ -18,10 +18,10 @@ export interface SafetyLimits {
 }
 
 export const DEFAULT_SAFETY_LIMITS: SafetyLimits = {
-  maxToolCalls: 5,
+  maxToolCalls: 10,
   maxLoopIterations: 5,
-  requestTimeoutMs: 30000,
-  toolTimeoutMs: 10000,
+  requestTimeoutMs: 300000, // 5 min - DeepSeek reasoning is slow
+  toolTimeoutMs: 300000,    // 5 min - model loading + inference
 };
 
 // ============ Planner ============

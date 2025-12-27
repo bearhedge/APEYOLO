@@ -119,6 +119,12 @@ export class AgentOrchestrator {
 
             yield { type: 'tool_start', tool: toolCall.function.name };
 
+            // Special handling for think_deeply - show thinking indicator
+            if (toolCall.function.name === 'think_deeply') {
+              const query = (toolCall.function.arguments as { query?: string })?.query || 'complex question';
+              yield { type: 'thought', content: `🧠 Deep thinking: "${query.slice(0, 100)}${query.length > 100 ? '...' : ''}"` };
+            }
+
             try {
               const result = await this.executeTool(toolCall);
               const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
@@ -209,7 +215,12 @@ export class AgentOrchestrator {
 
       case 'think_deeply': {
         const { query, context } = args as { query: string; context?: string };
-        return await thinkDeeply({ query, context });
+        const result = await thinkDeeply({ query, context });
+        // Return just the conclusion for the orchestrator, reasoning is internal
+        return {
+          analysis: result.conclusion,
+          hadDeepThinking: true,
+        };
       }
 
       default:

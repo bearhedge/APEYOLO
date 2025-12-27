@@ -1,12 +1,32 @@
 /**
- * LLM Client for Cloudflare Tunnel to local Ollama
+ * LLM Client - Multi-Provider Support
  *
- * Dual-Brain Trading Agent Architecture:
- * - PROPOSER (DeepSeek-R1:70b): Analyzes market, reasons about trades, proposes actions
- * - CRITIC (Qwen2.5:72b): Validates proposals, checks mandate compliance, assesses risk
+ * Supports:
+ * - Ollama (local via Cloudflare tunnel) - for development
+ * - Vertex AI (Google Cloud) - for production at scale
  *
- * Both models must agree before a trade can be executed (Review & Critique pattern).
+ * Set LLM_PROVIDER=ollama or LLM_PROVIDER=vertex
  */
+
+import { VertexAI, FunctionDeclarationSchemaType } from '@google-cloud/vertexai';
+
+// Provider configuration
+export type LLMProvider = 'ollama' | 'vertex';
+export const LLM_PROVIDER: LLMProvider = (process.env.LLM_PROVIDER as LLMProvider) || 'ollama';
+
+// Vertex AI configuration
+const GCP_PROJECT_ID = process.env.GCP_PROJECT_ID || 'fabled-cocoa-443004-n3';
+const GCP_LOCATION = process.env.GCP_LOCATION || 'asia-east1';
+const VERTEX_MODEL = process.env.VERTEX_MODEL || 'gemini-2.0-flash-exp'; // Fast and cheap
+
+// Initialize Vertex AI client (lazy)
+let vertexAI: VertexAI | null = null;
+function getVertexAI(): VertexAI {
+  if (!vertexAI) {
+    vertexAI = new VertexAI({ project: GCP_PROJECT_ID, location: GCP_LOCATION });
+  }
+  return vertexAI;
+}
 
 export interface LLMMessage {
   role: 'system' | 'user' | 'assistant';
@@ -116,7 +136,7 @@ export const PROCESSOR_MODEL = CRITIC_MODEL;
 const DEFAULT_MODEL = process.env.LLM_MODEL || PROPOSER_MODEL;
 
 // Timeout for LLM requests (inference can be slow on local hardware)
-const LLM_TIMEOUT_MS = parseInt(process.env.LLM_TIMEOUT_MS || '120000', 10); // 2 min for 70B models
+const LLM_TIMEOUT_MS = parseInt(process.env.LLM_TIMEOUT_MS || '300000', 10); // 5 min for 70B models (DeepSeek reasoning is slow)
 
 // Get tunnel URL from environment
 function getTunnelUrl(): string | null {
@@ -191,8 +211,19 @@ export async function checkLLMStatus(): Promise<LLMStatusResponse> {
 
 /**
  * Send a chat request to the LLM (non-streaming)
+ * Automatically uses the configured provider.
  */
 export async function chatWithLLM(request: LLMChatRequest): Promise<LLMChatResponse> {
+  if (LLM_PROVIDER === 'vertex') {
+    return chatWithLLMVertex(request);
+  }
+  return chatWithLLMOllama(request);
+}
+
+/**
+ * Ollama implementation
+ */
+async function chatWithLLMOllama(request: LLMChatRequest): Promise<LLMChatResponse> {
   const tunnelUrl = getTunnelUrl();
 
   if (!tunnelUrl) {
@@ -231,6 +262,45 @@ export async function chatWithLLM(request: LLMChatRequest): Promise<LLMChatRespo
       throw new Error('LLM request timeout');
     }
     throw error;
+  }
+}
+
+/**
+ * Vertex AI (Gemini) implementation
+ */
+async function chatWithLLMVertex(request: LLMChatRequest): Promise<LLMChatResponse> {
+  const vertex = getVertexAI();
+  const model = vertex.getGenerativeModel({
+    model: VERTEX_MODEL,
+  });
+
+  const systemInstruction = request.messages.find(m => m.role === 'system')?.content;
+  const contents = request.messages
+    .filter(m => m.role !== 'system')
+    .map(m => ({
+      role: m.role === 'assistant' ? 'model' as const : 'user' as const,
+      parts: [{ text: m.content }],
+    }));
+
+  try {
+    const result = await model.generateContent({
+      contents,
+      systemInstruction: systemInstruction || undefined,
+    });
+
+    const response = result.response;
+    const content = response.candidates?.[0]?.content?.parts
+      ?.filter(p => 'text' in p)
+      .map(p => (p as any).text)
+      .join('') || '';
+
+    return {
+      message: { role: 'assistant', content },
+      done: true,
+    };
+  } catch (error: any) {
+    console.error('[Vertex AI] Error:', error);
+    throw new Error(`Vertex AI error: ${error.message}`);
   }
 }
 
@@ -382,14 +452,24 @@ export function streamWithCritic(messages: LLMMessage[]) {
 }
 
 // ============================================
-// Tool Calling Functions (Ollama Native)
+// Tool Calling Functions (Multi-Provider)
 // ============================================
 
 /**
  * Chat with LLM using native tool calling.
- * The model decides what tools to call based on the query.
+ * Automatically uses the configured provider (Ollama or Vertex AI).
  */
 export async function chatWithTools(request: ChatWithToolsRequest): Promise<ChatWithToolsResponse> {
+  if (LLM_PROVIDER === 'vertex') {
+    return chatWithToolsVertex(request);
+  }
+  return chatWithToolsOllama(request);
+}
+
+/**
+ * Ollama implementation of chatWithTools
+ */
+async function chatWithToolsOllama(request: ChatWithToolsRequest): Promise<ChatWithToolsResponse> {
   const tunnelUrl = getTunnelUrl();
 
   if (!tunnelUrl) {
@@ -438,6 +518,114 @@ export async function chatWithTools(request: ChatWithToolsRequest): Promise<Chat
       throw new Error('LLM request timeout');
     }
     throw error;
+  }
+}
+
+/**
+ * Vertex AI (Gemini) implementation of chatWithTools
+ */
+async function chatWithToolsVertex(request: ChatWithToolsRequest): Promise<ChatWithToolsResponse> {
+  const vertex = getVertexAI();
+  const model = vertex.getGenerativeModel({
+    model: VERTEX_MODEL,
+  });
+
+  // Convert messages to Gemini format
+  const systemInstruction = request.messages.find(m => m.role === 'system')?.content;
+  const contents = request.messages
+    .filter(m => m.role !== 'system')
+    .map(m => {
+      if (m.role === 'tool') {
+        const toolMsg = m as LLMToolMessage;
+        return {
+          role: 'function' as const,
+          parts: [{
+            functionResponse: {
+              name: toolMsg.tool_name,
+              response: { result: toolMsg.content },
+            },
+          }],
+        };
+      }
+      if (m.role === 'assistant' && (m as LLMAssistantMessage).tool_calls) {
+        const assistantMsg = m as LLMAssistantMessage;
+        return {
+          role: 'model' as const,
+          parts: assistantMsg.tool_calls!.map(tc => ({
+            functionCall: {
+              name: tc.function.name,
+              args: tc.function.arguments,
+            },
+          })),
+        };
+      }
+      return {
+        role: m.role === 'assistant' ? 'model' as const : 'user' as const,
+        parts: [{ text: m.content }],
+      };
+    });
+
+  // Convert tools to Gemini format
+  const tools = request.tools ? [{
+    functionDeclarations: request.tools.map(t => ({
+      name: t.function.name,
+      description: t.function.description,
+      parameters: {
+        type: FunctionDeclarationSchemaType.OBJECT,
+        properties: Object.fromEntries(
+          Object.entries(t.function.parameters.properties).map(([key, val]) => [
+            key,
+            { type: FunctionDeclarationSchemaType.STRING, description: val.description },
+          ])
+        ),
+        required: t.function.parameters.required || [],
+      },
+    })),
+  }] : undefined;
+
+  try {
+    const result = await model.generateContent({
+      contents,
+      systemInstruction: systemInstruction || undefined,
+      tools,
+    });
+
+    const response = result.response;
+    const candidate = response.candidates?.[0];
+    const parts = candidate?.content?.parts || [];
+
+    // Check for function calls
+    const functionCalls = parts.filter(p => 'functionCall' in p);
+    if (functionCalls.length > 0) {
+      return {
+        message: {
+          role: 'assistant',
+          content: '',
+          tool_calls: functionCalls.map(p => ({
+            function: {
+              name: (p as any).functionCall.name,
+              arguments: (p as any).functionCall.args || {},
+            },
+          })),
+        },
+        done: true,
+      };
+    }
+
+    // Text response
+    const textParts = parts.filter(p => 'text' in p);
+    const content = textParts.map(p => (p as any).text).join('');
+
+    return {
+      message: {
+        role: 'assistant',
+        content,
+      },
+      done: true,
+    };
+  } catch (error: any) {
+    console.error('[Vertex AI] Error:', error);
+    throw new Error(`Vertex AI error: ${error.message}`);
   }
 }
 
