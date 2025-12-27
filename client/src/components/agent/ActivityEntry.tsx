@@ -8,9 +8,9 @@
  * - error: Error message
  */
 
-import { Loader2, CheckCircle, XCircle, Brain, Zap, AlertTriangle } from 'lucide-react';
+import { Loader2, CheckCircle, XCircle, Brain, Zap, AlertTriangle, User, Bot } from 'lucide-react';
 
-export type ActivityType = 'action' | 'result' | 'thinking' | 'error' | 'info';
+export type ActivityType = 'action' | 'result' | 'thinking' | 'error' | 'info' | 'user-message' | 'assistant-message';
 
 export interface ActivityEntryData {
   id: string;
@@ -102,6 +102,41 @@ export function ActivityEntry({ entry }: ActivityEntryProps) {
             <div className="flex items-center gap-2">
               <AlertTriangle className="w-4 h-4 text-red-400" />
               <span className="text-sm text-red-400">{content}</span>
+            </div>
+          </div>
+        </div>
+      );
+
+    case 'user-message':
+      return (
+        <div className="py-2 flex justify-end">
+          <div className="max-w-[80%] bg-blue-600/20 rounded-lg p-3 border border-blue-500/30">
+            <div className="flex items-center gap-2 mb-1">
+              <User className="w-3.5 h-3.5 text-blue-400" />
+              <span className="text-xs font-medium text-blue-400">You</span>
+              <span className="text-xs text-silver/60">{timeStr}</span>
+            </div>
+            <div className="text-sm text-white whitespace-pre-wrap">
+              {content}
+            </div>
+          </div>
+        </div>
+      );
+
+    case 'assistant-message':
+      return (
+        <div className="py-2">
+          <div className="max-w-[80%] bg-white/5 rounded-lg p-3 border border-white/10">
+            <div className="flex items-center gap-2 mb-1">
+              <Bot className="w-3.5 h-3.5 text-green-400" />
+              <span className="text-xs font-medium text-green-400">Agent</span>
+              <span className="text-xs text-silver/60">{timeStr}</span>
+              {status === 'running' && (
+                <Loader2 className="w-3 h-3 text-silver animate-spin" />
+              )}
+            </div>
+            <div className="text-sm text-white whitespace-pre-wrap">
+              {content || '...'}
             </div>
           </div>
         </div>

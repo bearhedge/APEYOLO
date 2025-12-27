@@ -6,15 +6,18 @@
  * Supports trade negotiation with interactive strike adjustment.
  */
 
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import toast from 'react-hot-toast';
 import { LeftNav } from '@/components/LeftNav';
 import { ActivityFeed } from '@/components/agent/ActivityFeed';
+import type { ActivityEntryData } from '@/components/agent/ActivityEntry';
 import { QuickActionsBar, type OperationType } from '@/components/agent/QuickActionsBar';
 import { TradeProposalCard, type ModificationImpact, type NegotiationMessage } from '@/components/agent/TradeProposalCard';
 import { AgentContextPanel } from '@/components/AgentContextPanel';
 import { useAgentOperator } from '@/hooks/useAgentOperator';
+import { useAgentV2 } from '@/hooks/useAgentV2';
 import { useBrokerStatus } from '@/hooks/useBrokerStatus';
+import { ChatInput } from '@/components/agent/ChatInput';
 import { Circle, RefreshCw, AlertTriangle, Trash2 } from 'lucide-react';
 import type { StrategyPreference } from '@shared/types/engine';
 
@@ -40,6 +43,13 @@ export function Agent() {
     enableStatusPolling: true,
   });
 
+  // V2 Agent hook for chat functionality
+  const {
+    messages: v2Messages,
+    isStreaming,
+    sendMessage,
+  } = useAgentV2();
+
   // IBKR broker status
   const {
     connected: ibkrConnected,
@@ -56,6 +66,23 @@ export function Agent() {
 
   // Strategy preference state (PUT-only, CALL-only, or Strangle)
   const [strategyPreference, setStrategyPreference] = useState<StrategyPreference>('strangle');
+
+  // Merge operator activities with V2 chat messages into unified feed
+  const unifiedActivities = useMemo((): ActivityEntryData[] => {
+    // Convert V2 messages to activity format
+    const chatActivities: ActivityEntryData[] = v2Messages.map(msg => ({
+      id: msg.id,
+      type: msg.role === 'user' ? 'user-message' : 'assistant-message',
+      timestamp: msg.timestamp,
+      content: msg.content,
+      status: msg.isStreaming ? 'running' : undefined,
+    }));
+
+    // Merge and sort by timestamp
+    const merged = [...activities, ...chatActivities];
+    merged.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+    return merged;
+  }, [activities, v2Messages]);
 
   // Handle strike modification - calls /api/agent/negotiate
   const handleModifyStrike = useCallback(async (legIndex: number, newStrike: number): Promise<ModificationImpact | null> => {
@@ -230,11 +257,11 @@ export function Agent() {
 
         {/* Main Content Area - scrollable */}
         <div className="flex-1 flex flex-col overflow-y-auto">
-          {/* Activity Feed */}
+          {/* Unified Activity Feed (operator activities + chat messages) */}
           <ActivityFeed
-            activities={activities}
-            isProcessing={isProcessing}
-            emptyMessage="Ready to operate. Use the buttons below to analyze markets or find trades."
+            activities={unifiedActivities}
+            isProcessing={isProcessing || isStreaming}
+            emptyMessage="Ready to operate. Use the buttons below or chat to interact with the agent."
           />
 
           {/* Trade Proposal Card (when active) */}
@@ -263,6 +290,14 @@ export function Agent() {
           onStop={stopOperation}
           strategy={strategyPreference}
           onStrategyChange={setStrategyPreference}
+        />
+
+        {/* Chat Input for V2 agent */}
+        <ChatInput
+          onSend={sendMessage}
+          isStreaming={isStreaming}
+          disabled={!isOnline}
+          placeholder="Ask the agent anything..."
         />
         </div>
 
