@@ -155,7 +155,7 @@ router.get('/performance', async (_req: Request, res: Response) => {
         ));
 
       // Filter to closed/expired trades (for win rate calculation)
-      const trades = allTrades.filter(t => t.status === 'closed' || t.status === 'expired');
+      const closedTrades = allTrades.filter(t => t.status === 'closed' || t.status === 'expired');
 
       // Get ending NAV for the period (most recent closing NAV)
       const endStr = endDate.toISOString().split('T')[0];
@@ -180,13 +180,45 @@ router.get('/performance', async (_req: Request, res: Response) => {
       // Calculate return % = (End NAV - Start NAV) / Start NAV
       const returnPercent = navStart > 0 ? (pnlHkd / navStart) * 100 : 0;
 
-      // Win/loss stats (from closed/expired trades only)
+      // Get all NAV snapshots for win rate calculation (same logic as trade log)
+      const allNavSnapshots = await db!
+        .select()
+        .from(navSnapshots)
+        .orderBy(desc(navSnapshots.date));
+
+      // Create lookup maps for NAV by date
+      const navByDateType = new Map<string, number>();
+      for (const nav of allNavSnapshots) {
+        const key = `${nav.date}-${nav.snapshotType}`;
+        navByDateType.set(key, parseFloat(nav.nav as any) || 0);
+      }
+
+      // Win/loss stats using NAV-based P&L (same calculation as trade log)
       const tradeCount = allTrades.length;  // Total trades in period
-      const closedCount = trades.length;     // Closed/expired trades
-      // Count wins based on trade's database P&L (or could use NAV change per trade)
-      const winCount = trades.filter(t => {
-        const realized = parseFloat(t.realizedPnl as any) || 0;
-        return realized > 0;
+      const closedCount = closedTrades.length;  // Closed/expired trades
+
+      // Count wins using NAV-based P&L (consistent with trade log display)
+      const winCount = closedTrades.filter(t => {
+        const createdAt = new Date(t.createdAt!);
+        // Use ET timezone for date matching (same as trade log)
+        const dateStr = new Intl.DateTimeFormat('en-CA', {
+          timeZone: 'America/New_York',
+          year: 'numeric',
+          month: '2-digit',
+          day: '2-digit'
+        }).format(createdAt);
+
+        // Look up NAV for this trade's date
+        const openingNav = navByDateType.get(`${dateStr}-opening`) || null;
+        const closingNav = navByDateType.get(`${dateStr}-closing`) || null;
+        const navChange = openingNav && closingNav ? closingNav - openingNav : null;
+
+        // Use NAV-based P&L if available, otherwise use database P&L
+        const dbPnl = parseFloat(t.realizedPnl as any) || 0;
+        const navBasedPnlUSD = navChange !== null ? navChange / USD_TO_HKD : null;
+        const pnl = navBasedPnlUSD !== null ? navBasedPnlUSD : dbPnl;
+
+        return pnl > 0;
       }).length;
       const winRate = closedCount > 0 ? winCount / closedCount : 0;
 

@@ -2,26 +2,22 @@
 /**
  * Position Monitor Job
  *
- * Real-time position monitoring using the 3-Layer Defense System.
- * Runs every 5 minutes during market hours to check exit conditions.
+ * Real-time position monitoring with AUTO-CLOSE capability.
+ * Runs every 5 minutes during market hours.
  *
- * Layer 1: Underlying price breaches strike for 15+ minutes
- * Layer 2: Premium reaches 6x entry (stop loss)
- * Layer 3: EOD sweep at 3:55 PM ET
+ * Layer 1: Underlying price breaches strike ±$2 for 15+ minutes → AUTO-CLOSE
+ * Layer 2: DISABLED (IBKR bracket stop handles 3x premium automatically)
+ * Layer 3: EOD sweep at 3:55/12:55 PM (handled by 0dtePositionManager)
  *
- * Aggregation: Instead of spamming the jobs page, we aggregate
- * monitoring checks into a single daily session and only create
- * detailed log entries when:
- * - Exit condition triggered
- * - Error occurred
- * - Position closed
+ * This monitor catches Layer 1 triggers that IBKR stop orders can't detect
+ * (underlying price movement vs option premium movement).
  */
 
 import { db } from '../../db';
 import { paperTrades, jobs, jobRuns, auditLogs } from '@shared/schema';
 import { eq, and, sql, gte } from 'drizzle-orm';
 import { getBroker } from '../../broker';
-import { ensureIbkrReady } from '../../broker/ibkr';
+import { ensureIbkrReady, placeCloseOrderByConid } from '../../broker/ibkr';
 import { registerJobHandler, type JobResult } from '../jobExecutor';
 import { getETDateString, getETTimeString, isMarketOpen, isEarlyCloseDay, getMarketStatus } from '../marketCalendar';
 import { monitorPosition, defineExitRules, type ExitRules, type MonitorResult } from '../../engine/step5';
@@ -135,6 +131,16 @@ function parsePremium(value: any): number {
   if (typeof value === 'number') return value;
   if (typeof value === 'string') return parseFloat(value) || 0;
   return 0;
+}
+
+/**
+ * Parse strike price from IBKR option symbol
+ * Input: "ARM   251212P00135000" → 135
+ */
+function parseStrikeFromSymbol(symbol: string): number | null {
+  const match = symbol.match(/([PC])(\d{8})$/);
+  if (!match) return null;
+  return parseInt(match[2]) / 1000;
 }
 
 /**
@@ -338,23 +344,75 @@ export async function executePositionMonitor(): Promise<JobResult> {
         };
         results.positions.push(monitored);
 
-        // Check if exit triggered
+        // Check if exit triggered - AUTO-CLOSE position
         if (monitorResult.shouldExit) {
           console.log(`[PositionMonitor] EXIT TRIGGERED: ${underlying} - ${monitorResult.exitReason}`);
 
           session.alertsTriggered++;
+          let actionTaken = 'FAILED';
+          let closeSuccess = false;
+
+          // Find matching IBKR positions and close them
+          for (const pos of ibkrPositions) {
+            if (!pos.symbol?.includes(underlying)) continue;
+
+            // Check if position matches our trade's strikes
+            const posSymbol = pos.symbol || '';
+            const posStrike = parseStrikeFromSymbol(posSymbol);
+            if (!posStrike) continue;
+
+            const matchesLeg1 = putStrike && Math.abs(posStrike - putStrike) < 0.01;
+            const matchesLeg2 = callStrike && Math.abs(posStrike - callStrike) < 0.01;
+            if (!matchesLeg1 && !matchesLeg2) continue;
+
+            // Determine close side (opposite of position side)
+            const closeSide = pos.side === 'SELL' ? 'BUY' : 'SELL';
+            const posConid = pos.id || trade.leg1Conid || '';
+            const qty = Math.abs(pos.qty || contracts);
+
+            console.log(`[PositionMonitor] Submitting close order: ${posSymbol} ${closeSide} ${qty}`);
+
+            try {
+              const orderResult = await placeCloseOrderByConid(parseInt(posConid), qty, closeSide);
+              if (orderResult.success) {
+                closeSuccess = true;
+                actionTaken = `AUTO-CLOSED via ${closeSide} order (ID: ${orderResult.orderId})`;
+                console.log(`[PositionMonitor] Close order submitted: ${orderResult.orderId}`);
+              } else {
+                console.error(`[PositionMonitor] Close order failed: ${orderResult.error}`);
+                actionTaken = `CLOSE FAILED: ${orderResult.error}`;
+              }
+            } catch (closeErr: any) {
+              console.error(`[PositionMonitor] Close order error:`, closeErr);
+              actionTaken = `CLOSE ERROR: ${closeErr?.message}`;
+            }
+          }
+
+          // Update paper_trades if we closed successfully
+          if (closeSuccess && db) {
+            try {
+              await db.update(paperTrades)
+                .set({
+                  exitReason: `Auto-closed by position monitor: ${monitorResult.exitReason}`,
+                  status: 'closed'
+                })
+                .where(eq(paperTrades.id, trade.id));
+            } catch (updateErr) {
+              console.error(`[PositionMonitor] Failed to update trade status:`, updateErr);
+            }
+          }
 
           const alert = {
             tradeId: trade.id,
             symbol: underlying,
             exitReason: monitorResult.exitReason || 'Unknown',
             exitLayer: monitorResult.exitLayer || 1,
-            actionTaken: 'ALERT - Manual close required',
+            actionTaken,
           };
           results.exitAlerts.push(alert);
 
           // Log significant event
-          await logAudit('POSITION_MONITOR_EXIT_ALERT', JSON.stringify({
+          await logAudit('POSITION_MONITOR_AUTO_CLOSE', JSON.stringify({
             tradeId: trade.id,
             symbol: underlying,
             exitReason: monitorResult.exitReason,
@@ -362,6 +420,8 @@ export async function executePositionMonitor(): Promise<JobResult> {
             underlyingPrice,
             currentPremium,
             entryPremium,
+            actionTaken,
+            success: closeSuccess,
           }));
         }
 
@@ -449,6 +509,8 @@ export async function ensurePositionMonitorJob(): Promise<void> {
   try {
     const [existingJob] = await db.select().from(jobs).where(eq(jobs.id, 'position-monitor')).limit(1);
 
+    const desiredSchedule = '*/5 9-16 * * 1-5'; // Every 5 min, 9am-4pm ET, weekdays
+
     if (!existingJob) {
       console.log('[PositionMonitor] Creating job in database...');
       await db.insert(jobs).values({
@@ -456,16 +518,27 @@ export async function ensurePositionMonitorJob(): Promise<void> {
         name: 'Position Monitor',
         description: 'Real-time position monitoring with 3-Layer Defense. Runs every 5 minutes during market hours.',
         type: 'position-monitor',
-        schedule: '*/5 9-16 * * 1-5', // Every 5 min, 9am-4pm ET, weekdays
+        schedule: desiredSchedule,
         timezone: 'America/New_York',
         enabled: true,
         config: {
           intervalMinutes: CHECK_INTERVAL_MINUTES,
           layer1SustainMs: LAYER1_SUSTAIN_MS,
-          aggregateLogs: true, // Only log significant events
+          aggregateLogs: true,
+          skipMarketCheck: true,  // Allow job to run after market close for status updates
         },
       });
       console.log('[PositionMonitor] Job created successfully');
+    } else {
+      // Update config to ensure skipMarketCheck is enabled
+      const currentConfig = existingJob.config as Record<string, any> || {};
+      if (!currentConfig.skipMarketCheck) {
+        console.log('[PositionMonitor] Updating job config with skipMarketCheck: true');
+        await db.update(jobs).set({
+          config: { ...currentConfig, skipMarketCheck: true }
+        }).where(eq(jobs.id, 'position-monitor'));
+        console.log('[PositionMonitor] Job config updated successfully');
+      }
     }
   } catch (err) {
     console.warn('[PositionMonitor] Could not ensure job exists:', err);

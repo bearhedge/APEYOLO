@@ -21,7 +21,8 @@ import {
 import {
   getOptionChainWithStrikes,
   getIbkrCookieString,
-  resolveSymbolConid
+  resolveSymbolConid,
+  ibkrEvents
 } from './ibkr';
 
 // Strike data structure matching engine expectations
@@ -38,6 +39,14 @@ export interface CachedStrike {
   iv?: number;
   openInterest?: number;
   lastUpdate: Date;
+  // OHLC tracking for 5-min intervals
+  intervalOpen?: number;
+  intervalHigh?: number;
+  intervalLow?: number;
+  intervalClose?: number;
+  intervalStart?: Date;
+  tickCount?: number;  // Track how many ticks received in this interval
+  optionType?: 'PUT' | 'CALL';  // Track option type for data capture
 }
 
 // Cached option chain structure
@@ -63,6 +72,13 @@ interface SymbolCache {
 
 // Stale threshold in milliseconds (5 seconds)
 const STALE_THRESHOLD_MS = 5000;
+
+// Helper: Get the start of a 5-minute interval
+function getIntervalStart(date: Date, intervalMinutes: number = 5): Date {
+  const ms = date.getTime();
+  const intervalMs = intervalMinutes * 60 * 1000;
+  return new Date(Math.floor(ms / intervalMs) * intervalMs);
+}
 
 // Broadcast function (injected from routes.ts)
 function broadcastOptionChainUpdate(message: object): void {
@@ -263,6 +279,27 @@ export class OptionChainStreamer {
   }
 
   /**
+   * Reset interval tracking for all options (call after data capture)
+   */
+  resetIntervalTracking(symbol: string): void {
+    const symbolCache = this.cache.get(symbol);
+    if (!symbolCache) return;
+
+    const resetStrike = (strike: CachedStrike) => {
+      strike.intervalOpen = undefined;
+      strike.intervalHigh = undefined;
+      strike.intervalLow = undefined;
+      strike.intervalClose = undefined;
+      strike.intervalStart = undefined;
+      strike.tickCount = 0;
+    };
+
+    symbolCache.chain.puts.forEach(resetStrike);
+    symbolCache.chain.calls.forEach(resetStrike);
+    console.log(`[OptionChainStreamer] Reset interval tracking for ${symbol}`);
+  }
+
+  /**
    * Schedule auto-start at market open (9:30 AM ET)
    */
   scheduleMarketOpenStart(symbol: string = 'SPY'): void {
@@ -365,6 +402,27 @@ export class OptionChainStreamer {
           if (update.iv != null) strike.iv = update.iv;
           if (update.openInterest != null) strike.openInterest = update.openInterest;
           strike.lastUpdate = update.timestamp;
+          strike.optionType = strikeInfo.type.toUpperCase() as 'PUT' | 'CALL';
+
+          // OHLC tracking for 5-minute intervals
+          if (update.last != null) {
+            const intervalStart = getIntervalStart(update.timestamp, 5);
+
+            // New interval? Reset OHLC
+            if (!strike.intervalStart || strike.intervalStart.getTime() < intervalStart.getTime()) {
+              strike.intervalOpen = update.last;
+              strike.intervalHigh = update.last;
+              strike.intervalLow = update.last;
+              strike.intervalStart = intervalStart;
+              strike.tickCount = 0;
+            }
+
+            // Update running OHLC
+            strike.intervalHigh = Math.max(strike.intervalHigh ?? update.last, update.last);
+            strike.intervalLow = Math.min(strike.intervalLow ?? update.last, update.last);
+            strike.intervalClose = update.last;
+            strike.tickCount = (strike.tickCount ?? 0) + 1;
+          }
 
           // Update chain's lastUpdate
           symbolCache.chain.lastUpdate = update.timestamp;
@@ -586,13 +644,74 @@ export function getOptionChainStreamer(): OptionChainStreamer {
 }
 
 /**
+ * Helper: Start streaming with retry logic
+ */
+async function startStreamingWithRetry(
+  streamer: OptionChainStreamer,
+  symbol: string,
+  maxRetries: number = 10
+): Promise<void> {
+  for (let i = 0; i < maxRetries; i++) {
+    try {
+      await streamer.startStreaming(symbol);
+      console.log(`[OptionChainStreamer] Streaming started successfully for ${symbol}`);
+      return;
+    } catch (err: any) {
+      console.log(`[OptionChainStreamer] Attempt ${i + 1}/${maxRetries} failed: ${err.message}`);
+      if (i < maxRetries - 1) {
+        console.log(`[OptionChainStreamer] Retrying in 30s...`);
+        await new Promise(resolve => setTimeout(resolve, 30000));
+      }
+    }
+  }
+  console.error(`[OptionChainStreamer] Failed to start streaming after ${maxRetries} attempts`);
+}
+
+/**
+ * Check if currently within US market trading hours
+ */
+function isMarketOpen(): boolean {
+  const now = new Date();
+  const ny = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const dayOfWeek = ny.getDay();
+  const hours = ny.getHours();
+  const minutes = ny.getMinutes();
+  const currentMinutes = hours * 60 + minutes;
+
+  // Mon-Fri, 9:30 AM - 4:00 PM ET
+  const marketOpen = 9 * 60 + 30;
+  const marketClose = 16 * 60;
+
+  return (
+    dayOfWeek >= 1 &&
+    dayOfWeek <= 5 &&
+    currentMinutes >= marketOpen &&
+    currentMinutes < marketClose
+  );
+}
+
+/**
  * Initialize and optionally auto-schedule streaming
+ * Now also listens for IBKR authentication events for auto-start
  */
 export function initOptionChainStreamer(options?: { autoSchedule?: boolean; symbol?: string }): OptionChainStreamer {
   const streamer = getOptionChainStreamer();
+  const symbol = options?.symbol || 'SPY';
+
+  // Listen for IBKR authentication events
+  ibkrEvents.on('authenticated', async () => {
+    console.log('[OptionChainStreamer] Received IBKR authenticated event');
+    if (isMarketOpen()) {
+      console.log('[OptionChainStreamer] Market is open, starting streaming...');
+      await startStreamingWithRetry(streamer, symbol);
+    } else {
+      console.log('[OptionChainStreamer] Market is closed, will start at next market open');
+      streamer.scheduleMarketOpenStart(symbol);
+    }
+  });
 
   if (options?.autoSchedule) {
-    streamer.scheduleMarketOpenStart(options.symbol || 'SPY');
+    streamer.scheduleMarketOpenStart(symbol);
   }
 
   return streamer;

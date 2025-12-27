@@ -14,7 +14,11 @@ import { wrapper } from 'axios-cookiejar-support';
 import { CookieJar } from 'tough-cookie';
 import { randomUUID } from "crypto";
 import { webcrypto as nodeWebcrypto } from 'node:crypto';
+import { EventEmitter } from 'events';
 import { storage } from "../storage";
+
+// Event emitter for IBKR authentication events
+export const ibkrEvents = new EventEmitter();
 import type { AxiosResponse } from 'axios';
 
 /**
@@ -787,6 +791,10 @@ class IbkrClient {
       throw new Error(`IBKR init failed: ${res.status}`);
     }
     this.sessionReady = true;
+
+    // Emit authenticated event for streaming auto-start
+    ibkrEvents.emit('authenticated');
+    console.log('[IBKR] Emitted authenticated event');
   }
 
   private async keepaliveSession(): Promise<void> {

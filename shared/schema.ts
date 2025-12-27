@@ -469,6 +469,82 @@ export type InsertOptionChainSnapshot = z.infer<typeof insertOptionChainSnapshot
 
 // ==================== END JOBS SYSTEM ====================
 
+// ==================== OPTION BARS (5-min OHLC for backtesting) ====================
+// Stores 5-minute option OHLC bars for historical backtesting
+// OHLC comes from WebSocket when available, otherwise snapshot_only from HTTP
+
+export const optionBars = pgTable('option_bars', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  symbol: text('symbol').notNull(),
+  strike: numeric('strike', { precision: 10, scale: 2 }).notNull(),
+  expiry: text('expiry').notNull(), // YYYYMMDD format
+  optionType: text('option_type').notNull(), // 'PUT' | 'CALL'
+  intervalStart: timestamp('interval_start').notNull(),
+
+  // OHLC (from WebSocket tick tracking)
+  open: numeric('open', { precision: 10, scale: 4 }),
+  high: numeric('high', { precision: 10, scale: 4 }),
+  low: numeric('low', { precision: 10, scale: 4 }),
+  close: numeric('close', { precision: 10, scale: 4 }),
+
+  // Snapshot data (always captured)
+  bidClose: numeric('bid_close', { precision: 10, scale: 4 }),
+  askClose: numeric('ask_close', { precision: 10, scale: 4 }),
+
+  // Greeks at close
+  delta: numeric('delta', { precision: 8, scale: 6 }),
+  gamma: numeric('gamma', { precision: 8, scale: 6 }),
+  theta: numeric('theta', { precision: 8, scale: 6 }),
+  vega: numeric('vega', { precision: 8, scale: 6 }),
+  iv: numeric('iv', { precision: 8, scale: 6 }),
+  openInterest: integer('open_interest'),
+
+  // Data quality tracking
+  dataQuality: text('data_quality').notNull(), // 'complete', 'partial', 'snapshot_only'
+  tickCount: integer('tick_count').default(0),
+
+  // Underlying context
+  underlyingPrice: numeric('underlying_price', { precision: 10, scale: 4 }),
+  vix: numeric('vix', { precision: 8, scale: 4 }),
+
+  createdAt: timestamp('created_at').defaultNow(),
+}, (table) => ([
+  // Prevent duplicates - one bar per option per interval
+  uniqueIndex('idx_option_bars_unique').on(
+    table.symbol, table.strike, table.expiry, table.optionType, table.intervalStart
+  ),
+  // Query performance for time-series lookups
+  index('idx_option_bars_symbol_time').on(table.symbol, table.intervalStart),
+]));
+
+export const insertOptionBarSchema = createInsertSchema(optionBars).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type OptionBar = typeof optionBars.$inferSelect;
+export type InsertOptionBar = z.infer<typeof insertOptionBarSchema>;
+
+// Continuous job status tracking (for 5-minute capture job observability)
+export const continuousJobStatus = pgTable('continuous_job_status', {
+  id: text('id').primaryKey(), // 'option-data-capture'
+  isRunning: boolean('is_running').default(false),
+  lastCaptureAt: timestamp('last_capture_at'),
+  lastCaptureResult: text('last_capture_result'), // 'success', 'error'
+  lastError: text('last_error'),
+  captureCountToday: integer('capture_count_today').default(0),
+  completeCount: integer('complete_count').default(0),
+  partialCount: integer('partial_count').default(0),
+  snapshotOnlyCount: integer('snapshot_only_count').default(0),
+  wsConnected: boolean('ws_connected').default(false),
+  marketDay: text('market_day'), // YYYY-MM-DD
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+export type ContinuousJobStatus = typeof continuousJobStatus.$inferSelect;
+
+// ==================== END OPTION BARS ====================
+
 // ==================== ECONOMIC EVENTS ====================
 // Macroeconomic calendar from FRED API
 

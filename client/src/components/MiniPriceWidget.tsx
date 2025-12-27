@@ -101,9 +101,9 @@ export function MiniPriceWidget({ symbol, showLink = true, testId }: MiniPriceWi
         </div>
       )}
 
-      {/* Link to Data page */}
+      {/* Link to DD page */}
       {showLink && (
-        <Link href="/data">
+        <Link href="/dd">
           <a className="flex items-center gap-1 text-xs text-silver hover:text-white transition ml-auto">
             <span>Full chart</span>
             <ExternalLink className="w-3 h-3" />

@@ -234,16 +234,20 @@ async function chatWithLLMOllama(request: LLMChatRequest): Promise<LLMChatRespon
   const timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
 
   try {
+    // Only enable think mode for DeepSeek models
+    const modelName = request.model || DEFAULT_MODEL;
+    const isDeepSeek = modelName.toLowerCase().includes('deepseek');
+
     const response = await fetch(`${tunnelUrl}/api/chat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: request.model || DEFAULT_MODEL,
+        model: modelName,
         messages: request.messages,
         stream: false,
-        think: true, // Enable DeepSeek-R1 reasoning output
+        ...(isDeepSeek && { think: true }), // Only for DeepSeek-R1
       }),
       signal: controller.signal,
     });
@@ -321,16 +325,20 @@ export async function* streamChatWithLLM(
   const timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
 
   try {
+    // Only enable think mode for DeepSeek models
+    const modelName = request.model || DEFAULT_MODEL;
+    const isDeepSeek = modelName.toLowerCase().includes('deepseek');
+
     const response = await fetch(`${tunnelUrl}/api/chat`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({
-        model: request.model || DEFAULT_MODEL,
+        model: modelName,
         messages: request.messages,
         stream: true,
-        think: true, // Enable DeepSeek-R1 reasoning output
+        ...(isDeepSeek && { think: true }), // Only for DeepSeek-R1
       }),
       signal: controller.signal,
     });

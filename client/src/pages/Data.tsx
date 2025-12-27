@@ -134,7 +134,7 @@ interface HistoryResponse {
   data: HistoricalBar[];
 }
 
-export function Data() {
+export function DD() {
   const queryClient = useQueryClient();
   const [searchTicker, setSearchTicker] = useState('');
   const [activeTicker, setActiveTicker] = useState('SPY');
@@ -468,7 +468,7 @@ export function Data() {
         {/* Page Header with Search */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-3xl font-bold tracking-wide">Data</h1>
+            <h1 className="text-3xl font-bold tracking-wide">DD</h1>
             <p className="text-silver text-sm mt-1">
               Real-time market data and option chains
             </p>

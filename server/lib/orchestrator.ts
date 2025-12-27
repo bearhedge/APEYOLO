@@ -20,6 +20,13 @@ import {
 // Types
 // ============================================
 
+export interface TradeLeg {
+  optionType: 'PUT' | 'CALL';
+  strike: number;
+  delta: number;
+  premium: number;
+}
+
 export interface TradeProposal {
   action: 'BUY' | 'SELL' | 'HOLD' | 'CLOSE';
   symbol: string;
@@ -30,6 +37,12 @@ export interface TradeProposal {
   price?: number;
   confidence: number; // 0-100
   reasoning: string;
+  // Extended properties for negotiate endpoint
+  legs?: TradeLeg[];
+  contracts?: number;
+  entryPremiumTotal?: number;
+  maxLoss?: number;
+  stopLossPrice?: number;
 }
 
 export interface CritiqueResult {

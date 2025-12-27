@@ -17,6 +17,7 @@ export interface ModificationImpact {
   probabilityChange: number;   // Change in probability OTM (positive = safer)
   newPremium: number;          // New total premium
   newProbOTM: number;          // New probability of expiring OTM
+  newDelta?: number;           // New delta after adjustment
   agentOpinion: 'approve' | 'caution' | 'reject';
   reasoning: string;
 }

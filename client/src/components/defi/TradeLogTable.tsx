@@ -406,7 +406,6 @@ export function TradeLogTable({ trades, loading }: TradeLogTableProps) {
                 <th className="px-3 py-2.5 text-right font-normal whitespace-nowrap">Return</th>
                 <th className="px-3 py-2.5 text-center font-normal whitespace-nowrap">W/L</th>
                 <th className="px-3 py-2.5 text-center font-normal whitespace-nowrap">Status</th>
-                <th className="px-3 py-2.5 text-center font-normal whitespace-nowrap">✓</th>
               </tr>
             </thead>
             <tbody>
@@ -459,11 +458,6 @@ export function TradeLogTable({ trades, loading }: TradeLogTableProps) {
                   </td>
                   <td className={`px-3 py-2.5 text-center ${getStatusColor(trade.status)}`}>
                     {formatStatus(trade.status)}
-                  </td>
-                  <td className="px-3 py-2.5 text-center">
-                    <div className="flex justify-center" title={trade.validationStatus || 'pending'}>
-                      <ValidationIcon status={trade.validationStatus} />
-                    </div>
                   </td>
                 </tr>
               ))}

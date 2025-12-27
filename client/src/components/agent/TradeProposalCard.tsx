@@ -40,6 +40,7 @@ export interface CritiqueResult {
   mandateCompliant: boolean;
   concerns: string[];
   suggestions?: string[];
+  reasoning?: string;
 }
 
 export interface ExecutionResult {

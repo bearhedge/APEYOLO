@@ -140,12 +140,13 @@ export async function calculatePositionSize(
     stopMultiplier
   );
 
-  // Fixed 2 contracts per side (override dynamic calculation)
-  const contracts = 2;
-
-  // Calculate max loss allowed for validation/display (not for contract count)
+  // Use dynamic calculation based on max loss per contract and risk profile
+  const { contracts, maxLossAllowed } = calculateContractsByMaxLoss(
+    netLiq,
+    maxLossPerContract,
+    riskProfile
+  );
   const maxLossPct = MAX_LOSS_PCT[riskProfile];
-  const maxLossAllowed = netLiq * maxLossPct;
 
   // Calculate totals
   const totalMarginRequired = contracts * marginPerContract;

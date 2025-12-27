@@ -20,6 +20,12 @@ import { toolRegistry } from '../agent-tools';
 // Orchestrator model - fast and capable
 const ORCHESTRATOR_MODEL = process.env.LLM_ORCHESTRATOR_MODEL || 'qwen2.5:32b';
 
+// Logging helper
+function logAgent(stage: string, details: Record<string, unknown> = {}) {
+  const timestamp = new Date().toISOString();
+  console.log(`[Agent ${timestamp}] ${stage}`, JSON.stringify(details, null, 2));
+}
+
 export interface RunInput {
   userMessage: string;
   userId: string;
@@ -58,6 +64,12 @@ export class AgentOrchestrator {
     });
 
     try {
+      logAgent('START', {
+        userMessage: input.userMessage,
+        userId: input.userId,
+        model: ORCHESTRATOR_MODEL
+      });
+
       yield* this.transitionTo('PLANNING');
 
       // Build conversation history
@@ -90,6 +102,9 @@ export class AgentOrchestrator {
           return;
         }
 
+        const iterationStart = Date.now();
+        logAgent('LLM_CALL_START', { iteration, model: ORCHESTRATOR_MODEL });
+
         yield { type: 'thought', content: `Iteration ${iteration}: Asking model what to do...` };
 
         // Call model with tools
@@ -98,6 +113,16 @@ export class AgentOrchestrator {
           messages,
           tools: AGENT_TOOLS,
           think: false, // Orchestrator doesn't need deep thinking
+        });
+
+        const llmDuration = Date.now() - iterationStart;
+        const toolCallNames = response.message.tool_calls?.map(tc => tc.function.name) || [];
+        logAgent('LLM_CALL_DONE', {
+          iteration,
+          durationMs: llmDuration,
+          hasToolCalls: toolCallNames.length > 0,
+          toolCalls: toolCallNames,
+          responsePreview: response.message.content?.slice(0, 100) || '(no content)'
         });
 
         // Add assistant message to history
@@ -117,17 +142,30 @@ export class AgentOrchestrator {
               return;
             }
 
-            yield { type: 'tool_start', tool: toolCall.function.name };
+            const toolStart = Date.now();
+            const toolName = toolCall.function.name;
+            const toolArgs = toolCall.function.arguments;
+
+            logAgent('TOOL_START', { tool: toolName, args: toolArgs });
+            yield { type: 'tool_start', tool: toolName };
 
             // Special handling for think_deeply - show thinking indicator
-            if (toolCall.function.name === 'think_deeply') {
-              const query = (toolCall.function.arguments as { query?: string })?.query || 'complex question';
+            if (toolName === 'think_deeply') {
+              const query = (toolArgs as { query?: string })?.query || 'complex question';
+              logAgent('THINK_DEEPLY_START', { query: query.slice(0, 200), model: 'qwen2.5:72b' });
               yield { type: 'thought', content: `🧠 Deep thinking: "${query.slice(0, 100)}${query.length > 100 ? '...' : ''}"` };
             }
 
             try {
               const result = await this.executeTool(toolCall);
+              const toolDuration = Date.now() - toolStart;
               const resultStr = typeof result === 'string' ? result : JSON.stringify(result);
+
+              logAgent('TOOL_DONE', {
+                tool: toolName,
+                durationMs: toolDuration,
+                resultPreview: resultStr.slice(0, 200)
+              });
 
               yield {
                 type: 'tool_done',
@@ -144,6 +182,7 @@ export class AgentOrchestrator {
               });
             } catch (error) {
               const errorMsg = error instanceof Error ? error.message : 'Tool error';
+              logAgent('TOOL_ERROR', { tool: toolName, error: errorMsg });
               yield { type: 'tool_error', tool: toolCall.function.name, error: errorMsg };
 
               messages.push({
@@ -155,9 +194,17 @@ export class AgentOrchestrator {
           }
         } else {
           // No tool calls - model is ready to respond
-          yield* this.transitionTo('RESPONDING');
-
+          const totalDuration = Date.now() - this.startTime;
           const content = response.message.content || '';
+
+          logAgent('FINAL_RESPONSE', {
+            totalDurationMs: totalDuration,
+            toolCallCount: this.toolCallCount,
+            responseLength: content.length,
+            responsePreview: content.slice(0, 200)
+          });
+
+          yield* this.transitionTo('RESPONDING');
 
           // Stream the response
           yield { type: 'response_chunk', content };

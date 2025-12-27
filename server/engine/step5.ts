@@ -45,9 +45,10 @@ const LAYER1_SUSTAIN_DURATION_MS = 15 * 60 * 1000; // 15 minutes
 
 /**
  * Premium multiplier for Layer 2 stop
- * 6x means: if sold at $0.70, exit when premium reaches $4.20
+ * 3x means: if sold at $0.70, exit when premium reaches $2.10
+ * NOTE: This matches the IBKR bracket stop order in engineRoutes.ts
  */
-const LAYER2_PREMIUM_MULTIPLIER = 6.0;
+const LAYER2_PREMIUM_MULTIPLIER = 3.0;
 
 /**
  * Minimum Layer 2 stop price when premium data is unavailable (market closed)
@@ -459,23 +460,18 @@ export function monitorPosition(
   }
 
   // =========================================================================
-  // LAYER 2: Wide Premium Stop Check
+  // LAYER 2: Wide Premium Stop Check - DISABLED
+  // IBKR bracket stop order handles this automatically at 3x premium.
+  // No need for position monitor to duplicate this check.
   // =========================================================================
   const currentMultiple = entryPrice > 0 ? currentOptionPrice / entryPrice : 0;
-  const layer2Triggered = currentOptionPrice >= exitRules.layer2.stopLossPrice;
 
   const layer2Result = {
-    triggered: layer2Triggered,
+    triggered: false, // Always false - IBKR handles this
     currentMultiple: Number(currentMultiple.toFixed(2))
   };
 
-  // Layer 2 only triggers if Layer 1 hasn't already
-  if (!shouldExit && layer2Triggered) {
-    shouldExit = true;
-    exitReason = `LAYER 2: Premium at $${currentOptionPrice.toFixed(2)} ` +
-                 `(${currentMultiple.toFixed(1)}x entry) >= $${exitRules.layer2.stopLossPrice.toFixed(2)} (6x stop)`;
-    exitLayer = 2;
-  }
+  // Layer 2 disabled - IBKR bracket stop handles premium-based exits
 
   // =========================================================================
   // TIME-BASED CHECK (Part of Layer 3)
