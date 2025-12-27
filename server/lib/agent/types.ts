@@ -122,7 +122,28 @@ export type AgentEvent =
   | { type: 'validation_result'; approved: boolean; reason: string }
   | { type: 'response_chunk'; content: string }
   | { type: 'done'; finalResponse?: string }
-  | { type: 'error'; error: string; recoverable: boolean };
+  | { type: 'error'; error: string; recoverable: boolean }
+  | { type: 'browser_screenshot'; data: { base64: string; url: string; timestamp: number } };
+
+// ============ Activity Log ============
+
+// Activity Log Entry for UI display
+export interface ActivityLogEntry {
+  id: string;
+  timestamp: number;
+  eventType: AgentEvent['type'];
+  title: string;
+  summary?: string;
+  details?: {
+    args?: Record<string, unknown>;
+    result?: unknown;
+    durationMs?: number;
+    reasoning?: string;
+    screenshotBase64?: string;
+    url?: string;
+  };
+  isExpandable: boolean;
+}
 
 // ============ Tool Registry ============
 
