@@ -58,6 +58,7 @@ export interface CachedOptionChain {
   expectedMove: number;
   strikeRangeLow: number;
   strikeRangeHigh: number;
+  expiry: string;  // YYYYMMDD format for option expiration
   puts: CachedStrike[];
   calls: CachedStrike[];
   dataSource: 'websocket' | 'http' | 'mock';
@@ -494,6 +495,10 @@ export class OptionChainStreamer {
         lastUpdate: now,
       }));
 
+    // Get today's expiry in YYYYMMDD format (ET timezone for 0DTE options)
+    const etNow = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+    const expiry = `${etNow.getFullYear()}${String(etNow.getMonth() + 1).padStart(2, '0')}${String(etNow.getDate()).padStart(2, '0')}`;
+
     const chain: CachedOptionChain = {
       symbol,
       underlyingPrice: httpChain.underlyingPrice,
@@ -502,6 +507,7 @@ export class OptionChainStreamer {
       expectedMove: httpChain.expectedMove,
       strikeRangeLow: httpChain.strikeRangeLow,
       strikeRangeHigh: httpChain.strikeRangeHigh,
+      expiry,
       puts,
       calls,
       dataSource: source,
