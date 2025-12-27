@@ -27,8 +27,8 @@ interface Trade {
   realizedPnl: number;
   realizedPnlUSD?: number;
   returnPercent: number;
-  // NEW: Days held and outcome
-  daysHeld?: number | null;
+  // Holding time in minutes and outcome
+  holdingMinutes?: number | null;
   outcome?: 'win' | 'loss' | 'breakeven' | 'open';
   entryNav?: number | null;
   premiumReceived?: number | null;
@@ -100,10 +100,14 @@ function formatStatus(status: string): string {
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
-function formatDaysHeld(days: number | null | undefined): string {
-  if (days === null || days === undefined) return '—';
-  if (days === 0) return '0d';
-  return `${days}d`;
+function formatHoldingTime(minutes: number | null | undefined): string {
+  if (minutes === null || minutes === undefined) return '—';
+  if (minutes === 0) return '0m';
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  const remainingMins = minutes % 60;
+  if (remainingMins === 0) return `${hours}h`;
+  return `${hours}h ${remainingMins}m`;
 }
 
 function OutcomeBadge({ outcome }: { outcome?: string }) {
@@ -392,7 +396,7 @@ export function TradeLogTable({ trades, loading }: TradeLogTableProps) {
                 <th className="px-3 py-2.5 text-left font-normal whitespace-nowrap">Date</th>
                 <th className="px-3 py-2.5 text-right font-normal whitespace-nowrap">Open NAV</th>
                 <th className="px-3 py-2.5 text-right font-normal whitespace-nowrap">Close NAV</th>
-                <th className="px-3 py-2.5 text-center font-normal whitespace-nowrap">Days</th>
+                <th className="px-3 py-2.5 text-center font-normal whitespace-nowrap">Time</th>
                 <th className="px-3 py-2.5 text-left font-normal whitespace-nowrap">Sym</th>
                 <th className="px-3 py-2.5 text-center font-normal whitespace-nowrap">Qty</th>
                 <th className="px-3 py-2.5 text-right font-normal whitespace-nowrap">Strikes</th>
@@ -423,7 +427,7 @@ export function TradeLogTable({ trades, loading }: TradeLogTableProps) {
                     {trade.closingNav ? `$${Math.round(trade.closingNav).toLocaleString()}` : '—'}
                   </td>
                   <td className="px-3 py-2.5 text-center text-terminal-dim tabular-nums">
-                    {formatDaysHeld(trade.daysHeld)}
+                    {formatHoldingTime(trade.holdingMinutes)}
                   </td>
                   <td className="px-3 py-2.5 text-terminal-bright font-medium">{trade.symbol}</td>
                   <td className="px-3 py-2.5 text-center text-terminal-bright">{trade.contracts}</td>

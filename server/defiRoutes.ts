@@ -143,12 +143,14 @@ router.get('/performance', async (_req: Request, res: Response) => {
         navStart = firstNav ? parseFloat(firstNav.nav as any) || 0 : 0;
       }
 
-      // Get ALL trades for this period (for counting)
+      // Get ALL trades for this period (for counting), starting from BASELINE_DATE
+      const baselineDate = new Date(BASELINE_DATE + 'T00:00:00-05:00');
+      const effectiveStartDate = startDate > baselineDate ? startDate : baselineDate;
       const allTrades = await db!
         .select()
         .from(paperTrades)
         .where(and(
-          gte(paperTrades.createdAt, startDate),
+          gte(paperTrades.createdAt, effectiveStartDate),
           lte(paperTrades.createdAt, endDate)
         ));
 
@@ -236,10 +238,12 @@ router.get('/trades', async (req: Request, res: Response) => {
 
     const limit = parseInt(req.query.limit as string) || 100;
 
-    // Get all trades (both open and closed), most recent first
+    // Get all trades from BASELINE_DATE onwards (both open and closed), most recent first
+    const baselineDate = new Date(BASELINE_DATE + 'T00:00:00-05:00'); // ET timezone
     const trades = await db
       .select()
       .from(paperTrades)
+      .where(gte(paperTrades.createdAt, baselineDate))
       .orderBy(desc(paperTrades.createdAt))
       .limit(limit);
 
@@ -304,10 +308,10 @@ router.get('/trades', async (req: Request, res: Response) => {
       const entryNav = openingNav || currentNav;
       const returnPercent = entryNav > 0 ? (pnl / entryNav) * 100 : 0;
 
-      // Calculate days held (createdAt to closedAt)
+      // Calculate holding time in minutes (createdAt to closedAt)
       const closedAt = t.closedAt ? new Date(t.closedAt) : null;
-      const daysHeld = closedAt
-        ? Math.max(0, Math.ceil((closedAt.getTime() - createdAt.getTime()) / (1000 * 60 * 60 * 24)))
+      const holdingMinutes = closedAt
+        ? Math.max(0, Math.round((closedAt.getTime() - createdAt.getTime()) / (1000 * 60)))
         : null;
 
       // Determine trade outcome (based on actual P&L)
@@ -318,14 +322,18 @@ router.get('/trades', async (req: Request, res: Response) => {
         : 'breakeven';
 
       // Get contract count and leg details
-      const contracts = t.contracts || 1;
+      // contracts = per-side contracts, totalContracts = contracts × number of legs
+      const contractsPerSide = t.contracts || 1;
       const putStrike = t.leg1Type === 'PUT' ? parseFloat(t.leg1Strike as any) : (t.leg2Type === 'PUT' ? parseFloat(t.leg2Strike as any) : null);
       const callStrike = t.leg2Type === 'CALL' ? parseFloat(t.leg2Strike as any) : (t.leg1Type === 'CALL' ? parseFloat(t.leg1Strike as any) : null);
+      // For strangles (PUT + CALL), total = contracts × 2; for single leg = contracts × 1
+      const numLegs = (putStrike ? 1 : 0) + (callStrike ? 1 : 0);
+      const totalContracts = contractsPerSide * (numLegs || 1);
 
-      // Calculate notional value in HKD: strike × 100 × contracts × 7.8
+      // Calculate notional value in HKD: strike × 100 × contractsPerSide × 7.8
       // For a strangle, show total notional (put + call sides)
-      const putNotionalHKD = putStrike ? putStrike * 100 * contracts * USD_TO_HKD : 0;
-      const callNotionalHKD = callStrike ? callStrike * 100 * contracts * USD_TO_HKD : 0;
+      const putNotionalHKD = putStrike ? putStrike * 100 * contractsPerSide * USD_TO_HKD : 0;
+      const callNotionalHKD = callStrike ? callStrike * 100 * contractsPerSide * USD_TO_HKD : 0;
       const totalNotionalHKD = putNotionalHKD + callNotionalHKD;
 
       // Determine exit time:
@@ -362,7 +370,7 @@ router.get('/trades', async (req: Request, res: Response) => {
         symbol: t.symbol,
         strategy: strategyDisplay,
         // Contract and leg details
-        contracts,
+        contracts: totalContracts,
         putStrike,
         callStrike,
         leg1Premium: t.leg1Premium ? parseFloat(t.leg1Premium as any) : null,
@@ -379,8 +387,8 @@ router.get('/trades', async (req: Request, res: Response) => {
         realizedPnl: pnl * USD_TO_HKD,
         realizedPnlUSD: pnl,
         returnPercent,
-        // NEW: Days held and entry NAV used for return calculation
-        daysHeld,
+        // Holding time in minutes and entry NAV used for return calculation
+        holdingMinutes,
         entryNav,
         // NAV data for this trade's date (already HKD in database)
         openingNav,
