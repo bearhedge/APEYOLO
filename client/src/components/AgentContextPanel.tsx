@@ -3,13 +3,14 @@
  *
  * Clean, minimal, functional design inspired by Manus AI:
  * - APEYOLO Workspace: Key-value data from agent tools
- * - Task Progress: Numbered steps with checkmarks
+ * - Activity Log: Chronological events with expandable details
  * - Status controls at bottom
  *
  * No emojis, minimal colors, functional design.
  */
 
-import { useAgentStore, AgentPhase, type TaskStep } from '@/lib/agentStore';
+import { useAgentStore, AgentPhase } from '@/lib/agentStore';
+import { ActivityLog } from './agent/ActivityLog';
 import { useQuery } from '@tanstack/react-query';
 import { getAccount } from '@/lib/api';
 import { useBrokerStatus } from '@/hooks/useBrokerStatus';
@@ -153,82 +154,6 @@ function APEYOLOWorkspace() {
   );
 }
 
-// ============================================
-// TASK PROGRESS - Manus-style numbered steps
-// ============================================
-
-function TaskProgress() {
-  const { taskSteps, phase } = useAgentStore();
-
-  // Calculate progress
-  const completedCount = taskSteps.filter(s => s.status === 'complete').length;
-  const totalCount = taskSteps.length;
-
-  // Get step indicator - text only, no colors
-  const getStepIndicator = (step: TaskStep): string => {
-    switch (step.status) {
-      case 'complete':
-        return '\u2713'; // checkmark
-      case 'running':
-        return '\u2192'; // arrow
-      case 'error':
-        return '\u2717'; // x mark
-      default:
-        return ' '; // space for pending
-    }
-  };
-
-  // Get step text style
-  const getStepStyle = (step: TaskStep): string => {
-    switch (step.status) {
-      case 'complete':
-        return 'text-white';
-      case 'running':
-        return 'text-white';
-      case 'error':
-        return 'text-silver/70';
-      default:
-        return 'text-silver/50';
-    }
-  };
-
-  const isExecuting = phase === 'executing';
-
-  return (
-    <Card title="Task Progress">
-      <div className="space-y-2 text-sm font-mono min-h-[60px]">
-        {taskSteps.length === 0 ? (
-          <div className="text-silver/50 text-center py-2">
-            {isExecuting ? (
-              <span>Preparing tasks...</span>
-            ) : (
-              <span>No active tasks</span>
-            )}
-          </div>
-        ) : (
-          <>
-            {taskSteps.map((step) => (
-              <div key={step.id} className={`flex items-start gap-3 ${getStepStyle(step)}`}>
-                <span className="w-4 text-center flex-shrink-0">
-                  {getStepIndicator(step)}
-                </span>
-                <span className="flex-shrink-0 w-4">{step.id}.</span>
-                <span className="flex-1">{step.description}</span>
-              </div>
-            ))}
-
-            {/* Progress counter */}
-            <div className="pt-3 mt-3 border-t border-white/10 flex justify-end">
-              <span className="text-xs text-silver tabular-nums">
-                {completedCount}/{totalCount}
-              </span>
-            </div>
-          </>
-        )}
-      </div>
-    </Card>
-  );
-}
 
 // ============================================
 // STATUS BOX - Agent status and controls
@@ -327,9 +252,11 @@ export function AgentContextPanel() {
         <APEYOLOWorkspace />
       </div>
 
-      {/* TASK PROGRESS - Manus-style numbered steps */}
+      {/* ACTIVITY LOG - Manus-style event visibility */}
       <div className="px-4 pt-4">
-        <TaskProgress />
+        <Card title="Activity Log">
+          <ActivityLog />
+        </Card>
       </div>
 
       {/* Spacer to push status to bottom */}
