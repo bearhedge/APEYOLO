@@ -8,6 +8,13 @@
       "when": 1765433134859,
       "tag": "0000_hot_wasp",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1766853476805,
+      "tag": "0001_add_option_bars",
+      "breakpoints": true
     }
   ]
 }
