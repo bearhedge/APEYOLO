@@ -117,6 +117,7 @@ export type AgentEvent =
   | { type: 'tool_start'; tool: string }
   | { type: 'tool_done'; tool: string; result: unknown; durationMs: number }
   | { type: 'tool_error'; tool: string; error: string }
+  | { type: 'thinking'; content: string; isStreaming?: boolean }
   | { type: 'step_complete'; stepId: number }
   | { type: 'validation_start' }
   | { type: 'validation_result'; approved: boolean; reason: string }

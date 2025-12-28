@@ -8,6 +8,7 @@ import {
 import { AgentMemory, getAgentMemory } from './memory';
 import {
   chatWithTools,
+  streamChatWithTools,
   LLMMessage,
   LLMToolMessage,
   LLMAssistantMessage,
@@ -19,7 +20,7 @@ import { webBrowse } from './tools/web-browse';
 import { toolRegistry } from '../agent-tools';
 
 // Orchestrator model - fast and capable
-const ORCHESTRATOR_MODEL = process.env.LLM_ORCHESTRATOR_MODEL || 'qwen2.5:32b';
+const ORCHESTRATOR_MODEL = process.env.LLM_ORCHESTRATOR_MODEL || 'deepseek-r1:70b';
 
 // Logging helper
 function logAgent(stage: string, details: Record<string, unknown> = {}) {
@@ -108,13 +109,47 @@ export class AgentOrchestrator {
 
         yield { type: 'thought', content: `Iteration ${iteration}: Asking model what to do...` };
 
-        // Call model with tools
-        const response = await chatWithTools({
+        // Stream response from model with thinking enabled
+        let assistantContent = '';
+        let thinkingContent = '';
+        let toolCalls: ToolCall[] | undefined;
+
+        for await (const chunk of streamChatWithTools({
           model: ORCHESTRATOR_MODEL,
           messages,
           tools: AGENT_TOOLS,
-          think: false, // Orchestrator doesn't need deep thinking
-        });
+          think: true, // Enable DeepSeek reasoning
+        })) {
+          // Stream thinking tokens to UI
+          if (chunk.thinking) {
+            thinkingContent += chunk.thinking;
+            yield { type: 'thinking', content: chunk.thinking, isStreaming: true };
+          }
+
+          if (chunk.content) {
+            assistantContent += chunk.content;
+          }
+
+          if (chunk.tool_calls) {
+            toolCalls = chunk.tool_calls;
+          }
+        }
+
+        // Signal end of thinking stream
+        if (thinkingContent) {
+          yield { type: 'thinking', content: '', isStreaming: false };
+        }
+
+        // Build response object for rest of logic
+        const response = {
+          message: {
+            role: 'assistant' as const,
+            content: assistantContent,
+            thinking: thinkingContent,
+            tool_calls: toolCalls,
+          },
+          done: true,
+        };
 
         const llmDuration = Date.now() - iterationStart;
         const toolCallNames = response.message.tool_calls?.map(tc => tc.function.name) || [];
@@ -123,7 +158,8 @@ export class AgentOrchestrator {
           durationMs: llmDuration,
           hasToolCalls: toolCallNames.length > 0,
           toolCalls: toolCallNames,
-          responsePreview: response.message.content?.slice(0, 100) || '(no content)'
+          responsePreview: response.message.content?.slice(0, 100) || '(no content)',
+          thinkingLength: thinkingContent.length
         });
 
         // Add assistant message to history
