@@ -15,6 +15,7 @@ import {
 } from '../llm-client';
 import { AGENT_TOOLS } from './tools/definitions';
 import { thinkDeeply } from './tools/think-deeply';
+import { webBrowse } from './tools/web-browse';
 import { toolRegistry } from '../agent-tools';
 
 // Orchestrator model - fast and capable
@@ -174,6 +175,21 @@ export class AgentOrchestrator {
                 durationMs: Date.now() - this.startTime,
               };
 
+              // Emit browser screenshot if web_browse returned one
+              if (toolName === 'web_browse' && result && typeof result === 'object') {
+                const browseResult = result as { screenshot?: string; url?: string };
+                if (browseResult.screenshot) {
+                  yield {
+                    type: 'browser_screenshot',
+                    data: {
+                      base64: browseResult.screenshot,
+                      url: browseResult.url || '',
+                      timestamp: Date.now(),
+                    },
+                  };
+                }
+              }
+
               // Add tool result to messages
               messages.push({
                 role: 'tool',
@@ -270,28 +286,42 @@ export class AgentOrchestrator {
         };
       }
 
+      case 'web_browse': {
+        const { query, url } = args as { query: string; url?: string };
+        const result = await webBrowse({ query, url });
+        return {
+          answer: result.content,
+          url: result.url,
+          screenshot: result.screenshot,
+        };
+      }
+
       default:
         throw new Error(`Unknown tool: ${name}`);
     }
   }
 
   private getSystemPrompt(): string {
-    return `You are a 0DTE SPY options trading assistant. You help users with market analysis, portfolio management, and finding trading opportunities.
+    return `You are APEYOLO, a 0DTE SPY options trading assistant with access to real data sources.
 
-You have these tools available:
-- get_market_data: Get current SPY price, VIX, and market status
-- get_positions: Get the user's current positions and P&L
-- run_engine: Find 0DTE strangle trade opportunities
-- think_deeply: Use deep analysis for complex questions
+CRITICAL RULES - NEVER VIOLATE:
+1. ALWAYS use tools for factual data - NEVER make up numbers, prices, or dates
+2. For SPY price, VIX, market status NOW: use get_market_data
+3. For portfolio, positions, P&L: use get_positions
+4. For finding trades: use run_engine
+5. For general knowledge (calendars, holidays, definitions): use web_browse
+6. For complex analysis requiring deep reasoning: use think_deeply
+7. If you genuinely don't know and can't look it up: say "I don't know"
 
-Guidelines:
-- For simple greetings, respond directly without tools
-- For market questions, use get_market_data
-- For portfolio questions, use get_positions
-- For trade requests, use run_engine
-- For complex analysis or risk assessment, use think_deeply
-- Be concise and helpful
-- Always use real data from tools, never make up numbers`;
+TOOL SELECTION GUIDE:
+- "what's SPY at?" → get_market_data (NEVER guess prices)
+- "is market open Monday?" → web_browse (search NYSE calendar)
+- "show my positions" → get_positions
+- "find me a trade" → run_engine
+- "should I trade given VIX?" → think_deeply
+- "what is a strangle?" → web_browse OR answer from knowledge
+
+Be concise and direct. No emojis. Only state facts from tool outputs.`;
   }
 
   private async *transitionTo(newState: OrchestratorState): AsyncGenerator<AgentEvent> {
