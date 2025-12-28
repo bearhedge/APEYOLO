@@ -34,7 +34,7 @@ gcloud run deploy "${SERVICE}" \
   --min-instances=1 \
   --max-instances=1 \
   --set-env-vars "APP_ENV=${APP_ENV},BROKER_PROVIDER=ibkr,IBKR_ENV=live,IBKR_BASE_URL=https://api.ibkr.com,IBKR_ACCOUNT_ID=U19860056,IBKR_ALLOWED_IP=35.206.203.27" \
-  --set-secrets "IBKR_CLIENT_ID=ibkr-client-id:latest,IBKR_CLIENT_KEY_ID=ibkr-client-key-id:latest,IBKR_CREDENTIAL=ibkr-credential:latest,IBKR_PRIVATE_KEY=ibkr-private-key:latest,DATABASE_URL=database-url:latest,JWT_SECRET=jwt-secret:latest,GOOGLE_CLIENT_ID=google-oauth-client-id:latest,GOOGLE_CLIENT_SECRET=google-oauth-client-secret:latest,LLM_TUNNEL_URL=LLM_TUNNEL_URL:latest" \
+  --set-secrets "IBKR_CLIENT_ID=ibkr-client-id:latest,IBKR_CLIENT_KEY_ID=ibkr-client-key-id:latest,IBKR_CREDENTIAL=ibkr-credential:latest,IBKR_PRIVATE_KEY=ibkr-private-key:latest,DATABASE_URL=database-url:latest,JWT_SECRET=jwt-secret:latest,GOOGLE_CLIENT_ID=google-oauth-client-id:latest,GOOGLE_CLIENT_SECRET=google-oauth-client-secret:latest,LLM_TUNNEL_URL=LLM_TUNNEL_URL:latest,BRAVE_SEARCH_API_KEY=BRAVE_SEARCH_API_KEY:latest" \
   --update-annotations=run.googleapis.com/invoker-iam-disabled=true \
   --allow-unauthenticated
 
