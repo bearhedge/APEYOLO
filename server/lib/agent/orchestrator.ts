@@ -19,8 +19,8 @@ import { thinkDeeply } from './tools/think-deeply';
 import { webBrowse } from './tools/web-browse';
 import { toolRegistry } from '../agent-tools';
 
-// Orchestrator model - fast and capable
-const ORCHESTRATOR_MODEL = process.env.LLM_ORCHESTRATOR_MODEL || 'deepseek-r1:70b';
+// Orchestrator model - must support tool calling (not DeepSeek-R1)
+const ORCHESTRATOR_MODEL = process.env.LLM_ORCHESTRATOR_MODEL || 'qwen2.5:32b';
 
 // Logging helper
 function logAgent(stage: string, details: Record<string, unknown> = {}) {
