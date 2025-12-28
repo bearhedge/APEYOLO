@@ -66,6 +66,27 @@ export const AGENT_TOOLS: Tool[] = [
       },
     },
   },
+  {
+    type: 'function',
+    function: {
+      name: 'web_browse',
+      description: 'Search the web for factual information like market schedules, holiday calendars, or general knowledge. Use for questions you cannot answer with other tools. NOT for real-time prices (use get_market_data for that).',
+      parameters: {
+        type: 'object',
+        properties: {
+          query: {
+            type: 'string',
+            description: 'Search query or question to look up',
+          },
+          url: {
+            type: 'string',
+            description: 'Optional: specific URL to navigate to instead of searching',
+          },
+        },
+        required: ['query'],
+      },
+    },
+  },
 ];
 
 /**
@@ -79,4 +100,5 @@ export interface ToolExecutors {
   get_positions: ToolExecutor;
   run_engine: ToolExecutor;
   think_deeply: ToolExecutor;
+  web_browse: ToolExecutor;
 }
