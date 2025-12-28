@@ -684,20 +684,8 @@ router.post('/chat/stream', requireAuth, async (req: Request, res: Response) => 
       });
     }
 
-    // FAIL FAST: Ensure IBKR is connected before processing any agent chat
-    // This prevents the agent from operating with mock/stale data
-    try {
-      await ensureIbkrReady();
-      console.log('[AgentRoutes] IBKR connection verified');
-    } catch (ibkrError: any) {
-      console.error('[AgentRoutes] IBKR connection failed:', ibkrError.message);
-      return res.status(503).json({
-        success: false,
-        error: 'IBKR broker not connected. Please check broker configuration.',
-        ibkrError: ibkrError.message,
-        offline: true,
-      });
-    }
+    // Note: Agent can run without IBKR - tools like web_browse, think_deeply work independently
+    // Market data and position tools will return errors if IBKR is not connected
 
     // Set up SSE headers
     res.setHeader('Content-Type', 'text/event-stream');
@@ -2058,16 +2046,8 @@ router.post('/v2/chat/stream', requireAuth, async (req: Request, res: Response) 
       });
     }
 
-    // FAIL FAST: Ensure IBKR is connected
-    try {
-      await ensureIbkrReady();
-    } catch (ibkrError: any) {
-      return res.status(503).json({
-        success: false,
-        error: 'IBKR broker not connected',
-        offline: true,
-      });
-    }
+    // Note: Agent can run without IBKR - web_browse, think_deeply work independently
+    // Market data and position tools will gracefully fail if IBKR is not connected
 
     // Set up SSE headers
     res.setHeader('Content-Type', 'text/event-stream');
