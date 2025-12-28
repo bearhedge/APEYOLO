@@ -39,17 +39,22 @@ class BrowserService {
       if (!this.page) throw new Error('Page not initialized');
 
       console.log(`[BrowserService] Searching: ${query}`);
-      const searchUrl = `https://www.google.com/search?q=${encodeURIComponent(query)}`;
+      // Use DuckDuckGo - no CAPTCHA/bot detection like Google
+      const searchUrl = `https://duckduckgo.com/?q=${encodeURIComponent(query)}`;
       await this.page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
       this.lastActivity = Date.now();
 
-      // Extract search results
+      // Wait for results to load
+      await this.page.waitForSelector('[data-testid="result"]', { timeout: 5000 }).catch(() => {});
+
+      // Extract search results from DuckDuckGo
       const content = await this.page.evaluate(() => {
         const results: string[] = [];
-        document.querySelectorAll('.g').forEach((el, i) => {
+        document.querySelectorAll('[data-testid="result"]').forEach((el, i) => {
           if (i < 5) {
-            const title = el.querySelector('h3')?.textContent || '';
-            const snippet = el.querySelector('.VwiC3b')?.textContent || '';
+            const title = el.querySelector('h2')?.textContent || '';
+            const snippet = el.querySelector('[data-result="snippet"]')?.textContent ||
+                           el.querySelector('.result__snippet')?.textContent || '';
             if (title) results.push(`${title}: ${snippet}`);
           }
         });
