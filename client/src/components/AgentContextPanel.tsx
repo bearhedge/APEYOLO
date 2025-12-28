@@ -11,6 +11,7 @@
 
 import { useAgentStore, AgentPhase } from '@/lib/agentStore';
 import { ActivityLog } from './agent/ActivityLog';
+import { BrowserPreview } from './agent/BrowserPreview';
 import { useQuery } from '@tanstack/react-query';
 import { getAccount } from '@/lib/api';
 import { useBrokerStatus } from '@/hooks/useBrokerStatus';
@@ -240,10 +241,11 @@ function MinimalStatusBar() {
 // ============================================
 
 export function AgentContextPanel() {
-  const { phase } = useAgentStore();
+  const { phase, browserScreenshots } = useAgentStore();
 
   // Determine if we're in an active state
   const isActive = phase !== 'idle';
+  const hasBrowserScreenshots = browserScreenshots.length > 0;
 
   return (
     <div className="w-96 h-full flex flex-col bg-charcoal border-l border-white/20">
@@ -258,6 +260,15 @@ export function AgentContextPanel() {
           <ActivityLog />
         </Card>
       </div>
+
+      {/* BROWSER PREVIEW - Shows when browser tool is used */}
+      {hasBrowserScreenshots && (
+        <div className="px-4 pt-4">
+          <Card title="Browser">
+            <BrowserPreview />
+          </Card>
+        </div>
+      )}
 
       {/* Spacer to push status to bottom */}
       <div className="flex-1" />
