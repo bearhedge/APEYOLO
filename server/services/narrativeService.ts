@@ -5,7 +5,10 @@
  * Uses the existing LLM client infrastructure (Ollama/Vertex AI).
  */
 
-import { chatWithLLM, type LLMMessage } from '../lib/llm-client';
+import { chatWithLLM, streamChatWithLLM, type LLMMessage } from '../lib/llm-client';
+
+// DeepSeek model for deep market analysis
+const NARRATIVE_MODEL = 'deepseek-r1:70b';
 import { fetchMacroData, type MacroData } from './macroDataService';
 import { getOptionChainStreamer } from '../broker/optionChainStreamer';
 import { getMarketStatus } from './marketCalendar';
@@ -36,6 +39,7 @@ export interface ResearchContext {
 
 export interface NarrativeResult {
   narrative: string;
+  thinking?: string;  // DeepSeek reasoning tokens
   context: ResearchContext;
   generatedAt: string;
 }
@@ -142,7 +146,8 @@ function formatContextForPrompt(context: ResearchContext): string {
 // ============================================
 
 /**
- * Generate AI-powered market narrative
+ * Generate AI-powered market narrative using DeepSeek-R1
+ * Streams thinking tokens and captures the final narrative
  */
 export async function generateNarrative(): Promise<NarrativeResult> {
   // Assemble context
@@ -158,14 +163,31 @@ export async function generateNarrative(): Promise<NarrativeResult> {
   ];
 
   try {
-    // Generate narrative using LLM
-    const response = await chatWithLLM({
+    // Stream narrative using DeepSeek-R1 with thinking enabled
+    let narrative = '';
+    let thinking = '';
+
+    for await (const chunk of streamChatWithLLM({
       messages,
-      stream: false,
-    });
+      model: NARRATIVE_MODEL,
+      stream: true,
+    })) {
+      // Accumulate thinking tokens
+      if (chunk.message?.thinking) {
+        thinking += chunk.message.thinking;
+      }
+
+      // Accumulate narrative content
+      if (chunk.message?.content) {
+        narrative += chunk.message.content;
+      }
+    }
+
+    console.log(`[NarrativeService] Generated with ${thinking.length} thinking chars, ${narrative.length} narrative chars`);
 
     return {
-      narrative: response.message.content,
+      narrative,
+      thinking: thinking || undefined,
       context,
       generatedAt: new Date().toISOString(),
     };

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import { LeftNav } from '@/components/LeftNav';
-import { RefreshCw, TrendingUp, TrendingDown, Activity, Database, Wifi, WifiOff } from 'lucide-react';
+import { RefreshCw, TrendingUp, TrendingDown, Activity, Database, Wifi, WifiOff, Brain, ChevronDown, ChevronUp } from 'lucide-react';
 
 // ============================================
 // Types
@@ -20,6 +20,7 @@ interface ResearchContext {
 
 interface NarrativeResult {
   narrative: string;
+  thinking?: string;  // DeepSeek reasoning tokens
   context: ResearchContext;
   generatedAt: string;
 }
@@ -49,6 +50,7 @@ interface DataCaptureStatus {
 
 export function DD() {
   const [narrative, setNarrative] = useState<NarrativeResult | null>(null);
+  const [showThinking, setShowThinking] = useState(false);
 
   // Fetch context (auto-refresh every 30s)
   const { data: contextData, isLoading: contextLoading } = useQuery<{ ok: boolean; context: ResearchContext }>({
@@ -196,10 +198,41 @@ export function DD() {
           </div>
 
           {narrative?.narrative ? (
-            <div className="prose prose-invert max-w-none">
-              <p className="text-base leading-relaxed whitespace-pre-wrap text-gray-300">
-                {narrative.narrative}
-              </p>
+            <div className="space-y-4">
+              {/* Thinking Section (Collapsible) */}
+              {narrative.thinking && (
+                <div className="border border-purple-500/30 rounded-lg overflow-hidden">
+                  <button
+                    onClick={() => setShowThinking(!showThinking)}
+                    className="w-full flex items-center justify-between p-3 bg-purple-500/10 hover:bg-purple-500/20 transition"
+                  >
+                    <div className="flex items-center gap-2 text-purple-400">
+                      <Brain className="w-4 h-4" />
+                      <span className="text-sm font-medium">DeepSeek Reasoning</span>
+                      <span className="text-xs text-purple-400/60">({narrative.thinking.length.toLocaleString()} chars)</span>
+                    </div>
+                    {showThinking ? (
+                      <ChevronUp className="w-4 h-4 text-purple-400" />
+                    ) : (
+                      <ChevronDown className="w-4 h-4 text-purple-400" />
+                    )}
+                  </button>
+                  {showThinking && (
+                    <div className="p-4 bg-purple-500/5 max-h-96 overflow-y-auto">
+                      <p className="text-sm leading-relaxed whitespace-pre-wrap text-purple-300/80 font-mono">
+                        {narrative.thinking}
+                      </p>
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {/* Narrative */}
+              <div className="prose prose-invert max-w-none">
+                <p className="text-base leading-relaxed whitespace-pre-wrap text-gray-300">
+                  {narrative.narrative}
+                </p>
+              </div>
             </div>
           ) : (
             <div className="text-center py-12 text-silver">
