@@ -1,5 +1,10 @@
 // server/lib/browser/browser-service.ts
-import { chromium, Browser, Page } from 'playwright';
+import { chromium } from 'playwright-extra';
+import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+import type { Browser, Page, BrowserContext } from 'playwright';
+
+// Add stealth plugin to hide automation signals
+chromium.use(StealthPlugin());
 
 export interface BrowserResult {
   success: boolean;
@@ -11,13 +16,14 @@ export interface BrowserResult {
 
 class BrowserService {
   private browser: Browser | null = null;
+  private context: BrowserContext | null = null;
   private page: Page | null = null;
   private lastActivity: number = 0;
   private readonly IDLE_TIMEOUT = 5 * 60 * 1000; // 5 min
 
   async initialize(): Promise<void> {
     if (!this.browser) {
-      console.log('[BrowserService] Launching browser...');
+      console.log('[BrowserService] Launching browser with stealth...');
 
       // Use system Chromium in production (Docker/Alpine)
       const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
@@ -25,11 +31,25 @@ class BrowserService {
       this.browser = await chromium.launch({
         headless: true,
         executablePath: executablePath || undefined,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-blink-features=AutomationControlled',
+        ],
       });
-      this.page = await this.browser.newPage();
+
+      // Create context with realistic browser fingerprint
+      this.context = await this.browser.newContext({
+        userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        viewport: { width: 1920, height: 1080 },
+        locale: 'en-US',
+        timezoneId: 'America/New_York',
+      });
+
+      this.page = await this.context.newPage();
       this.lastActivity = Date.now();
-      console.log('[BrowserService] Browser ready');
+      console.log('[BrowserService] Browser ready with stealth');
     }
   }
 
@@ -39,10 +59,17 @@ class BrowserService {
       if (!this.page) throw new Error('Page not initialized');
 
       console.log(`[BrowserService] Searching: ${query}`);
-      // Use DuckDuckGo - no CAPTCHA/bot detection like Google
+
+      // Add random delay before navigating (human-like)
+      await new Promise(r => setTimeout(r, 500 + Math.random() * 1000));
+
+      // Use DuckDuckGo - less aggressive than Google
       const searchUrl = `https://duckduckgo.com/?q=${encodeURIComponent(query)}`;
       await this.page.goto(searchUrl, { waitUntil: 'domcontentloaded', timeout: 30000 });
       this.lastActivity = Date.now();
+
+      // Wait a bit for JS to render (human-like)
+      await new Promise(r => setTimeout(r, 1000 + Math.random() * 500));
 
       // Wait for results to load
       await this.page.waitForSelector('[data-testid="result"]', { timeout: 5000 }).catch(() => {});
@@ -83,8 +110,15 @@ class BrowserService {
       if (!this.page) throw new Error('Page not initialized');
 
       console.log(`[BrowserService] Navigating to: ${url}`);
+
+      // Add random delay (human-like)
+      await new Promise(r => setTimeout(r, 300 + Math.random() * 700));
+
       await this.page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
       this.lastActivity = Date.now();
+
+      // Wait for page to settle
+      await new Promise(r => setTimeout(r, 500 + Math.random() * 500));
 
       const content = await this.page.evaluate(() => {
         return document.body.innerText.slice(0, 5000);
@@ -111,6 +145,7 @@ class BrowserService {
       console.log('[BrowserService] Closing browser');
       await this.browser.close();
       this.browser = null;
+      this.context = null;
       this.page = null;
     }
   }
