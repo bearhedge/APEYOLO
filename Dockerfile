@@ -23,7 +23,19 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 # Install build dependencies for native modules (usb package needs python/make/g++)
-RUN apk add --no-cache python3 make g++ linux-headers eudev-dev
+# Also install Chromium and dependencies for Playwright browser automation
+RUN apk add --no-cache python3 make g++ linux-headers eudev-dev \
+    chromium \
+    nss \
+    freetype \
+    harfbuzz \
+    ca-certificates \
+    ttf-freefont
+
+# Configure Playwright to use system Chromium instead of downloading its own
+ENV PLAYWRIGHT_BROWSERS_PATH=/usr/bin
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
+ENV PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium-browser
 
 # Copy built artifacts from build stage
 COPY --from=build /app/dist ./dist

@@ -18,9 +18,14 @@ class BrowserService {
   async initialize(): Promise<void> {
     if (!this.browser) {
       console.log('[BrowserService] Launching browser...');
+
+      // Use system Chromium in production (Docker/Alpine)
+      const executablePath = process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH;
+
       this.browser = await chromium.launch({
         headless: true,
-        args: ['--no-sandbox', '--disable-setuid-sandbox'],
+        executablePath: executablePath || undefined,
+        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
       });
       this.page = await this.browser.newPage();
       this.lastActivity = Date.now();
