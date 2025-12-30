@@ -141,11 +141,14 @@ export async function calculatePositionSize(
   );
 
   // Use dynamic calculation based on max loss per contract and risk profile
-  const { contracts, maxLossAllowed } = calculateContractsByMaxLoss(
+  const { contracts: calculatedContracts, maxLossAllowed } = calculateContractsByMaxLoss(
     netLiq,
     maxLossPerContract,
     riskProfile
   );
+
+  // Fixed at 2 contracts
+  const contracts = 2;
   const maxLossPct = MAX_LOSS_PCT[riskProfile];
 
   // Calculate totals
