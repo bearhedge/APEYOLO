@@ -37,6 +37,7 @@ import defiRoutes from "./defiRoutes.js";
 import agentRoutes from "./agentRoutes.js";
 import dataCaptureRoutes from "./routes/dataCaptureRoutes.js";
 import researchRoutes from "./routes/researchRoutes.js";
+import schedulerRoutes from "./routes/schedulerRoutes.js";
 import { getTodayOpeningSnapshot, getTodayClosingSnapshot, getPreviousClosingSnapshot, isMarketHours } from "./services/navSnapshot.js";
 
 // Helper function to get session from request
@@ -84,6 +85,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Register Research routes (DD research terminal)
   app.use('/api/research', researchRoutes);
+
+  // Register Cloud Scheduler routes (autonomous trading)
+  app.use('/api/cron', schedulerRoutes);
 
   // ==================== IBKR CREDENTIALS SETTINGS (Multi-Tenant) ====================
 

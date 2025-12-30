@@ -47,7 +47,7 @@ const DEFAULT_CONFIG: SchedulerConfig = {
   intervalMinutes: 5,
   tradingWindowStart: 11, // 11 AM ET
   tradingWindowEnd: 13, // 1 PM ET
-  maxTradesPerDay: 3,
+  maxTradesPerDay: 1,  // Single trade per day for autonomous mode
   autoExecute: true,
   symbol: 'SPY',
 };
