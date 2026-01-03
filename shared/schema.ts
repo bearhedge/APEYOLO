@@ -826,14 +826,17 @@ export const engineRuns = pgTable("engine_runs", {
   engineOutput: jsonb("engine_output"),
 
   // Outcome (filled when trade closes)
-  tradeId: varchar("trade_id", { length: 36 }),
+  tradeId: varchar("trade_id", { length: 36 }).references(() => trades.id, { onDelete: "set null" }),
   realizedPnl: doublePrecision("realized_pnl"),
   exitReason: text("exit_reason"),
   wasWinner: boolean("was_winner"),
 
   createdAt: timestamp("created_at").notNull().defaultNow(),
   closedAt: timestamp("closed_at"),
-});
+}, (table) => [
+  index("engine_runs_user_id_idx").on(table.userId),
+  index("engine_runs_created_at_idx").on(table.createdAt),
+]);
 
 export const engineRunsRelations = relations(engineRuns, ({ one }) => ({
   user: one(users, { fields: [engineRuns.userId], references: [users.id] }),
