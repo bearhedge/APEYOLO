@@ -10,7 +10,7 @@ import { getIndicatorSnapshot, getIndicatorSnapshotSafe } from './services/indic
 import { predictDirection } from './services/directionPredictor';
 import { db } from './db';
 import { indicatorSnapshots, directionPredictions } from '@shared/schema';
-import { eq } from 'drizzle-orm';
+import { eq, sql, isNotNull, and } from 'drizzle-orm';
 
 const router = Router();
 
@@ -229,6 +229,84 @@ router.patch('/predictions/:id', async (req, res) => {
   } catch (error) {
     console.error('Failed to update prediction:', error);
     res.status(500).json({ error: 'Failed to update prediction' });
+  }
+});
+
+/**
+ * GET /api/indicators/accuracy
+ *
+ * Get AI direction prediction accuracy statistics.
+ * Used for the RLHF "earned autonomy" feature - AI unlocks auto-run at 80% accuracy.
+ *
+ * Returns:
+ * - totalPredictions: number of closed trades with wasCorrect result
+ * - correctPredictions: number where wasCorrect = true
+ * - accuracy: overall accuracy percentage (0-100)
+ * - last50Accuracy: accuracy of last 50 predictions (for auto-run threshold)
+ * - overrideStats: stats when user overrode AI (agreedWithAi = false)
+ * - agreementStats: stats when user followed AI (agreedWithAi = true)
+ * - autoRunEligible: true if last50Accuracy >= 80
+ */
+router.get('/accuracy', async (req, res) => {
+  try {
+    // Query all predictions where wasCorrect is not null (closed trades)
+    const allPredictions = await db
+      .select({
+        id: directionPredictions.id,
+        wasCorrect: directionPredictions.wasCorrect,
+        agreedWithAi: directionPredictions.agreedWithAi,
+        wasOverride: directionPredictions.wasOverride,
+        overrideWasCorrect: directionPredictions.overrideWasCorrect,
+        createdAt: directionPredictions.createdAt,
+      })
+      .from(directionPredictions)
+      .where(isNotNull(directionPredictions.wasCorrect))
+      .orderBy(sql`${directionPredictions.createdAt} DESC`);
+
+    const totalPredictions = allPredictions.length;
+    const correctPredictions = allPredictions.filter(p => p.wasCorrect === true).length;
+    const accuracy = totalPredictions > 0 ? (correctPredictions / totalPredictions) * 100 : 0;
+
+    // Calculate last 50 accuracy for auto-run threshold
+    const last50 = allPredictions.slice(0, 50);
+    const last50Correct = last50.filter(p => p.wasCorrect === true).length;
+    const last50Accuracy = last50.length > 0 ? (last50Correct / last50.length) * 100 : null;
+
+    // Override stats: when user disagreed with AI (agreedWithAi = false)
+    const overridePredictions = allPredictions.filter(p => p.agreedWithAi === false);
+    const overrideCount = overridePredictions.length;
+    const overrideCorrectCount = overridePredictions.filter(p => p.wasCorrect === true).length;
+    const overrideAccuracy = overrideCount > 0 ? (overrideCorrectCount / overrideCount) * 100 : null;
+
+    // Agreement stats: when user followed AI (agreedWithAi = true)
+    const agreedPredictions = allPredictions.filter(p => p.agreedWithAi === true);
+    const agreedCount = agreedPredictions.length;
+    const agreedCorrectCount = agreedPredictions.filter(p => p.wasCorrect === true).length;
+    const agreedAccuracy = agreedCount > 0 ? (agreedCorrectCount / agreedCount) * 100 : null;
+
+    // Auto-run eligibility: need at least 50 predictions and 80%+ accuracy
+    const autoRunEligible = last50.length >= 50 && last50Accuracy !== null && last50Accuracy >= 80;
+
+    res.json({
+      totalPredictions,
+      correctPredictions,
+      accuracy: Math.round(accuracy * 100) / 100, // Round to 2 decimal places
+      last50Accuracy: last50Accuracy !== null ? Math.round(last50Accuracy * 100) / 100 : null,
+      overrideStats: {
+        overrideCount,
+        overrideCorrectCount,
+        overrideAccuracy: overrideAccuracy !== null ? Math.round(overrideAccuracy * 100) / 100 : null,
+      },
+      agreementStats: {
+        agreedCount,
+        agreedCorrectCount,
+        agreedAccuracy: agreedAccuracy !== null ? Math.round(agreedAccuracy * 100) / 100 : null,
+      },
+      autoRunEligible,
+    });
+  } catch (error) {
+    console.error('Failed to get accuracy stats:', error);
+    res.status(500).json({ error: 'Failed to get accuracy stats' });
   }
 });
 

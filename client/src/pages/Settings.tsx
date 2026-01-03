@@ -22,6 +22,7 @@ import {
 } from '@/lib/sas-client';
 import { SectionHeader } from '@/components/SectionHeader';
 import { LeftNav } from '@/components/LeftNav';
+import { AccuracyDashboard } from '@/components/AccuracyDashboard';
 import { Button } from '@/components/ui/button';
 import { StatusStep } from '@/components/ui/StatusStep';
 import { Input } from '@/components/ui/input';
@@ -1175,6 +1176,11 @@ export function Settings() {
                 </div>
               )}
             </div>
+          </div>
+
+          {/* AI Accuracy Dashboard */}
+          <div className="mt-6">
+            <AccuracyDashboard />
           </div>
 
           {/* Copied toast */}
