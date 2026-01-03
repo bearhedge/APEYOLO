@@ -9,7 +9,8 @@ import { Router } from 'express';
 import { getIndicatorSnapshot, getIndicatorSnapshotSafe } from './services/indicators/ibkrFetcher';
 import { predictDirection } from './services/directionPredictor';
 import { db } from './db';
-import { indicatorSnapshots } from '@shared/schema';
+import { indicatorSnapshots, directionPredictions } from '@shared/schema';
+import { eq } from 'drizzle-orm';
 
 const router = Router();
 
@@ -159,6 +160,75 @@ router.get('/:symbol/full', async (req, res) => {
   } catch (error) {
     console.error('Failed to get full snapshot:', error);
     res.status(500).json({ error: 'Failed to get full snapshot' });
+  }
+});
+
+/**
+ * PATCH /api/indicators/predictions/:id
+ *
+ * Update a direction prediction with the user's actual choice.
+ * Used for RLHF tracking - captures when user agrees/disagrees with AI.
+ * Note: Route is /predictions/:id since this router is mounted at /api/indicators
+ *
+ * Body:
+ * - userChoice: PUT | CALL | STRANGLE | NO_TRADE
+ * - agreedWithAi: boolean (optional, calculated if not provided)
+ */
+router.patch('/predictions/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { userChoice, agreedWithAi } = req.body;
+
+    if (!userChoice) {
+      res.status(400).json({ error: 'userChoice is required' });
+      return;
+    }
+
+    // First, get the existing prediction to compare with AI suggestion
+    const existing = await db
+      .select({
+        aiSuggestion: directionPredictions.aiSuggestion,
+        indicatorSignal: directionPredictions.indicatorSignal,
+      })
+      .from(directionPredictions)
+      .where(eq(directionPredictions.id, id))
+      .limit(1);
+
+    if (existing.length === 0) {
+      res.status(404).json({ error: 'Prediction not found' });
+      return;
+    }
+
+    const prediction = existing[0];
+
+    // Calculate agreement flags
+    const agreedWithAiFinal = agreedWithAi ?? (userChoice === prediction.aiSuggestion);
+    const agreedWithIndicators = userChoice === prediction.indicatorSignal;
+
+    // Update the prediction
+    await db
+      .update(directionPredictions)
+      .set({
+        userChoice,
+        agreedWithAi: agreedWithAiFinal,
+        agreedWithIndicators,
+      })
+      .where(eq(directionPredictions.id, id));
+
+    console.log(`[IndicatorRoutes] Updated prediction ${id}: userChoice=${userChoice}, agreedWithAi=${agreedWithAiFinal}, agreedWithIndicators=${agreedWithIndicators}`);
+
+    res.json({
+      success: true,
+      updated: {
+        id,
+        userChoice,
+        agreedWithAi: agreedWithAiFinal,
+        agreedWithIndicators,
+      },
+    });
+  } catch (error) {
+    console.error('Failed to update prediction:', error);
+    res.status(500).json({ error: 'Failed to update prediction' });
   }
 });
 

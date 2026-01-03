@@ -20,6 +20,7 @@ export type DirectionType = 'PUT' | 'CALL' | 'STRANGLE' | 'NO_TRADE';
 export interface DirectionPrediction {
   direction: DirectionType;
   confidence: number; // 0-100
+  predictionId?: string; // ID for updating with user choice (RLHF tracking)
   reasoning: {
     indicatorSignal: string;
     indicatorConfidence: number;
@@ -320,10 +321,13 @@ export async function predictDirection(symbol: string): Promise<DirectionPredict
     },
   };
 
-  // Step 6: Save prediction for tracking
-  await savePrediction(snapshot, prediction);
+  // Step 6: Save prediction for tracking and get ID
+  const predictionId = await savePrediction(snapshot, prediction);
+  if (predictionId) {
+    prediction.predictionId = predictionId;
+  }
 
-  console.log(`[DirectionPredictor] Final prediction: ${prediction.direction} (${prediction.confidence}% confidence)`);
+  console.log(`[DirectionPredictor] Final prediction: ${prediction.direction} (${prediction.confidence}% confidence), ID: ${predictionId || 'not saved'}`);
   return prediction;
 }
 
