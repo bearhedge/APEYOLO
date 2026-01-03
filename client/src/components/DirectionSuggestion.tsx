@@ -12,7 +12,7 @@
  * - Tracks when user agrees/disagrees with suggestion
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp, Brain, History, BarChart3, Loader2, AlertCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
@@ -20,7 +20,7 @@ import { Badge } from '@/components/ui/badge';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 
 // Types matching the API response
-type DirectionType = 'PUT' | 'CALL' | 'STRANGLE' | 'NO_TRADE';
+export type DirectionType = 'PUT' | 'CALL' | 'STRANGLE' | 'NO_TRADE';
 
 interface DirectionPrediction {
   direction: DirectionType;
@@ -131,17 +131,8 @@ export function DirectionSuggestion({
     retry: 2,
   });
 
-  // Track when user selects a direction that agrees/disagrees with AI
-  useEffect(() => {
-    if (selectedDirection && prediction && lastPredictionId !== prediction.predictionId) {
-      // User has made a selection - update the prediction record
-      updateUserChoice(prediction.predictionId, selectedDirection, prediction.direction);
-      setLastPredictionId(prediction.predictionId || null);
-    }
-  }, [selectedDirection, prediction, lastPredictionId]);
-
   // Update prediction with user's choice
-  const updateUserChoice = async (predictionId: string | undefined, userChoice: DirectionType, aiSuggestion: DirectionType) => {
+  const updateUserChoice = useCallback(async (predictionId: string | undefined, userChoice: DirectionType, aiSuggestion: DirectionType) => {
     if (!predictionId) return;
 
     try {
@@ -158,7 +149,16 @@ export function DirectionSuggestion({
     } catch (err) {
       console.error('[DirectionSuggestion] Failed to update user choice:', err);
     }
-  };
+  }, []);
+
+  // Track when user selects a direction that agrees/disagrees with AI
+  useEffect(() => {
+    if (selectedDirection && prediction && lastPredictionId !== prediction.predictionId) {
+      // User has made a selection - update the prediction record
+      updateUserChoice(prediction.predictionId, selectedDirection, prediction.direction);
+      setLastPredictionId(prediction.predictionId || null);
+    }
+  }, [selectedDirection, prediction, lastPredictionId, updateUserChoice]);
 
   // Handle click on suggestion badge
   const handleSuggestionClick = () => {
