@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Brain, TrendingUp, TrendingDown, Lock, Unlock, Target, Users, UserX } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
+import { AutoRunToggle } from './AutoRunToggle';
 
 interface AccuracyStats {
   totalPredictions: number;
@@ -147,6 +148,9 @@ export function AccuracyDashboard() {
             </p>
           )}
         </div>
+
+        {/* Auto-Run Toggle */}
+        <AutoRunToggle />
 
         {/* Agreement vs Override comparison */}
         <div className="grid grid-cols-2 gap-4">

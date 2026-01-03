@@ -954,6 +954,34 @@ export type InsertIndicatorSnapshot = z.infer<typeof insertIndicatorSnapshotSche
 
 // ==================== END INDICATOR SNAPSHOTS ====================
 
+// ==================== USER SETTINGS ====================
+// User-specific settings and preferences for RLHF features
+
+export const userSettings = pgTable("user_settings", {
+  id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id", { length: 36 }).notNull().references(() => users.id, { onDelete: "cascade" }).unique(),
+
+  // Auto-run feature for RLHF earned autonomy
+  autoRunEnabled: boolean("auto_run_enabled").notNull().default(false),
+
+  // Timestamps
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+}, (table) => [
+  index("user_settings_user_id_idx").on(table.userId),
+]);
+
+export const insertUserSettingsSchema = createInsertSchema(userSettings).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+});
+
+export type UserSettings = typeof userSettings.$inferSelect;
+export type InsertUserSettings = z.infer<typeof insertUserSettingsSchema>;
+
+// ==================== END USER SETTINGS ====================
+
 // Option chain types
 export type OptionData = {
   strike: number;

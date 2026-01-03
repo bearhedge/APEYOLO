@@ -10,11 +10,12 @@
  * - Confidence level display
  * - Expandable reasoning section showing indicator signals and historical accuracy
  * - Tracks when user agrees/disagrees with suggestion
+ * - Auto-run mode: automatically selects the AI's suggestion when enabled
  */
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp, Brain, History, BarChart3, Loader2, AlertCircle } from 'lucide-react';
+import { TrendingUp, TrendingDown, Minus, ChevronDown, ChevronUp, Brain, History, BarChart3, Loader2, AlertCircle, Zap } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { Badge } from '@/components/ui/badge';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
@@ -34,12 +35,22 @@ interface DirectionPrediction {
   predictionId?: string;
 }
 
+interface AutoRunStatus {
+  eligible: boolean;
+  enabled: boolean;
+  active: boolean;
+  accuracy: number | null;
+  predictionsCount: number;
+}
+
 interface DirectionSuggestionProps {
   symbol?: string;
   onSuggestionClick?: (direction: DirectionType) => void;
   selectedDirection?: DirectionType | null;
   compact?: boolean;
   className?: string;
+  /** When true, enables auto-run mode where AI automatically selects direction */
+  autoRunActive?: boolean;
 }
 
 // Direction styling configuration
@@ -105,9 +116,12 @@ export function DirectionSuggestion({
   selectedDirection,
   compact = false,
   className,
+  autoRunActive = false,
 }: DirectionSuggestionProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [lastPredictionId, setLastPredictionId] = useState<string | null>(null);
+  const [autoSelected, setAutoSelected] = useState(false);
+  const autoSelectTriggered = useRef(false);
 
   // Fetch prediction from API
   const {
@@ -160,12 +174,39 @@ export function DirectionSuggestion({
     }
   }, [selectedDirection, prediction, lastPredictionId, updateUserChoice]);
 
+  // Auto-run: automatically select AI's suggestion when auto-run is active
+  useEffect(() => {
+    if (
+      autoRunActive &&
+      prediction &&
+      prediction.direction !== 'NO_TRADE' &&
+      onSuggestionClick &&
+      !autoSelectTriggered.current &&
+      !selectedDirection // Don't auto-select if user already selected
+    ) {
+      console.log(`[DirectionSuggestion] Auto-run: auto-selecting ${prediction.direction} (${prediction.confidence}% confidence)`);
+      autoSelectTriggered.current = true;
+      setAutoSelected(true);
+      onSuggestionClick(prediction.direction);
+    }
+
+    // Reset when prediction changes
+    if (prediction?.predictionId !== lastPredictionId) {
+      autoSelectTriggered.current = false;
+      setAutoSelected(false);
+    }
+  }, [autoRunActive, prediction, onSuggestionClick, selectedDirection, lastPredictionId]);
+
   // Handle click on suggestion badge
   const handleSuggestionClick = () => {
     if (prediction && onSuggestionClick && prediction.direction !== 'NO_TRADE') {
+      setAutoSelected(false); // User manually clicked, no longer auto-selected
       onSuggestionClick(prediction.direction);
     }
   };
+
+  // Check if current selection matches auto-run suggestion
+  const isAutoSelected = autoRunActive && autoSelected && selectedDirection === prediction?.direction;
 
   // Loading state
   if (isLoading) {
@@ -206,12 +247,17 @@ export function DirectionSuggestion({
           'flex items-center gap-2 px-3 py-1.5 rounded-full border transition-all',
           config.bgColor,
           config.borderColor,
+          isAutoSelected && 'ring-2 ring-electric ring-offset-1 ring-offset-charcoal',
           prediction.direction !== 'NO_TRADE' && 'hover:opacity-80 cursor-pointer',
           prediction.direction === 'NO_TRADE' && 'opacity-60 cursor-not-allowed',
           className
         )}
       >
-        <Brain className="w-3.5 h-3.5 text-silver" />
+        {isAutoSelected ? (
+          <Zap className="w-3.5 h-3.5 text-electric" />
+        ) : (
+          <Brain className="w-3.5 h-3.5 text-silver" />
+        )}
         <Icon className={cn('w-4 h-4', config.textColor)} />
         <span className={cn('text-sm font-medium', config.textColor)}>
           {config.label}
@@ -219,6 +265,9 @@ export function DirectionSuggestion({
         <span className={cn('text-xs', getConfidenceColor(prediction.confidence))}>
           {prediction.confidence}%
         </span>
+        {isAutoSelected && (
+          <span className="text-xs text-electric font-medium">AUTO</span>
+        )}
       </button>
     );
   }
@@ -230,14 +279,24 @@ export function DirectionSuggestion({
         'rounded-lg border transition-all',
         config.bgColor,
         config.borderColor,
+        isAutoSelected && 'ring-2 ring-electric',
         className
       )}>
         {/* Header - always visible */}
         <div className="flex items-center justify-between p-3">
           <div className="flex items-center gap-3">
             <div className="flex items-center gap-1.5">
-              <Brain className="w-4 h-4 text-silver" />
-              <span className="text-xs text-silver font-medium">AI SUGGESTS</span>
+              {isAutoSelected ? (
+                <>
+                  <Zap className="w-4 h-4 text-electric" />
+                  <span className="text-xs text-electric font-medium">AUTO-SELECTED</span>
+                </>
+              ) : (
+                <>
+                  <Brain className="w-4 h-4 text-silver" />
+                  <span className="text-xs text-silver font-medium">AI SUGGESTS</span>
+                </>
+              )}
             </div>
 
             <button
@@ -246,6 +305,7 @@ export function DirectionSuggestion({
               className={cn(
                 'flex items-center gap-2 px-3 py-1.5 rounded-md transition-all',
                 'bg-white/5 border border-white/10',
+                isAutoSelected && 'ring-1 ring-electric',
                 prediction.direction !== 'NO_TRADE' && 'hover:bg-white/10 cursor-pointer',
                 prediction.direction === 'NO_TRADE' && 'opacity-60 cursor-not-allowed'
               )}
