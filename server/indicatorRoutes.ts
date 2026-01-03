@@ -7,6 +7,7 @@
 
 import { Router } from 'express';
 import { getIndicatorSnapshot, getIndicatorSnapshotSafe } from './services/indicators/ibkrFetcher';
+import { predictDirection } from './services/directionPredictor';
 import { db } from './db';
 import { indicatorSnapshots } from '@shared/schema';
 
@@ -82,6 +83,28 @@ router.get('/:symbol/suggestion', async (req, res) => {
   } catch (error) {
     console.error('Failed to get suggestion:', error);
     res.status(500).json({ error: 'Failed to get suggestion' });
+  }
+});
+
+/**
+ * GET /api/indicators/:symbol/predict
+ *
+ * Get AI direction prediction based on current indicators and historical accuracy.
+ * Uses RLHF-style learning from past user decisions and outcomes.
+ *
+ * Returns:
+ * - direction: PUT | CALL | STRANGLE | NO_TRADE
+ * - confidence: 0-100
+ * - reasoning: explanation of the prediction
+ */
+router.get('/:symbol/predict', async (req, res) => {
+  try {
+    const { symbol } = req.params;
+    const prediction = await predictDirection(symbol.toUpperCase());
+    res.json(prediction);
+  } catch (error) {
+    console.error('Failed to predict direction:', error);
+    res.status(500).json({ error: 'Failed to predict direction' });
   }
 });
 
