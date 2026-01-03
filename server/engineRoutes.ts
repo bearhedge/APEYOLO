@@ -15,7 +15,8 @@ import { requireAuth } from "./auth";
 import { z } from "zod";
 import { adaptTradingDecision } from "./engine/adapter";
 import { db } from "./db";
-import { paperTrades, orders } from "../shared/schema";
+import { paperTrades, orders, engineRuns } from "../shared/schema";
+import { eq } from "drizzle-orm";
 import { enforceMandate } from "./services/mandateService";
 import type { EngineAnalyzeResponse, TradeProposal, RiskProfile } from "../shared/types/engine";
 
@@ -53,7 +54,7 @@ const DEFAULT_GUARD_RAILS: GuardRails = {
   maxDelta: 0.35, // Aligned with step3 target range [0.25, 0.35]
   minDelta: 0.05,
   maxPositionsPerDay: 10,
-  maxContractsPerTrade: 5,
+  maxContractsPerTrade: 2,
   mandatoryStopLoss: true,
   stopLossMultiplier: 2.0,
   maxDailyLoss: 0.02,
@@ -393,7 +394,7 @@ router.post('/execute', requireAuth, async (req, res) => {
 // This is the NEW endpoint that returns the EngineAnalyzeResponse format
 router.get('/analyze', requireAuth, async (req, res) => {
   try {
-    const { riskTier = 'balanced', stopMultiplier = '3', strategy } = req.query;
+    const { riskTier = 'balanced', stopMultiplier = '6', strategy } = req.query;
 
     // Get symbol from query params, default to SPY
     const requestedSymbol = ((req.query.symbol as string) || 'SPY').toUpperCase() as TradingSymbol;
@@ -569,8 +570,21 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
   try {
     const { tradeProposal } = req.body as { tradeProposal: TradeProposal };
 
-    if (!tradeProposal || !tradeProposal.proposalId) {
-      return res.status(400).json({ error: 'Invalid trade proposal' });
+    if (!tradeProposal) {
+      console.log('[Engine/execute] ERROR: tradeProposal is null/undefined');
+      return res.status(400).json({ error: 'Invalid trade proposal: proposal is null' });
+    }
+    if (!tradeProposal.proposalId) {
+      console.log('[Engine/execute] ERROR: proposalId missing. Received:', JSON.stringify(tradeProposal, null, 2));
+      return res.status(400).json({
+        error: 'Invalid trade proposal: missing proposalId',
+        received: {
+          hasSymbol: !!tradeProposal.symbol,
+          hasLegs: !!tradeProposal.legs,
+          hasId: !!tradeProposal.id,
+          keys: Object.keys(tradeProposal)
+        }
+      });
     }
 
     // Check trading window
@@ -627,13 +641,13 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
         const expiration = tradeProposal.expirationDate.replace(/-/g, '');
         console.log(`[Engine/execute] Using expiration date: ${tradeProposal.expirationDate} → ${expiration}`);
 
-        // Calculate per-leg stop prices (3x each leg's individual premium)
+        // Calculate per-leg stop prices (6x each leg's individual premium)
         // FIX: Previously used portfolio-level stopLossPrice for all legs (bug: both got same 2.22)
         // Now each leg gets its own stop based on its own premium
 
         for (const leg of tradeProposal.legs) {
-          // Per-leg stop: 3x this leg's premium (e.g., PUT $0.70 → stop $2.10)
-          const STOP_MULTIPLIER = 3; // 3x premium (same as step5.ts: 1 + STOP_LOSS_MULTIPLIER)
+          // Per-leg stop: 6x this leg's premium (e.g., PUT $0.70 → stop $4.20)
+          const STOP_MULTIPLIER = 6; // 6x premium (Layer 2 backup)
           // Round to nearest cent (0.01) to conform to IBKR minimum price variation
           const legStopPrice = Math.round(leg.premium * STOP_MULTIPLIER * 100) / 100;
 
@@ -677,7 +691,7 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
                 ibkrOrderId: orderResult.primaryOrderId,
                 symbol: optionSymbol,
                 side: 'SELL',
-                quantity: tradeProposal.contracts,
+                quantity: tradeProposal.contracts, // Per-leg quantity (actual IBKR order size)
                 orderType: 'LMT',
                 limitPrice: sellPrice.toString(),
                 status: 'filled',
@@ -725,17 +739,20 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
     let engineTradeId: string | null = null;
     let dbInsertError: string | null = null;
 
-    // Try to insert trade record - but don't fail the whole request if DB insert fails
+    // Try to insert trade record with retry logic
     // IBKR orders have already been placed successfully at this point
-    try {
-      const [engineTrade] = await db.insert(paperTrades).values({
+    const MAX_DB_RETRIES = 3;
+    for (let dbAttempt = 1; dbAttempt <= MAX_DB_RETRIES; dbAttempt++) {
+      try {
+        const [engineTrade] = await db.insert(paperTrades).values({
         proposalId: tradeProposal.proposalId,
         symbol: tradeProposal.symbol,
         strategy: tradeProposal.strategy,
         bias: tradeProposal.bias,
         expiration: expirationDate,
         expirationLabel: tradeProposal.expiration,
-        contracts: tradeProposal.contracts,
+        // Store total option contracts (e.g., 2 strangles = 4 contracts)
+        contracts: leg2 ? tradeProposal.contracts * 2 : tradeProposal.contracts,
 
         leg1Type: leg1.optionType,
         leg1Strike: leg1.strike.toString(),
@@ -752,7 +769,7 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
         maxLoss: tradeProposal.maxLoss.toString(),
 
         stopLossPrice: tradeProposal.stopLossPrice.toString(),
-        stopLossMultiplier: '3.5', // 3.5x stop multiplier
+        stopLossMultiplier: '6', // 6x stop multiplier
         timeStopEt: tradeProposal.timeStop,
 
         entryVix: tradeProposal.context.vix?.toString() ?? null,
@@ -766,11 +783,17 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
         fullProposal: tradeProposal,
       }).returning();
 
-      engineTradeId = engineTrade.id;
-    } catch (dbErr: any) {
-      console.error('[Engine/execute] Failed to insert trade record:', dbErr);
-      dbInsertError = dbErr.message || 'Database insert failed';
-      // Don't throw - IBKR orders succeeded, we should still report success
+        engineTradeId = engineTrade.id;
+        break; // Success - exit retry loop
+      } catch (dbErr: any) {
+        console.error(`[Engine/execute] DB insert attempt ${dbAttempt}/${MAX_DB_RETRIES} failed:`, dbErr.message);
+        dbInsertError = dbErr.message || 'Database insert failed';
+
+        if (dbAttempt < MAX_DB_RETRIES) {
+          // Wait before retry (exponential backoff: 500ms, 1000ms, 1500ms)
+          await new Promise(resolve => setTimeout(resolve, 500 * dbAttempt));
+        }
+      }
     }
 
     // Create audit log
@@ -791,15 +814,19 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
       console.error('[Engine/execute] Failed to create audit log:', auditErr);
     }
 
-    // Return success if IBKR orders were placed (even if DB insert failed)
+    // CRITICAL: Return success only if trade was recorded in database
+    // IBKR orders without DB record = orphaned orders that need manual recovery
     res.json({
-      success: ibkrOrderIds.length > 0 || engineTradeId !== null,
+      success: engineTradeId !== null, // Only true if DB write succeeded
       tradeId: engineTradeId,
-      message: broker.status.provider === 'ibkr' && ibkrOrderIds.length > 0
-        ? `LIVE bracket orders submitted: ${ibkrOrderIds.length} order(s) (SELL + STOP)`
-        : 'Trade recorded (simulation mode - IBKR not connected)',
+      message: engineTradeId
+        ? (broker.status.provider === 'ibkr' && ibkrOrderIds.length > 0
+            ? `LIVE bracket orders submitted: ${ibkrOrderIds.length} order(s) (SELL + STOP)`
+            : 'Trade recorded (simulation mode - IBKR not connected)')
+        : 'CRITICAL: Trade may have been placed on IBKR but was NOT recorded in database!',
       ibkrOrderIds: ibkrOrderIds.length > 0 ? ibkrOrderIds : undefined,
-      warning: dbInsertError ? `Trade executed but database record failed: ${dbInsertError}` : undefined,
+      error: dbInsertError ? `Database insert failed: ${dbInsertError}` : undefined,
+      requiresManualRecovery: !!dbInsertError && ibkrOrderIds.length > 0,
     });
   } catch (error: any) {
     console.error('[Engine/execute] Error:', error);
@@ -910,8 +937,8 @@ router.post('/execute-trade', requireAuth, async (req, res) => {
       const putStrike = decision.strikes.putStrike;
       const contracts = decision.positionSize.contracts;
       const premium = putStrike.expectedPremium || putStrike.bid || 0.5;
-      // Stop loss: default 3.5x premium if not specified
-      const stopPrice = decision.exitRules?.stopLoss || (premium * 3.5);
+      // Stop loss: default 6x premium if not specified
+      const stopPrice = decision.exitRules?.stopLoss || (premium * 6);
 
       let orderResult: { primaryOrderId?: string; stopOrderId?: string; status: string } = { status: 'mock' };
 
@@ -973,8 +1000,8 @@ router.post('/execute-trade', requireAuth, async (req, res) => {
       const callStrike = decision.strikes.callStrike;
       const contracts = decision.positionSize.contracts;
       const premium = callStrike.expectedPremium || callStrike.bid || 0.5;
-      // Stop loss: default 3.5x premium if not specified
-      const stopPrice = decision.exitRules?.stopLoss || (premium * 3.5);
+      // Stop loss: default 6x premium if not specified
+      const stopPrice = decision.exitRules?.stopLoss || (premium * 6);
 
       let orderResult: { primaryOrderId?: string; stopOrderId?: string; status: string } = { status: 'mock' };
 
@@ -1264,6 +1291,90 @@ router.get('/test-strikes', requireAuth, async (req, res) => {
   } catch (error) {
     console.error('[Engine/test-strikes] Error:', error);
     res.status(500).json({ error: error instanceof Error ? error.message : 'Unknown error' });
+  }
+});
+
+// ============================================
+// Engine Run Adjustments (RLHF Tracking)
+// ============================================
+
+// Validation schema for strike adjustments
+const engineRunAdjustmentSchema = z.object({
+  finalPutStrike: z.number().positive().optional(),
+  finalCallStrike: z.number().positive().optional(),
+  adjustmentCount: z.number().int().min(0).max(6).optional(), // Max 3 adjustments per side = 6 total
+});
+
+// PATCH /api/engine/runs/:id/adjustments - Update engine run with user's final strike adjustments
+router.patch('/runs/:id/adjustments', requireAuth, async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    // Validate request body
+    const parseResult = engineRunAdjustmentSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      return res.status(400).json({
+        error: 'Invalid request body',
+        details: parseResult.error.issues,
+      });
+    }
+
+    const { finalPutStrike, finalCallStrike, adjustmentCount } = parseResult.data;
+
+    // Check if database is available
+    if (!db) {
+      return res.status(503).json({ error: 'Database not available' });
+    }
+
+    // Check if the engine run exists
+    const existing = await db
+      .select()
+      .from(engineRuns)
+      .where(eq(engineRuns.id, id))
+      .limit(1);
+
+    if (existing.length === 0) {
+      return res.status(404).json({ error: 'Engine run not found' });
+    }
+
+    // Build update object with only provided fields
+    const updateData: {
+      finalPutStrike?: number;
+      finalCallStrike?: number;
+      adjustmentCount?: number;
+    } = {};
+
+    if (finalPutStrike !== undefined) {
+      updateData.finalPutStrike = finalPutStrike;
+    }
+    if (finalCallStrike !== undefined) {
+      updateData.finalCallStrike = finalCallStrike;
+    }
+    if (adjustmentCount !== undefined) {
+      updateData.adjustmentCount = adjustmentCount;
+    }
+
+    // If no fields to update, return current record
+    if (Object.keys(updateData).length === 0) {
+      return res.json(existing[0]);
+    }
+
+    // Update the engine run record
+    const [updated] = await db
+      .update(engineRuns)
+      .set(updateData)
+      .where(eq(engineRuns.id, id))
+      .returning();
+
+    console.log(`[Engine/runs] Updated engine run ${id} with adjustments:`, updateData);
+
+    res.json(updated);
+  } catch (error) {
+    console.error('[Engine/runs] Error updating adjustments:', error);
+    res.status(500).json({
+      error: 'Failed to update engine run adjustments',
+      reason: error instanceof Error ? error.message : 'Unknown error',
+    });
   }
 });
 
