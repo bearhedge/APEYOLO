@@ -7,6 +7,7 @@
  */
 
 import { BarChart3, Search, Briefcase, Square, ChevronDown } from 'lucide-react';
+import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -21,6 +22,15 @@ import type { StrategyPreference } from '@shared/types/engine';
 type DirectionType = 'PUT' | 'CALL' | 'STRANGLE' | 'NO_TRADE';
 
 export type OperationType = 'analyze' | 'propose' | 'positions';
+
+// Auto-run status type
+interface AutoRunStatus {
+  active: boolean;
+  enabled: boolean;
+  eligible: boolean;
+  accuracy: number | null;
+  predictionsCount: number;
+}
 
 // Strategy display labels
 const STRATEGY_LABELS: Record<StrategyPreference, string> = {
@@ -50,6 +60,17 @@ export function QuickActionsBar({
   symbol = 'SPY',
   showSuggestion = true,
 }: QuickActionsBarProps) {
+  // Fetch auto-run status
+  const { data: autoRunStatus } = useQuery({
+    queryKey: ['/api/indicators/auto-run-status'],
+    queryFn: async () => {
+      const res = await fetch('/api/indicators/auto-run-status', { credentials: 'include' });
+      if (!res.ok) return null;
+      return res.json() as Promise<AutoRunStatus>;
+    },
+    refetchInterval: 60000,
+  });
+
   const handleFindTrade = () => {
     onAction('propose', { strategy });
   };
@@ -86,6 +107,7 @@ export function QuickActionsBar({
               onSuggestionClick={handleSuggestionClick}
               selectedDirection={selectedDirection}
               compact={false}
+              autoRunActive={autoRunStatus?.active ?? false}
             />
           </div>
         )}
