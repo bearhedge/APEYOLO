@@ -37,6 +37,9 @@ import defiRoutes from "./defiRoutes.js";
 import agentRoutes from "./agentRoutes.js";
 import dataCaptureRoutes from "./routes/dataCaptureRoutes.js";
 import researchRoutes from "./routes/researchRoutes.js";
+import publicRoutes from "./publicRoutes.js";
+import indicatorRoutes from "./indicatorRoutes.js";
+import cors from "cors";
 import { getTodayOpeningSnapshot, getTodayClosingSnapshot, getPreviousClosingSnapshot, isMarketHours } from "./services/navSnapshot.js";
 
 // Helper function to get session from request
@@ -58,7 +61,14 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Add cookie parser middleware
   app.use(cookieParser());
 
+  // Debug middleware for auth routes
+  app.use('/api/auth', (req, res, next) => {
+    console.log('[ROUTES] Auth route hit:', req.method, req.path);
+    next();
+  });
+
   // Register auth routes
+  console.log('[ROUTES] Registering auth routes, authRoutes type:', typeof authRoutes);
   app.use('/api/auth', authRoutes);
 
   // Register IBKR strategy routes
@@ -74,7 +84,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.use('/api/jobs', jobRoutes);
 
   // Register DeFi routes
-  app.use('/api/defi', defiRoutes);
+  // CORS for defi routes (needed for bearhedge.com track widget)
+  const defiCorsOptions = {
+    origin: ['https://bearhedge.com', 'http://localhost:3000', 'http://localhost:5173'],
+    methods: ['GET', 'POST'],
+    credentials: false,
+  };
+  app.use('/api/defi', cors(defiCorsOptions), defiRoutes);
 
   // Register Agent routes (LLM chat)
   app.use('/api/agent', agentRoutes);
@@ -85,19 +101,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Register Research routes (DD research terminal)
   app.use('/api/research', researchRoutes);
 
+  // Register Indicator routes (RLHF market context)
+  app.use('/api/indicators', indicatorRoutes);
+
+  // Register Public API routes (for bearhedge.com - no auth required)
+  // CORS enabled for bearhedge.com and localhost development
+  const publicCorsOptions = {
+    origin: ['https://bearhedge.com', 'http://localhost:3000', 'http://localhost:5173'],
+    methods: ['GET'],
+    credentials: false,
+  };
+  app.use('/api/public', cors(publicCorsOptions), publicRoutes);
+
   // ==================== IBKR CREDENTIALS SETTINGS (Multi-Tenant) ====================
 
   // GET /api/settings/ibkr - Get user's IBKR credentials status (not the secrets)
   app.get('/api/settings/ibkr', requireAuth, async (req, res) => {
     try {
       const userId = req.user!.id;
+      console.log(`[Settings] GET /api/settings/ibkr for userId=${userId}`);
       if (!db) {
+        console.log(`[Settings] Database not available!`);
         return res.status(503).json({ error: 'Database not available' });
       }
+
+      // Debug: list all credentials in table
+      const allCreds = await db.select({
+        id: ibkrCredentials.id,
+        userId: ibkrCredentials.userId,
+        clientIdPrefix: sql<string>`LEFT(${ibkrCredentials.clientId}, 8)`,
+        status: ibkrCredentials.status
+      }).from(ibkrCredentials).limit(10);
+      console.log(`[Settings] All credentials in DB:`, JSON.stringify(allCreds));
 
       const creds = await db.select().from(ibkrCredentials)
         .where(eq(ibkrCredentials.userId, userId))
         .limit(1);
+
+      console.log(`[Settings] Found ${creds.length} credentials for userId=${userId}`);
 
       if (creds.length === 0) {
         return res.json({
@@ -1601,11 +1642,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // SECURED: Returns user-specific IBKR status (not global server config)
   app.get('/api/ibkr/status', requireAuth, async (req, res) => {
     try {
+      const userId = req.user!.id;
+      console.log(`[IBKR Status] Checking credentials for user: ${userId}`);
+
       // Get broker for this specific user (no fallback to shared broker)
-      const userBroker = await getBrokerForUser(req.user!.id);
+      const userBroker = await getBrokerForUser(userId);
 
       // If user has no IBKR credentials configured, return unconfigured status
       if (!userBroker.api || userBroker.status.provider === 'none') {
+        console.log(`[IBKR Status] User ${userId} has no credentials: provider=${userBroker.status.provider}`);
         return res.json({
           configured: false,
           connected: false,
