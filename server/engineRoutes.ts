@@ -16,7 +16,7 @@ import { z } from "zod";
 import { adaptTradingDecision } from "./engine/adapter";
 import { db } from "./db";
 import { paperTrades, orders, engineRuns } from "../shared/schema";
-import { eq } from "drizzle-orm";
+import { eq, and } from "drizzle-orm";
 import { enforceMandate } from "./services/mandateService";
 import type { EngineAnalyzeResponse, TradeProposal, RiskProfile } from "../shared/types/engine";
 
@@ -1326,11 +1326,14 @@ router.patch('/runs/:id/adjustments', requireAuth, async (req, res) => {
       return res.status(503).json({ error: 'Database not available' });
     }
 
-    // Check if the engine run exists
+    // Check if the engine run exists AND belongs to the authenticated user
     const existing = await db
       .select()
       .from(engineRuns)
-      .where(eq(engineRuns.id, id))
+      .where(and(
+        eq(engineRuns.id, id),
+        eq(engineRuns.userId, req.user!.id)
+      ))
       .limit(1);
 
     if (existing.length === 0) {
