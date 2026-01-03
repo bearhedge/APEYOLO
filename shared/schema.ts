@@ -900,6 +900,60 @@ export type InsertDirectionPrediction = z.infer<typeof insertDirectionPrediction
 
 // ==================== END DIRECTION PREDICTIONS ====================
 
+// ==================== INDICATOR SNAPSHOTS ====================
+// Stores computed technical indicators (RSI, MACD, etc.) so the AI can reference historical market conditions
+
+export const indicatorSnapshots = pgTable("indicator_snapshots", {
+  id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+  symbol: text("symbol").notNull(),
+
+  // Price data
+  price: doublePrecision("price").notNull(),
+  open: doublePrecision("open"),
+  high: doublePrecision("high"),
+  low: doublePrecision("low"),
+  volume: doublePrecision("volume"),
+
+  // Trend indicators
+  sma20: doublePrecision("sma_20"),
+  sma50: doublePrecision("sma_50"),
+  ema9: doublePrecision("ema_9"),
+  ema21: doublePrecision("ema_21"),
+
+  // Momentum indicators
+  rsi14: doublePrecision("rsi_14"),
+  macd: doublePrecision("macd"),
+  macdSignal: doublePrecision("macd_signal"),
+  macdHistogram: doublePrecision("macd_histogram"),
+
+  // Volatility
+  atr14: doublePrecision("atr_14"),
+  bollingerUpper: doublePrecision("bollinger_upper"),
+  bollingerLower: doublePrecision("bollinger_lower"),
+
+  // Market context
+  vix: doublePrecision("vix"),
+
+  // Derived signals
+  trendDirection: text("trend_direction"), // UP | DOWN | SIDEWAYS
+  momentumSignal: text("momentum_signal"), // BULLISH | BEARISH | NEUTRAL
+  volatilityRegime: text("volatility_regime"), // LOW | NORMAL | HIGH
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  index("indicator_snapshots_symbol_idx").on(table.symbol),
+  index("indicator_snapshots_created_idx").on(table.createdAt),
+]);
+
+export const insertIndicatorSnapshotSchema = createInsertSchema(indicatorSnapshots).omit({
+  id: true,
+  createdAt: true,
+});
+export type IndicatorSnapshot = typeof indicatorSnapshots.$inferSelect;
+export type InsertIndicatorSnapshot = z.infer<typeof insertIndicatorSnapshotSchema>;
+
+// ==================== END INDICATOR SNAPSHOTS ====================
+
 // Option chain types
 export type OptionData = {
   strike: number;
