@@ -15,6 +15,13 @@
       "when": 1766853476805,
       "tag": "0001_add_option_bars",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1767448115109,
+      "tag": "0002_productive_lightspeed",
+      "breakpoints": true
     }
   ]
 }
