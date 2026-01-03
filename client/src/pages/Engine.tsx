@@ -5,9 +5,11 @@ import { EngineStepCard, StepStatus, StepFlowIndicator, StepConnector } from '@/
 import { Step1Content, Step2Content, Step3Content, Step4Content, Step5Content } from '@/components/EngineStepContents';
 import { StrikeSelector } from '@/components/StrikeSelector';
 import { OptionChainModal } from '@/components/OptionChainModal';
+import { TradeProposalCard, type TradeProposal, type ModificationImpact } from '@/components/agent/TradeProposalCard';
 import { CheckCircle, XCircle, Clock, Zap, AlertTriangle, Play, RefreshCw, Pause, ExternalLink } from 'lucide-react';
 import { useEngine } from '@/hooks/useEngine';
 import { useBrokerStatus } from '@/hooks/useBrokerStatus';
+import { useTradeEngineJob } from '@/hooks/useTradeEngineJob';
 import EngineLog from '@/components/EngineLog';
 import toast from 'react-hot-toast';
 import type { EngineFlowState, ExecutePaperTradeResponse, StrategyPreference } from '../../../shared/types/engine';
@@ -47,6 +49,9 @@ export function Engine() {
   // Unified broker status hook - same source as Settings page
   const { connected: brokerConnectedHook, isConnecting, environment } = useBrokerStatus();
 
+  // Automation toggle - controls scheduled 11:00 AM trade-engine job
+  const { isEnabled: automationEnabled, setEnabled: setAutomationEnabled, isUpdating: isUpdatingAutomation } = useTradeEngineJob();
+
   // Use hook value if available, otherwise fall back to useEngine value
   const brokerConnectedFinal = brokerConnectedHook ?? brokerConnected;
 
@@ -67,6 +72,10 @@ export function Engine() {
   // Execution result tracking
   const [executionResult, setExecutionResult] = useState<ExecutionResult | null>(null);
 
+  // Strike negotiation state - local proposal that can be modified
+  const [localProposal, setLocalProposal] = useState<TradeProposal | null>(null);
+  const [isNegotiating, setIsNegotiating] = useState(true); // Always allow strike adjustment
+
   // Auto-connect to IBKR when page loads (same as Settings page)
   useEffect(() => {
     const connectBroker = async () => {
@@ -83,6 +92,132 @@ export function Engine() {
     };
     connectBroker();
   }, [fetchStatus]);
+
+  // Sync localProposal when analysis.tradeProposal changes
+  useEffect(() => {
+    if (analysis?.tradeProposal) {
+      const legs = analysis.tradeProposal.legs.map(leg => ({
+        optionType: leg.optionType,
+        strike: leg.strike,
+        delta: leg.delta,
+        premium: leg.premium,
+      }));
+
+      // Calculate premium from legs if backend returned 0 (market closed, no bid/ask)
+      let entryPremiumTotal = analysis.tradeProposal.entryPremiumTotal;
+      const contracts = analysis.tradeProposal.contracts || 1;
+
+      if (entryPremiumTotal === 0 || !entryPremiumTotal) {
+        // Sum up leg premiums (per-share) and multiply by contracts and 100 shares
+        const legPremiumSum = legs.reduce((sum, leg) => sum + (leg.premium || 0), 0);
+        entryPremiumTotal = legPremiumSum * contracts * 100;
+        console.log('[Engine] Recalculated premium from legs:', { legPremiumSum, contracts, entryPremiumTotal });
+      }
+
+      // Calculate maxLoss from stop multiplier if needed
+      const premiumPerShare = legs.reduce((sum, leg) => sum + (leg.premium || 0), 0);
+      const maxLoss = analysis.tradeProposal.maxLoss ||
+        (premiumPerShare * (stopMultiplier - 1) * contracts * 100);
+
+      // Convert to TradeProposalCard format
+      const proposalId = analysis.tradeProposal.proposalId || `engine-${Date.now()}`;
+      const proposal: TradeProposal = {
+        id: proposalId,
+        proposalId: proposalId, // Backend requires this field
+        symbol: analysis.tradeProposal.symbol || selectedSymbol,
+        expiration: analysis.tradeProposal.expirationDate || SYMBOL_CONFIG[selectedSymbol].expiration,
+        strategy: analysis.tradeProposal.strategy,
+        bias: analysis.tradeProposal.bias,
+        legs,
+        contracts,
+        entryPremiumTotal,
+        maxLoss,
+        stopLossPrice: analysis.tradeProposal.stopLossPrice || (premiumPerShare * stopMultiplier),
+      };
+      setLocalProposal(proposal);
+    }
+  }, [analysis?.tradeProposal, selectedSymbol, stopMultiplier]);
+
+  // Handle strike modification - recalculate from candidates
+  const handleModifyStrike = useCallback(async (legIndex: number, newStrike: number): Promise<ModificationImpact | null> => {
+    if (!localProposal || !analysis?.q3Strikes?.candidates) return null;
+
+    const leg = localProposal.legs[legIndex];
+    if (!leg) return null;
+
+    // Find the new strike in candidates
+    const candidates = analysis.q3Strikes.candidates;
+    const newStrikeData = candidates.find(c =>
+      c.strike === newStrike && c.optionType === leg.optionType
+    );
+
+    if (!newStrikeData) {
+      toast.error(`Strike $${newStrike} not found in option chain`);
+      return null;
+    }
+
+    // Calculate the old leg's premium
+    const oldPremium = leg.premium;
+    const newPremium = newStrikeData.premium;
+    const premiumDiff = newPremium - oldPremium;
+
+    // Calculate probability change (using delta as proxy for prob ITM)
+    const oldProbOTM = (1 - Math.abs(leg.delta)) * 100;
+    const newProbOTM = (1 - Math.abs(newStrikeData.delta)) * 100;
+    const probChange = newProbOTM - oldProbOTM;
+
+    // Calculate new totals
+    const oldTotalPremium = localProposal.entryPremiumTotal;
+    const newTotalPremium = oldTotalPremium + (premiumDiff * localProposal.contracts * 100);
+
+    // Determine agent opinion
+    const underlyingPrice = analysis.q3Strikes.underlyingPrice || 0;
+    const isCloserToATM = Math.abs(newStrike - underlyingPrice) < Math.abs(leg.strike - underlyingPrice);
+    let agentOpinion: 'approve' | 'caution' | 'reject' = 'approve';
+    let warning: string | undefined;
+
+    if (isCloserToATM) {
+      agentOpinion = 'caution';
+      warning = `Strike $${newStrike} is closer to current price ($${underlyingPrice.toFixed(0)}) - higher risk`;
+    }
+    if (newProbOTM < 75) {
+      agentOpinion = 'reject';
+      warning = `Probability OTM (${newProbOTM.toFixed(0)}%) is below 75% threshold`;
+    }
+
+    // Update the local proposal with new leg data
+    const updatedLegs = [...localProposal.legs];
+    updatedLegs[legIndex] = {
+      optionType: leg.optionType,
+      strike: newStrike,
+      delta: newStrikeData.delta,
+      premium: newPremium,
+    };
+
+    // Recalculate max loss (using stopMultiplier)
+    const totalPremiumPerContract = updatedLegs.reduce((sum, l) => sum + l.premium, 0);
+    const newMaxLoss = totalPremiumPerContract * (stopMultiplier - 1) * localProposal.contracts * 100;
+
+    setLocalProposal({
+      ...localProposal,
+      legs: updatedLegs,
+      entryPremiumTotal: newTotalPremium,
+      maxLoss: newMaxLoss,
+      stopLossPrice: totalPremiumPerContract * stopMultiplier,
+    });
+
+    return {
+      premiumChange: premiumDiff * localProposal.contracts * 100,
+      probabilityChange: probChange,
+      newPremium: newTotalPremium,
+      newProbOTM,
+      agentOpinion,
+      reasoning: isCloserToATM
+        ? `Moving ${leg.optionType} strike closer to ATM increases premium but also risk.`
+        : `Moving ${leg.optionType} strike further OTM reduces premium but increases safety.`,
+      warning,
+    };
+  }, [localProposal, analysis?.q3Strikes, stopMultiplier]);
 
   // Handle running the engine analysis (Steps 1-3)
   const handleRunEngine = useCallback(async () => {
@@ -186,7 +321,7 @@ export function Engine() {
 
   // Handle paper trade execution
   const handleExecuteTrade = useCallback(async () => {
-    if (!analysis || !analysis.executionReady || !analysis.tradeProposal) {
+    if (!analysis || !analysis.executionReady || !localProposal) {
       toast.error('No valid trade proposal available for execution');
       return;
     }
@@ -200,7 +335,8 @@ export function Engine() {
       setIsExecuting(true);
       setExecutionResult(null); // Clear previous result
       toast.loading('Executing bracket order (SELL + STOP)...', { id: 'execute' });
-      const result = await executePaperTrade(analysis.tradeProposal);
+      // CRITICAL: Use localProposal (user-modified) not analysis.tradeProposal (original)
+      const result = await executePaperTrade(localProposal);
 
       // Store execution result for display
       setExecutionResult({
@@ -226,7 +362,7 @@ export function Engine() {
     } finally {
       setIsExecuting(false);
     }
-  }, [analysis, executePaperTrade, environment]);
+  }, [analysis, localProposal, executePaperTrade, environment]);
 
   // Helper to derive step status from analysis
   const getStepStatus = (stepNum: number): StepStatus => {
@@ -421,6 +557,19 @@ export function Engine() {
                 <option value="put-only">PUT Only</option>
                 <option value="call-only">CALL Only</option>
               </select>
+
+              {/* Automation Toggle */}
+              <button
+                onClick={() => setAutomationEnabled(!automationEnabled)}
+                disabled={isUpdatingAutomation}
+                className={`px-3 py-2 rounded text-sm font-medium transition-colors ${
+                  automationEnabled
+                    ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'
+                    : 'bg-zinc-800 text-silver/70 border border-white/10'
+                } ${isUpdatingAutomation ? 'opacity-50 cursor-wait' : 'hover:bg-white/5'}`}
+              >
+                {isUpdatingAutomation ? 'Updating...' : automationEnabled ? '11:00 AM Auto' : 'Manual Only'}
+              </button>
 
               {/* Engine state indicator */}
               {engineFlowState !== 'idle' && engineFlowState !== 'complete' && (
@@ -629,28 +778,10 @@ export function Engine() {
           className="max-h-[600px]"
         />
 
-        {/* Trade Summary - Clean Professional View */}
-        {analysis && analysis.canTrade && analysis.tradeProposal && (
-          <div className="bg-charcoal rounded-2xl p-6 border border-white/10 shadow-lg">
-            {/* Header */}
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h3 className="text-lg font-semibold">
-                  {analysis.tradeProposal.strategy === 'STRANGLE' ? 'SELL STRANGLE' :
-                   analysis.tradeProposal.strategy === 'PUT' ? 'SELL PUT' : 'SELL CALL'}
-                </h3>
-                <p className="text-sm text-silver">{analysis.tradeProposal.symbol || selectedSymbol} {analysis.tradeProposal.expiration || SYMBOL_CONFIG[selectedSymbol].expiration}</p>
-              </div>
-              <span className={`text-xs font-medium px-2 py-1 rounded ${
-                analysis.tradeProposal.bias === 'NEUTRAL' ? 'bg-blue-500/20 text-blue-400' :
-                analysis.tradeProposal.bias === 'BULL' ? 'bg-green-500/20 text-green-400' :
-                'bg-red-500/20 text-red-400'
-              }`}>
-                {analysis.tradeProposal.bias}
-              </span>
-            </div>
-
-            {/* Guard Rail Violations */}
+        {/* Trade Summary - Using TradeProposalCard with strike adjustment */}
+        {analysis && analysis.canTrade && localProposal && (
+          <>
+            {/* Guard Rail Violations - shown separately */}
             {analysis.guardRails?.violations && analysis.guardRails.violations.length > 0 && (
               <div className="mb-4 bg-red-500/10 border border-red-500/20 rounded-lg p-3">
                 <p className="text-sm font-medium text-red-500 mb-2">Guard Rail Violations:</p>
@@ -662,128 +793,30 @@ export function Engine() {
               </div>
             )}
 
-            {/* Strike Selection */}
-            <div className="mb-4 p-3 bg-black/20 rounded-lg">
-              <div className="flex items-center gap-4 text-sm">
-                {analysis.tradeProposal.legs.map((leg, i) => (
-                  <span key={i} className={`font-mono font-medium ${leg.optionType === 'PUT' ? 'text-red-400' : 'text-green-400'}`}>
-                    ${leg.strike} {leg.optionType}
-                  </span>
-                ))}
-                <span className="text-silver">•</span>
-                <span className="font-mono">{analysis.tradeProposal.contracts} contracts</span>
-              </div>
-            </div>
-
-            {/* Key Metrics - 2x2 Grid */}
-            <div className="grid grid-cols-2 gap-4 mb-4">
-              <div className="p-3 bg-black/20 rounded-lg">
-                <p className="text-xs text-silver mb-1">Max Profit (Premium)</p>
-                <p className="text-lg font-semibold text-green-400">
-                  ${analysis.tradeProposal.entryPremiumTotal.toFixed(0)}
-                </p>
-              </div>
-              <div className="p-3 bg-black/20 rounded-lg">
-                <p className="text-xs text-silver mb-1">Max Loss (at Stop)</p>
-                <p className="text-lg font-semibold text-red-400">
-                  ${analysis.tradeProposal.maxLoss.toFixed(0)}
-                </p>
-              </div>
-              <div className="p-3 bg-black/20 rounded-lg">
-                <p className="text-xs text-silver mb-1">Probability OTM</p>
-                <p className="text-lg font-semibold">
-                  {(() => {
-                    const avgDelta = analysis.tradeProposal.legs.reduce((sum, leg) => sum + Math.abs(leg.delta), 0) / analysis.tradeProposal.legs.length;
-                    return `${((1 - avgDelta) * 100).toFixed(0)}%`;
-                  })()}
-                </p>
-              </div>
-              <div className="p-3 bg-black/20 rounded-lg">
-                <p className="text-xs text-silver mb-1">Stop Loss</p>
-                <p className="text-lg font-semibold">
-                  ${analysis.tradeProposal.stopLossPrice.toFixed(2)} <span className="text-xs text-silver">(3x)</span>
-                </p>
-              </div>
-            </div>
-
-            {/* Risk/Reward Summary */}
-            <div className="mb-4 text-sm text-silver">
-              Risk/Reward: <span className="font-mono text-white">
-                {(analysis.tradeProposal.maxLoss / analysis.tradeProposal.entryPremiumTotal).toFixed(1)}:1
-              </span>
-            </div>
-
-            {/* Execution Result Display */}
-            {executionResult && (
-              <div className={`mb-4 p-4 rounded-lg border ${
-                executionResult.success
-                  ? 'bg-green-500/10 border-green-500/30'
-                  : 'bg-red-500/10 border-red-500/30'
-              }`}>
-                <div className="flex items-start gap-3">
-                  {executionResult.success ? (
-                    <CheckCircle className="w-5 h-5 text-green-500 flex-shrink-0 mt-0.5" />
-                  ) : (
-                    <XCircle className="w-5 h-5 text-red-500 flex-shrink-0 mt-0.5" />
-                  )}
-                  <div className="flex-1 min-w-0">
-                    <p className={`font-semibold ${executionResult.success ? 'text-green-400' : 'text-red-400'}`}>
-                      {executionResult.success ? 'Order Submitted' : 'Order Failed'}
-                    </p>
-                    <p className="text-sm text-silver mt-1">{executionResult.message}</p>
-                    {executionResult.ibkrOrderIds && executionResult.ibkrOrderIds.length > 0 && (
-                      <div className="mt-2">
-                        <p className="text-xs text-silver">IBKR Order IDs:</p>
-                        <div className="flex flex-wrap gap-2 mt-1">
-                          {executionResult.ibkrOrderIds.map((id, i) => (
-                            <span key={i} className="font-mono text-xs bg-black/30 px-2 py-1 rounded">
-                              {id}
-                            </span>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-                    {executionResult.tradeId && (
-                      <p className="text-xs text-silver mt-2">
-                        Trade ID: <span className="font-mono">{executionResult.tradeId}</span>
-                      </p>
-                    )}
-                    <p className="text-xs text-silver/60 mt-2">
-                      {executionResult.timestamp.toLocaleTimeString('en-US', {
-                        hour: '2-digit',
-                        minute: '2-digit',
-                        second: '2-digit',
-                        timeZone: 'America/New_York'
-                      })} ET
-                    </p>
-                    {executionResult.success && (
-                      <p className="text-xs text-yellow-400/80 mt-2 flex items-center gap-1">
-                        <AlertTriangle className="w-3 h-3" />
-                        Check IBKR mobile/web for order status (filled, cancelled, etc.)
-                      </p>
-                    )}
-                  </div>
-                </div>
-              </div>
-            )}
-
-            {/* Execute Button */}
-            <button
-              onClick={handleExecuteTrade}
-              disabled={
-                !analysis.executionReady ||
-                isExecuting ||
-                !analysis.guardRails?.passed
-              }
-              className={`w-full py-3 rounded-lg font-semibold transition text-lg ${
-                executionResult?.success
-                  ? 'bg-gray-600 text-white hover:bg-gray-700'
-                  : 'bg-green-600 text-white hover:bg-green-700'
-              } disabled:opacity-50 disabled:cursor-not-allowed`}
-            >
-              {isExecuting ? 'Executing...' : executionResult?.success ? 'Execute Again' : 'Execute'}
-            </button>
-          </div>
+            {/* TradeProposalCard with strike adjustment buttons */}
+            <TradeProposalCard
+              proposal={localProposal}
+              critique={{
+                approved: analysis.guardRails?.passed ?? true,
+                riskLevel: 'MEDIUM',
+                mandateCompliant: analysis.guardRails?.passed ?? true,
+                concerns: analysis.guardRails?.violations || [],
+              }}
+              executionResult={executionResult ? {
+                success: executionResult.success,
+                message: executionResult.message,
+                ibkrOrderIds: executionResult.ibkrOrderIds?.map(id => parseInt(id, 10)),
+                tradeId: executionResult.tradeId,
+                timestamp: executionResult.timestamp instanceof Date
+                  ? executionResult.timestamp
+                  : new Date(executionResult.timestamp),
+              } : undefined}
+              isExecuting={isExecuting}
+              onExecute={handleExecuteTrade}
+              isNegotiating={isNegotiating}
+              onModifyStrike={handleModifyStrike}
+            />
+          </>
         )}
 
 
