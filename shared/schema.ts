@@ -854,6 +854,52 @@ export type InsertEngineRun = z.infer<typeof insertEngineRunSchema>;
 
 // ==================== END ENGINE RUNS ====================
 
+// ==================== DIRECTION PREDICTIONS (AI Learning) ====================
+// Tracks AI direction suggestions vs user choices, enabling the AI to learn from when users override its suggestions
+
+export const directionPredictions = pgTable("direction_predictions", {
+  id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+  engineRunId: varchar("engine_run_id", { length: 36 }).references(() => engineRuns.id),
+
+  // What indicators suggested
+  indicatorSignal: text("indicator_signal"), // PUT | CALL | STRANGLE | NEUTRAL
+  indicatorConfidence: doublePrecision("indicator_confidence"),
+  indicatorReasoning: jsonb("indicator_reasoning"), // { rsi: "overbought", macd: "bearish cross", ... }
+
+  // What AI suggested (learned model)
+  aiSuggestion: text("ai_suggestion"),
+  aiConfidence: doublePrecision("ai_confidence"),
+
+  // What you actually chose
+  userChoice: text("user_choice").notNull(),
+
+  // Did you agree with AI?
+  agreedWithAi: boolean("agreed_with_ai"),
+  agreedWithIndicators: boolean("agreed_with_indicators"),
+
+  // This is your edge - when you disagree and are right
+  wasOverride: boolean("was_override"), // You disagreed with AI
+  overrideWasCorrect: boolean("override_was_correct"), // And you were right
+
+  // Outcome
+  pnl: doublePrecision("pnl"),
+  wasCorrect: boolean("was_correct"), // Did the chosen direction make money?
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  index("direction_predictions_engine_run_idx").on(table.engineRunId),
+  index("direction_predictions_created_idx").on(table.createdAt),
+]);
+
+export const insertDirectionPredictionSchema = createInsertSchema(directionPredictions).omit({
+  id: true,
+  createdAt: true,
+});
+export type DirectionPrediction = typeof directionPredictions.$inferSelect;
+export type InsertDirectionPrediction = z.infer<typeof insertDirectionPredictionSchema>;
+
+// ==================== END DIRECTION PREDICTIONS ====================
+
 // Option chain types
 export type OptionData = {
   strike: number;
