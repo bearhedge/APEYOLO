@@ -560,8 +560,14 @@ export function Engine() {
 
               {/* Automation Toggle */}
               <button
-                onClick={() => setAutomationEnabled(!automationEnabled)}
+                onClick={() => {
+                  const newState = !automationEnabled;
+                  setAutomationEnabled(newState);
+                  toast.success(newState ? 'Automation enabled - runs daily at 11:00 AM ET' : 'Automation disabled - manual only');
+                }}
                 disabled={isUpdatingAutomation}
+                aria-pressed={automationEnabled}
+                aria-label="Toggle automated trading"
                 className={`px-3 py-2 rounded text-sm font-medium transition-colors ${
                   automationEnabled
                     ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30'

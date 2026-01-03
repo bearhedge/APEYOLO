@@ -53,6 +53,9 @@ export function useTradeEngineJob() {
     onSuccess: (updatedJob) => {
       queryClient.setQueryData(['trade-engine-job'], updatedJob);
     },
+    onError: (error) => {
+      console.error('[useTradeEngineJob] Failed to update:', error);
+    },
   });
 
   return {
