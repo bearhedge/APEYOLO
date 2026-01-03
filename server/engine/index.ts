@@ -19,6 +19,9 @@ import { calculatePositionSize, PositionSize, RiskProfile, AccountInfo } from '.
 import { defineExitRules, ExitRules } from './step5.ts';
 import type { OptionChainDiagnostics } from '../../shared/types/engine';
 import type { EnhancedEngineLog, EnhancedStepLog, StepReasoning, StepMetric } from '../../shared/types/engineLog';
+import { db } from '../db';
+import { engineRuns } from '@shared/schema';
+import { getIndicatorSnapshotSafe } from '../services/indicators/ibkrFetcher';
 
 /**
  * Custom error class for engine failures with step context
@@ -61,6 +64,7 @@ export interface TradingDecision {
   audit: AuditEntry[];
   // Enhanced logging for UI
   enhancedLog?: EnhancedEngineLog;
+  engineRunId?: string;  // ID for tracking adjustments
 }
 
 /**
@@ -546,6 +550,47 @@ export class TradingEngine {
       }
     };
 
+    // Log engine run for RLHF tracking
+    let engineRunId: string | undefined;
+    try {
+      // Fetch current indicators for market context
+      const indicators = await getIndicatorSnapshotSafe(symbol);
+
+      const [engineRunRecord] = await db.insert(engineRuns).values({
+        userId: undefined, // Will be set by the route handler if user context available
+        symbol: symbol,
+        direction: direction.direction,
+        expirationMode: expirationMode,
+        originalPutStrike: strikes.putStrike?.strike,
+        originalCallStrike: strikes.callStrike?.strike,
+        originalPutDelta: strikes.putStrike?.delta,
+        originalCallDelta: strikes.callStrike?.delta,
+        underlyingPrice: underlyingPrice,
+        vix: marketRegime.metadata?.vix,
+        indicators: indicators || undefined,
+        engineOutput: {
+          marketRegime: {
+            shouldTrade: marketRegime.shouldTrade,
+            reason: marketRegime.reason,
+            volatilityRegime: marketRegime.metadata?.volatilityRegime,
+          },
+          direction: {
+            direction: direction.direction,
+            confidence: direction.confidence,
+            signals: direction.signals,
+          },
+          positionSize: positionSize,
+          exitRules: exitRules,
+        },
+      }).returning();
+
+      engineRunId = engineRunRecord.id;
+      console.log(`[Engine] Logged run to engine_runs: ${engineRunId}`);
+    } catch (error) {
+      console.error('[Engine] Failed to log engine run:', error);
+      // Non-fatal - continue with decision even if logging fails
+    }
+
     return {
       timestamp: new Date(),
       canTrade: fullyReady,
@@ -559,7 +604,8 @@ export class TradingEngine {
       exitRules,
       executionReady: fullyReady,
       audit: this.audit,
-      enhancedLog
+      enhancedLog,
+      engineRunId,
     };
   }
 
