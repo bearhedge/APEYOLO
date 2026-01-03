@@ -1,10 +1,7 @@
 // @ts-nocheck
 // TODO: Fix spread argument in res.json call
+// NOTE: dotenv is loaded via bootstrap.ts before this file is imported
 import express, { type Request, type Response, type NextFunction } from "express";
-// Only load .env file in development
-if (process.env.NODE_ENV !== 'production') {
-  await import('dotenv').then(module => module.config());
-}
 import { registerRoutes } from "./routes";
 import { serveStatic, log } from "./utils"; // Production-safe utilities
 import { testDatabaseConnection } from "./db";

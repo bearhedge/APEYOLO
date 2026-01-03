@@ -21,6 +21,7 @@ import { ensureIbkrReady, placeCloseOrderByConid } from '../../broker/ibkr';
 import { registerJobHandler, type JobResult } from '../jobExecutor';
 import { getETDateString, getETTimeString, isMarketOpen, isEarlyCloseDay, getMarketStatus } from '../marketCalendar';
 import { monitorPosition, defineExitRules, type ExitRules, type MonitorResult } from '../../engine/step5';
+import { linkTradeOutcome, normalizeExitReason } from '../rlhfService';
 import type { Position } from '@shared/types';
 
 // ============================================
@@ -146,13 +147,14 @@ function parseStrikeFromSymbol(symbol: string): number | null {
 /**
  * Log to audit (for significant events only)
  */
-async function logAudit(action: string, details: string): Promise<void> {
+async function logAudit(eventType: string, details: string, status: string = 'info'): Promise<void> {
   if (!db) return;
 
   try {
     await db.insert(auditLogs).values({
-      action,
+      eventType,
       details,
+      status,
       userId: 'position-monitor',
     });
   } catch (err) {
@@ -391,12 +393,21 @@ export async function executePositionMonitor(): Promise<JobResult> {
           // Update paper_trades if we closed successfully
           if (closeSuccess && db) {
             try {
+              // Calculate P&L (entry premium - current premium)
+              const pnl = (entryPremium - currentPremium) * contracts * 100;
+              const exitReasonText = `Auto-closed by position monitor: ${monitorResult.exitReason}`;
+
               await db.update(paperTrades)
                 .set({
-                  exitReason: `Auto-closed by position monitor: ${monitorResult.exitReason}`,
-                  status: 'closed'
+                  exitReason: exitReasonText,
+                  status: 'closed',
+                  realizedPnl: pnl.toString(),
+                  closedAt: new Date(),
                 })
                 .where(eq(paperTrades.id, trade.id));
+
+              // Link outcome to engine_run for RLHF
+              await linkTradeOutcome(trade.id, pnl, normalizeExitReason(exitReasonText));
             } catch (updateErr) {
               console.error(`[PositionMonitor] Failed to update trade status:`, updateErr);
             }

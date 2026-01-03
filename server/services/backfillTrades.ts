@@ -15,6 +15,7 @@ import { paperTrades, type Trade } from '@shared/schema';
 import { eq, and, or, isNull } from 'drizzle-orm';
 import { getBroker } from '../broker';
 import { ensureIbkrReady } from '../broker/ibkr';
+import { linkTradeOutcome, normalizeExitReason } from './rlhfService';
 
 // ============================================
 // Types
@@ -204,6 +205,9 @@ export async function backfillClosedTrades(): Promise<BackfillResult> {
           })
           .where(eq(paperTrades.id, trade.id));
 
+        // Link outcome to engine_run for RLHF
+        await linkTradeOutcome(trade.id, realizedPnl, normalizeExitReason('Backfilled from IBKR'));
+
         result.updated++;
       } catch (err: any) {
         console.error(`[BackfillTrades] Error processing ${tradeInfo}:`, err);
@@ -267,6 +271,9 @@ export async function backfillSingleTrade(tradeId: string): Promise<{ success: b
         realizedPnl: realizedPnl.toString(),
       })
       .where(eq(paperTrades.id, tradeId));
+
+    // Link outcome to engine_run for RLHF
+    await linkTradeOutcome(tradeId, realizedPnl, normalizeExitReason('Manually backfilled from IBKR'));
 
     return {
       success: true,
@@ -349,6 +356,10 @@ export async function fixExpiredTrades(): Promise<BackfillResult> {
             exitReason: 'Expired worthless',
           })
           .where(eq(paperTrades.id, trade.id));
+
+        // Link outcome to engine_run for RLHF
+        const pnlAmount = parseFloat(entryPremium as any) || 0;
+        await linkTradeOutcome(trade.id, pnlAmount, normalizeExitReason('Expired worthless'));
 
         result.updated++;
       } catch (err: any) {

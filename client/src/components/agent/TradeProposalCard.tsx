@@ -22,6 +22,7 @@ export interface TradeLeg {
 
 export interface TradeProposal {
   id: string;
+  proposalId?: string; // Backend requires this for execution
   symbol: string;
   expiration: string;
   strategy: 'PUT' | 'CALL' | 'STRANGLE';
@@ -226,10 +227,10 @@ export function TradeProposalCard({
   const handleStrikeChange = useCallback(async (legIndex: number, newStrike: number) => {
     if (!onModifyStrike) return;
 
-    // Check if this leg has already been adjusted
+    // Check if this leg has already been adjusted (max 3 times per side)
     const currentAdjustments = adjustmentsMade[legIndex] || 0;
-    if (currentAdjustments >= 1) {
-      toast.error('Only one adjustment allowed per leg');
+    if (currentAdjustments >= 3) {
+      toast.error('Maximum 3 adjustments per leg');
       return;
     }
 
@@ -322,10 +323,10 @@ export function TradeProposalCard({
                   optionType={leg.optionType}
                   onAdjust={(newStrike) => handleStrikeChange(i, newStrike)}
                   isLoading={isCalculating && activeModifyIndex === i}
-                  disabled={isExecuting || (adjustmentsMade[i] || 0) >= 1}
+                  disabled={isExecuting || (adjustmentsMade[i] || 0) >= 3}
                 />
-                {(adjustmentsMade[i] || 0) >= 1 && (
-                  <span className="text-xs text-silver/50">(adjusted)</span>
+                {(adjustmentsMade[i] || 0) > 0 && (
+                  <span className="text-xs text-silver/50">({adjustmentsMade[i]}/3)</span>
                 )}
               </div>
             ) : (
@@ -443,7 +444,10 @@ export function TradeProposalCard({
                 </p>
               )}
               <p className="text-xs text-silver/60 mt-2">
-                {executionResult.timestamp.toLocaleTimeString('en-US', {
+                {(executionResult.timestamp instanceof Date
+                  ? executionResult.timestamp
+                  : new Date(executionResult.timestamp)
+                ).toLocaleTimeString('en-US', {
                   hour: '2-digit',
                   minute: '2-digit',
                   second: '2-digit',

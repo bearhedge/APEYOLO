@@ -254,7 +254,7 @@ export function Settings() {
   const { data: ibkrStatus, refetch: refetchStatus } = useQuery({
     queryKey: ['/api/ibkr/status'],
     queryFn: async () => {
-      const response = await fetch('/api/ibkr/status');
+      const response = await fetch('/api/ibkr/status', { credentials: 'include' });
       return response.json();
     },
     refetchInterval: (query) => {
@@ -279,7 +279,7 @@ export function Settings() {
   // Test connection mutation
   const testConnectionMutation = useMutation({
     mutationFn: async () => {
-      const response = await fetch('/api/ibkr/test', { method: 'POST' });
+      const response = await fetch('/api/ibkr/test', { method: 'POST', credentials: 'include' });
       const data = await response.json();
       setTestResult(data);
       return data;
@@ -292,7 +292,7 @@ export function Settings() {
 
   const reconnectMutation = useMutation({
     mutationFn: async () => {
-      const response = await fetch('/api/broker/oauth', { method: 'POST' });
+      const response = await fetch('/api/broker/oauth', { method: 'POST', credentials: 'include' });
       return response.json();
     },
     onSuccess: () => {
@@ -304,7 +304,7 @@ export function Settings() {
   // Warm endpoint (runs full readiness flow server-side)
   const warmMutation = useMutation({
     mutationFn: async () => {
-      const response = await fetch('/api/broker/warm');
+      const response = await fetch('/api/broker/warm', { credentials: 'include' });
       return response.json();
     },
     onSuccess: () => refreshAllIbkrStatus(),
@@ -398,6 +398,7 @@ export function Settings() {
           orderType: 'MKT',
           tif: 'DAY',
         }),
+        credentials: 'include',
       });
       const data = await response.json();
       setOrderResult(data);
@@ -413,6 +414,7 @@ export function Settings() {
         headers: {
           'Content-Type': 'application/json',
         },
+        credentials: 'include',
       });
       const data = await response.json();
       setClearResult(data);
@@ -426,7 +428,7 @@ export function Settings() {
   const { data: userCredentials, refetch: refetchCredentials } = useQuery<IbkrCredentialsStatus>({
     queryKey: ['/api/settings/ibkr'],
     queryFn: async () => {
-      const response = await fetch('/api/settings/ibkr');
+      const response = await fetch('/api/settings/ibkr', { credentials: 'include' });
       return response.json();
     },
   });
@@ -446,6 +448,7 @@ export function Settings() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(credentials),
+        credentials: 'include',
       });
       const data = await response.json();
       setCredSaveResult(data);
@@ -466,6 +469,7 @@ export function Settings() {
     mutationFn: async () => {
       const response = await fetch('/api/settings/ibkr/test', {
         method: 'POST',
+        credentials: 'include',
       });
       const data = await response.json();
       setCredTestResult(data);
@@ -482,6 +486,7 @@ export function Settings() {
     mutationFn: async () => {
       const response = await fetch('/api/settings/ibkr', {
         method: 'DELETE',
+        credentials: 'include',
       });
       return response.json();
     },

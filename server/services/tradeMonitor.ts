@@ -17,6 +17,7 @@ import { eq, and, isNull, lt, inArray } from 'drizzle-orm';
 import { getBroker } from '../broker';
 import { ensureIbkrReady } from '../broker/ibkr';
 import { registerJobHandler, type JobResult } from './jobExecutor';
+import { linkTradeOutcome, normalizeExitReason } from './rlhfService';
 
 // ============================================
 // Types
@@ -201,6 +202,9 @@ export async function monitorOpenTrades(): Promise<JobResult> {
           })
           .where(eq(paperTrades.id, trade.id));
 
+        // Link outcome to engine_run for RLHF
+        await linkTradeOutcome(trade.id, entryPremium, normalizeExitReason('Expired worthless'));
+
         closedCount++;
         continue;
       }
@@ -263,6 +267,9 @@ export async function monitorOpenTrades(): Promise<JobResult> {
           })
           .where(eq(paperTrades.id, trade.id));
 
+        // Link outcome to engine_run for RLHF
+        await linkTradeOutcome(trade.id, realizedPnl, normalizeExitReason(exitReason));
+
         // Update stop order(s) with fill time for holding time calculation
         const orderIds = trade.ibkrOrderIds as string[] | null;
         if (orderIds?.length) {
@@ -309,11 +316,12 @@ export async function monitorOpenTrades(): Promise<JobResult> {
 // ============================================
 
 /**
- * Register the trade monitor job handler
+ * Register the trade monitor job handlers (main + EOD sweep)
  */
 export function initTradeMonitorJob(): void {
-  console.log('[TradeMonitor] Initializing job handler...');
+  console.log('[TradeMonitor] Initializing job handlers...');
 
+  // Main handler - runs during market hours
   registerJobHandler({
     id: 'trade-monitor',
     name: 'Trade Monitor',
@@ -321,19 +329,33 @@ export function initTradeMonitorJob(): void {
     execute: monitorOpenTrades,
   });
 
-  console.log('[TradeMonitor] Job handler registered');
+  // EOD sweep handler - runs at 4:05 PM ET
+  // Uses the same logic but ensures all expired options are marked
+  registerJobHandler({
+    id: 'trade-monitor-eod',
+    name: 'Trade Monitor EOD Sweep',
+    description: 'End-of-day sweep to mark all expired options with realized P&L',
+    execute: monitorOpenTrades,  // Same handler, but runs after market close
+  });
+
+  console.log('[TradeMonitor] Job handlers registered');
 }
 
 /**
- * Create the trade-monitor job in the database if it doesn't exist
+ * Create the trade-monitor jobs in the database if they don't exist.
+ *
+ * Two schedules:
+ * 1. trade-monitor: Every 30 minutes during market hours for live position monitoring
+ * 2. trade-monitor-eod: 4:05 PM ET daily to mark all expired options at end of day
  */
 export async function ensureTradeMonitorJob(): Promise<void> {
   if (!db) return;
 
   try {
     const { jobs } = await import('@shared/schema');
-    const [existingJob] = await db.select().from(jobs).where(eq(jobs.id, 'trade-monitor')).limit(1);
 
+    // Main trade monitor - runs during market hours
+    const [existingJob] = await db.select().from(jobs).where(eq(jobs.id, 'trade-monitor')).limit(1);
     const desiredSchedule = '*/30 9-16 * * 1-5'; // Every 30 minutes during market hours (9AM-4PM ET, weekdays)
 
     if (!existingJob) {
@@ -360,6 +382,25 @@ export async function ensureTradeMonitorJob(): Promise<void> {
         }).where(eq(jobs.id, 'trade-monitor'));
         console.log('[TradeMonitor] Job config updated successfully');
       }
+    }
+
+    // EOD sweep - runs at 4:05 PM ET to mark all expired options
+    const [existingEodJob] = await db.select().from(jobs).where(eq(jobs.id, 'trade-monitor-eod')).limit(1);
+    const eodSchedule = '5 16 * * 1-5'; // 4:05 PM ET on weekdays
+
+    if (!existingEodJob) {
+      console.log('[TradeMonitor] Creating trade-monitor-eod job in database...');
+      await db.insert(jobs).values({
+        id: 'trade-monitor-eod',
+        name: 'Trade Monitor EOD Sweep',
+        description: 'End-of-day sweep to mark all expired options with realized P&L',
+        type: 'trade-monitor',  // Uses same handler
+        schedule: eodSchedule,
+        timezone: 'America/New_York',
+        enabled: true,
+        config: { skipMarketCheck: true, isEodSweep: true },
+      });
+      console.log('[TradeMonitor] EOD job created successfully');
     }
   } catch (err) {
     console.warn('[TradeMonitor] Could not ensure job exists:', err);

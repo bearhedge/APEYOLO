@@ -129,8 +129,10 @@ export async function executeJob(
 
   // 4. Get job handler
   const handler = jobHandlers.get(jobId);
+  const registeredIds = Array.from(jobHandlers.keys());
+  console.log(`[JobExecutor] Looking for handler: ${jobId}. Registered handlers: [${registeredIds.join(', ')}]`);
   if (!handler) {
-    console.error(`[JobExecutor] No handler registered for job: ${jobId}`);
+    console.error(`[JobExecutor] No handler registered for job: ${jobId}. Map size: ${jobHandlers.size}`);
     return createJobRun(jobId, triggeredBy, marketDay, {
       success: false,
       error: `No handler registered for job: ${jobId}`,
@@ -348,7 +350,6 @@ export async function seedDefaultJobs(): Promise<void> {
     schedule: string;
     config: any;
   }> = [
-    // market-close-options removed - using live IBKR stream instead
     {
       id: 'economic-calendar-refresh',
       name: 'Economic Calendar Refresh',
@@ -356,6 +357,70 @@ export async function seedDefaultJobs(): Promise<void> {
       type: 'economic-calendar-refresh',
       schedule: '0 0 1 * *', // Midnight ET on 1st of each month
       config: { daysAhead: 90 },
+    },
+    {
+      id: 'nav-snapshot-opening',
+      name: 'NAV Snapshot (Opening)',
+      description: 'Capture NAV at market open for Day P&L calculation',
+      type: 'nav-snapshot',
+      schedule: '30 9 * * 1-5', // 9:30 AM ET Mon-Fri
+      config: {},
+    },
+    {
+      id: 'nav-snapshot-closing',
+      name: 'NAV Snapshot (Closing)',
+      description: 'Capture NAV at market close',
+      type: 'nav-snapshot',
+      schedule: '0 16 * * 1-5', // 4:00 PM ET Mon-Fri
+      config: {},
+    },
+    {
+      id: '0dte-position-manager',
+      name: '0DTE Position Manager',
+      description: 'Close risky 0DTE positions before expiry (3:55 PM ET safety net)',
+      type: '0dte-position-manager',
+      schedule: '55 15 * * 1-5', // 3:55 PM ET Mon-Fri
+      config: {},
+    },
+    {
+      id: 'position-monitor',
+      name: 'Position Monitor',
+      description: '3-layer defense monitoring every 5 min during market hours',
+      type: 'position-monitor',
+      schedule: '*/5 9-16 * * 1-5', // Every 5 min 9 AM - 4 PM ET Mon-Fri
+      config: { skipMarketCheck: false },
+    },
+    {
+      id: 'trade-monitor',
+      name: 'Trade Monitor',
+      description: 'Monitor open trades every 30 min during market hours',
+      type: 'trade-monitor',
+      schedule: '*/30 9-16 * * 1-5', // Every 30 min 9 AM - 4 PM ET Mon-Fri
+      config: {},
+    },
+    {
+      id: 'trade-monitor-eod',
+      name: 'Trade Monitor EOD',
+      description: 'Mark expired options with realized P&L at 4:05 PM ET',
+      type: 'trade-monitor',
+      schedule: '5 16 * * 1-5', // 4:05 PM ET Mon-Fri
+      config: {},
+    },
+    {
+      id: 'trade-engine',
+      name: 'Trade Engine',
+      description: 'Automated 5-step trading engine at 11:00 AM ET',
+      type: 'trade-engine',
+      schedule: '0 11 * * 1-5', // 11:00 AM ET Mon-Fri
+      config: {},
+    },
+    {
+      id: 'option-bar-capture',
+      name: 'Option Bar Capture',
+      description: 'Capture 5-minute OHLC bars for SPY options during market hours',
+      type: 'option-bar-capture',
+      schedule: '*/5 9-16 * * 1-5', // Every 5 min 9 AM - 4 PM ET Mon-Fri
+      config: { skipMarketCheck: false },
     },
   ];
 

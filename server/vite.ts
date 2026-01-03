@@ -31,9 +31,22 @@ export async function setupVite(app: Express, server: Server) {
     appType: "custom",
   });
 
+  // Debug: log all requests before Vite
+  app.use((req, res, next) => {
+    if (req.originalUrl.startsWith('/api')) {
+      console.log('[VITE] API request received:', req.method, req.originalUrl);
+    }
+    next();
+  });
+
   app.use(vite.middlewares);
   // Express v5/path-to-regexp v6: avoid raw "*"; use a regex catch-all
+  // IMPORTANT: Skip /api routes - they should be handled by Express routes, not Vite
   app.use(/.*/, async (req, res, next) => {
+    // Skip API routes - let Express handle them
+    if (req.originalUrl.startsWith('/api')) {
+      return next();
+    }
     const url = req.originalUrl;
     try {
       const clientTemplate = path.resolve(clientRoot, "index.html");

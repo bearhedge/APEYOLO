@@ -109,6 +109,22 @@ export function decryptPrivateKey(encryptedKey: string): string {
 }
 
 /**
+ * Encrypts IBKR OAuth token for storage
+ */
+export function encryptToken(token: string): string {
+  const key = getEncryptionKey();
+  return encrypt(token, key);
+}
+
+/**
+ * Decrypts IBKR OAuth token for use
+ */
+export function decryptToken(encryptedToken: string): string {
+  const key = getEncryptionKey();
+  return decrypt(encryptedToken, key);
+}
+
+/**
  * Validates that a string is a valid PEM-formatted private key
  */
 export function isValidPrivateKey(key: string): boolean {

@@ -45,10 +45,10 @@ const LAYER1_SUSTAIN_DURATION_MS = 15 * 60 * 1000; // 15 minutes
 
 /**
  * Premium multiplier for Layer 2 stop
- * 3x means: if sold at $0.70, exit when premium reaches $2.10
+ * 6x means: if sold at $0.70, exit when premium reaches $4.20
  * NOTE: This matches the IBKR bracket stop order in engineRoutes.ts
  */
-const LAYER2_PREMIUM_MULTIPLIER = 3.0;
+const LAYER2_PREMIUM_MULTIPLIER = 6.0;
 
 /**
  * Minimum Layer 2 stop price when premium data is unavailable (market closed)

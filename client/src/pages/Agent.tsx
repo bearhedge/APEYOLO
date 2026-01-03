@@ -6,7 +6,7 @@
  * Supports trade negotiation with interactive strike adjustment.
  */
 
-import { useState, useCallback, useMemo } from 'react';
+import { useState, useCallback, useMemo, useRef, useEffect } from 'react';
 import toast from 'react-hot-toast';
 import { LeftNav } from '@/components/LeftNav';
 import { ActivityFeed } from '@/components/agent/ActivityFeed';
@@ -64,6 +64,12 @@ export function Agent() {
   const [isNegotiating, setIsNegotiating] = useState(true); // Enable negotiation by default when proposal exists
   const [negotiationMessages, setNegotiationMessages] = useState<NegotiationMessage[]>([]);
 
+  // Ref to always have latest proposal (fixes stale closure on first click)
+  const activeProposalRef = useRef(activeProposal);
+  useEffect(() => {
+    activeProposalRef.current = activeProposal;
+  }, [activeProposal]);
+
   // Strategy preference state (PUT-only, CALL-only, or Strangle)
   const [strategyPreference, setStrategyPreference] = useState<StrategyPreference>('strangle');
 
@@ -86,7 +92,12 @@ export function Agent() {
 
   // Handle strike modification - calls /api/agent/negotiate
   const handleModifyStrike = useCallback(async (legIndex: number, newStrike: number): Promise<ModificationImpact | null> => {
-    if (!activeProposal?.id) return null;
+    // Use ref to always get latest proposal (fixes stale closure on first click)
+    const proposal = activeProposalRef.current;
+    if (!proposal?.id) {
+      console.warn('[Agent] handleModifyStrike: No active proposal');
+      return null;
+    }
 
     try {
       const response = await fetch('/api/agent/negotiate', {
@@ -94,7 +105,7 @@ export function Agent() {
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
         body: JSON.stringify({
-          proposalId: activeProposal.id,
+          proposalId: proposal.id,
           legIndex,
           newStrike,
         }),
@@ -140,7 +151,7 @@ export function Agent() {
       console.error('Failed to negotiate:', error);
       return null;
     }
-  }, [activeProposal?.id, updateProposal]);
+  }, [updateProposal]); // No activeProposal dep - using ref instead
 
   // Clear negotiation messages when proposal changes
   const handleDismissProposal = useCallback(() => {

@@ -343,7 +343,7 @@ function adaptExitRules(
   exit: ExitRules | undefined,
   contracts: number,
   premiumPerContract: number,
-  stopMultiplier: number = 3
+  stopMultiplier: number = 6
 ): Q5Exit {
   const entryPremium = premiumPerContract * 100; // Convert to dollars per contract
 
@@ -621,7 +621,7 @@ export function adaptTradingDecision(
   }
 ): EngineAnalyzeResponse {
   const riskProfile = options?.riskProfile ?? 'BALANCED';
-  const stopMultiplier = options?.stopMultiplier ?? 3.5;
+  const stopMultiplier = options?.stopMultiplier ?? 6;
   const symbol = options?.symbol ?? decision.marketRegime?.metadata?.symbol ?? 'SPY';
   const expirationMode = options?.expirationMode ?? '0DTE';
 

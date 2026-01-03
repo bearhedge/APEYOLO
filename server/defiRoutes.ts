@@ -384,8 +384,9 @@ router.get('/trades', async (req: Request, res: Response) => {
       // For expired/exercised trades, use 4:00 PM ET as exit time
       const derivedStatus = deriveDisplayStatus(t.status, t.exitReason);
       if (derivedStatus === 'expired' || derivedStatus === 'exercised') {
-        // Use market close (4:00 PM ET) on the trade's expiration date or closed date
-        const exitDate = t.closedAt ? new Date(t.closedAt) : createdAt;
+        // Use market close (4:00 PM ET) on the trade's EXPIRATION date (not closedAt!)
+        // closedAt is when the batch process ran, expiration is the actual option expiry
+        const exitDate = t.expiration ? new Date(t.expiration) : (t.closedAt ? new Date(t.closedAt) : createdAt);
         const exitDateStr = new Intl.DateTimeFormat('en-CA', {
           timeZone: 'America/New_York',
           year: 'numeric',
@@ -396,18 +397,16 @@ router.get('/trades', async (req: Request, res: Response) => {
         exitFillTime = new Date(`${exitDateStr}T16:00:00-05:00`);
       }
 
-      // Only calculate holdingMinutes if we have ACTUAL fill times from orders table
-      // For expired/exercised trades, we use 4:00 PM ET as exit time (set above)
-      // If no real entry fill time exists, show N/A (null) - don't use fake data
+      // Calculate holdingMinutes
+      // - For orders with fill times: use actual fill times
+      // - For expired trades: use createdAt as entry, 4PM ET on expiration as exit
       let holdingMinutes: number | null = null;
 
-      if (entryFillTime && exitFillTime) {
-        // We have actual fill times from orders table
-        holdingMinutes = Math.max(0, Math.round((exitFillTime.getTime() - entryFillTime.getTime()) / (1000 * 60)));
-      } else if (derivedStatus === 'expired' || derivedStatus === 'exercised') {
-        // For expired/exercised without entry fill time, still show N/A
-        // (exitFillTime is set to 4PM but we need entryFillTime too)
-        holdingMinutes = null;
+      // Use actual entry fill time if available, otherwise use createdAt
+      const effectiveEntryTime = entryFillTime || createdAt;
+
+      if (effectiveEntryTime && exitFillTime) {
+        holdingMinutes = Math.max(0, Math.round((exitFillTime.getTime() - effectiveEntryTime.getTime()) / (1000 * 60)));
       }
       // Otherwise holdingMinutes stays null - will show "—" in UI
 
@@ -419,13 +418,13 @@ router.get('/trades', async (req: Request, res: Response) => {
         : 'breakeven';
 
       // Get contract count and leg details
-      // contracts = per-side contracts, totalContracts = contracts × number of legs
-      const contractsPerSide = t.contracts || 1;
+      // contracts = total option contracts (e.g., 4 contracts for a 2-strangle position = 2 puts + 2 calls)
+      const totalContracts = t.contracts || 1;
       const putStrike = t.leg1Type === 'PUT' ? parseFloat(t.leg1Strike as any) : (t.leg2Type === 'PUT' ? parseFloat(t.leg2Strike as any) : null);
       const callStrike = t.leg2Type === 'CALL' ? parseFloat(t.leg2Strike as any) : (t.leg1Type === 'CALL' ? parseFloat(t.leg1Strike as any) : null);
-      // For strangles (PUT + CALL), total = contracts × 2; for single leg = contracts × 1
       const numLegs = (putStrike ? 1 : 0) + (callStrike ? 1 : 0);
-      const totalContracts = contractsPerSide * (numLegs || 1);
+      // For notional, divide by legs to get per-side contracts
+      const contractsPerSide = numLegs > 1 ? totalContracts / numLegs : totalContracts;
 
       // Calculate notional value in HKD: strike × 100 × contractsPerSide × 7.8
       // For a strangle, show total notional (put + call sides)

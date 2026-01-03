@@ -5,7 +5,7 @@
   "license": "MIT",
   "scripts": {
     "dev": "concurrently \"npm:dev:server\" \"npm:dev:client\"",
-    "dev:server": "NODE_ENV=development tsx watch server/index.ts",
+    "dev:server": "NODE_ENV=development tsx watch server/bootstrap.ts",
     "dev:client": "vite --port 5173",
     "build": "vite build && esbuild server/index.ts --platform=node --packages=external --bundle --format=esm --outdir=dist",
     "start": "NODE_ENV=production node dist/index.js",

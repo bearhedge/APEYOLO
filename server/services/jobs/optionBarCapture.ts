@@ -9,7 +9,8 @@
 import { db } from '../../db';
 import { optionBars, type InsertOptionBar } from '@shared/schema';
 import { getOptionChainStreamer, type CachedOptionChain, type CachedStrike } from '../../broker/optionChainStreamer';
-import { getETDateString } from '../marketCalendar';
+import { getETDateString, getMarketStatus } from '../marketCalendar';
+import { registerJobHandler, type JobResult } from '../jobExecutor';
 
 // ============================================
 // Types
@@ -199,4 +200,58 @@ export async function captureOptionBars(symbol: string = 'SPY'): Promise<Capture
   streamer.resetIntervalTracking(symbol);
 
   return result;
+}
+
+// ============================================
+// Job Handler Registration
+// ============================================
+
+const JOB_ID = 'option-bar-capture';
+
+/**
+ * Initialize and register the option bar capture job handler
+ */
+export function initOptionBarCaptureJob(): void {
+  console.log('[OptionBarCapture] Initializing job handler...');
+
+  registerJobHandler({
+    id: JOB_ID,
+    name: 'Option Bar Capture',
+    description: 'Capture 5-minute OHLC bars for SPY options during market hours',
+
+    async execute(): Promise<JobResult> {
+      const marketStatus = getMarketStatus();
+      if (!marketStatus.isOpen) {
+        return {
+          success: false,
+          skipped: true,
+          reason: `Market closed: ${marketStatus.reason}`,
+        };
+      }
+
+      try {
+        const result = await captureOptionBars('SPY');
+        return {
+          success: true,
+          data: result,
+        };
+      } catch (error: any) {
+        console.error('[OptionBarCapture] Job failed:', error);
+        return {
+          success: false,
+          error: error.message || 'Failed to capture option bars',
+        };
+      }
+    },
+  });
+
+  console.log('[OptionBarCapture] Job handler registered');
+}
+
+/**
+ * Ensure Cloud Scheduler job exists
+ */
+export async function ensureOptionBarCaptureJob(): Promise<void> {
+  // Scheduler job created via gcloud CLI
+  console.log('[OptionBarCapture] Job should be scheduled via Cloud Scheduler: */5 9-16 * * 1-5 (America/New_York)');
 }

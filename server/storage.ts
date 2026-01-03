@@ -373,10 +373,10 @@ export class MemStorage implements IStorage {
       try {
         await db.insert(auditLogs).values({
           id: log.id,
-          eventType: log.action,  // Map 'action' field to 'event_type' column
+          eventType: log.eventType,
           details: log.details,
           userId: log.userId,
-          status: 'success',  // Default status for audit logs
+          status: log.status,
         });
       } catch (err) {
         console.error('[Storage] Failed to save audit log to database:', err);

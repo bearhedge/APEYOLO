@@ -27,6 +27,9 @@ const MAX_LOSS_PCT: Record<RiskProfile, number> = {
   AGGRESSIVE: 0.03,    // 3% max loss
 };
 
+// Hard cap on contracts per side (safety limit)
+const MAX_CONTRACTS_PER_SIDE = 2;
+
 export interface PositionSize {
   contracts: number;
   marginPerContract: number;
@@ -122,7 +125,7 @@ export async function calculatePositionSize(
   strikeSelection: StrikeSelection,
   accountInfo: AccountInfo,
   riskProfile: RiskProfile = 'BALANCED',
-  stopMultiplier: number = 3.5
+  stopMultiplier: number = 6
 ): Promise<PositionSize> {
   // Use netLiquidation if available, otherwise use buyingPower as proxy
   const netLiq = accountInfo.netLiquidation || accountInfo.buyingPower;
@@ -141,11 +144,14 @@ export async function calculatePositionSize(
   );
 
   // Use dynamic calculation based on max loss per contract and risk profile
-  const { contracts, maxLossAllowed } = calculateContractsByMaxLoss(
+  const { contracts: calculatedContracts, maxLossAllowed } = calculateContractsByMaxLoss(
     netLiq,
     maxLossPerContract,
     riskProfile
   );
+
+  // Apply hard cap on contracts (safety limit)
+  const contracts = Math.min(calculatedContracts, MAX_CONTRACTS_PER_SIDE);
   const maxLossPct = MAX_LOSS_PCT[riskProfile];
 
   // Calculate totals
@@ -272,7 +278,7 @@ export async function testStep4(): Promise<void> {
   console.log(`  Expected Premium: $${(strikeSelection.expectedPremium / 100).toFixed(2)}/contract\n`);
 
   const riskProfiles: RiskProfile[] = ['CONSERVATIVE', 'BALANCED', 'AGGRESSIVE'];
-  const stopMultiplier = 3.5;
+  const stopMultiplier = 6;
 
   for (const profile of riskProfiles) {
     const sizing = await calculatePositionSize(

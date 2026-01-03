@@ -31,7 +31,8 @@ import {
   type ToolCall,
   type ToolResult,
 } from './lib/agent-tools';
-import { ensureIbkrReady } from './broker/ibkr';
+import { ensureIbkrReady, placeOptionOrderWithStop } from './broker/ibkr';
+import { getBrokerForUser } from './broker/index';
 import {
   calculateModificationImpact,
   generateNegotiationResponse,
@@ -1782,34 +1783,93 @@ router.post('/operate', requireAuth, async (req: Request, res: Response) => {
           sendEvent({ type: 'status', phase: 'executing' });
           sendEvent({ type: 'action', tool: 'executeTrade', content: 'Submitting order to IBKR...' });
 
-          // Execute the trade
-          const { executeToolCall } = await import('./lib/agent-tools');
-          const result = await executeToolCall({
-            tool: 'executeTrade',
-            args: {
-              _approved: true, // Human approved via UI
-              ...proposal.proposal,
-            },
-          });
+          try {
+            // Get user's broker connection
+            const userId = (req as any).user?.id;
+            if (!userId) {
+              throw new Error('User not authenticated');
+            }
 
-          if (result.success) {
+            const broker = await getBrokerForUser(userId);
+            if (broker.status.provider !== 'ibkr') {
+              throw new Error('IBKR broker not configured');
+            }
+
+            await ensureIbkrReady();
+
+            // Calculate expiration date (0DTE = today's date in YYYYMMDD format)
+            const now = new Date();
+            const expiration = now.toISOString().split('T')[0].replace(/-/g, '');
+
+            const ibkrOrderIds: string[] = [];
+            const tradeProposal = proposal.proposal as {
+              symbol?: string;
+              contracts?: number;
+              legs?: Array<{
+                optionType: string;
+                strike: number;
+                premium?: number;
+                bid?: number;
+              }>;
+            };
+
+            if (!tradeProposal || !tradeProposal.legs || tradeProposal.legs.length === 0) {
+              throw new Error('Invalid trade proposal: missing legs');
+            }
+
+            const contracts = tradeProposal.contracts || 2;
+
+            // Place bracket orders for each leg (same logic as Engine page)
+            for (const leg of tradeProposal.legs) {
+              const STOP_MULTIPLIER = 6; // 6x premium (Layer 2 backup)
+              const premium = leg.premium || 0;
+              const legStopPrice = Math.round(premium * STOP_MULTIPLIER * 100) / 100;
+              const sellPrice = Math.round((leg.bid || premium || 0.01) * 100) / 100;
+
+              console.log(`[AgentRoutes/execute] Placing ${leg.optionType} order: strike=$${leg.strike}, price=$${sellPrice}, stop=$${legStopPrice}`);
+
+              const orderResult = await placeOptionOrderWithStop({
+                symbol: tradeProposal.symbol || 'SPY',
+                optionType: leg.optionType as 'PUT' | 'CALL',
+                strike: leg.strike,
+                expiration,
+                quantity: contracts,
+                limitPrice: sellPrice,
+                stopPrice: legStopPrice,
+              });
+
+              if (orderResult.primaryOrderId) {
+                ibkrOrderIds.push(orderResult.primaryOrderId);
+              }
+              if (orderResult.stopOrderId) {
+                ibkrOrderIds.push(orderResult.stopOrderId);
+              }
+
+              if (orderResult.status.startsWith('rejected')) {
+                throw new Error(`IBKR order rejected: ${orderResult.error || orderResult.status}`);
+              }
+
+              console.log(`[AgentRoutes/execute] ${leg.optionType} order placed:`, orderResult);
+            }
+
             pendingProposals.delete(proposalId);
             sendEvent({
               type: 'execution',
               executionResult: {
                 success: true,
                 message: 'Order submitted to IBKR',
-                ibkrOrderIds: result.data?.orderIds || [],
-                tradeId: result.data?.tradeId,
+                ibkrOrderIds,
+                tradeId: `trade_${Date.now()}`,
                 timestamp: new Date(),
               },
             });
-          } else {
+          } catch (execError: any) {
+            console.error('[AgentRoutes/execute] Error:', execError);
             sendEvent({
               type: 'execution',
               executionResult: {
                 success: false,
-                message: result.error || 'Execution failed',
+                message: execError.message || 'Execution failed',
                 timestamp: new Date(),
               },
             });

@@ -24,7 +24,7 @@ import {
   getUpcomingMarketEvents,
   getETDateString,
 } from './services/marketCalendar';
-import { getLatestSnapshot, getSnapshotHistory } from './services/jobs/optionChainCapture';
+// Option chain snapshots removed - using optionBarCapture instead
 import { getUpcomingEconomicEvents, isFREDConfigured } from './services/fredApi';
 
 // Unified event type for the calendar API
@@ -130,40 +130,7 @@ router.get('/calendar', async (req: Request, res: Response) => {
   }
 });
 
-/**
- * GET /api/jobs/snapshots/:symbol - Get option chain snapshots for a symbol
- */
-router.get('/snapshots/:symbol', async (req: Request, res: Response) => {
-  try {
-    const symbol = req.params.symbol.toUpperCase();
-    const days = parseInt(req.query.days as string) || 30;
-
-    const snapshots = await getSnapshotHistory(symbol, days);
-    res.json({ ok: true, symbol, count: snapshots.length, snapshots });
-  } catch (error: any) {
-    console.error('[JobRoutes] Error getting snapshots:', error);
-    res.status(500).json({ ok: false, error: error.message });
-  }
-});
-
-/**
- * GET /api/jobs/snapshots/:symbol/latest - Get the latest snapshot
- */
-router.get('/snapshots/:symbol/latest', async (req: Request, res: Response) => {
-  try {
-    const symbol = req.params.symbol.toUpperCase();
-    const snapshot = await getLatestSnapshot(symbol);
-
-    if (!snapshot) {
-      return res.status(404).json({ ok: false, error: `No snapshot found for ${symbol}` });
-    }
-
-    res.json({ ok: true, snapshot });
-  } catch (error: any) {
-    console.error('[JobRoutes] Error getting latest snapshot:', error);
-    res.status(500).json({ ok: false, error: error.message });
-  }
-});
+// Snapshot routes removed - using optionBarCapture for 5-minute OHLC data
 
 // ============================================
 // Parameterized Routes (MUST come after static routes)
@@ -285,7 +252,9 @@ router.get('/position-monitor/status', async (_req: Request, res: Response) => {
  * - nav-snapshot-opening (9:30 AM ET) - Day P&L baseline
  * - position-monitor (every 5 min) - 3-Layer Defense monitoring
  * - 0dte-position-manager (3:55 PM ET) - Close risky 0DTE positions
- * - trade-monitor (every 30 min) - Mark expired trades with realized P&L
+ * - trade-monitor (every 30 min during market) - Monitor open trades
+ * - trade-monitor-eod (4:05 PM ET) - Mark all expired options with realized P&L
+ * - trade-engine (11:00 AM ET) - Automated 5-step trading engine
  * - economic-calendar-refresh (monthly) - FRED data
  */
 export async function initializeJobsSystem(): Promise<void> {
@@ -315,10 +284,29 @@ export async function initializeJobsSystem(): Promise<void> {
   initTradeMonitorJob();
   await ensureTradeMonitorJob();
 
+  // Trade engine (11:00 AM ET daily - automated 5-step trading)
+  const { initTradeEngineJob, ensureTradeEngineJob } = await import('./services/jobs/tradeEngine');
+  initTradeEngineJob();
+  await ensureTradeEngineJob();
+
+  // Option bar capture (every 5 min 9:30-4:00 PM ET - OHLC data collection)
+  try {
+    const { initOptionBarCaptureJob, ensureOptionBarCaptureJob } = await import('./services/jobs/optionBarCapture');
+    console.log('[JobRoutes] Loaded optionBarCapture module, calling initOptionBarCaptureJob...');
+    initOptionBarCaptureJob();
+    await ensureOptionBarCaptureJob();
+    console.log('[JobRoutes] optionBarCapture initialization complete');
+  } catch (err) {
+    console.error('[JobRoutes] FAILED to initialize optionBarCapture:', err);
+  }
+
   // Seed default jobs in database
   await seedDefaultJobs();
 
-  console.log('[JobRoutes] Jobs system initialized');
+  // Log all registered handlers for debugging
+  const { getRegisteredHandlers } = await import('./services/jobExecutor');
+  const handlers = getRegisteredHandlers();
+  console.log(`[JobRoutes] Jobs system initialized. Registered handlers: ${handlers.map(h => h.id).join(', ')}`);
 }
 
 export default router;

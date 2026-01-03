@@ -16,6 +16,7 @@ import { randomUUID } from "crypto";
 import { webcrypto as nodeWebcrypto } from 'node:crypto';
 import { EventEmitter } from 'events';
 import { storage } from "../storage";
+import { saveTokenState } from '../services/ibkrTokenPersistence';
 
 // Event emitter for IBKR authentication events
 export const ibkrEvents = new EventEmitter();
@@ -87,6 +88,41 @@ async function createSsoSession(baseUrl: string, accessToken: string): Promise<S
   return { ok: res.status >= 200 && res.status < 300, status: res.status, body: res.data, reqId: traceVal || reqId };
 }
 
+// Cache for current outgoing IP (refreshed every 5 minutes)
+let cachedOutgoingIp: { ip: string; fetchedAt: number } | null = null;
+const IP_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * Detect the current outgoing IP address of this server.
+ * Uses ipify.org API. Returns null if detection fails.
+ */
+async function detectOutgoingIp(): Promise<string | null> {
+  // Return cached value if still fresh
+  if (cachedOutgoingIp && Date.now() - cachedOutgoingIp.fetchedAt < IP_CACHE_TTL_MS) {
+    return cachedOutgoingIp.ip;
+  }
+
+  try {
+    const response = await axios.get('https://api.ipify.org?format=json', { timeout: 5000 });
+    const ip = response.data?.ip;
+    if (ip && typeof ip === 'string') {
+      cachedOutgoingIp = { ip, fetchedAt: Date.now() };
+      console.log(`[IBKR][IP] Detected outgoing IP: ${ip}`);
+      return ip;
+    }
+  } catch (err) {
+    console.warn('[IBKR][IP] Failed to detect outgoing IP:', (err as any)?.message);
+  }
+  return null;
+}
+
+/**
+ * Get the current outgoing IP (exported for use in other modules)
+ */
+export async function getCurrentOutgoingIp(): Promise<string | null> {
+  return detectOutgoingIp();
+}
+
 type PhaseStatus = { status: number | null; ts: string; requestId?: string };
 export type IbkrDiagnostics = {
   oauth: PhaseStatus;
@@ -99,6 +135,7 @@ type IbkrConfig = {
   baseUrl?: string;
   accountId?: string;
   env: "paper" | "live";
+  userId?: string; // For token persistence
   // Optional: Per-user credentials (if not provided, falls back to env vars)
   credentials?: {
     clientId: string;
@@ -120,6 +157,7 @@ class IbkrClient {
 
   // Per-user credentials (optional - falls back to env vars)
   private credentials?: IbkrConfig['credentials'];
+  private userId?: string; // For token persistence
 
   private accessToken: string | null = null;
   private accessTokenExpiryMs = 0;
@@ -147,6 +185,7 @@ class IbkrClient {
     this.accountId = cfg.accountId;
     this.env = cfg.env;
     this.credentials = cfg.credentials; // Store per-user credentials
+    this.userId = cfg.userId; // Store for token persistence
     // Axios client with cookie jar for CP API
     this.http = wrapper(axios.create({
       baseURL: 'https://api.ibkr.com',
@@ -157,6 +196,85 @@ class IbkrClient {
       timeout: 30000,  // 30 second timeout (reduced from 60s for faster failure)
       headers: { 'User-Agent': 'apeyolo/1.0' },
     }));
+  }
+
+  /**
+   * Get current token state for persistence
+   */
+  public getTokenState(): {
+    accessToken: string | null;
+    accessTokenExpiryMs: number;
+    ssoToken: string | null;
+    ssoSessionId: string | null;
+    ssoTokenExpiryMs: number;
+    cookieJarJson: string;
+  } {
+    return {
+      accessToken: this.accessToken,
+      accessTokenExpiryMs: this.accessTokenExpiryMs,
+      ssoToken: this.ssoAccessToken,
+      ssoSessionId: this.ssoSessionId,
+      ssoTokenExpiryMs: this.ssoAccessTokenExpiryMs,
+      cookieJarJson: JSON.stringify(this.jar.toJSON()),
+    };
+  }
+
+  /**
+   * Restore token state from persistence
+   */
+  public restoreTokenState(state: {
+    accessToken: string | null;
+    accessTokenExpiryMs: number;
+    ssoToken: string | null;
+    ssoSessionId: string | null;
+    ssoTokenExpiryMs: number;
+    cookieJarJson: string | null;
+  }): void {
+    const now = Date.now();
+
+    // Only restore if tokens haven't expired
+    if (state.accessToken && state.accessTokenExpiryMs > now) {
+      this.accessToken = state.accessToken;
+      this.accessTokenExpiryMs = state.accessTokenExpiryMs;
+      console.log('[IBKR] Restored access token, expires in',
+        Math.round((state.accessTokenExpiryMs - now) / 1000 / 60), 'minutes');
+    }
+
+    if (state.ssoToken && state.ssoTokenExpiryMs > now) {
+      this.ssoAccessToken = state.ssoToken;
+      this.ssoSessionId = state.ssoSessionId;
+      this.ssoAccessTokenExpiryMs = state.ssoTokenExpiryMs;
+      this.sessionReady = true;
+      console.log('[IBKR] Restored SSO session, expires in',
+        Math.round((state.ssoTokenExpiryMs - now) / 1000 / 60), 'minutes');
+    }
+
+    // Restore cookies
+    if (state.cookieJarJson) {
+      try {
+        const jarData = JSON.parse(state.cookieJarJson);
+        this.jar = CookieJar.fromJSON(jarData);
+        // Recreate http client with restored jar
+        this.http = wrapper(axios.create({
+          baseURL: 'https://api.ibkr.com',
+          jar: this.jar,
+          withCredentials: true,
+          validateStatus: () => true,
+          timeout: 30000,
+          headers: { 'User-Agent': 'apeyolo/1.0' },
+        }));
+        console.log('[IBKR] Restored cookie jar');
+      } catch (e) {
+        console.warn('[IBKR] Failed to restore cookie jar:', e);
+      }
+    }
+  }
+
+  /**
+   * Get userId for this client
+   */
+  public getUserId(): string | undefined {
+    return this.userId;
   }
 
   // Helper methods to get credentials from instance or env vars
@@ -528,6 +646,14 @@ class IbkrClient {
       this.accessToken = json.access_token;
       this.accessTokenExpiryMs = this.now() + json.expires_in * 1000;
 
+      // Persist tokens to database
+      if (this.userId) {
+        const state = this.getTokenState();
+        saveTokenState(this.userId, state).catch(err =>
+          console.error('[IBKR] Failed to persist tokens:', err)
+        );
+      }
+
       await storage.createAuditLog({
         eventType: "IBKR_OAUTH_TOKEN",
         details: `OK http=${resp.status} req=${oauthReqId}`,
@@ -572,8 +698,35 @@ class IbkrClient {
       this.ssoAccessTokenExpiryMs = 0;
     }
 
-    // Build the SSO JWT (with optional IP claim)
-    const ip = this.getAllowedIp();
+    // Auto-detect current outgoing IP and compare with stored IP
+    const storedIp = this.getAllowedIp();
+    const currentIp = await detectOutgoingIp();
+    let ipToUse = storedIp;
+
+    if (currentIp && storedIp && currentIp !== storedIp) {
+      // IP MISMATCH DETECTED - this is the root cause of 401 errors
+      console.warn(`[IBKR][IP][MISMATCH] Stored IP: ${storedIp}, Current IP: ${currentIp}`);
+      console.warn(`[IBKR][IP][MISMATCH] Using current IP to avoid 401 errors`);
+      console.warn(`[IBKR][IP][MISMATCH] Database IP should be updated to: ${currentIp}`);
+      ipToUse = currentIp;
+
+      // Clear any cached tokens since they were created with wrong IP
+      this.ssoSessionId = null;
+      this.ssoAccessToken = null;
+      this.ssoAccessTokenExpiryMs = 0;
+
+      // Emit event for IP mismatch (can be used to auto-update database)
+      ibkrEvents.emit('ip_mismatch', { storedIp, currentIp, userId: this.userId });
+    } else if (currentIp && !storedIp) {
+      // No stored IP, use detected IP
+      console.log(`[IBKR][IP] No stored IP, using detected IP: ${currentIp}`);
+      ipToUse = currentIp;
+    } else if (storedIp) {
+      console.log(`[IBKR][IP] Using stored IP: ${storedIp}`);
+    }
+
+    // Build the SSO JWT (with IP claim from auto-detection or stored value)
+    const ip = ipToUse;
     const username = this.getCredential();
     const clientId = this.getClientId();
     const kid = this.getClientKeyId();
@@ -636,6 +789,14 @@ class IbkrClient {
     });
 
     await storage.createAuditLog({ eventType: 'IBKR_SSO_SESSION', details: `OK http=${res.status} req=${traceVal ?? ''} hasToken=${!!this.ssoAccessToken}` , status: 'SUCCESS' });
+
+    // Persist tokens to database
+    if (this.userId) {
+      const state = this.getTokenState();
+      saveTokenState(this.userId, state).catch(err =>
+        console.error('[IBKR] Failed to persist tokens:', err)
+      );
+    }
 
     // Delay 3s after successful SSO per requirement
     await this.sleep(3000);
@@ -865,17 +1026,29 @@ class IbkrClient {
       await this.createSSOSession(oauth);
       // After SSO, a 3s delay is already applied in createSSOSession()
 
-      // Validate (idempotent), handle 401/403 once by resetting and retrying flow
+      // Try validate first, but don't fail if it returns 401 - try init anyway
       const v = await this.validateSso();
       this.lastValidateTimeMs = Date.now();
-      if ((v === 401 || v === 403) && retry) {
-        this.ssoAccessToken = null;
-        this.ssoSessionId = null;
-        return this._doEnsureReady(false);
-      }
-      if (v !== 200) throw new Error(`validate ${this.last.validate.status}`);
 
-      // Wait 2s after validate
+      if (v === 200) {
+        console.log('[IBKR] Validate succeeded, proceeding to init');
+      } else if (v === 401 || v === 403) {
+        // Validate failed, but SSO token might still work for init
+        console.log(`[IBKR] Validate returned ${v}, trying init anyway with SSO token`);
+        if (retry) {
+          // On first failure, clear tokens and retry once
+          console.log('[IBKR] Clearing tokens and retrying full flow');
+          this.ssoAccessToken = null;
+          this.ssoSessionId = null;
+          return this._doEnsureReady(false);
+        }
+        // On second attempt, continue to init anyway
+        console.log('[IBKR] Second attempt, skipping validate and trying init directly');
+      } else {
+        throw new Error(`validate ${this.last.validate.status}`);
+      }
+
+      // Wait 2s before init
       await this.sleep(2000);
 
       // Tickle once before init
@@ -3556,6 +3729,7 @@ export function createIbkrProviderWithCredentials(config: {
   env: "paper" | "live";
   accountId?: string;
   baseUrl?: string;
+  userId?: string; // For token persistence
   credentials: {
     clientId: string;
     clientKeyId: string;
@@ -3563,11 +3737,12 @@ export function createIbkrProviderWithCredentials(config: {
     credential: string;
     allowedIp?: string;
   };
-}): BrokerProvider {
+}): BrokerProvider & { restoreTokenState?: (state: { accessToken?: string | null; accessTokenExpiryMs?: number; ssoToken?: string | null; ssoExpiryMs?: number }) => void } {
   const client = new IbkrClient({
     env: config.env,
     accountId: config.accountId,
     baseUrl: config.baseUrl,
+    userId: config.userId,
     credentials: config.credentials,
   });
   // Note: We intentionally do NOT set activeClient here to avoid
@@ -3579,6 +3754,7 @@ export function createIbkrProviderWithCredentials(config: {
     getTrades: () => client.getTrades(),
     placeOrder: (trade: InsertTrade) => client.placeOrder(trade),
     getMarketData: (symbol: string) => client.getMarketData(symbol),
+    restoreTokenState: (state) => client.restoreTokenState(state),
   };
 }
 

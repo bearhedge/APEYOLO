@@ -5,6 +5,7 @@ const API_BASE = '';
 async function fetchAPI<T>(endpoint: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${endpoint}`, {
     ...options,
+    credentials: 'include', // Ensure cookies are sent for authentication
     headers: {
       'Content-Type': 'application/json',
       ...options?.headers,

@@ -1,11 +1,49 @@
 import { storage } from "../storage";
 import type { BrokerEnv, BrokerProvider, BrokerProviderName, BrokerStatus } from "./types";
-import { createIbkrProvider, createIbkrProviderWithCredentials, getIbkrDiagnostics } from "./ibkr";
+import { createIbkrProvider, createIbkrProviderWithCredentials, getIbkrDiagnostics, ibkrEvents } from "./ibkr";
 import type { InsertTrade } from "@shared/schema";
 import { ibkrCredentials } from "@shared/schema";
 import { db } from "../db";
 import { eq } from "drizzle-orm";
 import { decryptPrivateKey } from "../crypto";
+import { loadTokenState, clearTokenState } from '../services/ibkrTokenPersistence';
+
+// Listen for IP mismatch events and auto-update database
+ibkrEvents.on('ip_mismatch', async ({ storedIp, currentIp, userId }: { storedIp: string; currentIp: string; userId?: string }) => {
+  console.log(`[Broker][IP] Auto-updating database IP from ${storedIp} to ${currentIp}`);
+
+  try {
+    if (!db) {
+      console.error('[Broker][IP] Database not available for IP update');
+      return;
+    }
+
+    // Update all credentials with the old IP to the new IP
+    const result = await db.update(ibkrCredentials)
+      .set({
+        allowedIp: currentIp,
+        updatedAt: new Date(),
+      })
+      .where(eq(ibkrCredentials.allowedIp, storedIp));
+
+    console.log(`[Broker][IP] Database IP updated successfully to ${currentIp}`);
+
+    // Clear cached tokens for this user (they were created with wrong IP)
+    if (userId) {
+      await clearTokenState(userId);
+      console.log(`[Broker][IP] Cleared cached tokens for user ${userId}`);
+    }
+
+    // Create audit log
+    await storage.createAuditLog({
+      eventType: 'IBKR_IP_AUTO_UPDATE',
+      details: `IP auto-updated from ${storedIp} to ${currentIp}`,
+      status: 'SUCCESS',
+    });
+  } catch (err) {
+    console.error('[Broker][IP] Failed to auto-update database IP:', err);
+  }
+});
 
 type BrokerBundle = {
   status: BrokerStatus;
@@ -133,13 +171,14 @@ export async function getBrokerForUser(
   }
 
   // Load credentials from database
+  console.log(`[Broker] Looking up credentials for user ${userId}...`);
   const creds = await db.select().from(ibkrCredentials)
     .where(eq(ibkrCredentials.userId, userId))
     .limit(1);
 
   // No credentials found - return no broker (security: never fall back to shared broker)
   if (creds.length === 0) {
-    console.log(`[Broker] No IBKR credentials for user ${userId}`);
+    console.log(`[Broker] No IBKR credentials found for user ${userId} in database`);
     return {
       status: { provider: "none", env: "paper", connected: false },
       api: null
@@ -147,11 +186,12 @@ export async function getBrokerForUser(
   }
 
   const userCreds = creds[0];
+  console.log(`[Broker] Found credentials for user ${userId}: clientId=${userCreds.clientId.substring(0, 8)}***, status=${userCreds.status}`);
 
   // Only use active credentials (security: never fall back to shared broker)
   // BUT allow testing inactive credentials when explicitly requested
   if (userCreds.status !== 'active' && !options?.allowInactive) {
-    console.log(`[Broker] IBKR credentials for user ${userId} are ${userCreds.status}`);
+    console.log(`[Broker] IBKR credentials for user ${userId} are ${userCreds.status} (not active)`);
     return {
       status: { provider: "none", env: "paper", connected: false },
       api: null
@@ -168,6 +208,7 @@ export async function getBrokerForUser(
     const provider = createIbkrProviderWithCredentials({
       env: userCreds.environment as BrokerEnv,
       accountId: userCreds.accountId || undefined,
+      userId: userId, // Pass userId for token persistence
       credentials: {
         clientId: userCreds.clientId,
         clientKeyId: userCreds.clientKeyId,
@@ -176,6 +217,15 @@ export async function getBrokerForUser(
         allowedIp: userCreds.allowedIp || undefined,
       }
     });
+
+    // Restore persisted tokens if available
+    const savedTokens = await loadTokenState(userId);
+    if (savedTokens && (savedTokens.accessToken || savedTokens.ssoToken)) {
+      // @ts-ignore - restoreTokenState is on the underlying IbkrClient
+      if (typeof provider.restoreTokenState === 'function') {
+        provider.restoreTokenState(savedTokens);
+      }
+    }
 
     // Cache the provider
     userBrokerCache.set(userId, {

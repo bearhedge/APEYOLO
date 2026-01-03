@@ -23,6 +23,7 @@ import { getBroker } from '../../broker';
 import { ensureIbkrReady, placeCloseOrderByConid } from '../../broker/ibkr';
 import { registerJobHandler, type JobResult } from '../jobExecutor';
 import { getETDateString, getETTimeString, getExitDeadline, isEarlyCloseDay, formatTimeForDisplay } from '../marketCalendar';
+import { linkTradeOutcome, normalizeExitReason } from '../rlhfService';
 import type { Position } from '@shared/types';
 
 // ============================================
@@ -378,12 +379,20 @@ export async function execute0dtePositionManager(): Promise<JobResult> {
             console.log(`[0DTE-Manager] Order submitted successfully: ${orderResult.orderId}`);
 
             // Update paper_trades to mark as closing
+            const exitReasonText = `Auto-closed by 0DTE manager: ${risky.reason}`;
             await db
               .update(paperTrades)
               .set({
-                exitReason: `Auto-closed by 0DTE manager: ${risky.reason}`,
+                exitReason: exitReasonText,
+                status: 'closed',
+                closedAt: new Date(),
               })
               .where(eq(paperTrades.id, risky.tradeId));
+
+            // Link outcome to engine_run for RLHF
+            // Note: P&L will be calculated and updated by tradeMonitor when it detects the position is closed
+            // For now, we just mark it as auto_close - the actual P&L will be linked later
+            await linkTradeOutcome(risky.tradeId, 0, normalizeExitReason(exitReasonText));
 
             break;
           } else {

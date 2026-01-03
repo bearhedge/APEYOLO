@@ -3,6 +3,8 @@
  * All environment-specific settings in one place
  */
 
+console.log('[CONFIG] Loading config.ts, GOOGLE_CLIENT_ID:', process.env.GOOGLE_CLIENT_ID ? 'SET' : 'NOT SET');
+
 import * as crypto from 'crypto';
 
 // Environment detection
@@ -100,7 +102,7 @@ export const config = {
 
   // Google OAuth
   google: {
-    clientId: process.env.GOOGLE_CLIENT_ID || '',
+    clientId: (() => { console.log('[CONFIG] Creating clientId, value:', process.env.GOOGLE_CLIENT_ID ? 'SET' : 'NOT SET'); return process.env.GOOGLE_CLIENT_ID || ''; })(),
     clientSecret: process.env.GOOGLE_CLIENT_SECRET || '',
     redirectUri: getGoogleRedirectUri(),
   },

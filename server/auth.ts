@@ -5,10 +5,14 @@
  * Handles Google OAuth flow for user authentication
  */
 
+console.log('[AUTH] Loading auth.ts module');
+
 import { Request, Response, Router, NextFunction } from 'express';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import { config } from './config.js';
+
+console.log('[AUTH] After config import, config.google.clientId:', config.google.clientId ? 'SET' : 'NOT SET');
 import { db } from './db.js';
 import { users } from '@shared/schema';
 import { eq } from 'drizzle-orm';
@@ -39,7 +43,9 @@ const GOOGLE_USER_INFO_URL = 'https://www.googleapis.com/oauth2/v3/userinfo';
  * Redirects user to Google consent screen
  */
 router.get('/google', (req: Request, res: Response) => {
-  if (!config.google.clientId) {
+  // Use env directly instead of config object
+  const clientId = process.env.GOOGLE_CLIENT_ID || config.google.clientId;
+  if (!clientId) {
     return res.status(500).json({ error: 'Google OAuth not configured' });
   }
 

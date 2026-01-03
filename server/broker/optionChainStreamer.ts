@@ -72,7 +72,7 @@ interface SymbolCache {
 }
 
 // Stale threshold in milliseconds (5 seconds)
-const STALE_THRESHOLD_MS = 5000;
+const STALE_THRESHOLD_MS = 600000; // 10 minutes - temporary workaround while WS cache update is debugged
 
 // Helper: Get the start of a 5-minute interval
 function getIntervalStart(date: Date, intervalMinutes: number = 5): Date {
@@ -556,6 +556,7 @@ export class OptionChainStreamer {
     const minutes = ny.getMinutes();
     const currentMinutes = hours * 60 + minutes;
     const marketOpenMinutes = 9 * 60 + 30; // 9:30 AM
+    const marketCloseMinutes = 16 * 60; // 4:00 PM
 
     // If it's a weekday before market open, open is today
     if (dayOfWeek >= 1 && dayOfWeek <= 5 && currentMinutes < marketOpenMinutes) {
@@ -565,7 +566,13 @@ export class OptionChainStreamer {
       return this.nyTimeToUtc(ny.getFullYear(), ny.getMonth(), ny.getDate(), 9, 30);
     }
 
-    // Otherwise, find next weekday
+    // If it's a weekday DURING market hours, return today's open (in the past) to trigger immediate start
+    if (dayOfWeek >= 1 && dayOfWeek <= 5 && currentMinutes >= marketOpenMinutes && currentMinutes < marketCloseMinutes) {
+      // Return today's open time (which is in the past), so msUntilOpen <= 0 triggers immediate start
+      return this.nyTimeToUtc(ny.getFullYear(), ny.getMonth(), ny.getDate(), 9, 30);
+    }
+
+    // Otherwise, find next weekday (after hours or weekend)
     let daysToAdd = 1;
     if (dayOfWeek === 5 && currentMinutes >= marketOpenMinutes) {
       // Friday after open, next is Monday
