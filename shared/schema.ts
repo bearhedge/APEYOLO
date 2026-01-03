@@ -1,4 +1,4 @@
-import { sql } from "drizzle-orm";
+import { relations, sql } from "drizzle-orm";
 import { pgTable, text, varchar, decimal, integer, timestamp, boolean, jsonb, bigint, index, doublePrecision, uniqueIndex } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
@@ -200,6 +200,13 @@ export const ibkrCredentials = pgTable("ibkr_credentials", {
   status: text("status", { enum: ["active", "inactive", "error"] }).notNull().default("inactive"),
   lastConnectedAt: timestamp("last_connected_at"),
   errorMessage: text("error_message"),
+  // Runtime OAuth tokens (encrypted, survive restarts)
+  accessTokenEncrypted: text("access_token_encrypted"),
+  accessTokenExpiryMs: bigint("access_token_expiry_ms", { mode: "number" }),
+  ssoTokenEncrypted: text("sso_token_encrypted"),
+  ssoSessionId: text("sso_session_id"),
+  ssoTokenExpiryMs: bigint("sso_token_expiry_ms", { mode: "number" }),
+  cookieJarJson: text("cookie_jar_json"), // Serialized cookie jar
   createdAt: timestamp("created_at").notNull().defaultNow(),
   updatedAt: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -784,6 +791,65 @@ export type AgentTick = typeof agentTicks.$inferSelect;
 export type InsertAgentTick = z.infer<typeof insertAgentTickSchema>;
 
 // ==================== END AGENT KNOWLEDGE BASE ====================
+
+// ==================== ENGINE RUNS (RLHF TRACKING) ====================
+// Tracks every engine run for RLHF - links user adjustments and trade outcomes to AI decisions
+
+export const engineRuns = pgTable("engine_runs", {
+  id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id", { length: 36 }).references(() => users.id),
+
+  // Trade setup
+  symbol: text("symbol").notNull(),
+  direction: text("direction").notNull(), // PUT | CALL | STRANGLE
+  expirationMode: text("expiration_mode"), // 0DTE | WEEKLY
+
+  // Original engine output (before your adjustments)
+  originalPutStrike: doublePrecision("original_put_strike"),
+  originalCallStrike: doublePrecision("original_call_strike"),
+  originalPutDelta: doublePrecision("original_put_delta"),
+  originalCallDelta: doublePrecision("original_call_delta"),
+
+  // Your final adjustments
+  finalPutStrike: doublePrecision("final_put_strike"),
+  finalCallStrike: doublePrecision("final_call_strike"),
+  adjustmentCount: integer("adjustment_count").default(0),
+
+  // Market context at time of decision
+  underlyingPrice: doublePrecision("underlying_price"),
+  vix: doublePrecision("vix"),
+
+  // Computed indicators (what AI sees)
+  indicators: jsonb("indicators"), // { rsi: 65, macd: 0.5, sma20: 450, ... }
+
+  // Full engine output for reference
+  engineOutput: jsonb("engine_output"),
+
+  // Outcome (filled when trade closes)
+  tradeId: varchar("trade_id", { length: 36 }),
+  realizedPnl: doublePrecision("realized_pnl"),
+  exitReason: text("exit_reason"),
+  wasWinner: boolean("was_winner"),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  closedAt: timestamp("closed_at"),
+});
+
+export const engineRunsRelations = relations(engineRuns, ({ one }) => ({
+  user: one(users, { fields: [engineRuns.userId], references: [users.id] }),
+  trade: one(trades, { fields: [engineRuns.tradeId], references: [trades.id] }),
+}));
+
+export const insertEngineRunSchema = createInsertSchema(engineRuns).omit({
+  id: true,
+  createdAt: true,
+  closedAt: true,
+});
+
+export type EngineRun = typeof engineRuns.$inferSelect;
+export type InsertEngineRun = z.infer<typeof insertEngineRunSchema>;
+
+// ==================== END ENGINE RUNS ====================
 
 // Option chain types
 export type OptionData = {
