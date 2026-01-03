@@ -12,7 +12,7 @@ import { db } from '../db';
 import { engineRuns, directionPredictions } from '@shared/schema';
 import { getIndicatorSnapshotSafe } from './indicators/ibkrFetcher';
 import { IndicatorSnapshot } from './indicators/calculator';
-import { eq, and, isNotNull, desc, sql } from 'drizzle-orm';
+import { eq, and, isNotNull, desc } from 'drizzle-orm';
 
 // Types
 export type DirectionType = 'PUT' | 'CALL' | 'STRANGLE' | 'NO_TRADE';
