@@ -37,6 +37,7 @@ import defiRoutes from "./defiRoutes.js";
 import agentRoutes from "./agentRoutes.js";
 import dataCaptureRoutes from "./routes/dataCaptureRoutes.js";
 import researchRoutes from "./routes/researchRoutes.js";
+import schedulerRoutes from "./routes/schedulerRoutes.js";
 import publicRoutes from "./publicRoutes.js";
 import indicatorRoutes from "./indicatorRoutes.js";
 import cors from "cors";
@@ -100,6 +101,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Register Research routes (DD research terminal)
   app.use('/api/research', researchRoutes);
+
+  // Register Cloud Scheduler routes (autonomous trading)
+  app.use('/api/cron', schedulerRoutes);
 
   // Register Indicator routes (RLHF market context)
   app.use('/api/indicators', indicatorRoutes);
