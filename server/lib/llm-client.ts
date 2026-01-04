@@ -3,16 +3,20 @@
  *
  * Supports:
  * - Ollama (local via Cloudflare tunnel) - for development
+ * - MLX (Apple Silicon via Cloudflare tunnel) - for Kimi-Dev-72B
  * - Vertex AI (Google Cloud) - for production at scale
  *
- * Set LLM_PROVIDER=ollama or LLM_PROVIDER=vertex
+ * Set LLM_PROVIDER=ollama, LLM_PROVIDER=mlx, or LLM_PROVIDER=vertex
  */
 
 import { VertexAI, FunctionDeclarationSchemaType } from '@google-cloud/vertexai';
 
 // Provider configuration
-export type LLMProvider = 'ollama' | 'vertex';
+export type LLMProvider = 'ollama' | 'mlx' | 'vertex';
 export const LLM_PROVIDER: LLMProvider = (process.env.LLM_PROVIDER as LLMProvider) || 'ollama';
+
+// MLX model configuration
+const MLX_MODEL = process.env.MLX_MODEL || 'mlx-community/Kimi-Dev-72B-4bit-DWQ';
 
 // Vertex AI configuration
 const GCP_PROJECT_ID = process.env.GCP_PROJECT_ID || 'fabled-cocoa-443004-n3';
@@ -153,6 +157,20 @@ export async function checkLLMStatus(): Promise<LLMStatusResponse> {
     return { online: false, error: 'LLM_TUNNEL_URL not configured' };
   }
 
+  // MLX uses OpenAI-compatible API
+  if (LLM_PROVIDER === 'mlx') {
+    try {
+      const ctrl = new AbortController();
+      const t = setTimeout(() => ctrl.abort(), 5000);
+      const r = await fetch(`${tunnelUrl}/v1/models`, { method: 'GET', signal: ctrl.signal });
+      clearTimeout(t);
+      if (!r.ok) return { online: false, error: `HTTP ${r.status}` };
+      return { online: true, proposerOnline: true, criticOnline: true, proposerModel: MLX_MODEL, criticModel: MLX_MODEL };
+    } catch (e: any) {
+      return { online: false, error: e.name === 'AbortError' ? 'Connection timeout' : e.message };
+    }
+  }
+
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 5000);
@@ -217,7 +235,44 @@ export async function chatWithLLM(request: LLMChatRequest): Promise<LLMChatRespo
   if (LLM_PROVIDER === 'vertex') {
     return chatWithLLMVertex(request);
   }
+  if (LLM_PROVIDER === 'mlx') {
+    return chatWithLLMMLX(request);
+  }
   return chatWithLLMOllama(request);
+}
+
+/**
+ * MLX (Kimi-Dev) implementation - OpenAI-compatible API
+ */
+async function chatWithLLMMLX(request: LLMChatRequest): Promise<LLMChatResponse> {
+  const tunnelUrl = getTunnelUrl();
+  if (!tunnelUrl) throw new Error('LLM_TUNNEL_URL not configured');
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+
+  try {
+    const response = await fetch(`${tunnelUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: MLX_MODEL,
+        messages: request.messages.map(m => ({ role: m.role, content: m.content })),
+        stream: false,
+        max_tokens: 4096,
+      }),
+      signal: controller.signal,
+    });
+
+    clearTimeout(timeout);
+    if (!response.ok) throw new Error(`MLX: ${response.status} - ${await response.text()}`);
+
+    const data = await response.json() as { choices: Array<{ message: { content: string } }> };
+    return { message: { role: 'assistant', content: data.choices[0]?.message?.content || '' }, done: true };
+  } catch (error: any) {
+    clearTimeout(timeout);
+    throw error.name === 'AbortError' ? new Error('MLX request timeout') : error;
+  }
 }
 
 /**
