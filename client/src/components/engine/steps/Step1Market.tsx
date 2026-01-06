@@ -105,10 +105,10 @@ export function Step1Market({
         </div>
       </div>
 
-      {/* CTA */}
+      {/* CTA - Always enabled (market closed just shows warning) */}
       <Button
         onClick={onAnalyze}
-        disabled={isLoading || !marketOpen}
+        disabled={isLoading}
         className="w-full py-6 text-base"
         size="lg"
       >
@@ -119,11 +119,16 @@ export function Step1Market({
           </>
         ) : (
           <>
-            Analyze Direction
+            Run Engine
             <ArrowRight className="w-5 h-5" />
           </>
         )}
       </Button>
+      {!marketOpen && (
+        <p className="text-xs text-amber-400 text-center mt-2">
+          Market is closed. Results may use cached/delayed data.
+        </p>
+      )}
     </div>
   );
 }
