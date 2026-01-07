@@ -13,6 +13,7 @@ import { OptionChainModal } from '@/components/OptionChainModal';
 import { useEngine } from '@/hooks/useEngine';
 import { useBrokerStatus } from '@/hooks/useBrokerStatus';
 import { useTradeEngineJob } from '@/hooks/useTradeEngineJob';
+import { useMarketSnapshot } from '@/hooks/useMarketSnapshot';
 import toast from 'react-hot-toast';
 import type { TradeDirection, TradeProposal, StrategyPreference } from '@shared/types/engine';
 
@@ -38,6 +39,9 @@ export function Engine() {
 
   // Unified broker status hook
   const { connected: brokerConnectedHook, environment } = useBrokerStatus();
+
+  // Real-time market data (shows before analysis runs)
+  const { snapshot: marketSnapshot } = useMarketSnapshot();
 
   // Automation toggle
   const { isEnabled: automationEnabled, setEnabled: setAutomationEnabled, isUpdating: isUpdatingAutomation } = useTradeEngineJob();
@@ -176,7 +180,9 @@ export function Engine() {
         }
 
         toast.success('Analysis complete!', { id: 'engine-analyze' });
-        advanceStep();
+        // Skip step 2 (direction) - go straight to step 3 (strikes)
+        setCompletedSteps(prev => new Set([...prev, 1, 2]));
+        setCurrentStep(3);
       } else {
         toast.error(`Cannot trade: ${result.reason}`, { id: 'engine-analyze' });
       }
@@ -273,9 +279,13 @@ export function Engine() {
     ? ((premiumPerContract * recommendedContracts * 100 * (stopMultiplier - 1)) / accountValue) * 100
     : 0;
 
-  // Get market data from analysis or use placeholders
-  const spyPrice = analysis?.q1MarketRegime?.inputs?.spyPrice ?? 0;
-  const vixValue = analysis?.q1MarketRegime?.inputs?.vixValue ?? 0;
+  // Get market data from analysis, fallback to snapshot (real-time), then 0
+  const spyPrice = analysis?.q1MarketRegime?.inputs?.spyPrice ?? marketSnapshot?.spyPrice ?? 0;
+  const vixValue = analysis?.q1MarketRegime?.inputs?.vixValue ?? marketSnapshot?.vix ?? 0;
+  const spyChangePct = analysis?.q1MarketRegime?.inputs?.spyChangePct ?? marketSnapshot?.spyChangePct ?? 0;
+  const dayHigh = spyPrice * 1.005;
+  const dayLow = spyPrice * 0.995;
+  const marketOpen = marketSnapshot?.marketState === 'REGULAR' || status?.tradingWindowOpen;
 
   // Render current step content
   const renderStepContent = () => {
@@ -284,13 +294,15 @@ export function Engine() {
         return (
           <Step1Market
             spyPrice={spyPrice}
-            spyChangePct={analysis?.q1MarketRegime?.inputs?.spyChangePct ?? 0}
+            spyChangePct={spyChangePct}
             vix={vixValue}
             vwap={spyPrice}
-            ivRank={50}
-            dayLow={spyPrice * 0.995}
-            dayHigh={spyPrice * 1.005}
-            marketOpen={status?.tradingWindowOpen ?? false}
+            ivRank={null}
+            dayLow={dayLow}
+            dayHigh={dayHigh}
+            marketOpen={marketOpen ?? false}
+            strategy={strategyPreference}
+            onStrategyChange={setStrategyPreference}
             onAnalyze={handleAnalyze}
             isLoading={isExecuting || loading}
           />
