@@ -5,8 +5,8 @@ import { createServer, type Server } from "http";
 import WebSocket, { WebSocketServer } from "ws";
 import { storage } from "./storage";
 import { getBroker, getBrokerForUser, clearUserBrokerCache } from "./broker";
-import { getIbkrDiagnostics, ensureIbkrReady, placePaperStockOrder, placePaperOptionOrder, listPaperOpenOrders, getIbkrCookieString, resolveSymbolConid } from "./broker/ibkr";
-import { IbkrWebSocketManager, initIbkrWebSocket, getIbkrWebSocketManager, destroyIbkrWebSocket, type MarketDataUpdate } from "./broker/ibkrWebSocket";
+import { getIbkrDiagnostics, ensureIbkrReady, placePaperStockOrder, placePaperOptionOrder, listPaperOpenOrders, getIbkrCookieString, getIbkrSessionToken, resolveSymbolConid } from "./broker/ibkr";
+import { IbkrWebSocketManager, initIbkrWebSocket, getIbkrWebSocketManager, destroyIbkrWebSocket, getIbkrWebSocketStatus, type MarketDataUpdate, wsManagerInstance } from "./broker/ibkrWebSocket";
 import { getOptionChainStreamer, initOptionChainStreamer } from "./broker/optionChainStreamer";
 import { TradingEngine } from "./engine/index.ts";
 import {
@@ -40,8 +40,11 @@ import researchRoutes from "./routes/researchRoutes.js";
 import schedulerRoutes from "./routes/schedulerRoutes.js";
 import publicRoutes from "./publicRoutes.js";
 import indicatorRoutes from "./indicatorRoutes.js";
+import replayRoutes from "./replayRoutes.js";
+import ddRoutes from "./ddRoutes.js";
 import cors from "cors";
 import { getTodayOpeningSnapshot, getTodayClosingSnapshot, getPreviousClosingSnapshot, isMarketHours } from "./services/navSnapshot.js";
+import { fetchMarketSnapshot as fetchYahooSnapshot } from "./services/yahooFinanceService.js";
 
 // Helper function to get session from request
 async function getSessionFromRequest(req: any) {
@@ -107,6 +110,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Register Indicator routes (RLHF market context)
   app.use('/api/indicators', indicatorRoutes);
+
+  // Register Replay routes (historical data for replay trainer)
+  app.use('/api/replay', replayRoutes);
+
+  // Register DD routes (training decisions and research observations)
+  app.use('/api/dd', ddRoutes);
 
   // Register Public API routes (for bearhedge.com - no auth required)
   // CORS enabled for bearhedge.com and localhost development
@@ -438,26 +447,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     }));
 
-    // Simulate live data updates
+    // Real-time data updates (ONLY when IBKR is connected - NO fake data)
     const interval = setInterval(async () => {
       if (ws.readyState === WebSocket.OPEN) {
-        // Price updates
-        ws.send(JSON.stringify({
-          type: 'price_update',
-          data: {
-            SPY: 450.23 + (Math.random() - 0.5) * 2,
-            TSLA: 242.15 + (Math.random() - 0.5) * 5,
-            AAPL: 187.50 + (Math.random() - 0.5) * 3,
-            timestamp: new Date().toISOString()
-          }
-        }));
-
-        // Engine status updates (if using real data)
+        // Only send real market data when IBKR is connected
         if (broker.status.provider === 'ibkr') {
           try {
             const { getMarketData, getVIXData } = await import('./services/marketDataService.js');
             const spyData = await getMarketData('SPY');
             const vixData = await getVIXData();
+
+            // Send real price update (replacing the fake data)
+            ws.send(JSON.stringify({
+              type: 'price_update',
+              data: {
+                SPY: spyData.price,
+                timestamp: new Date().toISOString()
+              }
+            }));
 
             ws.send(JSON.stringify({
               type: 'engine_market_data',
@@ -490,7 +497,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }
           } catch (error) {
             console.error('[WebSocket] Error fetching market data:', error);
+            // Send error status so frontend knows data is unavailable
+            ws.send(JSON.stringify({
+              type: 'market_data_error',
+              error: 'Failed to fetch market data',
+              timestamp: new Date().toISOString()
+            }));
           }
+        } else {
+          // No IBKR - send status message instead of fake data
+          ws.send(JSON.stringify({
+            type: 'market_data_unavailable',
+            message: 'IBKR not connected - no real-time data available',
+            timestamp: new Date().toISOString()
+          }));
         }
       }
     }, 1000); // 1 second interval for live chart updates
@@ -1292,14 +1312,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Ensure IBKR is ready first
       await ensureIbkrReady();
 
-      // Get cookie string for WebSocket authentication
+      // Get cookie string and session token for WebSocket authentication
       const cookieString = await getIbkrCookieString();
       if (!cookieString) {
         return res.status(500).json({ ok: false, error: 'Failed to get IBKR cookies' });
       }
 
-      // Initialize WebSocket manager
-      const wsManager = initIbkrWebSocket(cookieString);
+      // Get session token for WebSocket authentication (required for IBKR Web API)
+      const sessionToken = await getIbkrSessionToken();
+      console.log(`[IbkrWS] Got session token: ${sessionToken ? 'yes' : 'no'}`);
+
+      // Initialize WebSocket manager with both cookies and session token
+      const wsManager = initIbkrWebSocket(cookieString, sessionToken);
 
       // Set up callback to broadcast updates to client WebSockets
       wsManager.onUpdate((update: MarketDataUpdate) => {
@@ -1638,6 +1662,107 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // Simple market snapshot - gets SPY/VIX with hybrid data sources
+  // Primary: IBKR WebSocket during market hours
+  // Fallback: Yahoo Finance for extended hours or when IBKR unavailable
+  app.get('/api/broker/stream/snapshot', requireAuth, async (req, res) => {
+    try {
+      // Determine market state
+      const now = new Date();
+      const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+      const hours = et.getHours();
+      const minutes = et.getMinutes();
+      const day = et.getDay();
+      const totalMinutes = hours * 60 + minutes;
+
+      // Market hours: 9:30 AM - 4:00 PM ET (Mon-Fri)
+      const marketOpen = 9 * 60 + 30;
+      const marketClose = 16 * 60;
+      // Extended hours: 4:00 AM - 8:00 PM ET
+      const extendedOpen = 4 * 60;
+      const extendedClose = 20 * 60;
+
+      let marketState: 'PRE' | 'REGULAR' | 'POST' | 'CLOSED';
+      if (day === 0 || day === 6) {
+        marketState = 'CLOSED';
+      } else if (totalMinutes >= marketOpen && totalMinutes < marketClose) {
+        marketState = 'REGULAR';
+      } else if (totalMinutes >= extendedOpen && totalMinutes < marketOpen) {
+        marketState = 'PRE';
+      } else if (totalMinutes >= marketClose && totalMinutes < extendedClose) {
+        marketState = 'POST';
+      } else {
+        marketState = 'CLOSED';
+      }
+
+      // Try IBKR WebSocket first during market hours
+      if (marketState === 'REGULAR') {
+        const wsManager = getIbkrWebSocketManager();
+        if (wsManager?.connected) {
+          const SPY_CONID = 756733;
+          const VIX_CONID = 13455763;
+          const spyData = wsManager.getCachedMarketData(SPY_CONID);
+          const vixData = wsManager.getCachedMarketData(VIX_CONID);
+
+          if (spyData?.last && spyData.last > 0) {
+            return res.json({
+              ok: true,
+              available: true,
+              source: 'ibkr',
+              marketState,
+              snapshot: {
+                spyPrice: spyData.last,
+                spyChange: 0, // IBKR WebSocket doesn't provide change
+                spyChangePct: 0,
+                vix: vixData?.last || 0,
+                vixChange: 0,
+                vixChangePct: 0,
+                timestamp: new Date().toISOString()
+              }
+            });
+          }
+        }
+      }
+
+      // Fall back to Yahoo Finance for extended hours or when IBKR unavailable
+      if (marketState !== 'CLOSED') {
+        try {
+          const yahoo = await fetchYahooSnapshot();
+          return res.json({
+            ok: true,
+            available: true,
+            source: 'yahoo',
+            marketState,
+            snapshot: {
+              spyPrice: yahoo.spy.price,
+              spyChange: yahoo.spy.change,
+              spyChangePct: yahoo.spy.changePercent,
+              vix: yahoo.vix.current,
+              vixChange: yahoo.vix.change,
+              vixChangePct: yahoo.vix.changePercent,
+              timestamp: yahoo.timestamp.toISOString()
+            }
+          });
+        } catch (yahooErr) {
+          console.error('[Snapshot] Yahoo Finance fallback failed:', yahooErr);
+        }
+      }
+
+      // Market closed - no data available
+      return res.json({
+        ok: true,
+        available: false,
+        source: 'none',
+        marketState,
+        message: marketState === 'CLOSED' ? 'Market is closed' : 'No data source available'
+      });
+
+    } catch (err: any) {
+      console.error('[Snapshot] Error:', err);
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // ============================================
   // End of Option Chain Streamer Endpoints
   // ============================================
@@ -1714,7 +1839,33 @@ export async function registerRoutes(app: Express): Promise<Server> {
             status: diag.init.status,
             message: diag.init.status === 200 ? 'Ready' : diag.init.status === 0 ? 'Not attempted' : 'Failed',
             success: diag.init.status === 200
-          }
+          },
+          // WebSocket status for real-time data streaming
+          websocket: (() => {
+            const wsStatus = getIbkrWebSocketStatus();
+            if (!wsStatus) {
+              return {
+                status: 0,
+                message: 'Not initialized',
+                success: false,
+                connected: false,
+                authenticated: false,
+                subscriptions: 0
+              };
+            }
+            return {
+              status: wsStatus.connected && wsStatus.authenticated ? 200 : (wsStatus.connected ? 100 : 0),
+              message: wsStatus.connected && wsStatus.authenticated
+                ? `Streaming (${wsStatus.subscriptions} subs)`
+                : wsStatus.connected
+                  ? 'Connected (authenticating...)'
+                  : 'Disconnected',
+              success: wsStatus.connected && wsStatus.authenticated,
+              connected: wsStatus.connected,
+              authenticated: wsStatus.authenticated,
+              subscriptions: wsStatus.subscriptions
+            };
+          })()
         }
       });
     } catch (error: any) {
