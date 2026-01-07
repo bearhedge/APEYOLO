@@ -265,6 +265,12 @@ function adaptStrikes(
       expirationMode,
     },
 
+    // Pass through smart filtering results for interactive UI
+    smartCandidates: strikes?.smartCandidates,
+    rejectedStrikes: strikes?.rejectedStrikes,
+    filterConfig: strikes?.filterConfig,
+    awaitingUserSelection: strikes?.awaitingUserSelection,
+
     stepNumber: 3,
     stepName: 'Strikes',
     passed: !!(selectedPut || selectedCall),
