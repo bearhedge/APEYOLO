@@ -283,9 +283,12 @@ export function Engine() {
   const spyPrice = analysis?.q1MarketRegime?.inputs?.spyPrice ?? marketSnapshot?.spyPrice ?? 0;
   const vixValue = analysis?.q1MarketRegime?.inputs?.vixValue ?? marketSnapshot?.vix ?? 0;
   const spyChangePct = analysis?.q1MarketRegime?.inputs?.spyChangePct ?? marketSnapshot?.spyChangePct ?? 0;
+  const vixChangePct = marketSnapshot?.vixChangePct ?? 0;
   const dayHigh = spyPrice * 1.005;
   const dayLow = spyPrice * 0.995;
   const marketOpen = marketSnapshot?.marketState === 'REGULAR' || status?.tradingWindowOpen;
+  const dataSource = marketSnapshot?.source ?? 'none';
+  const dataTimestamp = marketSnapshot?.timestamp ?? null;
 
   // Render current step content
   const renderStepContent = () => {
@@ -296,11 +299,14 @@ export function Engine() {
             spyPrice={spyPrice}
             spyChangePct={spyChangePct}
             vix={vixValue}
+            vixChangePct={vixChangePct}
             vwap={spyPrice}
             ivRank={null}
             dayLow={dayLow}
             dayHigh={dayHigh}
             marketOpen={marketOpen ?? false}
+            source={dataSource}
+            timestamp={dataTimestamp}
             strategy={strategyPreference}
             onStrategyChange={setStrategyPreference}
             onAnalyze={handleAnalyze}

@@ -7,16 +7,22 @@
 
 import { Button } from '@/components/ui/button';
 import { TrendingUp, TrendingDown, Minus, ArrowRight } from 'lucide-react';
+import type { StrategyPreference } from '@shared/types/engine';
 
 interface Step1MarketProps {
   spyPrice: number;
   spyChangePct: number;
   vix: number;
+  vixChangePct: number;
   vwap: number;
-  ivRank: number;
+  ivRank: number | null;
   dayLow: number;
   dayHigh: number;
   marketOpen: boolean;
+  source: 'ibkr' | 'yahoo' | 'none';
+  timestamp: string | null;
+  strategy: StrategyPreference;
+  onStrategyChange: (strategy: StrategyPreference) => void;
   onAnalyze: () => void;
   isLoading: boolean;
 }
@@ -25,21 +31,27 @@ export function Step1Market({
   spyPrice,
   spyChangePct,
   vix,
+  vixChangePct,
   vwap,
   ivRank,
   dayLow,
   dayHigh,
   marketOpen,
+  source,
+  timestamp,
+  strategy,
+  onStrategyChange,
   onAnalyze,
   isLoading,
 }: Step1MarketProps) {
   // Calculate position within day range (0-100%)
-  const rangePosition = ((spyPrice - dayLow) / (dayHigh - dayLow)) * 100;
+  const range = dayHigh - dayLow;
+  const rangePosition = range > 0 ? ((spyPrice - dayLow) / range) * 100 : 50;
 
   return (
     <div className="space-y-6">
-      {/* Market Status Badge */}
-      <div className="flex items-center justify-center">
+      {/* Market Status Badge + Source Indicator */}
+      <div className="flex items-center justify-center gap-2">
         <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-full border ${
           marketOpen
             ? 'bg-green-500/10 border-green-500/30 text-green-400'
@@ -50,6 +62,16 @@ export function Step1Market({
             {marketOpen ? 'Market Open' : 'Market Closed'}
           </span>
         </div>
+        {/* Source Badge */}
+        {source !== 'none' && (
+          <div className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium uppercase tracking-wider ${
+            source === 'ibkr'
+              ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+              : 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
+          }`}>
+            {source === 'ibkr' ? 'LIVE' : 'DELAYED'}
+          </div>
+        )}
       </div>
 
       {/* Hero Price Display */}
@@ -70,7 +92,14 @@ export function Step1Market({
       <div className="grid grid-cols-3 gap-4">
         <div className="p-4 bg-zinc-900/50 rounded-lg border border-zinc-800">
           <p className="text-xs text-zinc-500 mb-1 uppercase tracking-wider">VIX</p>
-          <p className="text-2xl font-bold font-mono text-white">{vix.toFixed(2)}</p>
+          <div className="flex items-baseline gap-2">
+            <span className="text-2xl font-bold font-mono text-white">{vix.toFixed(2)}</span>
+            {vixChangePct !== 0 && (
+              <span className={`text-sm font-mono ${vixChangePct >= 0 ? 'text-red-400' : 'text-green-400'}`}>
+                {vixChangePct >= 0 ? '+' : ''}{vixChangePct.toFixed(1)}%
+              </span>
+            )}
+          </div>
         </div>
         <div className="p-4 bg-zinc-900/50 rounded-lg border border-zinc-800">
           <p className="text-xs text-zinc-500 mb-1 uppercase tracking-wider">VWAP</p>
@@ -78,7 +107,9 @@ export function Step1Market({
         </div>
         <div className="p-4 bg-zinc-900/50 rounded-lg border border-zinc-800">
           <p className="text-xs text-zinc-500 mb-1 uppercase tracking-wider">IV Rank</p>
-          <p className="text-2xl font-bold font-mono text-white">{ivRank.toFixed(0)}%</p>
+          <p className="text-2xl font-bold font-mono text-white">
+            {ivRank !== null ? `${ivRank.toFixed(0)}%` : '—'}
+          </p>
         </div>
       </div>
 
@@ -105,6 +136,43 @@ export function Step1Market({
         </div>
       </div>
 
+      {/* Strategy Selection */}
+      <div className="space-y-2">
+        <p className="text-xs text-zinc-500 uppercase tracking-wider text-center">Strategy</p>
+        <div className="flex gap-2">
+          <button
+            onClick={() => onStrategyChange('strangle')}
+            className={`flex-1 py-3 px-4 rounded-lg border text-sm font-medium transition ${
+              strategy === 'strangle'
+                ? 'bg-blue-500/20 border-blue-500 text-blue-400'
+                : 'bg-zinc-900/50 border-zinc-700 text-zinc-400 hover:border-zinc-600'
+            }`}
+          >
+            Strangle
+          </button>
+          <button
+            onClick={() => onStrategyChange('put-only')}
+            className={`flex-1 py-3 px-4 rounded-lg border text-sm font-medium transition ${
+              strategy === 'put-only'
+                ? 'bg-red-500/20 border-red-500 text-red-400'
+                : 'bg-zinc-900/50 border-zinc-700 text-zinc-400 hover:border-zinc-600'
+            }`}
+          >
+            Put
+          </button>
+          <button
+            onClick={() => onStrategyChange('call-only')}
+            className={`flex-1 py-3 px-4 rounded-lg border text-sm font-medium transition ${
+              strategy === 'call-only'
+                ? 'bg-green-500/20 border-green-500 text-green-400'
+                : 'bg-zinc-900/50 border-zinc-700 text-zinc-400 hover:border-zinc-600'
+            }`}
+          >
+            Call
+          </button>
+        </div>
+      </div>
+
       {/* CTA - Always enabled (market closed just shows warning) */}
       <Button
         onClick={onAnalyze}
@@ -127,6 +195,18 @@ export function Step1Market({
       {!marketOpen && (
         <p className="text-xs text-amber-400 text-center mt-2">
           Market is closed. Results may use cached/delayed data.
+        </p>
+      )}
+
+      {/* Timestamp */}
+      {timestamp && (
+        <p className="text-xs text-zinc-500 text-center">
+          Last updated: {new Date(timestamp).toLocaleTimeString('en-US', {
+            hour: '2-digit',
+            minute: '2-digit',
+            second: '2-digit',
+            timeZone: 'America/New_York'
+          })} ET
         </p>
       )}
     </div>
