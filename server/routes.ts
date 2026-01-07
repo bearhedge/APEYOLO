@@ -45,6 +45,7 @@ import ddRoutes from "./ddRoutes.js";
 import cors from "cors";
 import { getTodayOpeningSnapshot, getTodayClosingSnapshot, getPreviousClosingSnapshot, isMarketHours } from "./services/navSnapshot.js";
 import { fetchMarketSnapshot as fetchYahooSnapshot } from "./services/yahooFinanceService.js";
+import { getMarketStatus } from "./services/marketCalendar.js";
 
 // Helper function to get session from request
 async function getSessionFromRequest(req: any) {
@@ -1667,29 +1668,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Fallback: Yahoo Finance for extended hours or when IBKR unavailable
   app.get('/api/broker/stream/snapshot', requireAuth, async (req, res) => {
     try {
-      // Determine market state
-      const now = new Date();
-      const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
-      const hours = et.getHours();
-      const minutes = et.getMinutes();
-      const day = et.getDay();
-      const totalMinutes = hours * 60 + minutes;
+      // Determine market state using centralized market calendar (includes holiday detection)
+      const status = getMarketStatus();
 
-      // Market hours: 9:30 AM - 4:00 PM ET (Mon-Fri)
-      const marketOpen = 9 * 60 + 30;
-      const marketClose = 16 * 60;
-      // Extended hours: 4:00 AM - 8:00 PM ET
-      const extendedOpen = 4 * 60;
-      const extendedClose = 20 * 60;
-
+      // Map MarketStatus to our marketState enum
+      // The reason field indicates pre-market/after-hours when market is closed
       let marketState: 'PRE' | 'REGULAR' | 'POST' | 'CLOSED';
-      if (day === 0 || day === 6) {
-        marketState = 'CLOSED';
-      } else if (totalMinutes >= marketOpen && totalMinutes < marketClose) {
+      if (status.isOpen) {
         marketState = 'REGULAR';
-      } else if (totalMinutes >= extendedOpen && totalMinutes < marketOpen) {
+      } else if (status.reason.startsWith('Pre-market')) {
         marketState = 'PRE';
-      } else if (totalMinutes >= marketClose && totalMinutes < extendedClose) {
+      } else if (status.reason.startsWith('After hours')) {
         marketState = 'POST';
       } else {
         marketState = 'CLOSED';
@@ -1699,6 +1688,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (marketState === 'REGULAR') {
         const wsManager = getIbkrWebSocketManager();
         if (wsManager?.connected) {
+          // TODO: Centralize conids - these are duplicated across the codebase
           const SPY_CONID = 756733;
           const VIX_CONID = 13455763;
           const spyData = wsManager.getCachedMarketData(SPY_CONID);
