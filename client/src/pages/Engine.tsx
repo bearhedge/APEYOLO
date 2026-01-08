@@ -289,6 +289,9 @@ export function Engine() {
   const marketOpen = marketSnapshot?.marketState === 'REGULAR' || status?.tradingWindowOpen;
   const dataSource = marketSnapshot?.source ?? 'none';
   const dataTimestamp = marketSnapshot?.timestamp ?? null;
+  // Use real VWAP and IV Rank from snapshot (calculated server-side)
+  const vwap = marketSnapshot?.vwap ?? null;
+  const ivRank = marketSnapshot?.ivRank ?? null;
 
   // Render current step content
   const renderStepContent = () => {
@@ -300,8 +303,8 @@ export function Engine() {
             spyChangePct={spyChangePct}
             vix={vixValue}
             vixChangePct={vixChangePct}
-            vwap={spyPrice}
-            ivRank={null}
+            vwap={vwap}
+            ivRank={ivRank}
             dayLow={dayLow}
             dayHigh={dayHigh}
             marketOpen={marketOpen ?? false}

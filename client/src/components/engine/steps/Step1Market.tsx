@@ -14,12 +14,12 @@ interface Step1MarketProps {
   spyChangePct: number;
   vix: number;
   vixChangePct: number;
-  vwap: number;
+  vwap: number | null;
   ivRank: number | null;
   dayLow: number;
   dayHigh: number;
   marketOpen: boolean;
-  source: 'ibkr' | 'yahoo' | 'none';
+  source: 'ibkr' | 'ibkr-sse' | 'yahoo' | 'none';
   timestamp: string | null;
   strategy: StrategyPreference;
   onStrategyChange: (strategy: StrategyPreference) => void;
@@ -63,29 +63,38 @@ export function Step1Market({
           </span>
         </div>
         {/* Source Badge */}
-        {source !== 'none' && (
-          <div className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium uppercase tracking-wider ${
-            source === 'ibkr'
-              ? 'bg-green-500/20 text-green-400 border border-green-500/30'
-              : 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
-          }`}>
-            {source === 'ibkr' ? 'LIVE' : 'DELAYED'}
-          </div>
-        )}
+        <div className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium uppercase tracking-wider ${
+          source === 'ibkr' || source === 'ibkr-sse'
+            ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+            : source === 'yahoo'
+            ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+            : 'bg-red-500/20 text-red-400 border border-red-500/30'
+        }`}>
+          {source === 'ibkr' || source === 'ibkr-sse' ? 'LIVE' : source === 'yahoo' ? 'YAHOO' : 'NO DATA'}
+        </div>
       </div>
 
       {/* Hero Price Display */}
       <div className="text-center">
-        <div className="flex items-center justify-center gap-3 mb-2">
-          <span className="text-5xl font-bold font-mono">${spyPrice.toFixed(2)}</span>
-          <div className={`flex items-center gap-1 text-2xl font-semibold ${
-            spyChangePct >= 0 ? 'text-green-400' : 'text-red-400'
-          }`}>
-            {spyChangePct >= 0 ? <TrendingUp className="w-6 h-6" /> : <TrendingDown className="w-6 h-6" />}
-            <span className="font-mono">{spyChangePct >= 0 ? '+' : ''}{spyChangePct.toFixed(2)}%</span>
-          </div>
-        </div>
-        <p className="text-sm text-zinc-400 uppercase tracking-wider">SPY Price</p>
+        {spyPrice > 0 ? (
+          <>
+            <div className="flex items-center justify-center gap-3 mb-2">
+              <span className="text-5xl font-bold font-mono">${spyPrice.toFixed(2)}</span>
+              <div className={`flex items-center gap-1 text-2xl font-semibold ${
+                spyChangePct >= 0 ? 'text-green-400' : 'text-red-400'
+              }`}>
+                {spyChangePct >= 0 ? <TrendingUp className="w-6 h-6" /> : <TrendingDown className="w-6 h-6" />}
+                <span className="font-mono">{spyChangePct >= 0 ? '+' : ''}{spyChangePct.toFixed(2)}%</span>
+              </div>
+            </div>
+            <p className="text-sm text-zinc-400 uppercase tracking-wider">SPY Price</p>
+          </>
+        ) : (
+          <>
+            <div className="text-5xl font-bold font-mono text-zinc-600 mb-2">—</div>
+            <p className="text-sm text-red-400 uppercase tracking-wider">No Price Data Available</p>
+          </>
+        )}
       </div>
 
       {/* Metrics Row - 3 columns */}
@@ -103,7 +112,9 @@ export function Step1Market({
         </div>
         <div className="p-4 bg-zinc-900/50 rounded-lg border border-zinc-800">
           <p className="text-xs text-zinc-500 mb-1 uppercase tracking-wider">VWAP</p>
-          <p className="text-2xl font-bold font-mono text-white">${vwap.toFixed(2)}</p>
+          <p className="text-2xl font-bold font-mono text-white">
+            {vwap !== null ? `$${vwap.toFixed(2)}` : '—'}
+          </p>
         </div>
         <div className="p-4 bg-zinc-900/50 rounded-lg border border-zinc-800">
           <p className="text-xs text-zinc-500 mb-1 uppercase tracking-wider">IV Rank</p>

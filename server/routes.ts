@@ -46,6 +46,14 @@ import cors from "cors";
 import { getTodayOpeningSnapshot, getTodayClosingSnapshot, getPreviousClosingSnapshot, isMarketHours } from "./services/navSnapshot.js";
 import { fetchMarketSnapshot as fetchYahooSnapshot } from "./services/yahooFinanceService.js";
 import { getMarketStatus } from "./services/marketCalendar.js";
+import {
+  setPreviousClose,
+  calculateChangePercent,
+  calculateChange,
+  calculateIVRank,
+  getMetrics,
+  getVWAP,
+} from "./services/marketMetrics.js";
 
 // Helper function to get session from request
 async function getSessionFromRequest(req: any) {
@@ -1344,8 +1352,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Connect to IBKR WebSocket
       await wsManager.connect();
 
-      console.log('[IbkrWS] WebSocket streaming started');
-      return res.json({ ok: true, message: 'IBKR WebSocket streaming started' });
+      // Auto-subscribe to SPY and VIX for real-time streaming
+      const SPY_CONID = 756733;
+      const VIX_CONID = 13455763;
+      console.log('[IbkrWS] Auto-subscribing to SPY and VIX...');
+      wsManager.subscribe(SPY_CONID, { symbol: 'SPY', type: 'stock' });
+      wsManager.subscribe(VIX_CONID, { symbol: 'VIX', type: 'stock' });
+
+      console.log('[IbkrWS] WebSocket streaming started with SPY/VIX subscriptions');
+      return res.json({ ok: true, message: 'IBKR WebSocket streaming started', subscriptions: ['SPY', 'VIX'] });
     } catch (err: any) {
       console.error('[IbkrWS] Error starting WebSocket:', err.message);
       return res.status(500).json({ ok: false, error: err.message });
@@ -1668,33 +1683,42 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Fallback: Yahoo Finance for extended hours or when IBKR unavailable
   app.get('/api/broker/stream/snapshot', requireAuth, async (req, res) => {
     try {
-      // Determine market state using centralized market calendar (includes holiday detection)
-      const status = getMarketStatus();
-
-      // Map MarketStatus to our marketState enum
-      // The reason field indicates pre-market/after-hours when market is closed
-      let marketState: 'PRE' | 'REGULAR' | 'POST' | 'CLOSED';
-      if (status.isOpen) {
-        marketState = 'REGULAR';
-      } else if (status.reason.startsWith('Pre-market')) {
-        marketState = 'PRE';
-      } else if (status.reason.startsWith('After hours')) {
-        marketState = 'POST';
-      } else {
-        marketState = 'CLOSED';
+      // Get market status safely
+      let marketState: 'PRE' | 'REGULAR' | 'POST' | 'CLOSED' = 'CLOSED';
+      try {
+        const status = getMarketStatus();
+        if (status?.isOpen) {
+          marketState = 'REGULAR';
+        } else if (status?.reason?.startsWith('Pre-market')) {
+          marketState = 'PRE';
+        } else if (status?.reason?.startsWith('After hours')) {
+          marketState = 'POST';
+        }
+      } catch (e) {
+        console.log('[Snapshot] Market status check failed, defaulting to CLOSED');
       }
 
-      // Try IBKR WebSocket first during market hours
+      // MARKET HOURS: Use IBKR WebSocket (free real-time streaming)
       if (marketState === 'REGULAR') {
         const wsManager = getIbkrWebSocketManager();
         if (wsManager?.connected) {
-          // TODO: Centralize conids - these are duplicated across the codebase
           const SPY_CONID = 756733;
           const VIX_CONID = 13455763;
           const spyData = wsManager.getCachedMarketData(SPY_CONID);
           const vixData = wsManager.getCachedMarketData(VIX_CONID);
 
           if (spyData?.last && spyData.last > 0) {
+            // Calculate metrics from previous close
+            const metrics = getMetrics();
+            const spyChangePct = calculateChangePercent(spyData.last, metrics.spyPrevClose);
+            const spyChange = calculateChange(spyData.last, metrics.spyPrevClose);
+            const vixCurrent = vixData?.last || 0;
+            const vixChangePct = calculateChangePercent(vixCurrent, metrics.vixPrevClose);
+            const vixChange = calculateChange(vixCurrent, metrics.vixPrevClose);
+            const ivRank = calculateIVRank(vixCurrent);
+            const vwap = getVWAP();
+
+            console.log(`[Snapshot] IBKR WebSocket: SPY=$${spyData.last} (${spyChangePct >= 0 ? '+' : ''}${spyChangePct.toFixed(2)}%), VIX=${vixCurrent} (IV Rank: ${ivRank})`);
             return res.json({
               ok: true,
               available: true,
@@ -1702,55 +1726,155 @@ export async function registerRoutes(app: Express): Promise<Server> {
               marketState,
               snapshot: {
                 spyPrice: spyData.last,
-                spyChange: 0, // IBKR WebSocket doesn't provide change
-                spyChangePct: 0,
-                vix: vixData?.last || 0,
-                vixChange: 0,
-                vixChangePct: 0,
-                timestamp: new Date().toISOString()
+                spyChange,
+                spyChangePct,
+                vix: vixCurrent,
+                vixChange,
+                vixChangePct,
+                vwap: vwap || spyData.last,  // Fallback to current price if no VWAP yet
+                ivRank,
+                timestamp: spyData.timestamp.toISOString()
               }
             });
           }
         }
       }
 
-      // Fall back to Yahoo Finance for extended hours or when IBKR unavailable
-      if (marketState !== 'CLOSED') {
-        try {
-          const yahoo = await fetchYahooSnapshot();
-          return res.json({
-            ok: true,
-            available: true,
-            source: 'yahoo',
-            marketState,
-            snapshot: {
-              spyPrice: yahoo.spy.price,
-              spyChange: yahoo.spy.change,
-              spyChangePct: yahoo.spy.changePercent,
-              vix: yahoo.vix.current,
-              vixChange: yahoo.vix.change,
-              vixChangePct: yahoo.vix.changePercent,
-              timestamp: yahoo.timestamp.toISOString()
-            }
-          });
-        } catch (yahooErr) {
-          console.error('[Snapshot] Yahoo Finance fallback failed:', yahooErr);
-        }
-      }
+      // NON-MARKET HOURS: Use Yahoo Finance
+      try {
+        const yahoo = await fetchYahooSnapshot();
 
-      // Market closed - no data available
-      return res.json({
-        ok: true,
-        available: false,
-        source: 'none',
-        marketState,
-        message: marketState === 'CLOSED' ? 'Market is closed' : 'No data source available'
-      });
+        // Update previous close values from Yahoo (for next market session calculations)
+        if (yahoo.spy.previousClose && yahoo.vix.close) {
+          setPreviousClose(yahoo.spy.previousClose, yahoo.vix.close);
+        }
+
+        // Calculate IV Rank from VIX
+        const ivRank = calculateIVRank(yahoo.vix.current);
+
+        console.log(`[Snapshot] Yahoo: SPY=$${yahoo.spy.price} (${yahoo.spy.changePercent.toFixed(2)}%), VIX=${yahoo.vix.current} (IV Rank: ${ivRank})`);
+        return res.json({
+          ok: true,
+          available: true,
+          source: 'yahoo',
+          marketState,
+          snapshot: {
+            spyPrice: yahoo.spy.price,
+            spyChange: yahoo.spy.change,
+            spyChangePct: yahoo.spy.changePercent,
+            vix: yahoo.vix.current,
+            vixChange: yahoo.vix.change,
+            vixChangePct: yahoo.vix.changePercent,
+            vwap: null,  // Yahoo doesn't provide VWAP
+            ivRank,
+            timestamp: yahoo.timestamp.toISOString()
+          }
+        });
+      } catch (yahooErr: any) {
+        console.error('[Snapshot] Yahoo Finance error:', yahooErr.message);
+        return res.json({
+          ok: true,
+          available: false,
+          source: 'none',
+          marketState,
+          message: `Yahoo Finance error: ${yahooErr.message}`
+        });
+      }
 
     } catch (err: any) {
       console.error('[Snapshot] Error:', err);
       return res.status(500).json({ ok: false, error: err.message });
     }
+  });
+
+  // ============================================
+  // REAL-TIME SSE STREAMING ENDPOINT
+  // This is TRUE streaming - pushes every price update as it arrives
+  // ============================================
+  app.get('/api/broker/stream/live', requireAuth, async (req, res) => {
+    console.log('[SSE] Client connected for live streaming');
+
+    // Set SSE headers
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+    res.flushHeaders();
+
+    // Send initial connection message
+    res.write(`data: ${JSON.stringify({ type: 'connected', timestamp: new Date().toISOString() })}\n\n`);
+
+    const wsManager = getIbkrWebSocketManager();
+
+    if (!wsManager?.connected) {
+      res.write(`data: ${JSON.stringify({ type: 'error', message: 'WebSocket not connected' })}\n\n`);
+      console.log('[SSE] WebSocket not connected, ending stream');
+      res.end();
+      return;
+    }
+
+    // Subscribe to market data updates and stream them immediately
+    const SPY_CONID = 756733;
+    const VIX_CONID = 13455763;
+
+    let updateCount = 0;
+    const unsubscribe = wsManager.onUpdate((update: MarketDataUpdate) => {
+      // Only stream SPY and VIX updates
+      if (update.conid === SPY_CONID || update.conid === VIX_CONID) {
+        updateCount++;
+        const symbol = update.conid === SPY_CONID ? 'SPY' : 'VIX';
+
+        // Get market status for accurate state
+        const marketStatus = getMarketStatus();
+        const marketState = marketStatus?.isOpen ? 'REGULAR' : 'CLOSED';
+
+        // Calculate metrics
+        const metrics = getMetrics();
+        let changePct = 0;
+        let ivRank: number | null = null;
+
+        if (symbol === 'SPY' && update.last) {
+          changePct = calculateChangePercent(update.last, metrics.spyPrevClose);
+        } else if (symbol === 'VIX' && update.last) {
+          changePct = calculateChangePercent(update.last, metrics.vixPrevClose);
+          ivRank = calculateIVRank(update.last);
+        }
+
+        const eventData = {
+          type: 'price',
+          symbol,
+          conid: update.conid,
+          last: update.last,
+          bid: update.bid,
+          ask: update.ask,
+          changePct,
+          ivRank,
+          marketState,
+          vwap: symbol === 'SPY' ? getVWAP() : null,
+          timestamp: update.timestamp.toISOString(),
+          updateNumber: updateCount
+        };
+
+        // Log every 10th update to avoid log spam
+        if (updateCount % 10 === 1) {
+          console.log(`[SSE] Streaming ${symbol}: $${update.last} (${changePct >= 0 ? '+' : ''}${changePct.toFixed(2)}%) [${marketState}] (update #${updateCount})`);
+        }
+
+        res.write(`data: ${JSON.stringify(eventData)}\n\n`);
+      }
+    });
+
+    // Send heartbeat every 15 seconds to keep connection alive
+    const heartbeatInterval = setInterval(() => {
+      res.write(`data: ${JSON.stringify({ type: 'heartbeat', timestamp: new Date().toISOString() })}\n\n`);
+    }, 15000);
+
+    // Clean up on client disconnect
+    req.on('close', () => {
+      console.log(`[SSE] Client disconnected after ${updateCount} updates`);
+      unsubscribe();
+      clearInterval(heartbeatInterval);
+    });
   });
 
   // ============================================
@@ -2729,13 +2853,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // ============================================
   // Initialize the option chain streamer and schedule it to auto-start
   // at 9:30 AM ET on trading days. This ensures the engine has fresh
-  // option data when the trading window opens at 11:00 AM ET.
-  try {
-    console.log('[Server] Scheduling option chain streamer for market open (9:30 AM ET)');
-    initOptionChainStreamer({ autoSchedule: true, symbol: 'SPY' });
-  } catch (err) {
-    console.error('[Server] Failed to initialize option chain streamer:', err);
-  }
+  // DISABLED: Auto-scheduling option chain streamer uses expensive snapshot API ($0.01/conid)
+  // Option chains will be fetched on-demand when users request them via the UI
+  // try {
+  //   console.log('[Server] Scheduling option chain streamer for market open (9:30 AM ET)');
+  //   initOptionChainStreamer({ autoSchedule: true, symbol: 'SPY' });
+  // } catch (err) {
+  //   console.error('[Server] Failed to initialize option chain streamer:', err);
+  // }
+  console.log('[Server] Option chain streamer auto-schedule DISABLED to save on snapshot costs');
+
+  // ============================================
+  // Initialize Previous Close Values (for change % calculations)
+  // ============================================
+  // Fetch previous close from Yahoo Finance once at startup
+  // This is needed to calculate change % when using IBKR WebSocket data
+  (async () => {
+    try {
+      console.log('[Server] Fetching previous close values from Yahoo Finance...');
+      const yahoo = await fetchYahooSnapshot();
+      if (yahoo.spy.previousClose && yahoo.vix.close) {
+        setPreviousClose(yahoo.spy.previousClose, yahoo.vix.close);
+        console.log(`[Server] Previous close initialized: SPY=$${yahoo.spy.previousClose.toFixed(2)}, VIX=${yahoo.vix.close.toFixed(2)}`);
+      } else {
+        console.warn('[Server] Yahoo Finance did not return previous close values');
+      }
+    } catch (err) {
+      console.error('[Server] Failed to fetch previous close from Yahoo Finance:', err);
+    }
+  })();
 
   return httpServer;
 }
