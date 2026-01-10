@@ -10,6 +10,17 @@ export const AGENT_TOOLS: Tool[] = [
   {
     type: 'function',
     function: {
+      name: 'get_current_time',
+      description: 'Get the current date and time in multiple timezones (Hong Kong, New York, UTC). Use this when the user asks about the time, date, day, or anything time-related.',
+      parameters: {
+        type: 'object',
+        properties: {},
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'get_market_data',
       description: 'Get current SPY price, VIX level, and market open/close status. Use this when the user asks about market conditions, prices, or wants to know current trading conditions.',
       parameters: {

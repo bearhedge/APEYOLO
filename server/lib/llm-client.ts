@@ -178,6 +178,9 @@ export async function checkLLMStatus(): Promise<LLMStatusResponse> {
 
     const response = await fetch(`${tunnelUrl}/api/tags`, {
       method: 'GET',
+      headers: {
+        'ngrok-skip-browser-warning': 'true',
+      },
       signal: controller.signal,
     });
 
@@ -298,6 +301,7 @@ async function chatWithLLMOllama(request: LLMChatRequest): Promise<LLMChatRespon
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true',
       },
       body: JSON.stringify({
         model: modelName,
@@ -326,51 +330,49 @@ async function chatWithLLMOllama(request: LLMChatRequest): Promise<LLMChatRespon
 }
 
 /**
- * MLX (Kimi-Dev) implementation - OpenAI-compatible API
+ * Vertex AI (Gemini) streaming implementation
  */
-async function chatWithLLMMLX(request: LLMChatRequest): Promise<LLMChatResponse> {
-  const tunnelUrl = getTunnelUrl();
-  if (!tunnelUrl) {
-    throw new Error('LLM_TUNNEL_URL not configured');
-  }
+async function* streamChatWithLLMVertex(
+  request: LLMChatRequest
+): AsyncGenerator<LLMStreamChunk, void, unknown> {
+  const vertex = getVertexAI();
+  const model = vertex.getGenerativeModel({
+    model: VERTEX_MODEL,
+  });
 
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), LLM_TIMEOUT_MS);
+  const systemInstruction = request.messages.find(m => m.role === 'system')?.content;
+  const contents = request.messages
+    .filter(m => m.role !== 'system')
+    .map(m => ({
+      role: m.role === 'assistant' ? 'model' as const : 'user' as const,
+      parts: [{ text: m.content }],
+    }));
 
   try {
-    const response = await fetch(`${tunnelUrl}/v1/chat/completions`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: MLX_MODEL,
-        messages: request.messages.map(m => ({ role: m.role, content: m.content })),
-        stream: false,
-        max_tokens: 4096,
-      }),
-      signal: controller.signal,
+    const streamResult = await model.generateContentStream({
+      contents,
+      systemInstruction: systemInstruction || undefined,
     });
 
-    clearTimeout(timeout);
+    for await (const chunk of streamResult.stream) {
+      const text = chunk.candidates?.[0]?.content?.parts
+        ?.filter(p => 'text' in p)
+        .map(p => (p as any).text)
+        .join('') || '';
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      throw new Error(`MLX request failed: ${response.status} - ${errorText}`);
+      if (text) {
+        yield {
+          message: { role: 'assistant', content: text },
+          done: false,
+        };
+      }
     }
 
-    const data = await response.json() as {
-      choices: Array<{ message: { role: string; content: string }; finish_reason: string }>;
-    };
-
-    return {
-      message: { role: 'assistant', content: data.choices[0]?.message?.content || '' },
-      done: true,
-    };
+    // Final done signal
+    yield { done: true };
   } catch (error: any) {
-    clearTimeout(timeout);
-    if (error.name === 'AbortError') {
-      throw new Error('MLX request timeout');
-    }
-    throw error;
+    console.error('[Vertex AI Stream] Error:', error);
+    throw new Error(`Vertex AI streaming error: ${error.message}`);
   }
 }
 
@@ -416,14 +418,25 @@ async function chatWithLLMVertex(request: LLMChatRequest): Promise<LLMChatRespon
 /**
  * Send a chat request to the LLM with streaming response
  * Returns an async generator that yields response chunks
+ * Supports Vertex AI (Gemini) and Ollama providers
  */
 export async function* streamChatWithLLM(
   request: LLMChatRequest
 ): AsyncGenerator<LLMStreamChunk, void, unknown> {
+  // Use Vertex AI if configured (production) - has built-in streaming support
+  if (LLM_PROVIDER === 'vertex') {
+    yield* streamChatWithLLMVertex(request);
+    return;
+  }
+
+  // Fallback to Ollama via tunnel
   const tunnelUrl = getTunnelUrl();
 
   if (!tunnelUrl) {
-    throw new Error('LLM_TUNNEL_URL not configured');
+    // If no tunnel configured, fall back to Vertex AI
+    console.log('[LLM] No tunnel URL, falling back to Vertex AI for streaming');
+    yield* streamChatWithLLMVertex(request);
+    return;
   }
 
   const controller = new AbortController();
@@ -438,6 +451,7 @@ export async function* streamChatWithLLM(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true',
       },
       body: JSON.stringify({
         model: modelName,
@@ -571,12 +585,29 @@ export function streamWithCritic(messages: LLMMessage[]) {
 /**
  * Chat with LLM using native tool calling.
  * Automatically uses the configured provider (Ollama or Vertex AI).
+ * Falls back to Vertex AI if Ollama fails.
  */
 export async function chatWithTools(request: ChatWithToolsRequest): Promise<ChatWithToolsResponse> {
+  // Use Vertex AI if explicitly configured
   if (LLM_PROVIDER === 'vertex') {
     return chatWithToolsVertex(request);
   }
-  return chatWithToolsOllama(request);
+
+  // Try Ollama via tunnel
+  const tunnelUrl = getTunnelUrl();
+  if (tunnelUrl) {
+    try {
+      return await chatWithToolsOllama(request);
+    } catch (error: any) {
+      console.warn(`[LLM] Ollama tool call failed (${error.message}), falling back to Vertex AI`);
+      // Fall through to Vertex AI
+    }
+  } else {
+    console.log('[LLM] No tunnel URL, using Vertex AI for tool calling');
+  }
+
+  // Fallback to Vertex AI
+  return chatWithToolsVertex(request);
 }
 
 /**
@@ -597,6 +628,7 @@ async function chatWithToolsOllama(request: ChatWithToolsRequest): Promise<ChatW
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true',
       },
       body: JSON.stringify({
         model: request.model,
@@ -762,6 +794,7 @@ export async function* streamChatWithTools(
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'ngrok-skip-browser-warning': 'true',
       },
       body: JSON.stringify({
         model: request.model,

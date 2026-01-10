@@ -23,8 +23,8 @@ import { requireAuth } from './auth';
 import type { AttestationPeriod } from '@shared/types/defi';
 import type { CreateMandateRequest } from '@shared/types/mandate';
 import { db } from './db';
-import { paperTrades, navSnapshots, orders } from '@shared/schema';
-import { eq, and, gte, lte, desc, asc, inArray } from 'drizzle-orm';
+import { paperTrades, navSnapshots, orders, optionBars } from '@shared/schema';
+import { eq, and, gte, lte, desc, asc, inArray, sql, or } from 'drizzle-orm';
 
 const router = Router();
 
@@ -249,6 +249,251 @@ router.get('/performance', async (_req: Request, res: Response) => {
     res.status(500).json({
       success: false,
       error: error.message || 'Failed to get performance data',
+    });
+  }
+});
+
+/**
+ * GET /api/defi/current
+ *
+ * Get today's trade (or most recent) with live unrealized P&L if open.
+ * Includes streak and market close time.
+ * Public endpoint for BearHedge website display.
+ */
+router.get('/current', async (_req: Request, res: Response) => {
+  try {
+    if (!db) {
+      return res.status(500).json({
+        success: false,
+        error: 'Database not available',
+      });
+    }
+
+    const USD_TO_HKD = 7.8;
+
+    // Get today's date in ET timezone
+    const nowET = new Date().toLocaleString('en-US', { timeZone: 'America/New_York' });
+    const todayET = new Date(nowET);
+    const todayStr = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(new Date());
+
+    // Get ALL trades from baseline for day count and streak calculation
+    const baselineDate = new Date(BASELINE_DATE + 'T00:00:00-05:00');
+    const allTrades = await db
+      .select()
+      .from(paperTrades)
+      .where(gte(paperTrades.createdAt, baselineDate))
+      .orderBy(asc(paperTrades.createdAt));
+
+    // Get unique trading days with their dates for day numbering
+    const tradingDaysMap = new Map<string, number>();
+    let dayNumber = 0;
+    for (const t of allTrades) {
+      const dateStr = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/New_York',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      }).format(new Date(t.createdAt!));
+      if (!tradingDaysMap.has(dateStr)) {
+        dayNumber++;
+        tradingDaysMap.set(dateStr, dayNumber);
+      }
+    }
+    const totalDays = dayNumber;
+
+    // Calculate streak and accumulated profit
+    // User requested reset: start counting from yesterday only
+    const recentTrades = [...allTrades].reverse(); // Most recent first
+    const closedTrades = recentTrades.filter(t => t.status !== 'open');
+
+    // Simple streak: just count from yesterday (Day 1)
+    // For now, streak = 1 if most recent trade is profitable
+    let streak = 0;
+    let accumulatedProfitUSD = 0;
+
+    // Only count the most recent trade as Day 1
+    if (closedTrades.length > 0) {
+      const mostRecent = closedTrades[0];
+      const pnl = parseFloat(mostRecent.realizedPnl as any) || 0;
+      if (pnl >= 0) {
+        streak = 1;
+        accumulatedProfitUSD = pnl;
+      }
+    }
+
+    const accumulatedProfitHKD = accumulatedProfitUSD * USD_TO_HKD;
+
+    // Find today's trade
+    const todayTrade = recentTrades.find(t => {
+      const tradeDate = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/New_York',
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+      }).format(new Date(t.createdAt!));
+      return tradeDate === todayStr;
+    });
+
+    // Calculate time until market close (4:00 PM ET)
+    const marketCloseET = new Date(todayET);
+    marketCloseET.setHours(16, 0, 0, 0);
+    const msUntilClose = marketCloseET.getTime() - todayET.getTime();
+    const minutesUntilClose = Math.floor(msUntilClose / 60000);
+    const hoursUntilClose = Math.floor(minutesUntilClose / 60);
+    const minsRemaining = minutesUntilClose % 60;
+    const marketOpen = todayET.getHours() >= 9 && todayET.getHours() < 16 && todayET.getDay() >= 1 && todayET.getDay() <= 5;
+
+    // Day number for display (reset to 1 for fresh start)
+    const todayDayNumber = 1;
+
+    // Base response with streak and accumulated profits
+    let response: any = {
+      streak: streak,
+      dayNumber: todayDayNumber,
+      totalDays: totalDays,
+      accumulatedProfitUSD: accumulatedProfitUSD,
+      accumulatedProfitHKD: accumulatedProfitHKD,
+      todayStr: todayStr,
+      hasTrade: !!todayTrade,
+      marketOpen: marketOpen,
+      timeUntilClose: marketOpen && msUntilClose > 0 ? `${hoursUntilClose}h ${minsRemaining}m` : null,
+    };
+
+    // Get the most recent trade (today's or last trade)
+    const trade = todayTrade || recentTrades.find(t => t.status !== 'open');
+
+    if (!trade) {
+      return res.json({ success: true, ...response, trade: null });
+    }
+
+    // Update hasTrade to true since we have a trade to show
+    response.hasTrade = true;
+
+    const createdAt = new Date(trade.createdAt!);
+    const tradeDateStr = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/New_York',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(createdAt);
+
+    // Get leg details (premiums are in USD)
+    const leg1Type = trade.leg1Type; // 'PUT' or 'CALL'
+    const leg1Strike = trade.leg1Strike ? parseFloat(trade.leg1Strike as any) : null;
+    const leg1PremiumUSD = trade.leg1Premium ? parseFloat(trade.leg1Premium as any) : 0;
+
+    const leg2Type = trade.leg2Type; // 'PUT' or 'CALL' or null
+    const leg2Strike = trade.leg2Strike ? parseFloat(trade.leg2Strike as any) : null;
+    const leg2PremiumUSD = trade.leg2Premium ? parseFloat(trade.leg2Premium as any) : 0;
+
+    // Total premium (USD)
+    const totalPremiumUSD = leg1PremiumUSD + leg2PremiumUSD;
+    const totalPremiumHKD = totalPremiumUSD * USD_TO_HKD;
+
+    // Contracts per leg (for strangle: total / 2)
+    const totalContracts = trade.contracts || 1;
+    const numLegs = (leg1Type ? 1 : 0) + (leg2Type ? 1 : 0);
+    const contractsPerLeg = numLegs > 1 ? totalContracts / numLegs : totalContracts;
+
+    // Build legs array
+    const legs: any[] = [];
+    if (leg1Type && leg1Strike) {
+      legs.push({
+        type: leg1Type,
+        strike: leg1Strike,
+        contracts: contractsPerLeg,
+        premiumUSD: leg1PremiumUSD * 100 * contractsPerLeg, // Per contract premium × 100 × contracts
+        premiumHKD: leg1PremiumUSD * 100 * contractsPerLeg * USD_TO_HKD,
+      });
+    }
+    if (leg2Type && leg2Strike) {
+      legs.push({
+        type: leg2Type,
+        strike: leg2Strike,
+        contracts: contractsPerLeg,
+        premiumUSD: leg2PremiumUSD * 100 * contractsPerLeg,
+        premiumHKD: leg2PremiumUSD * 100 * contractsPerLeg * USD_TO_HKD,
+      });
+    }
+
+    // Calculate total premium by summing leg premiums
+    const calculatedTotalPremiumUSD = legs.reduce((sum, leg) => sum + leg.premiumUSD, 0);
+    const calculatedTotalPremiumHKD = legs.reduce((sum, leg) => sum + leg.premiumHKD, 0);
+
+    response.trade = {
+      id: trade.id,
+      date: tradeDateStr,
+      symbol: trade.symbol,
+      strategy: trade.strategy,
+      contracts: totalContracts,
+      legs: legs,
+      totalPremiumUSD: calculatedTotalPremiumUSD,
+      totalPremiumHKD: calculatedTotalPremiumHKD,
+      entryTime: createdAt.toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        timeZone: 'America/New_York',
+      }) + ' ET',
+      status: trade.status,
+      exitReason: trade.exitReason,
+      isOpen: trade.status === 'open',
+    };
+
+    // If trade is closed, include realized P&L (realizedPnl is in USD)
+    if (trade.status !== 'open') {
+      const realizedPnlUSD = parseFloat(trade.realizedPnl as any) || 0;
+      response.trade.realizedPnlUSD = realizedPnlUSD;
+      response.trade.realizedPnlHKD = realizedPnlUSD * USD_TO_HKD;
+      response.trade.exitTime = trade.closedAt ? new Date(trade.closedAt).toLocaleTimeString('en-US', {
+        hour: 'numeric',
+        minute: '2-digit',
+        timeZone: 'America/New_York',
+      }) + ' ET' : null;
+    }
+
+    // If trade is open, try to get unrealized P&L from IBKR
+    if (trade.status === 'open') {
+      try {
+        const { getBroker } = await import('./broker/index.js');
+        const broker = getBroker();
+
+        if (broker.api && broker.status.connected) {
+          const positions = await broker.api.getPositions();
+          let totalUnrealizedPnL = 0;
+          let foundPositions = 0;
+
+          for (const pos of positions) {
+            const contract = pos.contract;
+            if (contract.symbol === trade.symbol && contract.secType === 'OPT') {
+              const strike = contract.strike;
+              if (strike === trade.putStrike || strike === trade.callStrike) {
+                totalUnrealizedPnL += pos.unrealizedPnL || 0;
+                foundPositions++;
+              }
+            }
+          }
+
+          if (foundPositions > 0) {
+            response.trade.unrealizedPnlUSD = totalUnrealizedPnL;
+            response.trade.unrealizedPnlHKD = totalUnrealizedPnL * USD_TO_HKD;
+          }
+        }
+      } catch (brokerError: any) {
+        console.log('[DefiRoutes] Could not get unrealized P&L:', brokerError.message);
+      }
+    }
+
+    res.json({ success: true, ...response });
+  } catch (error: any) {
+    console.error('[DefiRoutes] Error getting current trade:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to get current trade',
     });
   }
 });
@@ -505,6 +750,12 @@ router.get('/trades', async (req: Request, res: Response) => {
         marginRequired: t.marginRequired ? parseFloat(t.marginRequired as any) * USD_TO_HKD : null,
         maxLoss: t.maxLoss ? parseFloat(t.maxLoss as any) * USD_TO_HKD : null,
         entrySpy: t.entrySpyPrice ? parseFloat(t.entrySpyPrice as any) : null,
+        // Commission breakdown (USD)
+        entryCommission: t.entryCommission ?? null,
+        exitCommission: t.exitCommission ?? null,
+        totalCommissions: t.totalCommissions ?? null,
+        grossPnl: t.grossPnl ?? null,
+        netPnl: t.netPnl ?? null,
       };
     });
 
@@ -1037,6 +1288,220 @@ router.post('/backfill-trade/:id', requireAuth, async (req: Request, res: Respon
     res.status(500).json({
       success: false,
       error: error.message || 'Failed to backfill trade',
+    });
+  }
+});
+
+// ============================================
+// Option Candle Data Endpoint
+// ============================================
+
+/**
+ * GET /api/defi/candles/:date
+ *
+ * Get 5-minute OHLC candle data for a specific trade date.
+ * Returns PUT and CALL candles for the traded strikes.
+ *
+ * URL params:
+ *   :date - Trade date in YYYY-MM-DD format
+ *
+ * Query params (optional):
+ *   putStrike - Override put strike (defaults to trade's put strike)
+ *   callStrike - Override call strike (defaults to trade's call strike)
+ *
+ * Response:
+ *   {
+ *     success: true,
+ *     date: "2026-01-08",
+ *     trade: { putStrike, callStrike, strategy, contracts },
+ *     putCandles: [{ time, open, high, low, close, bid, ask, delta }],
+ *     callCandles: [{ time, open, high, low, close, bid, ask, delta }],
+ *     underlyingCandles: [{ time, price }]
+ *   }
+ */
+router.get('/candles/:date', async (req: Request, res: Response) => {
+  try {
+    if (!db) {
+      return res.status(500).json({
+        success: false,
+        error: 'Database not available',
+      });
+    }
+
+    const dateStr = req.params.date;
+
+    // Validate date format
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid date format. Use YYYY-MM-DD',
+      });
+    }
+
+    // Get query param overrides if provided
+    const overridePutStrike = req.query.putStrike ? parseFloat(req.query.putStrike as string) : null;
+    const overrideCallStrike = req.query.callStrike ? parseFloat(req.query.callStrike as string) : null;
+
+    // Find trade for this date
+    const dateStart = new Date(`${dateStr}T00:00:00-05:00`); // ET timezone
+    const dateEnd = new Date(`${dateStr}T23:59:59-05:00`);
+
+    const [trade] = await db
+      .select()
+      .from(paperTrades)
+      .where(and(
+        gte(paperTrades.createdAt, dateStart),
+        lte(paperTrades.createdAt, dateEnd)
+      ))
+      .limit(1);
+
+    // Determine strikes to query
+    let putStrike: number | null = overridePutStrike;
+    let callStrike: number | null = overrideCallStrike;
+    let tradeInfo: any = null;
+
+    if (trade) {
+      // Extract strikes from trade legs
+      const leg1Type = trade.leg1Type;
+      const leg2Type = trade.leg2Type;
+      const leg1Strike = trade.leg1Strike ? parseFloat(trade.leg1Strike as any) : null;
+      const leg2Strike = trade.leg2Strike ? parseFloat(trade.leg2Strike as any) : null;
+
+      if (!putStrike) {
+        putStrike = leg1Type === 'PUT' ? leg1Strike : (leg2Type === 'PUT' ? leg2Strike : null);
+      }
+      if (!callStrike) {
+        callStrike = leg1Type === 'CALL' ? leg1Strike : (leg2Type === 'CALL' ? leg2Strike : null);
+      }
+
+      tradeInfo = {
+        id: trade.id,
+        symbol: trade.symbol,
+        strategy: trade.strategy,
+        putStrike,
+        callStrike,
+        contracts: trade.contracts,
+        status: trade.status,
+        entryTime: trade.createdAt,
+      };
+    }
+
+    // If no strikes found, return empty
+    if (!putStrike && !callStrike) {
+      return res.json({
+        success: true,
+        date: dateStr,
+        trade: tradeInfo,
+        putCandles: [],
+        callCandles: [],
+        underlyingCandles: [],
+        message: 'No trade found for this date or strikes not specified',
+      });
+    }
+
+    // Convert date to expiry format YYYYMMDD
+    const expiry = dateStr.replace(/-/g, '');
+
+    // Build strike condition using proper drizzle or() syntax
+    let strikeCondition;
+    if (putStrike && callStrike) {
+      // Both strikes: PUT OR CALL
+      strikeCondition = or(
+        and(eq(optionBars.strike, String(putStrike)), eq(optionBars.optionType, 'PUT')),
+        and(eq(optionBars.strike, String(callStrike)), eq(optionBars.optionType, 'CALL'))
+      );
+    } else if (putStrike) {
+      strikeCondition = and(eq(optionBars.strike, String(putStrike)), eq(optionBars.optionType, 'PUT'));
+    } else if (callStrike) {
+      strikeCondition = and(eq(optionBars.strike, String(callStrike)), eq(optionBars.optionType, 'CALL'));
+    }
+
+    // Fetch option bars for the date and strikes
+    // Use date range instead of DATE() function for better compatibility
+    const dayStart = new Date(`${dateStr}T00:00:00Z`);
+    const dayEnd = new Date(`${dateStr}T23:59:59Z`);
+
+    const bars = await db
+      .select()
+      .from(optionBars)
+      .where(and(
+        eq(optionBars.symbol, 'SPY'),
+        eq(optionBars.expiry, expiry),
+        gte(optionBars.intervalStart, dayStart),
+        lte(optionBars.intervalStart, dayEnd),
+        strikeCondition
+      ))
+      .orderBy(asc(optionBars.intervalStart));
+
+    // Separate into PUT and CALL candles
+    const putCandles: any[] = [];
+    const callCandles: any[] = [];
+    const underlyingPrices = new Map<string, number>();
+
+    for (const bar of bars) {
+      const candle = {
+        time: bar.intervalStart,
+        timeFormatted: new Date(bar.intervalStart).toLocaleTimeString('en-US', {
+          hour: 'numeric',
+          minute: '2-digit',
+          timeZone: 'America/New_York',
+        }),
+        open: bar.open ? parseFloat(bar.open) : null,
+        high: bar.high ? parseFloat(bar.high) : null,
+        low: bar.low ? parseFloat(bar.low) : null,
+        close: bar.close ? parseFloat(bar.close) : null,
+        bid: bar.bidClose ? parseFloat(bar.bidClose) : null,
+        ask: bar.askClose ? parseFloat(bar.askClose) : null,
+        delta: bar.delta ? parseFloat(bar.delta) : null,
+        iv: bar.iv ? parseFloat(bar.iv) : null,
+        dataQuality: bar.dataQuality,
+      };
+
+      if (bar.optionType === 'PUT') {
+        putCandles.push(candle);
+      } else if (bar.optionType === 'CALL') {
+        callCandles.push(candle);
+      }
+
+      // Track underlying price
+      if (bar.underlyingPrice) {
+        underlyingPrices.set(bar.intervalStart.toISOString(), parseFloat(bar.underlyingPrice));
+      }
+    }
+
+    // Build underlying candles array
+    const underlyingCandles = Array.from(underlyingPrices.entries())
+      .sort(([a], [b]) => new Date(a).getTime() - new Date(b).getTime())
+      .map(([time, price]) => ({
+        time: new Date(time),
+        timeFormatted: new Date(time).toLocaleTimeString('en-US', {
+          hour: 'numeric',
+          minute: '2-digit',
+          timeZone: 'America/New_York',
+        }),
+        price,
+      }));
+
+    res.json({
+      success: true,
+      date: dateStr,
+      trade: tradeInfo,
+      putStrike,
+      callStrike,
+      putCandles,
+      callCandles,
+      underlyingCandles,
+      barCount: {
+        put: putCandles.length,
+        call: callCandles.length,
+        underlying: underlyingCandles.length,
+      },
+    });
+  } catch (error: any) {
+    console.error('[DefiRoutes] Error getting candles:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to get candle data',
     });
   }
 });

@@ -167,7 +167,7 @@ export function DD() {
       if (!res.ok) throw new Error('Failed to fetch stream status');
       return res.json();
     },
-    refetchInterval: 5000,
+    refetchInterval: false, // DISABLED - IBKR snapshots cost money
   });
 
   // Fetch cached option chain
@@ -211,9 +211,8 @@ export function DD() {
         isHistorical: false
       };
     },
-    // Only poll as fallback - WebSocket provides instant updates
-    // Use 30s when WebSocket connected, 10s otherwise
-    refetchInterval: wsConnected && streamStatus?.isStreaming ? 30000 : 10000,
+    // DISABLED - IBKR snapshots cost money
+    refetchInterval: false,
     enabled: !!activeTicker,
   });
 
@@ -234,7 +233,7 @@ export function DD() {
         open: data.open,
       };
     },
-    refetchInterval: 5000,
+    refetchInterval: false, // DISABLED - IBKR snapshots cost money
     enabled: !!activeTicker,
   });
 

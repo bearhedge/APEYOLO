@@ -9,8 +9,8 @@ import {
   Step5Exit,
   type StepId,
 } from '@/components/engine';
-import { OptionChainModal } from '@/components/OptionChainModal';
 import { useEngine } from '@/hooks/useEngine';
+import { useEngineStream } from '@/hooks/useEngineStream';
 import { useBrokerStatus } from '@/hooks/useBrokerStatus';
 import { useTradeEngineJob } from '@/hooks/useTradeEngineJob';
 import { useMarketSnapshot } from '@/hooks/useMarketSnapshot';
@@ -33,15 +33,26 @@ export function Engine() {
     analysis,
     loading,
     fetchStatus,
-    analyzeEngine,
     executePaperTrade,
   } = useEngine();
+
+  // SSE streaming for real-time engine log updates
+  const {
+    isRunning: streamIsRunning,
+    engineLog: streamingEngineLog,
+    analysis: streamingAnalysis,
+    error: streamError,
+    startAnalysis,
+  } = useEngineStream();
+
+  // Use streaming analysis when available, fall back to regular analysis
+  const effectiveAnalysis = streamingAnalysis || analysis;
 
   // Unified broker status hook
   const { connected: brokerConnectedHook, environment } = useBrokerStatus();
 
   // Real-time market data (shows before analysis runs)
-  const { snapshot: marketSnapshot } = useMarketSnapshot();
+  const { snapshot: marketSnapshot, connectionStatus, dataSourceMode } = useMarketSnapshot();
 
   // Automation toggle
   const { isEnabled: automationEnabled, setEnabled: setAutomationEnabled, isUpdating: isUpdatingAutomation } = useTradeEngineJob();
@@ -63,7 +74,6 @@ export function Engine() {
   // Strike selection state
   const [selectedPutStrike, setSelectedPutStrike] = useState<number | null>(null);
   const [selectedCallStrike, setSelectedCallStrike] = useState<number | null>(null);
-  const [isModalOpen, setIsModalOpen] = useState(false);
 
   // Direction override state
   const [directionOverride, setDirectionOverride] = useState<TradeDirection | null>(null);
@@ -89,8 +99,8 @@ export function Engine() {
 
   // Sync localProposal when analysis.tradeProposal changes
   useEffect(() => {
-    if (analysis?.tradeProposal) {
-      const legs = analysis.tradeProposal.legs.map(leg => ({
+    if (effectiveAnalysis?.tradeProposal) {
+      const legs = effectiveAnalysis.tradeProposal.legs.map(leg => ({
         optionType: leg.optionType,
         action: 'SELL' as const,
         strike: leg.strike,
@@ -100,8 +110,8 @@ export function Engine() {
         ask: leg.ask || leg.premium * 1.1,
       }));
 
-      let entryPremiumTotal = analysis.tradeProposal.entryPremiumTotal;
-      const contracts = analysis.tradeProposal.contracts || 1;
+      let entryPremiumTotal = effectiveAnalysis.tradeProposal.entryPremiumTotal;
+      const contracts = effectiveAnalysis.tradeProposal.contracts || 1;
 
       if (entryPremiumTotal === 0 || !entryPremiumTotal) {
         const legPremiumSum = legs.reduce((sum, leg) => sum + (leg.premium || 0), 0);
@@ -109,39 +119,40 @@ export function Engine() {
       }
 
       const premiumPerShare = legs.reduce((sum, leg) => sum + (leg.premium || 0), 0);
-      const maxLoss = analysis.tradeProposal.maxLoss ||
-        (premiumPerShare * (stopMultiplier - 1) * contracts * 100);
+      // Always calculate based on multiplier (user controls via buttons)
+      const stopLossPrice = premiumPerShare * stopMultiplier;
+      const maxLoss = premiumPerShare * (stopMultiplier - 1) * contracts * 100;
 
-      const proposalId = analysis.tradeProposal.proposalId || `engine-${Date.now()}`;
+      const proposalId = effectiveAnalysis.tradeProposal.proposalId || `engine-${Date.now()}`;
       const proposal: TradeProposal = {
         proposalId,
-        symbol: analysis.tradeProposal.symbol || selectedSymbol,
-        expiration: analysis.tradeProposal.expiration || SYMBOL_CONFIG[selectedSymbol].expiration,
-        expirationDate: analysis.tradeProposal.expirationDate,
+        symbol: effectiveAnalysis.tradeProposal.symbol || selectedSymbol,
+        expiration: effectiveAnalysis.tradeProposal.expiration || SYMBOL_CONFIG[selectedSymbol].expiration,
+        expirationDate: effectiveAnalysis.tradeProposal.expirationDate,
         createdAt: new Date().toISOString(),
-        strategy: analysis.tradeProposal.strategy,
-        bias: analysis.tradeProposal.bias,
+        strategy: effectiveAnalysis.tradeProposal.strategy,
+        bias: effectiveAnalysis.tradeProposal.bias,
         legs,
         contracts,
         entryPremiumTotal,
         entryPremiumPerContract: entryPremiumTotal / contracts,
-        marginRequired: analysis.tradeProposal.marginRequired || 0,
+        marginRequired: effectiveAnalysis.tradeProposal.marginRequired || 0,
         maxLoss,
-        stopLossPrice: analysis.tradeProposal.stopLossPrice || (premiumPerShare * stopMultiplier),
+        stopLossPrice,
         stopLossAmount: maxLoss,
         takeProfitPrice: null,
-        timeStop: analysis.tradeProposal.expirationDate,
+        timeStop: effectiveAnalysis.tradeProposal.expirationDate,
         context: {
-          vix: analysis.q1MarketRegime?.inputs?.vixValue ?? 0,
-          vixRegime: analysis.q1MarketRegime?.vixRegime ?? 'NORMAL',
-          spyPrice: analysis.q1MarketRegime?.inputs?.spyPrice ?? 0,
-          directionConfidence: analysis.q2Direction?.confidence ?? 50,
+          vix: effectiveAnalysis.q1MarketRegime?.inputs?.vixValue ?? 0,
+          vixRegime: effectiveAnalysis.q1MarketRegime?.vixRegime ?? 'NORMAL',
+          spyPrice: effectiveAnalysis.q1MarketRegime?.inputs?.spyPrice ?? 0,
+          directionConfidence: effectiveAnalysis.q2Direction?.confidence ?? 50,
           riskProfile: riskTier,
         },
       };
       setLocalProposal(proposal);
     }
-  }, [analysis?.tradeProposal, analysis?.q1MarketRegime, analysis?.q2Direction, selectedSymbol, stopMultiplier, riskTier]);
+  }, [effectiveAnalysis?.tradeProposal, effectiveAnalysis?.q1MarketRegime, effectiveAnalysis?.q2Direction, selectedSymbol, stopMultiplier, riskTier]);
 
   // Handle step navigation
   const handleStepClick = useCallback((step: StepId) => {
@@ -159,24 +170,27 @@ export function Engine() {
     }
   }, [currentStep]);
 
-  // Handle Step 1: Analyze direction
-  const handleAnalyze = useCallback(async () => {
-    try {
-      setIsExecuting(true);
-      toast.loading('Analyzing market conditions...', { id: 'engine-analyze' });
+  // Handle Step 1: Analyze direction (uses SSE streaming)
+  const handleAnalyze = useCallback(() => {
+    // Start streaming analysis - this will update streamingEngineLog in real-time
+    startAnalysis({
+      riskTier,
+      stopMultiplier,
+      symbol: selectedSymbol,
+      strategy: strategyPreference
+    });
+    toast.loading('Analyzing market conditions...', { id: 'engine-analyze' });
+  }, [startAnalysis, riskTier, stopMultiplier, selectedSymbol, strategyPreference]);
 
-      const result = await analyzeEngine({
-        riskTier,
-        stopMultiplier,
-        symbol: selectedSymbol,
-        strategy: strategyPreference
-      });
-
-      if (result.canTrade) {
+  // Handle streaming completion
+  useEffect(() => {
+    if (streamingAnalysis && !streamIsRunning) {
+      // Streaming just completed
+      if (streamingAnalysis.canTrade) {
         // Set default strikes from engine recommendation
-        if (result.q3Strikes?.smartCandidates) {
-          setSelectedPutStrike(result.q3Strikes.selectedPut?.strike ?? null);
-          setSelectedCallStrike(result.q3Strikes.selectedCall?.strike ?? null);
+        if (streamingAnalysis.q3Strikes?.smartCandidates) {
+          setSelectedPutStrike(streamingAnalysis.q3Strikes.selectedPut?.strike ?? null);
+          setSelectedCallStrike(streamingAnalysis.q3Strikes.selectedCall?.strike ?? null);
         }
 
         toast.success('Analysis complete!', { id: 'engine-analyze' });
@@ -184,15 +198,65 @@ export function Engine() {
         setCompletedSteps(prev => new Set([...prev, 1, 2]));
         setCurrentStep(3);
       } else {
-        toast.error(`Cannot trade: ${result.reason}`, { id: 'engine-analyze' });
+        toast.error(`Cannot trade: ${streamingAnalysis.reason}`, { id: 'engine-analyze' });
       }
-    } catch (err: any) {
-      console.error('[Engine] Analyze error:', err);
-      toast.error(err.message || 'Failed to analyze market', { id: 'engine-analyze' });
-    } finally {
-      setIsExecuting(false);
     }
-  }, [analyzeEngine, riskTier, stopMultiplier, selectedSymbol, strategyPreference, advanceStep]);
+  }, [streamingAnalysis, streamIsRunning]);
+
+  // Handle streaming error
+  useEffect(() => {
+    if (streamError) {
+      console.error('[Engine] Stream error:', streamError);
+      toast.error(streamError || 'Failed to analyze market', { id: 'engine-analyze' });
+    }
+  }, [streamError]);
+
+  // Step 3 stream loading state
+  const [isStreamLoading, setIsStreamLoading] = useState(false);
+  const [streamLoadingMessage, setStreamLoadingMessage] = useState('');
+
+  // Start option chain streaming when entering Step 3
+  useEffect(() => {
+    if (currentStep === 3) {
+      // Trigger streaming if not already active
+      setIsStreamLoading(true);
+      setStreamLoadingMessage('Connecting to broker...');
+
+      const startTime = Date.now();
+
+      // Update message based on elapsed time
+      const messageInterval = setInterval(() => {
+        const elapsed = Date.now() - startTime;
+        if (elapsed > 20000) {
+          setStreamLoadingMessage('Subscribing to option strikes...');
+        } else if (elapsed > 10000) {
+          setStreamLoadingMessage('Processing option chain...');
+        } else if (elapsed > 5000) {
+          setStreamLoadingMessage('Fetching option chain data...');
+        }
+      }, 1000);
+
+      fetch('/api/broker/stream/start', {
+        method: 'POST',
+        body: JSON.stringify({ symbol: 'SPY' }),
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include'
+      })
+        .then(() => {
+          setStreamLoadingMessage('Stream connected');
+        })
+        .catch(() => {
+          console.log('[Engine] Stream start failed - using static option data');
+        })
+        .finally(() => {
+          clearInterval(messageInterval);
+          setIsStreamLoading(false);
+          setStreamLoadingMessage('');
+        });
+
+      return () => clearInterval(messageInterval);
+    }
+  }, [currentStep]);
 
   // Handle Step 2: Override direction
   const handleDirectionOverride = useCallback((newDirection: TradeDirection) => {
@@ -252,10 +316,10 @@ export function Engine() {
   }, []);
 
   // Derived values
-  const effectiveDirection = directionOverride || analysis?.q2Direction?.recommendedDirection || 'STRANGLE';
-  const confidence = analysis?.q2Direction?.confidence ?? 50;
-  const signals = analysis?.q2Direction?.signals ?
-    Object.entries(analysis.q2Direction.signals)
+  const effectiveDirection = directionOverride || effectiveAnalysis?.q2Direction?.recommendedDirection || 'STRANGLE';
+  const confidence = effectiveAnalysis?.q2Direction?.confidence ?? 50;
+  const signals = effectiveAnalysis?.q2Direction?.signals ?
+    Object.entries(effectiveAnalysis.q2Direction.signals)
       .filter(([key, val]) => val && key !== 'spyPrice')
       .map(([key, val]) => `${key}: ${val}`)
     : [];
@@ -270,28 +334,49 @@ export function Engine() {
   };
 
   const recommendedContracts = getContractsForTier(riskTier);
-  const premiumPerContract = analysis?.q3Strikes?.expectedPremiumPerContract
-    ? analysis.q3Strikes.expectedPremiumPerContract / 100
+  const premiumPerContract = effectiveAnalysis?.q3Strikes?.expectedPremiumPerContract
+    ? effectiveAnalysis.q3Strikes.expectedPremiumPerContract / 100
     : 0;
-  const marginPerContract = analysis?.q4Size?.marginPerContract ?? 0;
-  const accountValue = analysis?.q4Size?.inputs?.accountValue ?? 0;
+  const marginPerContract = effectiveAnalysis?.q4Size?.marginPerContract ?? 0;
+  const accountValue = effectiveAnalysis?.q4Size?.inputs?.accountValue ?? 0;
   const maxRiskPercent = accountValue > 0
     ? ((premiumPerContract * recommendedContracts * 100 * (stopMultiplier - 1)) / accountValue) * 100
     : 0;
 
-  // Get market data from analysis, fallback to snapshot (real-time), then 0
-  const spyPrice = analysis?.q1MarketRegime?.inputs?.spyPrice ?? marketSnapshot?.spyPrice ?? 0;
-  const vixValue = analysis?.q1MarketRegime?.inputs?.vixValue ?? marketSnapshot?.vix ?? 0;
-  const spyChangePct = analysis?.q1MarketRegime?.inputs?.spyChangePct ?? marketSnapshot?.spyChangePct ?? 0;
+  // Get market data - ALWAYS use live snapshot for display (analysis data gets stale)
+  // Use last traded price when valid, fall back to midpoint when last is stale
+  const lastPrice = marketSnapshot?.spyPrice ?? 0;
+  const bid = marketSnapshot?.spyBid;
+  const ask = marketSnapshot?.spyAsk;
+  const midpoint = bid && ask ? (bid + ask) / 2 : null;
+
+  // Check if last price is stale (outside bid/ask range)
+  const isLastPriceStale = bid && ask && lastPrice > 0 && (lastPrice < bid || lastPrice > ask);
+
+  // Use midpoint only when last price is clearly stale, otherwise prefer last traded
+  const spyPrice = isLastPriceStale && midpoint
+    ? midpoint
+    : lastPrice || midpoint || 0;
+  const vixValue = effectiveAnalysis?.q1MarketRegime?.inputs?.vixValue ?? marketSnapshot?.vix ?? 0;
+  // IMPORTANT: Prioritize live market data over cached analysis data
+  // The analysis stored in sessionStorage may have stale spyChangePct (e.g., 0)
+  // Always prefer the real-time snapshot value for display
+  const spyChangePct = marketSnapshot?.spyChangePct ?? effectiveAnalysis?.q1MarketRegime?.inputs?.spyChangePct ?? 0;
   const vixChangePct = marketSnapshot?.vixChangePct ?? 0;
-  const dayHigh = spyPrice * 1.005;
-  const dayLow = spyPrice * 0.995;
-  const marketOpen = marketSnapshot?.marketState === 'REGULAR' || status?.tradingWindowOpen;
+  // Use real day high/low from snapshot, fallback to calculated
+  const dayHigh = marketSnapshot?.dayHigh || spyPrice * 1.005;
+  const dayLow = marketSnapshot?.dayLow || spyPrice * 0.995;
+  const marketState = marketSnapshot?.marketState ?? 'CLOSED';
+  const marketOpen = marketState === 'REGULAR' || marketState === 'OVERNIGHT' || status?.tradingWindowOpen;
   const dataSource = marketSnapshot?.source ?? 'none';
   const dataTimestamp = marketSnapshot?.timestamp ?? null;
   // Use real VWAP and IV Rank from snapshot (calculated server-side)
   const vwap = marketSnapshot?.vwap ?? null;
   const ivRank = marketSnapshot?.ivRank ?? null;
+  // Bid/Ask and Previous Close for extended hours display
+  const spyBid = marketSnapshot?.spyBid ?? null;
+  const spyAsk = marketSnapshot?.spyAsk ?? null;
+  const spyPrevClose = marketSnapshot?.spyPrevClose ?? null;
 
   // Render current step content
   const renderStepContent = () => {
@@ -301,6 +386,9 @@ export function Engine() {
           <Step1Market
             spyPrice={spyPrice}
             spyChangePct={spyChangePct}
+            spyBid={spyBid}
+            spyAsk={spyAsk}
+            spyPrevClose={spyPrevClose}
             vix={vixValue}
             vixChangePct={vixChangePct}
             vwap={vwap}
@@ -308,12 +396,15 @@ export function Engine() {
             dayLow={dayLow}
             dayHigh={dayHigh}
             marketOpen={marketOpen ?? false}
+            marketState={marketState}
             source={dataSource}
+            connectionStatus={connectionStatus}
+            dataSourceMode={dataSourceMode}
             timestamp={dataTimestamp}
             strategy={strategyPreference}
             onStrategyChange={setStrategyPreference}
             onAnalyze={handleAnalyze}
-            isLoading={isExecuting || loading}
+            isLoading={isExecuting || loading || streamIsRunning}
           />
         );
 
@@ -325,25 +416,61 @@ export function Engine() {
             signals={signals}
             onOverride={handleDirectionOverride}
             onContinue={advanceStep}
-            isComplete={!!analysis?.q2Direction}
+            isComplete={!!effectiveAnalysis?.q2Direction}
           />
         );
 
       case 3:
+        // Use smartCandidates if available, fall back to candidates (less filtered)
+        const smartPuts = effectiveAnalysis?.q3Strikes?.smartCandidates?.puts ?? [];
+        const smartCalls = effectiveAnalysis?.q3Strikes?.smartCandidates?.calls ?? [];
+
+        // Fallback: convert candidates to SmartStrikeCandidate format if smartCandidates is empty
+        const convertToSmartCandidate = (c: any, type: 'PUT' | 'CALL', recommendedStrike?: number) => ({
+          strike: c.strike,
+          optionType: type,
+          bid: c.bid,
+          ask: c.ask,
+          spread: c.ask - c.bid,
+          delta: c.delta,
+          openInterest: c.openInterest ?? 0,
+          yield: c.premium / (effectiveAnalysis?.q3Strikes?.underlyingPrice ?? spyPrice),
+          yieldPct: `${((c.premium / (effectiveAnalysis?.q3Strikes?.underlyingPrice ?? spyPrice)) * 100).toFixed(3)}%`,
+          qualityScore: 3 as const,
+          qualityReasons: ['From candidates fallback'],
+          isEngineRecommended: c.strike === recommendedStrike,
+          isUserSelected: false,
+        });
+
+        const fallbackPuts = smartPuts.length === 0 && effectiveAnalysis?.q3Strikes?.candidates
+          ? effectiveAnalysis.q3Strikes.candidates
+              .filter((c: any) => c.optionType === 'PUT')
+              .map((c: any) => convertToSmartCandidate(c, 'PUT', effectiveAnalysis?.q3Strikes?.selectedPut?.strike))
+          : [];
+        const fallbackCalls = smartCalls.length === 0 && effectiveAnalysis?.q3Strikes?.candidates
+          ? effectiveAnalysis.q3Strikes.candidates
+              .filter((c: any) => c.optionType === 'CALL')
+              .map((c: any) => convertToSmartCandidate(c, 'CALL', effectiveAnalysis?.q3Strikes?.selectedCall?.strike))
+          : [];
+
+        const putCandidates = smartPuts.length > 0 ? smartPuts : fallbackPuts;
+        const callCandidates = smartCalls.length > 0 ? smartCalls : fallbackCalls;
+
         return (
           <Step3Strikes
-            underlyingPrice={analysis?.q3Strikes?.underlyingPrice ?? spyPrice}
-            putCandidates={analysis?.q3Strikes?.smartCandidates?.puts ?? []}
-            callCandidates={analysis?.q3Strikes?.smartCandidates?.calls ?? []}
+            underlyingPrice={effectiveAnalysis?.q3Strikes?.underlyingPrice ?? spyPrice}
+            putCandidates={putCandidates}
+            callCandidates={callCandidates}
             selectedPutStrike={selectedPutStrike}
             selectedCallStrike={selectedCallStrike}
-            recommendedPutStrike={analysis?.q3Strikes?.selectedPut?.strike ?? null}
-            recommendedCallStrike={analysis?.q3Strikes?.selectedCall?.strike ?? null}
+            recommendedPutStrike={effectiveAnalysis?.q3Strikes?.selectedPut?.strike ?? null}
+            recommendedCallStrike={effectiveAnalysis?.q3Strikes?.selectedCall?.strike ?? null}
             onPutSelect={setSelectedPutStrike}
             onCallSelect={setSelectedCallStrike}
-            onViewFullChain={() => setIsModalOpen(true)}
             onContinue={handleStrikeContinue}
             expectedPremium={premiumPerContract}
+            isStreamLoading={isStreamLoading}
+            streamLoadingMessage={streamLoadingMessage}
           />
         );
 
@@ -378,8 +505,8 @@ export function Engine() {
             entryPremium={localProposal.entryPremiumTotal}
             stopLossPrice={localProposal.stopLossPrice || 0}
             maxLoss={localProposal.maxLoss || 0}
-            guardRailsPassed={analysis?.guardRails?.passed ?? true}
-            violations={analysis?.guardRails?.violations ?? []}
+            guardRailsPassed={effectiveAnalysis?.guardRails?.passed ?? true}
+            violations={effectiveAnalysis?.guardRails?.violations ?? []}
             onExecute={handleExecuteTrade}
             onCancel={handleCancel}
             isExecuting={isExecuting}
@@ -399,36 +526,13 @@ export function Engine() {
           currentStep={currentStep}
           completedSteps={completedSteps}
           onStepClick={handleStepClick}
-          engineLog={analysis?.enhancedLog ?? null}
-          isRunning={isExecuting}
+          engineLog={streamingEngineLog ?? effectiveAnalysis?.enhancedLog ?? null}
+          isRunning={streamIsRunning || isExecuting}
         >
           {renderStepContent()}
         </EngineWizardLayout>
       </div>
 
-      {/* Full Option Chain Modal */}
-      {analysis?.q3Strikes?.smartCandidates && (
-        <OptionChainModal
-          isOpen={isModalOpen}
-          onClose={() => setIsModalOpen(false)}
-          underlyingPrice={analysis.q3Strikes.underlyingPrice}
-          vix={analysis.q1MarketRegime?.inputs?.vixValue ?? undefined}
-          lastUpdate={new Date().toLocaleTimeString('en-US', {
-            hour: '2-digit',
-            minute: '2-digit',
-            timeZone: 'America/New_York'
-          }) + ' ET'}
-          putCandidates={analysis.q3Strikes.smartCandidates.puts}
-          callCandidates={analysis.q3Strikes.smartCandidates.calls}
-          rejectedStrikes={analysis.q3Strikes.rejectedStrikes}
-          selectedPutStrike={selectedPutStrike}
-          selectedCallStrike={selectedCallStrike}
-          onPutSelect={setSelectedPutStrike}
-          onCallSelect={setSelectedCallStrike}
-          onConfirmSelection={handleStrikeContinue}
-          isConfirming={isExecuting}
-        />
-      )}
     </div>
   );
 }

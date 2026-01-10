@@ -48,6 +48,12 @@ interface Trade {
   marginRequired?: number | null;
   maxLoss?: number | null;
   entrySpy?: number | null;
+  // Commission breakdown (USD)
+  entryCommission?: number | null;
+  exitCommission?: number | null;
+  totalCommissions?: number | null;
+  grossPnl?: number | null;
+  netPnl?: number | null;
 }
 
 interface TradeLogTableProps {
@@ -60,6 +66,11 @@ function formatHKD(value: number | null | undefined, useBrackets = false): strin
   const absValue = Math.abs(value);
   const formatted = `$${absValue.toLocaleString('en-US', { maximumFractionDigits: 0 })}`;
   return (useBrackets && value < 0) ? `(${formatted})` : formatted;
+}
+
+function formatUSD(value: number | null | undefined): string {
+  if (value === null || value === undefined) return '—';
+  return `$${value.toFixed(2)}`;
 }
 
 function formatNotionalM(value: number | null | undefined): string {
@@ -319,6 +330,48 @@ function ValidationModal({ trade, onClose }: { trade: Trade; onClose: () => void
             </div>
           </div>
 
+          {/* Commission Breakdown */}
+          {(trade.totalCommissions != null || trade.entryCommission != null || trade.exitCommission != null) && (
+            <div className="space-y-2">
+              <h3 className="text-xs uppercase text-terminal-dim tracking-wide">Commission Breakdown (USD)</h3>
+              <div className="bg-white/5 rounded p-3 space-y-1 font-mono text-sm">
+                <div className="grid grid-cols-3 gap-4">
+                  <div>
+                    <div className="text-terminal-dim text-xs">Entry Commission</div>
+                    <div className="text-terminal-bright">{formatUSD(trade.entryCommission)}</div>
+                  </div>
+                  <div>
+                    <div className="text-terminal-dim text-xs">Exit Commission</div>
+                    <div className="text-terminal-bright">{formatUSD(trade.exitCommission)}</div>
+                  </div>
+                  <div>
+                    <div className="text-terminal-dim text-xs">Total Commission</div>
+                    <div className="text-bloomberg-amber">{formatUSD(trade.totalCommissions)}</div>
+                  </div>
+                </div>
+
+                <div className="border-t border-terminal pt-2 mt-2 grid grid-cols-3 gap-4">
+                  <div>
+                    <div className="text-terminal-dim text-xs">Gross P&L</div>
+                    <div className={(trade.grossPnl ?? 0) >= 0 ? 'text-bloomberg-green' : 'text-bloomberg-red'}>
+                      {formatUSD(trade.grossPnl)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-terminal-dim text-xs">Less Commission</div>
+                    <div className="text-terminal-dim">-{formatUSD(trade.totalCommissions)}</div>
+                  </div>
+                  <div>
+                    <div className="text-terminal-dim text-xs">Net P&L</div>
+                    <div className={(trade.netPnl ?? 0) >= 0 ? 'text-bloomberg-green font-medium' : 'text-bloomberg-red font-medium'}>
+                      {formatUSD(trade.netPnl)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* NAV Reconciliation */}
           <div className="space-y-2">
             <h3 className="text-xs uppercase text-terminal-dim tracking-wide">NAV Reconciliation (HKD)</h3>
@@ -403,6 +456,7 @@ export function TradeLogTable({ trades, loading }: TradeLogTableProps) {
                 <th className="px-3 py-2.5 text-right font-normal whitespace-nowrap">Notional</th>
                 <th className="px-3 py-2.5 text-right font-normal whitespace-nowrap">Premium</th>
                 <th className="px-3 py-2.5 text-right font-normal whitespace-nowrap">P&L</th>
+                <th className="px-3 py-2.5 text-right font-normal whitespace-nowrap">Comm</th>
                 <th className="px-3 py-2.5 text-right font-normal whitespace-nowrap">Return</th>
                 <th className="px-3 py-2.5 text-center font-normal whitespace-nowrap">W/L</th>
                 <th className="px-3 py-2.5 text-center font-normal whitespace-nowrap">Status</th>
@@ -443,6 +497,9 @@ export function TradeLogTable({ trades, loading }: TradeLogTableProps) {
                     trade.realizedPnl >= 0 ? 'text-bloomberg-green' : 'text-bloomberg-red'
                   }`}>
                     {trade.status === 'open' ? '—' : formatHKD(trade.realizedPnl, true)}
+                  </td>
+                  <td className="px-3 py-2.5 text-right tabular-nums text-terminal-dim whitespace-nowrap">
+                    {trade.totalCommissions != null ? `-${formatUSD(trade.totalCommissions)}` : '—'}
                   </td>
                   <td className={`px-3 py-2.5 text-right tabular-nums whitespace-nowrap ${
                     trade.returnPercent >= 0 ? 'text-bloomberg-green' : 'text-bloomberg-red'

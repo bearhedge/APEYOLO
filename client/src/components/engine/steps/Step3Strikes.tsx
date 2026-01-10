@@ -1,12 +1,15 @@
 /**
- * Step3Strikes - Strike Selection (Simplified)
+ * Step3Strikes - Strike Selection (Table View with Streaming)
  *
- * Two-column strike selection with recommended strikes highlighted
- * and full chain viewer link.
+ * Two-column table layout showing 7 strikes per side (3 above + recommended + 3 below).
+ * Click any row to select. Real-time streaming of bid/ask/delta via WebSocket.
  */
 
+import { useMemo } from 'react';
 import { Button } from '@/components/ui/button';
-import { ExternalLink, Star } from 'lucide-react';
+import { Star, TrendingUp, TrendingDown, Loader2 } from 'lucide-react';
+import { useMarketSnapshot } from '@/hooks/useMarketSnapshot';
+import { useOptionChainStream, StreamedStrike } from '@/hooks/useOptionChainStream';
 import type { SmartStrikeCandidate } from '@shared/types/engine';
 
 interface Step3StrikesProps {
@@ -19,9 +22,105 @@ interface Step3StrikesProps {
   recommendedCallStrike: number | null;
   onPutSelect: (strike: number) => void;
   onCallSelect: (strike: number) => void;
-  onViewFullChain: () => void;
   onContinue: () => void;
   expectedPremium: number;
+  isStreamLoading?: boolean;
+  streamLoadingMessage?: string;
+}
+
+/**
+ * Get 7 visible strikes centered around the recommended strike
+ */
+function getVisibleStrikes(
+  candidates: SmartStrikeCandidate[],
+  recommendedStrike: number | null,
+  ascending: boolean = true
+): SmartStrikeCandidate[] {
+  if (candidates.length === 0) return [];
+  if (candidates.length <= 7) return candidates;
+
+  // Sort by strike
+  const sorted = [...candidates].sort((a, b) =>
+    ascending ? a.strike - b.strike : b.strike - a.strike
+  );
+
+  // If no recommended, return first 7
+  if (!recommendedStrike) return sorted.slice(0, 7);
+
+  // Find index of recommended
+  const recIdx = sorted.findIndex(c => c.strike === recommendedStrike);
+  if (recIdx === -1) return sorted.slice(0, 7);
+
+  // Get 3 above, recommended, 3 below (centered)
+  const start = Math.max(0, recIdx - 3);
+  const end = Math.min(sorted.length, start + 7);
+  const adjustedStart = end === sorted.length ? Math.max(0, sorted.length - 7) : start;
+
+  return sorted.slice(adjustedStart, adjustedStart + 7);
+}
+
+/**
+ * Strike row component for the table
+ */
+interface StrikeRowProps {
+  candidate: SmartStrikeCandidate;
+  streamedData?: StreamedStrike;
+  isSelected: boolean;
+  isRecommended: boolean;
+  optionType: 'PUT' | 'CALL';
+  onSelect: () => void;
+}
+
+function StrikeRow({
+  candidate,
+  streamedData,
+  isSelected,
+  isRecommended,
+  optionType,
+  onSelect,
+}: StrikeRowProps) {
+  // Use streamed data if available, otherwise use candidate data
+  const bid = streamedData?.bid ?? candidate.bid;
+  const ask = streamedData?.ask ?? candidate.ask;
+  const delta = streamedData?.delta ?? candidate.delta;
+
+  const rowClasses = [
+    'grid grid-cols-4 gap-2 px-3 py-2 rounded-lg cursor-pointer transition-all',
+    isSelected
+      ? 'bg-blue-500/20 border-l-2 border-l-blue-500 border border-blue-500/30'
+      : isRecommended
+      ? 'bg-amber-500/10 border border-amber-500/30'
+      : 'bg-zinc-900/50 border border-zinc-800 hover:bg-zinc-800/50',
+  ].join(' ');
+
+  const colorClass = optionType === 'PUT' ? 'text-red-400' : 'text-green-400';
+
+  return (
+    <div className={rowClasses} onClick={onSelect}>
+      {/* Strike */}
+      <div className="flex items-center gap-1">
+        {isRecommended && <Star className="w-3 h-3 text-amber-400 fill-amber-400" />}
+        <span className="font-mono font-semibold text-white">${candidate.strike}</span>
+      </div>
+
+      {/* Bid */}
+      <div className="text-right">
+        <span className="font-mono text-green-400">{bid.toFixed(2)}</span>
+      </div>
+
+      {/* Ask */}
+      <div className="text-right">
+        <span className="font-mono text-zinc-400">{ask.toFixed(2)}</span>
+      </div>
+
+      {/* Delta */}
+      <div className="text-right">
+        <span className={`font-mono ${colorClass}`}>
+          {optionType === 'PUT' ? Math.abs(delta).toFixed(2) : delta.toFixed(2)}
+        </span>
+      </div>
+    </div>
+  );
 }
 
 export function Step3Strikes({
@@ -34,120 +133,207 @@ export function Step3Strikes({
   recommendedCallStrike,
   onPutSelect,
   onCallSelect,
-  onViewFullChain,
   onContinue,
   expectedPremium,
+  isStreamLoading = false,
+  streamLoadingMessage = '',
 }: Step3StrikesProps) {
-  // Find selected candidates
+  // Live market data (same as Step 1)
+  const { snapshot } = useMarketSnapshot();
+  const livePrice = snapshot?.spyPrice ?? underlyingPrice;
+  const spyChangePct = snapshot?.spyChangePct ?? 0;
+  const spyBid = snapshot?.spyBid ?? null;
+  const spyAsk = snapshot?.spyAsk ?? null;
+  const source = snapshot?.source ?? 'none';
+  const marketState = snapshot?.marketState ?? 'CLOSED';
+
+  // Get visible strikes (7 per side)
+  const visiblePuts = useMemo(
+    () => getVisibleStrikes(putCandidates, recommendedPutStrike, false), // descending for puts
+    [putCandidates, recommendedPutStrike]
+  );
+
+  const visibleCalls = useMemo(
+    () => getVisibleStrikes(callCandidates, recommendedCallStrike, true), // ascending for calls
+    [callCandidates, recommendedCallStrike]
+  );
+
+  // Streaming option data
+  const putStrikesToStream = useMemo(() => visiblePuts.map(c => c.strike), [visiblePuts]);
+  const callStrikesToStream = useMemo(() => visibleCalls.map(c => c.strike), [visibleCalls]);
+
+  const { streamedPuts, streamedCalls, isStreaming } = useOptionChainStream({
+    symbol: 'SPY',
+    putStrikes: putStrikesToStream,
+    callStrikes: callStrikesToStream,
+    enabled: true,
+  });
+
+  // Find selected candidates for premium calculation
   const selectedPut = putCandidates.find(c => c.strike === selectedPutStrike);
   const selectedCall = callCandidates.find(c => c.strike === selectedCallStrike);
 
+  // Calculate total premium from selected strikes
+  const totalPremium = useMemo(() => {
+    let total = 0;
+    if (selectedPut) {
+      const streamed = streamedPuts.get(selectedPut.strike);
+      total += streamed?.bid ?? selectedPut.bid;
+    }
+    if (selectedCall) {
+      const streamed = streamedCalls.get(selectedCall.strike);
+      total += streamed?.bid ?? selectedCall.bid;
+    }
+    return total || expectedPremium;
+  }, [selectedPut, selectedCall, streamedPuts, streamedCalls, expectedPremium]);
+
   return (
     <div className="space-y-6">
-      {/* Current Price Reference */}
+      {/* Stream Loading Indicator */}
+      {isStreamLoading && (
+        <div className="flex items-center justify-center gap-3 p-4 bg-blue-500/10 rounded-lg border border-blue-500/30">
+          <Loader2 className="w-5 h-5 text-blue-400 animate-spin" />
+          <span className="text-sm text-blue-400 font-medium">
+            {streamLoadingMessage || 'Connecting to option chain...'}
+          </span>
+        </div>
+      )}
+
+      {/* Live Price Display (matches Step 1) */}
       <div className="text-center p-4 bg-zinc-900/50 rounded-lg border border-zinc-800">
-        <p className="text-xs text-zinc-500 mb-1 uppercase tracking-wider">Current Price</p>
-        <p className="text-3xl font-bold font-mono text-white">${underlyingPrice.toFixed(2)}</p>
-      </div>
-
-      {/* Two Columns: PUT and CALL */}
-      <div className="grid grid-cols-2 gap-4">
-        {/* PUT Column */}
-        <div className="space-y-3">
-          <div className="text-center pb-2 border-b border-zinc-800">
-            <h4 className="text-sm font-semibold text-red-400 uppercase tracking-wider">PUT</h4>
+        <div className="flex items-center justify-center gap-2 mb-2">
+          {/* Source Badge */}
+          <div className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-medium uppercase tracking-wider ${
+            source === 'ibkr' || source === 'ibkr-sse'
+              ? 'bg-green-500/20 text-green-400 border border-green-500/30'
+              : 'bg-red-500/20 text-red-400 border border-red-500/30'
+          }`}>
+            {source === 'ibkr' || source === 'ibkr-sse' ? 'LIVE' : 'NO DATA'}
           </div>
-
-          {/* PUT Strike Selector */}
-          <select
-            value={selectedPutStrike || ''}
-            onChange={(e) => onPutSelect(Number(e.target.value))}
-            className="w-full px-3 py-3 bg-zinc-900 border border-zinc-700 rounded-lg text-white font-mono focus:outline-none focus:ring-2 focus:ring-red-500/50"
-          >
-            <option value="">Select Strike</option>
-            {putCandidates.map((candidate) => (
-              <option key={candidate.strike} value={candidate.strike}>
-                ${candidate.strike}{' '}
-                {candidate.isEngineRecommended && '⭐ '}
-                (Δ {Math.abs(candidate.delta).toFixed(2)})
-              </option>
-            ))}
-          </select>
-
-          {/* Selected PUT Details */}
-          {selectedPut && (
-            <div className="p-3 bg-red-500/5 rounded-lg border border-red-500/20">
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-zinc-400">Delta:</span>
-                  <span className="font-mono text-white">{Math.abs(selectedPut.delta).toFixed(3)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-zinc-400">Premium:</span>
-                  <span className="font-mono text-green-400">${selectedPut.bid.toFixed(2)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-zinc-400">IV:</span>
-                  <span className="font-mono text-white">{selectedPut.iv ? `${(selectedPut.iv * 100).toFixed(1)}%` : 'N/A'}</span>
-                </div>
-                {selectedPut.isEngineRecommended && (
-                  <div className="flex items-center gap-1 text-xs text-amber-400 pt-1 border-t border-red-500/20">
-                    <Star className="w-3 h-3 fill-amber-400" />
-                    <span>Engine Recommended</span>
-                  </div>
-                )}
+          {isStreaming && (
+            <>
+              <div className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-blue-500/20 text-blue-400 border border-blue-500/30">
+                OPTIONS STREAMING
               </div>
-            </div>
+              <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium bg-red-500/20 text-red-400 border border-red-500/30">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-red-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-red-500"></span>
+                </span>
+                REC
+              </div>
+            </>
           )}
         </div>
 
-        {/* CALL Column */}
-        <div className="space-y-3">
-          <div className="text-center pb-2 border-b border-zinc-800">
-            <h4 className="text-sm font-semibold text-green-400 uppercase tracking-wider">CALL</h4>
+        <div className="flex items-center justify-center gap-3 mb-1">
+          <span className="text-4xl font-bold font-mono text-white">${livePrice.toFixed(2)}</span>
+          <div className={`flex items-center gap-1 text-xl font-semibold ${
+            spyChangePct >= 0 ? 'text-green-400' : 'text-red-400'
+          }`}>
+            {spyChangePct >= 0 ? <TrendingUp className="w-5 h-5" /> : <TrendingDown className="w-5 h-5" />}
+            <span className="font-mono">{spyChangePct >= 0 ? '+' : ''}{spyChangePct.toFixed(2)}%</span>
+          </div>
+        </div>
+
+        <p className="text-xs text-zinc-500 uppercase tracking-wider mb-2">SPY Current Price</p>
+
+        {/* Bid/Ask Display */}
+        {(spyBid || spyAsk) && (
+          <div className="flex items-center justify-center gap-4 text-sm">
+            <span className="text-zinc-500">
+              Bid: <span className="font-mono text-zinc-300">${spyBid?.toFixed(2) ?? '—'}</span>
+            </span>
+            <span className="text-zinc-600">|</span>
+            <span className="text-zinc-500">
+              Ask: <span className="font-mono text-zinc-300">${spyAsk?.toFixed(2) ?? '—'}</span>
+            </span>
+          </div>
+        )}
+      </div>
+
+      {/* Strike Tables */}
+      <div className="grid grid-cols-2 gap-4">
+        {/* PUT Table */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between pb-2 border-b border-zinc-800">
+            <h4 className="text-sm font-semibold text-red-400 uppercase tracking-wider">PUT</h4>
+            <span className="text-xs text-zinc-500">Click to select</span>
           </div>
 
-          {/* CALL Strike Selector */}
-          <select
-            value={selectedCallStrike || ''}
-            onChange={(e) => onCallSelect(Number(e.target.value))}
-            className="w-full px-3 py-3 bg-zinc-900 border border-zinc-700 rounded-lg text-white font-mono focus:outline-none focus:ring-2 focus:ring-green-500/50"
-          >
-            <option value="">Select Strike</option>
-            {callCandidates.map((candidate) => (
-              <option key={candidate.strike} value={candidate.strike}>
-                ${candidate.strike}{' '}
-                {candidate.isEngineRecommended && '⭐ '}
-                (Δ {candidate.delta.toFixed(2)})
-              </option>
-            ))}
-          </select>
+          {/* Table Header */}
+          <div className="grid grid-cols-4 gap-2 px-3 py-1 text-xs text-zinc-500 uppercase tracking-wider">
+            <div>Strike</div>
+            <div className="text-right">Bid</div>
+            <div className="text-right">Ask</div>
+            <div className="text-right">Delta</div>
+          </div>
 
-          {/* Selected CALL Details */}
-          {selectedCall && (
-            <div className="p-3 bg-green-500/5 rounded-lg border border-green-500/20">
-              <div className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span className="text-zinc-400">Delta:</span>
-                  <span className="font-mono text-white">{selectedCall.delta.toFixed(3)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-zinc-400">Premium:</span>
-                  <span className="font-mono text-green-400">${selectedCall.bid.toFixed(2)}</span>
-                </div>
-                <div className="flex justify-between">
-                  <span className="text-zinc-400">IV:</span>
-                  <span className="font-mono text-white">{selectedCall.iv ? `${(selectedCall.iv * 100).toFixed(1)}%` : 'N/A'}</span>
-                </div>
-                {selectedCall.isEngineRecommended && (
-                  <div className="flex items-center gap-1 text-xs text-amber-400 pt-1 border-t border-green-500/20">
-                    <Star className="w-3 h-3 fill-amber-400" />
-                    <span>Engine Recommended</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          )}
+          {/* Table Rows */}
+          <div className="space-y-1">
+            {visiblePuts.length > 0 ? (
+              visiblePuts.map((candidate) => (
+                <StrikeRow
+                  key={candidate.strike}
+                  candidate={candidate}
+                  streamedData={streamedPuts.get(candidate.strike)}
+                  isSelected={selectedPutStrike === candidate.strike}
+                  isRecommended={recommendedPutStrike === candidate.strike}
+                  optionType="PUT"
+                  onSelect={() => onPutSelect(candidate.strike)}
+                />
+              ))
+            ) : (
+              <div className="text-center py-4 text-zinc-500 text-sm">No PUT strikes available</div>
+            )}
+          </div>
+        </div>
+
+        {/* CALL Table */}
+        <div className="space-y-2">
+          <div className="flex items-center justify-between pb-2 border-b border-zinc-800">
+            <h4 className="text-sm font-semibold text-green-400 uppercase tracking-wider">CALL</h4>
+            <span className="text-xs text-zinc-500">Click to select</span>
+          </div>
+
+          {/* Table Header */}
+          <div className="grid grid-cols-4 gap-2 px-3 py-1 text-xs text-zinc-500 uppercase tracking-wider">
+            <div>Strike</div>
+            <div className="text-right">Bid</div>
+            <div className="text-right">Ask</div>
+            <div className="text-right">Delta</div>
+          </div>
+
+          {/* Table Rows */}
+          <div className="space-y-1">
+            {visibleCalls.length > 0 ? (
+              visibleCalls.map((candidate) => (
+                <StrikeRow
+                  key={candidate.strike}
+                  candidate={candidate}
+                  streamedData={streamedCalls.get(candidate.strike)}
+                  isSelected={selectedCallStrike === candidate.strike}
+                  isRecommended={recommendedCallStrike === candidate.strike}
+                  optionType="CALL"
+                  onSelect={() => onCallSelect(candidate.strike)}
+                />
+              ))
+            ) : (
+              <div className="text-center py-4 text-zinc-500 text-sm">No CALL strikes available</div>
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Legend */}
+      <div className="flex items-center justify-center gap-4 text-xs text-zinc-500">
+        <div className="flex items-center gap-1">
+          <Star className="w-3 h-3 text-amber-400 fill-amber-400" />
+          <span>Engine Recommended</span>
+        </div>
+        <div className="flex items-center gap-1">
+          <div className="w-3 h-3 bg-blue-500/30 border border-blue-500 rounded" />
+          <span>Your Selection</span>
         </div>
       </div>
 
@@ -155,19 +341,8 @@ export function Step3Strikes({
       <div className="p-4 bg-green-500/5 rounded-lg border border-green-500/20">
         <div className="flex items-center justify-between">
           <span className="text-sm text-zinc-400 uppercase tracking-wider">Total Premium (per contract)</span>
-          <span className="text-2xl font-bold font-mono text-green-400">${expectedPremium.toFixed(2)}</span>
+          <span className="text-2xl font-bold font-mono text-green-400">${totalPremium.toFixed(2)}</span>
         </div>
-      </div>
-
-      {/* View Full Chain Link */}
-      <div className="text-center">
-        <button
-          onClick={onViewFullChain}
-          className="inline-flex items-center gap-2 text-sm text-blue-400 hover:text-blue-300 transition-colors"
-        >
-          <ExternalLink className="w-4 h-4" />
-          <span>View Full Option Chain</span>
-        </button>
       </div>
 
       {/* CTA */}

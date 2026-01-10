@@ -122,7 +122,7 @@ export type AgentEvent =
   | { type: 'validation_start' }
   | { type: 'validation_result'; approved: boolean; reason: string }
   | { type: 'response_chunk'; content: string }
-  | { type: 'done'; finalResponse?: string }
+  | { type: 'done'; finalResponse?: string; conversationId?: string }
   | { type: 'error'; error: string; recoverable: boolean }
   | { type: 'browser_screenshot'; data: { base64: string; url: string; timestamp: number } };
 

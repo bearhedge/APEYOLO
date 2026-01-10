@@ -15,6 +15,7 @@ export interface MarketDay {
 
 export interface MarketStatus {
   isOpen: boolean;
+  isOvernight?: boolean;  // True during BOATS overnight session (8 PM - 3:50 AM ET)
   currentTimeET: string;
   marketCloseET: string;
   reason: string;
@@ -148,6 +149,11 @@ const MARKET_OPEN_TIME = '09:30';
 const MARKET_CLOSE_NORMAL = '16:00';
 const MARKET_CLOSE_EARLY = '13:00';
 
+// Overnight trading hours (BOATS/IBEOS via Blue Ocean ATS)
+// Session runs 8:00 PM - 3:50 AM ET (next day)
+const OVERNIGHT_START = '20:00';  // 8 PM ET
+const OVERNIGHT_END = '03:50';    // 3:50 AM ET
+
 /**
  * Get market status for a specific date/time
  * Now includes time-of-day check for accurate open/closed status
@@ -182,8 +188,24 @@ export function getMarketStatus(date: Date = new Date()): MarketStatus {
   const { isEarlyClose, reason: earlyCloseReason } = isEarlyCloseDay(date);
   const marketCloseToday = isEarlyClose ? MARKET_CLOSE_EARLY : MARKET_CLOSE_NORMAL;
 
+  // Check for overnight trading session (8 PM - 3:50 AM ET)
+  // This runs on weekdays only (weekend check already done above)
+  const isOvernightSession = timeStr >= OVERNIGHT_START || timeStr < OVERNIGHT_END;
+
   // Time-of-day check: Market is only open 9:30 AM - close time
   if (timeStr < MARKET_OPEN_TIME) {
+    // Before regular market open - could be overnight or pre-market
+    if (timeStr < OVERNIGHT_END) {
+      // Overnight session (midnight to 3:50 AM)
+      return {
+        isOpen: false,
+        isOvernight: true,
+        currentTimeET: timeStr,
+        marketCloseET: marketCloseToday,
+        reason: `Overnight trading (BOATS) - closes at 3:50 AM ET`,
+      };
+    }
+    // Pre-market (3:50 AM to 9:30 AM) - no BOATS, waiting for pre-market/regular
     return {
       isOpen: false,
       currentTimeET: timeStr,
@@ -194,6 +216,18 @@ export function getMarketStatus(date: Date = new Date()): MarketStatus {
 
   if (timeStr >= marketCloseToday) {
     const closeTimeFormatted = isEarlyClose ? '1:00 PM' : '4:00 PM';
+    // After regular close - could be post-market or overnight
+    if (timeStr >= OVERNIGHT_START) {
+      // Overnight session (8 PM to midnight)
+      return {
+        isOpen: false,
+        isOvernight: true,
+        currentTimeET: timeStr,
+        marketCloseET: marketCloseToday,
+        reason: `Overnight trading (BOATS) - closes at 3:50 AM ET`,
+      };
+    }
+    // Post-market (4 PM to 8 PM)
     return {
       isOpen: false,
       currentTimeET: timeStr,

@@ -40,7 +40,7 @@ export interface NearbyStrike {
 export interface EnhancedStepLog {
   step: number;
   name: string;
-  status: 'passed' | 'failed' | 'skipped';
+  status: 'passed' | 'failed' | 'skipped' | 'running' | 'pending';
   durationMs: number;
   isSlowest?: boolean;
 

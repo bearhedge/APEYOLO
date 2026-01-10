@@ -102,6 +102,9 @@ export class OptionChainStreamer {
 
   /**
    * Start streaming option chain for a symbol
+   *
+   * Cost: Initial HTTP fetch costs ~$0.01 per option conid (one-time)
+   * After that, WebSocket streaming is FREE
    */
   async startStreaming(symbol: string): Promise<void> {
     console.log(`[OptionChainStreamer] Starting streaming for ${symbol}`);
@@ -156,7 +159,7 @@ export class OptionChainStreamer {
 
       this.isStreaming = true;
 
-      // Step 6: Set up periodic full refresh as backup
+      // Step 6: Set up periodic full refresh as backup (every 5 minutes)
       const refreshInterval = setInterval(async () => {
         console.log(`[OptionChainStreamer] Periodic refresh for ${symbol}`);
         await this.refreshChain(symbol);
@@ -340,26 +343,25 @@ export class OptionChainStreamer {
   // --- Private methods ---
 
   private async ensureWebSocketConnected(): Promise<void> {
-    if (this.wsManager?.connected) {
+    // Use the SHARED WebSocket manager - don't create our own
+    // The WebSocket should be initialized by autoStartMarketDataStream with proper credentials
+    this.wsManager = getIbkrWebSocketManager() || undefined;
+
+    if (!this.wsManager) {
+      console.log('[OptionChainStreamer] WebSocket not available yet - waiting for autoStartMarketDataStream');
       return;
     }
 
-    // Get cookie string from IBKR client
-    const cookieString = await getIbkrCookieString();
-
-    // Initialize or get WebSocket manager
-    this.wsManager = initIbkrWebSocket(cookieString);
+    if (!this.wsManager.connected) {
+      console.log('[OptionChainStreamer] WebSocket not connected yet - waiting for connection');
+      return;
+    }
 
     // Register our update handler
     if (!this.unsubscribeCallback) {
       this.unsubscribeCallback = this.wsManager.onUpdate((update) => {
         this.handleMarketDataUpdate(update);
       });
-    }
-
-    // Connect if not connected
-    if (!this.wsManager.connected) {
-      await this.wsManager.connect();
     }
   }
 
@@ -524,28 +526,9 @@ export class OptionChainStreamer {
   }
 
   private async refreshChain(symbol: string): Promise<void> {
-    const symbolCache = this.cache.get(symbol);
-    if (!symbolCache) return;
-
-    try {
-      const httpChain = await getOptionChainWithStrikes(symbol);
-
-      // Update underlying price and VIX
-      symbolCache.chain.underlyingPrice = httpChain.underlyingPrice;
-      symbolCache.chain.vix = httpChain.vix;
-      symbolCache.chain.expectedMove = httpChain.expectedMove;
-      symbolCache.chain.strikeRangeLow = httpChain.strikeRangeLow;
-      symbolCache.chain.strikeRangeHigh = httpChain.strikeRangeHigh;
-      symbolCache.chain.lastFullRefresh = new Date();
-      symbolCache.chain.lastUpdate = new Date();
-
-      // TODO: If new strikes come into range, subscribe to them
-      // TODO: If strikes go out of range, unsubscribe
-
-      console.log(`[OptionChainStreamer] Refreshed chain for ${symbol}`);
-    } catch (error) {
-      console.error(`[OptionChainStreamer] Refresh failed for ${symbol}:`, error);
-    }
+    // DISABLED: Uses expensive snapshot API ($0.01 per conid)
+    console.log(`[OptionChainStreamer] DISABLED - refreshChain for ${symbol} blocked to save snapshot costs`);
+    // All code removed - function is disabled to save on IBKR snapshot costs
   }
 
   private getNextMarketOpen(from: Date): Date {

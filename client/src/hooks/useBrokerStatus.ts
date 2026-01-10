@@ -51,12 +51,8 @@ export function useBrokerStatus(options: UseBrokerStatusOptions = {}) {
     queryKey: ['/api/ibkr/status'],
     queryFn: fetchBrokerStatus,
     enabled,
-    // Adaptive polling: 10s when connecting/unstable, 30s when stable
-    refetchInterval: (query) => {
-      const data = query.state.data;
-      if (!data) return 10000; // 10s when no data yet
-      return data.connected ? 30000 : 10000; // 30s stable, 10s when disconnected
-    },
+    // DISABLED - IBKR snapshots cost money
+    refetchInterval: false,
     // Keep data fresh but allow some staleness
     staleTime: 5000, // Consider fresh for 5s
     // Don't refetch on window focus if recently fetched

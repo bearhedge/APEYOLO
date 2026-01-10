@@ -35,6 +35,18 @@ export function ContextPanel() {
 
   const isIBKRConnected = diagData?.oauth === 200 && diagData?.sso === 200;
 
+  // Check agent/LLM status
+  const { data: agentStatus } = useQuery({
+    queryKey: ['/api/agent/status'],
+    queryFn: async () => {
+      const res = await fetch('/api/agent/status', { credentials: 'include' });
+      return res.ok ? res.json() : null;
+    },
+    enabled: location !== '/' && location !== '/onboarding',
+    staleTime: 30000,
+  });
+  const isAgentOnline = agentStatus?.online === true;
+
   const cards: ContextCard[] = [
     {
       title: 'Session',
@@ -56,11 +68,18 @@ export function ContextPanel() {
             )}
           </div>
           <div className="flex justify-between items-center">
-            <span className="text-silver">Oracle</span>
-            <span className="flex items-center gap-1 text-xs font-medium">
-              <CheckCircle className="w-3 h-3" />
-              Live
-            </span>
+            <span className="text-silver">LLM</span>
+            {isAgentOnline ? (
+              <span className="flex items-center gap-1 text-xs font-medium">
+                <CheckCircle className="w-3 h-3" />
+                Online
+              </span>
+            ) : (
+              <span className="flex items-center gap-1 text-xs font-medium text-silver">
+                <XCircle className="w-3 h-3" />
+                Offline
+              </span>
+            )}
           </div>
           <div className="flex justify-between items-center">
             <span className="text-silver">Mode</span>

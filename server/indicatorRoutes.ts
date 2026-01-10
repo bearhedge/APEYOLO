@@ -10,89 +10,10 @@ import { Router } from 'express';
 import { getIndicatorSnapshot, getIndicatorSnapshotSafe } from './services/indicators/ibkrFetcher';
 import { predictDirection } from './services/directionPredictor';
 import { db } from './db';
-import { indicatorSnapshots, directionPredictions, userSettings } from '@shared/schema';
-import { eq, sql, isNotNull, and } from 'drizzle-orm';
-import { requireAuth } from './auth';
+import { indicatorSnapshots, directionPredictions } from '@shared/schema';
+import { eq } from 'drizzle-orm';
 
 const router = Router();
-
-/**
- * GET /api/indicators/accuracy
- *
- * Get AI direction prediction accuracy statistics.
- * Used for the RLHF "earned autonomy" feature - AI unlocks auto-run at 80% accuracy.
- *
- * Returns:
- * - totalPredictions: number of closed trades with wasCorrect result
- * - correctPredictions: number where wasCorrect = true
- * - accuracy: overall accuracy percentage (0-100)
- * - last50Accuracy: accuracy of last 50 predictions (for auto-run threshold)
- * - overrideStats: stats when user overrode AI (agreedWithAi = false)
- * - agreementStats: stats when user followed AI (agreedWithAi = true)
- * - autoRunEligible: true if last50Accuracy >= 80
- */
-router.get('/accuracy', async (req, res) => {
-  try {
-    // Query all predictions where wasCorrect is not null (closed trades)
-    const allPredictions = await db
-      .select({
-        id: directionPredictions.id,
-        wasCorrect: directionPredictions.wasCorrect,
-        agreedWithAi: directionPredictions.agreedWithAi,
-        wasOverride: directionPredictions.wasOverride,
-        overrideWasCorrect: directionPredictions.overrideWasCorrect,
-        createdAt: directionPredictions.createdAt,
-      })
-      .from(directionPredictions)
-      .where(isNotNull(directionPredictions.wasCorrect))
-      .orderBy(sql`${directionPredictions.createdAt} DESC`);
-
-    const totalPredictions = allPredictions.length;
-    const correctPredictions = allPredictions.filter(p => p.wasCorrect === true).length;
-    const accuracy = totalPredictions > 0 ? (correctPredictions / totalPredictions) * 100 : 0;
-
-    // Calculate last 50 accuracy for auto-run threshold
-    const last50 = allPredictions.slice(0, 50);
-    const last50Correct = last50.filter(p => p.wasCorrect === true).length;
-    const last50Accuracy = last50.length > 0 ? (last50Correct / last50.length) * 100 : null;
-
-    // Override stats: when user disagreed with AI (agreedWithAi = false)
-    const overridePredictions = allPredictions.filter(p => p.agreedWithAi === false);
-    const overrideCount = overridePredictions.length;
-    const overrideCorrectCount = overridePredictions.filter(p => p.wasCorrect === true).length;
-    const overrideAccuracy = overrideCount > 0 ? (overrideCorrectCount / overrideCount) * 100 : null;
-
-    // Agreement stats: when user followed AI (agreedWithAi = true)
-    const agreedPredictions = allPredictions.filter(p => p.agreedWithAi === true);
-    const agreedCount = agreedPredictions.length;
-    const agreedCorrectCount = agreedPredictions.filter(p => p.wasCorrect === true).length;
-    const agreedAccuracy = agreedCount > 0 ? (agreedCorrectCount / agreedCount) * 100 : null;
-
-    // Auto-run eligibility: need at least 50 predictions and 80%+ accuracy
-    const autoRunEligible = last50.length >= 50 && last50Accuracy !== null && last50Accuracy >= 80;
-
-    res.json({
-      totalPredictions,
-      correctPredictions,
-      accuracy: Math.round(accuracy * 100) / 100, // Round to 2 decimal places
-      last50Accuracy: last50Accuracy !== null ? Math.round(last50Accuracy * 100) / 100 : null,
-      overrideStats: {
-        overrideCount,
-        overrideCorrectCount,
-        overrideAccuracy: overrideAccuracy !== null ? Math.round(overrideAccuracy * 100) / 100 : null,
-      },
-      agreementStats: {
-        agreedCount,
-        agreedCorrectCount,
-        agreedAccuracy: agreedAccuracy !== null ? Math.round(agreedAccuracy * 100) / 100 : null,
-      },
-      autoRunEligible,
-    });
-  } catch (error) {
-    console.error('Failed to get accuracy stats:', error);
-    res.status(500).json({ error: 'Failed to get accuracy stats' });
-  }
-});
 
 /**
  * PATCH /api/indicators/predictions/:id
@@ -103,12 +24,13 @@ router.get('/accuracy', async (req, res) => {
  *
  * Body:
  * - userChoice: PUT | CALL | STRANGLE | NO_TRADE
+ * - userReasoning: string (optional) - WHY user made this choice (gold for RLHF)
  * - agreedWithAi: boolean (optional, calculated if not provided)
  */
 router.patch('/predictions/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { userChoice, agreedWithAi } = req.body;
+    const { userChoice, userReasoning, agreedWithAi } = req.body;
 
     if (!userChoice) {
       res.status(400).json({ error: 'userChoice is required' });
@@ -136,23 +58,25 @@ router.patch('/predictions/:id', async (req, res) => {
     const agreedWithAiFinal = agreedWithAi ?? (userChoice === prediction.aiSuggestion);
     const agreedWithIndicators = userChoice === prediction.indicatorSignal;
 
-    // Update the prediction
+    // Update the prediction with user's choice and reasoning
     await db
       .update(directionPredictions)
       .set({
         userChoice,
+        userReasoning: userReasoning || null, // WHY - the gold for learning your edge
         agreedWithAi: agreedWithAiFinal,
         agreedWithIndicators,
       })
       .where(eq(directionPredictions.id, id));
 
-    console.log(`[IndicatorRoutes] Updated prediction ${id}: userChoice=${userChoice}, agreedWithAi=${agreedWithAiFinal}, agreedWithIndicators=${agreedWithIndicators}`);
+    console.log(`[IndicatorRoutes] Updated prediction ${id}: userChoice=${userChoice}, hasReasoning=${!!userReasoning}, agreedWithAi=${agreedWithAiFinal}`);
 
     res.json({
       success: true,
       updated: {
         id,
         userChoice,
+        userReasoning: userReasoning || null,
         agreedWithAi: agreedWithAiFinal,
         agreedWithIndicators,
       },
@@ -160,156 +84,6 @@ router.patch('/predictions/:id', async (req, res) => {
   } catch (error) {
     console.error('Failed to update prediction:', error);
     res.status(500).json({ error: 'Failed to update prediction' });
-  }
-});
-
-/**
- * GET /api/indicators/auto-run-status
- *
- * Get the auto-run status for the authenticated user.
- * Returns eligibility (based on accuracy), user preference, and active status.
- *
- * Returns:
- * - eligible: boolean - true if last 50 accuracy >= 80%
- * - enabled: boolean - user's preference setting
- * - active: boolean - true if eligible AND enabled
- */
-router.get('/auto-run-status', requireAuth, async (req, res) => {
-  try {
-    const userId = (req as any).user?.id;
-    if (!userId) {
-      res.status(401).json({ error: 'Unauthorized' });
-      return;
-    }
-
-    // Get accuracy stats to determine eligibility
-    const allPredictions = await db
-      .select({
-        wasCorrect: directionPredictions.wasCorrect,
-        createdAt: directionPredictions.createdAt,
-      })
-      .from(directionPredictions)
-      .where(isNotNull(directionPredictions.wasCorrect))
-      .orderBy(sql`${directionPredictions.createdAt} DESC`);
-
-    // Calculate last 50 accuracy for auto-run threshold
-    const last50 = allPredictions.slice(0, 50);
-    const last50Correct = last50.filter(p => p.wasCorrect === true).length;
-    const last50Accuracy = last50.length > 0 ? (last50Correct / last50.length) * 100 : null;
-
-    // Auto-run eligibility: need at least 50 predictions and 80%+ accuracy
-    const eligible = last50.length >= 50 && last50Accuracy !== null && last50Accuracy >= 80;
-
-    // Get user's auto-run preference
-    const settings = await db
-      .select({ autoRunEnabled: userSettings.autoRunEnabled })
-      .from(userSettings)
-      .where(eq(userSettings.userId, userId))
-      .limit(1);
-
-    const enabled = settings.length > 0 ? settings[0].autoRunEnabled : false;
-
-    // Active only if both eligible and enabled
-    const active = eligible && enabled;
-
-    res.json({
-      eligible,
-      enabled,
-      active,
-      accuracy: last50Accuracy !== null ? Math.round(last50Accuracy * 100) / 100 : null,
-      predictionsCount: last50.length,
-    });
-  } catch (error) {
-    console.error('Failed to get auto-run status:', error);
-    res.status(500).json({ error: 'Failed to get auto-run status' });
-  }
-});
-
-/**
- * POST /api/indicators/auto-run
- *
- * Toggle auto-run setting for the authenticated user.
- * Only works if the user is eligible (accuracy >= 80% over last 50 trades).
- *
- * Body:
- * - enabled: boolean
- */
-router.post('/auto-run', requireAuth, async (req, res) => {
-  try {
-    const userId = (req as any).user?.id;
-    if (!userId) {
-      res.status(401).json({ error: 'Unauthorized' });
-      return;
-    }
-
-    const { enabled } = req.body;
-    if (typeof enabled !== 'boolean') {
-      res.status(400).json({ error: 'enabled must be a boolean' });
-      return;
-    }
-
-    // If trying to enable, verify eligibility first
-    if (enabled) {
-      const allPredictions = await db
-        .select({
-          wasCorrect: directionPredictions.wasCorrect,
-          createdAt: directionPredictions.createdAt,
-        })
-        .from(directionPredictions)
-        .where(isNotNull(directionPredictions.wasCorrect))
-        .orderBy(sql`${directionPredictions.createdAt} DESC`);
-
-      const last50 = allPredictions.slice(0, 50);
-      const last50Correct = last50.filter(p => p.wasCorrect === true).length;
-      const last50Accuracy = last50.length > 0 ? (last50Correct / last50.length) * 100 : null;
-
-      const eligible = last50.length >= 50 && last50Accuracy !== null && last50Accuracy >= 80;
-
-      if (!eligible) {
-        res.status(403).json({
-          error: 'Not eligible for auto-run',
-          message: 'Auto-run requires 80% accuracy over the last 50 predictions',
-          accuracy: last50Accuracy,
-          predictionsCount: last50.length,
-        });
-        return;
-      }
-    }
-
-    // Check if settings exist for user
-    const existingSettings = await db
-      .select({ id: userSettings.id })
-      .from(userSettings)
-      .where(eq(userSettings.userId, userId))
-      .limit(1);
-
-    if (existingSettings.length > 0) {
-      // Update existing settings
-      await db
-        .update(userSettings)
-        .set({
-          autoRunEnabled: enabled,
-          updatedAt: new Date(),
-        })
-        .where(eq(userSettings.userId, userId));
-    } else {
-      // Create new settings record
-      await db.insert(userSettings).values({
-        userId,
-        autoRunEnabled: enabled,
-      });
-    }
-
-    console.log(`[IndicatorRoutes] Auto-run ${enabled ? 'enabled' : 'disabled'} for user ${userId}`);
-
-    res.json({
-      success: true,
-      enabled,
-      message: enabled ? 'Auto-run enabled. AI will automatically select direction.' : 'Auto-run disabled.',
-    });
-  } catch (error) {
-    console.error('Failed to update auto-run setting:', error);
-    res.status(500).json({ error: 'Failed to update auto-run setting' });
   }
 });
 

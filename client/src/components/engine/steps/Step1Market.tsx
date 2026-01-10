@@ -6,12 +6,16 @@
  */
 
 import { Button } from '@/components/ui/button';
-import { TrendingUp, TrendingDown, Minus, ArrowRight } from 'lucide-react';
+import { TrendingUp, TrendingDown, Minus, ArrowRight, Zap, Database } from 'lucide-react';
 import type { StrategyPreference } from '@shared/types/engine';
+import type { DataSourceMode } from '@/hooks/useMarketSnapshot';
 
 interface Step1MarketProps {
   spyPrice: number;
   spyChangePct: number;
+  spyBid: number | null;
+  spyAsk: number | null;
+  spyPrevClose: number | null;
   vix: number;
   vixChangePct: number;
   vwap: number | null;
@@ -19,7 +23,10 @@ interface Step1MarketProps {
   dayLow: number;
   dayHigh: number;
   marketOpen: boolean;
-  source: 'ibkr' | 'ibkr-sse' | 'yahoo' | 'none';
+  marketState?: 'PRE' | 'REGULAR' | 'POST' | 'OVERNIGHT' | 'CLOSED';
+  source: 'ibkr' | 'ibkr-sse' | 'none';
+  connectionStatus: 'connecting' | 'connected' | 'fallback' | 'error';
+  dataSourceMode: DataSourceMode;
   timestamp: string | null;
   strategy: StrategyPreference;
   onStrategyChange: (strategy: StrategyPreference) => void;
@@ -30,6 +37,9 @@ interface Step1MarketProps {
 export function Step1Market({
   spyPrice,
   spyChangePct,
+  spyBid,
+  spyAsk,
+  spyPrevClose,
   vix,
   vixChangePct,
   vwap,
@@ -37,16 +47,29 @@ export function Step1Market({
   dayLow,
   dayHigh,
   marketOpen,
+  marketState,
   source,
+  connectionStatus,
+  dataSourceMode,
   timestamp,
   strategy,
   onStrategyChange,
   onAnalyze,
   isLoading,
 }: Step1MarketProps) {
+  // Determine if we're in overnight trading session
+  const isOvernight = marketState === 'OVERNIGHT';
+  const isPreMarket = marketState === 'PRE';
+  const isPostMarket = marketState === 'POST';
+  const isExtendedHours = isOvernight || isPreMarket || isPostMarket;
+
   // Calculate position within day range (0-100%)
   const range = dayHigh - dayLow;
   const rangePosition = range > 0 ? ((spyPrice - dayLow) / range) * 100 : 50;
+
+  // Calculate bid-ask spread
+  const bidAskSpread = spyBid && spyAsk ? spyAsk - spyBid : null;
+  const bidAskMidpoint = spyBid && spyAsk ? (spyBid + spyAsk) / 2 : null;
 
   return (
     <div className="space-y-6">
@@ -55,22 +78,41 @@ export function Step1Market({
         <div className={`inline-flex items-center gap-2 px-4 py-2 rounded-full border ${
           marketOpen
             ? 'bg-green-500/10 border-green-500/30 text-green-400'
+            : isOvernight
+            ? 'bg-blue-500/10 border-blue-500/30 text-blue-400'
             : 'bg-zinc-500/10 border-zinc-500/30 text-zinc-400'
         }`}>
-          <div className={`w-2 h-2 rounded-full ${marketOpen ? 'bg-green-500 animate-pulse' : 'bg-zinc-500'}`} />
+          <div className={`w-2 h-2 rounded-full ${
+            marketOpen ? 'bg-green-500 animate-pulse' : isOvernight ? 'bg-blue-500 animate-pulse' : 'bg-zinc-500'
+          }`} />
           <span className="text-sm font-medium uppercase tracking-wider">
-            {marketOpen ? 'Market Open' : 'Market Closed'}
+            {marketOpen ? 'Market Open' : isOvernight ? 'Overnight Trading' : 'Market Closed'}
           </span>
         </div>
-        {/* Source Badge */}
-        <div className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium uppercase tracking-wider ${
-          source === 'ibkr' || source === 'ibkr-sse'
+        {/* Data Source Mode Badge */}
+        <div className={`inline-flex items-center gap-1.5 px-2 py-1 rounded text-xs font-medium uppercase tracking-wider ${
+          connectionStatus === 'connected'
             ? 'bg-green-500/20 text-green-400 border border-green-500/30'
-            : source === 'yahoo'
+            : connectionStatus === 'fallback'
+            ? 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30'
+            : connectionStatus === 'connecting'
             ? 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
             : 'bg-red-500/20 text-red-400 border border-red-500/30'
         }`}>
-          {source === 'ibkr' || source === 'ibkr-sse' ? 'LIVE' : source === 'yahoo' ? 'YAHOO' : 'NO DATA'}
+          {dataSourceMode === 'websocket' ? (
+            <Zap className="w-3 h-3" />
+          ) : (
+            <Database className="w-3 h-3" />
+          )}
+          <div className={`w-1.5 h-1.5 rounded-full ${
+            connectionStatus === 'connected' ? 'bg-green-400 animate-pulse' :
+            connectionStatus === 'fallback' ? 'bg-yellow-400' :
+            connectionStatus === 'connecting' ? 'bg-blue-400 animate-pulse' :
+            'bg-red-400'
+          }`} />
+          {connectionStatus === 'connecting' ? 'CONNECTING' :
+           connectionStatus === 'error' ? 'ERROR' :
+           dataSourceMode === 'websocket' ? 'WS LIVE' : 'HTTP NBBO'}
         </div>
       </div>
 
@@ -87,7 +129,37 @@ export function Step1Market({
                 <span className="font-mono">{spyChangePct >= 0 ? '+' : ''}{spyChangePct.toFixed(2)}%</span>
               </div>
             </div>
-            <p className="text-sm text-zinc-400 uppercase tracking-wider">SPY Price</p>
+            <p className="text-sm text-zinc-400 uppercase tracking-wider">
+              SPY {isExtendedHours ? (isPreMarket ? 'Pre-Market' : isPostMarket ? 'After-Hours' : 'Overnight') : 'Price'}
+            </p>
+
+            {/* Bid/Ask Display */}
+            {(spyBid || spyAsk) && (
+              <div className="mt-2 flex items-center justify-center gap-4 text-sm">
+                <span className="text-zinc-500">
+                  Bid: <span className="font-mono text-zinc-300">${spyBid?.toFixed(2) ?? '—'}</span>
+                </span>
+                <span className="text-zinc-600">|</span>
+                <span className="text-zinc-500">
+                  Ask: <span className="font-mono text-zinc-300">${spyAsk?.toFixed(2) ?? '—'}</span>
+                </span>
+                {bidAskSpread !== null && (
+                  <>
+                    <span className="text-zinc-600">|</span>
+                    <span className="text-zinc-500">
+                      Spread: <span className="font-mono text-zinc-300">${bidAskSpread.toFixed(2)}</span>
+                    </span>
+                  </>
+                )}
+              </div>
+            )}
+
+            {/* Previous Close Reference (for extended hours context) */}
+            {isExtendedHours && spyPrevClose && spyPrevClose > 0 && (
+              <div className="mt-2 text-sm text-zinc-500">
+                Prev Close: <span className="font-mono text-zinc-400">${spyPrevClose.toFixed(2)}</span>
+              </div>
+            )}
           </>
         ) : (
           <>
@@ -203,9 +275,14 @@ export function Step1Market({
           </>
         )}
       </Button>
-      {!marketOpen && (
+      {!marketOpen && !isOvernight && (
         <p className="text-xs text-amber-400 text-center mt-2">
           Market is closed. Results may use cached/delayed data.
+        </p>
+      )}
+      {isOvernight && (
+        <p className="text-xs text-blue-400 text-center mt-2">
+          Overnight session via BOATS. Lower liquidity than regular hours.
         </p>
       )}
 

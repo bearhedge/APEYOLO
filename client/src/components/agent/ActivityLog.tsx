@@ -189,19 +189,19 @@ export function ActivityLog() {
   const { activityLog } = useAgentStore();
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
-  // Fetch job run history (polls every 15 seconds)
+  // Fetch job run history
   const { data: jobHistory } = useQuery({
     queryKey: ['/api/jobs/history'],
     queryFn: fetchJobHistory,
-    refetchInterval: 15000,
+    refetchInterval: false, // DISABLED - IBKR snapshots cost money
     staleTime: 5000,
   });
 
-  // Fetch recent trades (polls every 15 seconds)
+  // Fetch recent trades
   const { data: tradesData } = useQuery({
     queryKey: ['/api/public/trades'],
     queryFn: fetchTrades,
-    refetchInterval: 15000,
+    refetchInterval: false, // DISABLED - IBKR snapshots cost money
     staleTime: 5000,
   });
 

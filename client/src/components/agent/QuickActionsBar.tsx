@@ -3,11 +3,9 @@
  *
  * Replaces the chat text input with actionable buttons.
  * "Task First, Chat Second" - primary interaction through actions.
- * Includes AI direction suggestion to help guide strategy selection.
  */
 
 import { BarChart3, Search, Briefcase, Square, ChevronDown } from 'lucide-react';
-import { useQuery } from '@tanstack/react-query';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -15,22 +13,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { DirectionSuggestion } from '@/components/DirectionSuggestion';
 import type { StrategyPreference } from '@shared/types/engine';
 
-// Direction type from the prediction API
-type DirectionType = 'PUT' | 'CALL' | 'STRANGLE' | 'NO_TRADE';
-
 export type OperationType = 'analyze' | 'propose' | 'positions';
-
-// Auto-run status type
-interface AutoRunStatus {
-  active: boolean;
-  enabled: boolean;
-  eligible: boolean;
-  accuracy: number | null;
-  predictionsCount: number;
-}
 
 // Strategy display labels
 const STRATEGY_LABELS: Record<StrategyPreference, string> = {
@@ -46,8 +31,6 @@ interface QuickActionsBarProps {
   onStop?: () => void;
   strategy?: StrategyPreference;
   onStrategyChange?: (strategy: StrategyPreference) => void;
-  symbol?: string;
-  showSuggestion?: boolean;
 }
 
 export function QuickActionsBar({
@@ -57,61 +40,13 @@ export function QuickActionsBar({
   onStop,
   strategy = 'strangle',
   onStrategyChange,
-  symbol = 'SPY',
-  showSuggestion = true,
 }: QuickActionsBarProps) {
-  // Fetch auto-run status
-  const { data: autoRunStatus } = useQuery({
-    queryKey: ['/api/indicators/auto-run-status'],
-    queryFn: async () => {
-      const res = await fetch('/api/indicators/auto-run-status', { credentials: 'include' });
-      if (!res.ok) return null;
-      return res.json() as Promise<AutoRunStatus>;
-    },
-    refetchInterval: 60000,
-  });
-
   const handleFindTrade = () => {
     onAction('propose', { strategy });
   };
 
-  // Map direction prediction to strategy preference
-  const handleSuggestionClick = (direction: DirectionType) => {
-    if (!onStrategyChange) return;
-
-    switch (direction) {
-      case 'PUT':
-        onStrategyChange('put-only');
-        break;
-      case 'CALL':
-        onStrategyChange('call-only');
-        break;
-      case 'STRANGLE':
-        onStrategyChange('strangle');
-        break;
-    }
-  };
-
-  // Map current strategy to direction for tracking
-  const selectedDirection: DirectionType | null = strategy === 'put-only' ? 'PUT' :
-    strategy === 'call-only' ? 'CALL' :
-    strategy === 'strangle' ? 'STRANGLE' : null;
-
   return (
       <div className="border-t border-white/10 bg-charcoal p-4">
-        {/* AI Direction Suggestion - shown above action buttons */}
-        {showSuggestion && canOperate && (
-          <div className="mb-3">
-            <DirectionSuggestion
-              symbol={symbol}
-              onSuggestionClick={handleSuggestionClick}
-              selectedDirection={selectedDirection}
-              compact={false}
-              autoRunActive={autoRunStatus?.active ?? false}
-            />
-          </div>
-        )}
-
         <div className="flex items-center gap-3">
           {/* Analyze Market button */}
           <Button

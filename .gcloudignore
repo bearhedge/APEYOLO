@@ -3,5 +3,8 @@ node_modules
 .env*
 .venv
 dist
+data
+logs
 **/.DS_Store
+*.db
 

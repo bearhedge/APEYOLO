@@ -11,3 +11,6 @@ vite.config.ts.*
 
 # ClaudePoint checkpoint system
 .claudepoint/
+
+# Theta Terminal credentials (sensitive)
+config/theta/creds.txt

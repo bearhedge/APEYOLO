@@ -45,7 +45,7 @@ import {
 // Query Planner - Manus-style task breakdown
 // ============================================
 
-type QueryType = 'PRICE' | 'MARKET' | 'POSITION' | 'TRADE' | 'COMPLEX';
+type QueryType = 'TIME' | 'PRICE' | 'MARKET' | 'POSITION' | 'TRADE' | 'COMPLEX';
 
 interface PlanStep {
   id: number;
@@ -137,6 +137,12 @@ function classifyQuery(text: string, sessionId?: string): QueryType {
     return 'PRICE';
   }
 
+  // TIME - Just wants the current time/date
+  if (/\b(time|date|day|what time|what day|today)\b/.test(lower)
+      && !/\b(spy|vix|market|trade|position)\b/.test(lower)) {
+    return 'TIME';
+  }
+
   // PRICE - Just wants a quote
   if (/\b(spy|price|quote|trading at|what.*(spy|price))\b/.test(lower)
       && !/\b(vix|market|regime|trade|should|find)\b/.test(lower)) {
@@ -168,6 +174,14 @@ function classifyQuery(text: string, sessionId?: string): QueryType {
  */
 function generatePlan(queryType: QueryType): QueryPlan {
   switch (queryType) {
+    case 'TIME':
+      return {
+        type: 'TIME',
+        steps: [
+          { id: 1, description: 'Get current time', tool: 'getTime', status: 'pending' },
+        ],
+      };
+
     case 'PRICE':
       return {
         type: 'PRICE',
@@ -297,6 +311,15 @@ async function executePlanWithStreaming(
               workspaceData['Trade'] = 'NO OPPORTUNITY';
               sendEvent({ type: 'data', key: 'Trade', value: 'NO OPPORTUNITY' });
             }
+          } else if (step.tool === 'getTime') {
+            // Time is returned directly from the tool
+            const { utc, hk, ny } = result.data;
+            workspaceData['UTC'] = utc;
+            workspaceData['HKT'] = hk;
+            workspaceData['NYT'] = ny;
+            sendEvent({ type: 'data', key: 'UTC', value: utc });
+            sendEvent({ type: 'data', key: 'HKT', value: hk });
+            sendEvent({ type: 'data', key: 'NYT', value: ny });
           }
         }
       }
@@ -1481,11 +1504,12 @@ router.post('/quick', requireAuth, async (req: Request, res: Response) => {
  */
 router.post('/operate', requireAuth, async (req: Request, res: Response) => {
   try {
-    const { operation, message, proposalId, strategy } = req.body as {
+    const { operation, message, proposalId, strategy, userReasoning } = req.body as {
       operation: 'analyze' | 'propose' | 'positions' | 'execute' | 'custom';
       message?: string;
       proposalId?: string;
       strategy?: 'strangle' | 'put-only' | 'call-only';
+      userReasoning?: string; // WHY user made this trade - gold for RLHF learning
     };
 
     if (!operation) {
@@ -2148,6 +2172,127 @@ router.post('/v2/chat/stream', requireAuth, async (req: Request, res: Response) 
         error: error.message || 'Agent error',
       });
     }
+  }
+});
+
+// ============================================
+// Conversation Management Endpoints
+// ============================================
+
+/**
+ * GET /api/agent/conversations
+ *
+ * List all conversations for the current user.
+ * Returns conversation metadata (not full messages).
+ */
+router.get('/conversations', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user?.id;
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'User not authenticated',
+      });
+    }
+
+    const limit = parseInt(req.query.limit as string) || 50;
+
+    const { getAgentMemory } = await import('./lib/agent/memory');
+    const memory = getAgentMemory();
+    const conversations = memory.getUserConversations(userId, limit);
+
+    res.json({
+      success: true,
+      conversations,
+    });
+  } catch (error: any) {
+    console.error('[AgentRoutes] Error listing conversations:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to list conversations',
+    });
+  }
+});
+
+/**
+ * GET /api/agent/conversations/:id
+ *
+ * Get a single conversation with all its messages.
+ */
+router.get('/conversations/:id', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user?.id;
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'User not authenticated',
+      });
+    }
+
+    const conversationId = req.params.id;
+
+    const { getAgentMemory } = await import('./lib/agent/memory');
+    const memory = getAgentMemory();
+    const conversation = memory.getConversation(conversationId, userId);
+
+    if (!conversation) {
+      return res.status(404).json({
+        success: false,
+        error: 'Conversation not found',
+      });
+    }
+
+    res.json({
+      success: true,
+      conversation,
+    });
+  } catch (error: any) {
+    console.error('[AgentRoutes] Error getting conversation:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to get conversation',
+    });
+  }
+});
+
+/**
+ * DELETE /api/agent/conversations/:id
+ *
+ * Delete a conversation and all its messages.
+ */
+router.delete('/conversations/:id', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = (req as any).user?.id;
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        error: 'User not authenticated',
+      });
+    }
+
+    const conversationId = req.params.id;
+
+    const { getAgentMemory } = await import('./lib/agent/memory');
+    const memory = getAgentMemory();
+    const deleted = memory.deleteConversation(conversationId, userId);
+
+    if (!deleted) {
+      return res.status(404).json({
+        success: false,
+        error: 'Conversation not found',
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'Conversation deleted',
+    });
+  } catch (error: any) {
+    console.error('[AgentRoutes] Error deleting conversation:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to delete conversation',
+    });
   }
 });
 

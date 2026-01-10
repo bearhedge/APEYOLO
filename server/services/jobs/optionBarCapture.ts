@@ -7,10 +7,11 @@
  */
 
 import { db } from '../../db';
-import { optionBars, type InsertOptionBar } from '@shared/schema';
+import { optionBars, positions, trades, type InsertOptionBar } from '@shared/schema';
 import { getOptionChainStreamer, type CachedOptionChain, type CachedStrike } from '../../broker/optionChainStreamer';
 import { getETDateString, getMarketStatus } from '../marketCalendar';
 import { registerJobHandler, type JobResult } from '../jobExecutor';
+import { eq, or, and, gte } from 'drizzle-orm';
 
 // ============================================
 // Types
@@ -49,18 +50,76 @@ function getTodayExpiry(): string {
 }
 
 /**
+ * Fetch traded strikes from open positions and recent trades
+ * Returns a Set of strike prices that should always be captured
+ */
+async function getTradedStrikes(symbol: string): Promise<Set<number>> {
+  const tradedStrikes = new Set<number>();
+
+  if (!db) {
+    console.log('[OptionBarCapture] No database - skipping traded strikes lookup');
+    return tradedStrikes;
+  }
+
+  try {
+    // Get today's date for filtering
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+
+    // 1. Get strikes from open positions
+    const openPositions = await db
+      .select({ sellStrike: positions.sellStrike, buyStrike: positions.buyStrike })
+      .from(positions)
+      .where(eq(positions.status, 'open'));
+
+    for (const pos of openPositions) {
+      if (pos.sellStrike) tradedStrikes.add(parseFloat(pos.sellStrike));
+      if (pos.buyStrike) tradedStrikes.add(parseFloat(pos.buyStrike));
+    }
+
+    // 2. Get strikes from today's trades (filled or pending)
+    const todayTrades = await db
+      .select({ sellStrike: trades.sellStrike, buyStrike: trades.buyStrike })
+      .from(trades)
+      .where(
+        and(
+          gte(trades.submittedAt, todayStart),
+          or(eq(trades.status, 'filled'), eq(trades.status, 'pending'))
+        )
+      );
+
+    for (const trade of todayTrades) {
+      if (trade.sellStrike) tradedStrikes.add(parseFloat(trade.sellStrike));
+      if (trade.buyStrike) tradedStrikes.add(parseFloat(trade.buyStrike));
+    }
+
+    console.log(`[OptionBarCapture] Found ${tradedStrikes.size} traded strikes: [${Array.from(tradedStrikes).sort((a, b) => a - b).join(', ')}]`);
+  } catch (error: any) {
+    console.error('[OptionBarCapture] Error fetching traded strikes:', error.message);
+  }
+
+  return tradedStrikes;
+}
+
+/**
  * Filter to liquid strikes only (ATM ± $7)
- * Based on plan: roughly 1% from SPY price, ~28 options per snapshot
+ * Also includes any traded strikes regardless of distance from ATM
  */
 function filterLiquidStrikes(
   strikes: CachedStrike[],
   underlyingPrice: number,
-  optionType: 'PUT' | 'CALL'
+  optionType: 'PUT' | 'CALL',
+  tradedStrikes: Set<number> = new Set()
 ): CachedStrike[] {
   const STRIKE_RANGE = 7; // ± $7 from ATM
 
   return strikes.filter(strike => {
     const distanceFromATM = Math.abs(strike.strike - underlyingPrice);
+
+    // ALWAYS include traded strikes (from open positions/trades)
+    if (tradedStrikes.has(strike.strike)) {
+      return true;
+    }
 
     // Primary filter: within $7 of ATM
     if (distanceFromATM <= STRIKE_RANGE) {
@@ -124,9 +183,12 @@ export async function captureOptionBars(symbol: string = 'SPY'): Promise<Capture
     return result;
   }
 
-  // Filter to liquid strikes only
-  const liquidPuts = filterLiquidStrikes(chain.puts, chain.underlyingPrice, 'PUT');
-  const liquidCalls = filterLiquidStrikes(chain.calls, chain.underlyingPrice, 'CALL');
+  // Fetch traded strikes from positions/trades (always capture these)
+  const tradedStrikes = await getTradedStrikes(symbol);
+
+  // Filter to liquid strikes only (also includes traded strikes)
+  const liquidPuts = filterLiquidStrikes(chain.puts, chain.underlyingPrice, 'PUT', tradedStrikes);
+  const liquidCalls = filterLiquidStrikes(chain.calls, chain.underlyingPrice, 'CALL', tradedStrikes);
   const allStrikes = [...liquidPuts, ...liquidCalls];
 
   console.log(`[OptionBarCapture] Capturing ${allStrikes.length} liquid strikes for ${symbol} at ${intervalStart.toISOString()}`);

@@ -11,6 +11,7 @@
 import { useState, useCallback } from 'react';
 import { CheckCircle, XCircle, AlertTriangle, Loader2, Shield, Minus, Plus, MessageSquare } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import { Textarea } from '@/components/ui/textarea';
 import toast from 'react-hot-toast';
 
 export interface TradeLeg {
@@ -73,7 +74,7 @@ interface TradeProposalCardProps {
   critique?: CritiqueResult;
   executionResult?: ExecutionResult;
   isExecuting: boolean;
-  onExecute: () => void;
+  onExecute: (userReasoning?: string) => void;
   onReject?: () => void;
   // Negotiation props
   isNegotiating?: boolean;
@@ -191,6 +192,8 @@ export function TradeProposalCard({
   const [activeModifyIndex, setActiveModifyIndex] = useState<number | null>(null);
   // Track adjustments per leg - limit 1 adjustment per side
   const [adjustmentsMade, setAdjustmentsMade] = useState<Record<number, number>>({});
+  // User reasoning - captures WHY they're making this trade (the gold for RLHF)
+  const [userReasoning, setUserReasoning] = useState('');
 
   const {
     symbol,
@@ -465,10 +468,26 @@ export function TradeProposalCard({
         </div>
       )}
 
+      {/* User Reasoning Input - Captures WHY (the gold for learning your edge) */}
+      {!executionResult?.success && (
+        <div className="mb-4">
+          <Textarea
+            placeholder="Why this trade? What do you see? (optional but valuable for learning your edge)"
+            value={userReasoning}
+            onChange={(e) => setUserReasoning(e.target.value)}
+            className="bg-black/20 border-white/10 text-white placeholder:text-silver/50 resize-none"
+            rows={2}
+          />
+          <p className="text-xs text-silver/50 mt-1">
+            Your reasoning helps the AI learn what makes a high-edge day vs a coin flip
+          </p>
+        </div>
+      )}
+
       {/* Action Buttons */}
       <div className="flex gap-3">
         <Button
-          onClick={onExecute}
+          onClick={() => onExecute(userReasoning || undefined)}
           disabled={!canExecute || isExecuting}
           className={`flex-1 py-3 text-lg font-semibold ${
             executionResult?.success

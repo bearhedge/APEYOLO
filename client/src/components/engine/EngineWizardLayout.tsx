@@ -11,11 +11,11 @@
  * - Content takes full width
  */
 
-import { ReactNode, useState } from 'react';
+import { ReactNode, useState, useMemo } from 'react';
 import { ArrowLeft, Zap, XCircle, ChevronUp, ChevronDown, Terminal } from 'lucide-react';
 import { Link } from 'wouter';
 import { EngineStepper, StepId } from './EngineStepper';
-import EngineLog from '../EngineLog';
+import { EngineLogSimple } from './EngineLogSimple';
 import type { EnhancedEngineLog } from '@shared/types/engineLog';
 
 interface EngineWizardLayoutProps {
@@ -43,6 +43,31 @@ export function EngineWizardLayout({
 }: EngineWizardLayoutProps) {
   // Mobile drawer state
   const [drawerOpen, setDrawerOpen] = useState(false);
+
+  // Filter engine log to only show steps up to current wizard step
+  // This creates a progressive reveal as user advances through the wizard
+  const filteredLog = useMemo((): EnhancedEngineLog | null => {
+    if (!engineLog) return null;
+
+    // Filter steps to only show up to current step
+    const visibleSteps = engineLog.steps.filter(step => step.step <= currentStep);
+
+    // Only show summary when user reaches final step (Step 5)
+    const showSummary = currentStep >= 5;
+
+    return {
+      ...engineLog,
+      steps: visibleSteps,
+      summary: showSummary ? engineLog.summary : {
+        strategy: '',
+        strike: '',
+        contracts: 0,
+        premium: 0,
+        stopLoss: '',
+        status: 'PENDING',
+      },
+    };
+  }, [engineLog, currentStep]);
 
   return (
     <div className="flex flex-col h-full">
@@ -100,8 +125,8 @@ export function EngineWizardLayout({
             </h2>
           </div>
           <div className="flex-1 overflow-y-auto">
-            <EngineLog
-              log={engineLog}
+            <EngineLogSimple
+              log={filteredLog}
               isRunning={isRunning}
               className="border-0 rounded-none h-full"
             />
@@ -133,8 +158,8 @@ export function EngineWizardLayout({
         {/* Drawer Content */}
         {drawerOpen && (
           <div className="h-64 overflow-y-auto border-t border-zinc-800">
-            <EngineLog
-              log={engineLog}
+            <EngineLogSimple
+              log={filteredLog}
               isRunning={isRunning}
               className="border-0 rounded-none h-full"
             />

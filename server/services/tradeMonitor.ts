@@ -23,6 +23,9 @@ import { linkTradeOutcome, normalizeExitReason } from './rlhfService';
 // Types
 // ============================================
 
+// IBKR commission rate per options contract (approximate)
+const IBKR_COMMISSION_PER_CONTRACT = 0.65;
+
 interface OpenTrade {
   id: string;
   symbol: string;
@@ -34,6 +37,7 @@ interface OpenTrade {
   expiration: Date;
   ibkrOrderIds: any;
   status: string;
+  entryCommission: number | null;
 }
 
 interface IbkrPosition {
@@ -191,19 +195,32 @@ export async function monitorOpenTrades(): Promise<JobResult> {
         // If options expired worthless (most common for OTM), full premium is kept
         const entryPremium = parseFloat(trade.entryPremiumTotal as any) || 0;
 
+        // Commission calculation for expired options
+        // Entry commission was paid when opening, no exit commission (no closing transaction)
+        // Use stored entry commission if available, otherwise estimate from contract count
+        const entryCommission = trade.entryCommission ?? (trade.contracts * IBKR_COMMISSION_PER_CONTRACT);
+        const exitCommission = 0; // No closing transaction for expired options
+        const totalCommissions = entryCommission + exitCommission;
+        const grossPnl = entryPremium;
+        const netPnl = grossPnl - totalCommissions;
+
         await db
           .update(paperTrades)
           .set({
             status: 'expired',
             exitPrice: '0.00',
             exitReason: 'Expired worthless',
-            realizedPnl: entryPremium.toString(), // Full premium kept
+            realizedPnl: entryPremium.toString(), // Full premium kept (gross)
+            exitCommission,
+            totalCommissions,
+            grossPnl,
+            netPnl,
             closedAt: new Date(),
           })
           .where(eq(paperTrades.id, trade.id));
 
-        // Link outcome to engine_run for RLHF
-        await linkTradeOutcome(trade.id, entryPremium, normalizeExitReason('Expired worthless'));
+        // Link outcome to engine_run for RLHF (use net P&L for true performance tracking)
+        await linkTradeOutcome(trade.id, netPnl, normalizeExitReason('Expired worthless'));
 
         closedCount++;
         continue;
@@ -248,11 +265,25 @@ export async function monitorOpenTrades(): Promise<JobResult> {
         // Calculate actual P&L from executions
         const { exitPrice, realizedPnl } = calculateRealizedPnl(entryPremium, matchingExecs, contracts);
 
+        // Calculate commission from closing executions
+        // Each execution has its commission stored in entryCommission (IBKR field naming)
+        const exitCommission = matchingExecs.reduce((sum, exec) => {
+          return sum + (exec.entryCommission || 0);
+        }, 0);
+
+        // Get entry commission from the trade record, or estimate from contract count
+        const entryCommission = trade.entryCommission ?? (trade.contracts * IBKR_COMMISSION_PER_CONTRACT);
+        const totalCommissions = entryCommission + exitCommission;
+
+        // Calculate gross and net P&L
+        const grossPnl = realizedPnl; // P&L before commissions
+        const netPnl = grossPnl - totalCommissions;
+
         const exitReason = matchingExecs.length > 0
           ? 'Closed via IBKR'
           : 'Position closed (no fill data)';
 
-        console.log(`[TradeMonitor] ${tradeInfo}: entry=$${entryPremium.toFixed(2)}, exit=$${exitPrice.toFixed(4)}, P&L=$${realizedPnl.toFixed(2)}`);
+        console.log(`[TradeMonitor] ${tradeInfo}: entry=$${entryPremium.toFixed(2)}, exit=$${exitPrice.toFixed(4)}, grossP&L=$${grossPnl.toFixed(2)}, commission=$${totalCommissions.toFixed(2)}, netP&L=$${netPnl.toFixed(2)}`);
 
         const now = new Date();
 
@@ -262,13 +293,17 @@ export async function monitorOpenTrades(): Promise<JobResult> {
             status: 'closed',
             exitPrice: exitPrice.toString(),
             exitReason,
-            realizedPnl: realizedPnl.toString(),
+            realizedPnl: realizedPnl.toString(), // Keep for backward compatibility (gross P&L)
+            exitCommission,
+            totalCommissions,
+            grossPnl,
+            netPnl,
             closedAt: now,
           })
           .where(eq(paperTrades.id, trade.id));
 
-        // Link outcome to engine_run for RLHF
-        await linkTradeOutcome(trade.id, realizedPnl, normalizeExitReason(exitReason));
+        // Link outcome to engine_run for RLHF (use net P&L for true performance tracking)
+        await linkTradeOutcome(trade.id, netPnl, normalizeExitReason(exitReason));
 
         // Update stop order(s) with fill time for holding time calculation
         const orderIds = trade.ibkrOrderIds as string[] | null;

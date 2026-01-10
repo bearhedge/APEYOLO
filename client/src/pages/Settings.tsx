@@ -1,6 +1,6 @@
 // @ts-nocheck - Solana SAS integration incomplete
 import { useState, useEffect } from 'react';
-import { RefreshCw, CheckCircle, XCircle, AlertCircle, Trash2, Key, Eye, EyeOff, Save, Building2, Wallet, Copy, Loader2, ExternalLink } from 'lucide-react';
+import { RefreshCw, CheckCircle, XCircle, AlertCircle, Trash2, Key, Eye, EyeOff, Save, Building2, Wallet, Copy, Loader2, ExternalLink, Zap, Database } from 'lucide-react';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { Transaction, PublicKey } from '@solana/web3.js';
@@ -22,7 +22,6 @@ import {
 } from '@/lib/sas-client';
 import { SectionHeader } from '@/components/SectionHeader';
 import { LeftNav } from '@/components/LeftNav';
-import { AccuracyDashboard } from '@/components/AccuracyDashboard';
 import { Button } from '@/components/ui/button';
 import { StatusStep } from '@/components/ui/StatusStep';
 import { Input } from '@/components/ui/input';
@@ -55,6 +54,21 @@ export function Settings() {
   const [testResult, setTestResult] = useState<any>(null);
   const [orderResult, setOrderResult] = useState<any>(null);
   const [clearResult, setClearResult] = useState<any>(null);
+
+  // Data Source Preference - stored in localStorage
+  const [dataSource, setDataSource] = useState<'websocket' | 'http'>(() => {
+    if (typeof window !== 'undefined') {
+      return (localStorage.getItem('apeyolo-data-source') as 'websocket' | 'http') || 'http';
+    }
+    return 'http';
+  });
+
+  const handleDataSourceChange = (source: 'websocket' | 'http') => {
+    setDataSource(source);
+    localStorage.setItem('apeyolo-data-source', source);
+    // Trigger page reload to apply new data source
+    window.location.reload();
+  };
 
   // IBKR Credentials Form State
   const [showCredentialsForm, setShowCredentialsForm] = useState(false);
@@ -648,6 +662,13 @@ export function Settings() {
                       success={ibkrStatus.diagnostics.init?.success || ibkrStatus.diagnostics.initialized?.success}
                       compact
                     />
+                    <StatusStep
+                      name="WebSocket"
+                      status={ibkrStatus.diagnostics.websocket?.status || 0}
+                      message={ibkrStatus.diagnostics.websocket?.message || 'Not initialized'}
+                      success={ibkrStatus.diagnostics.websocket?.success}
+                      compact
+                    />
                   </div>
                 </div>
               )}
@@ -688,6 +709,31 @@ export function Settings() {
                   )}
                 </div>
               )}
+            </div>
+
+            {/* DATA SOURCE Section */}
+            <div className="p-6 border-b border-white/10">
+              <h4 className="text-sm font-medium text-silver uppercase tracking-wider mb-4">Data Source</h4>
+              <p className="text-xs text-silver mb-4">
+                Market data is streamed via WebSocket (FREE with OPRA subscription).
+              </p>
+
+              <div className="p-4 rounded-lg border bg-electric/20 border-electric">
+                <div className="flex items-center gap-3 mb-2">
+                  <Zap className="w-5 h-5 text-electric" />
+                  <span className="font-medium text-white">WebSocket Streaming</span>
+                  <span className="text-xs bg-green-500/20 text-green-400 px-2 py-0.5 rounded-full">FREE</span>
+                </div>
+                <p className="text-xs text-silver">
+                  Real-time push updates • ~50ms latency • Covered by OPRA subscription
+                </p>
+              </div>
+
+              <div className="mt-3 p-3 bg-amber-900/20 border border-amber-500/30 rounded-lg">
+                <p className="text-xs text-amber-400">
+                  <span className="font-medium">Note:</span> HTTP Snapshot mode was removed because it used costly snapshot API calls ($0.01-$0.03 each), which added up to ~$72/hour during market hours.
+                </p>
+              </div>
             </div>
 
             {/* CREDENTIALS Section */}
@@ -1176,11 +1222,6 @@ export function Settings() {
                 </div>
               )}
             </div>
-          </div>
-
-          {/* AI Accuracy Dashboard */}
-          <div className="mt-6">
-            <AccuracyDashboard />
           </div>
 
           {/* Copied toast */}

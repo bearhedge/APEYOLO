@@ -17,6 +17,7 @@ import { webcrypto as nodeWebcrypto } from 'node:crypto';
 import { EventEmitter } from 'events';
 import { storage } from "../storage";
 import { saveTokenState } from '../services/ibkrTokenPersistence';
+import { getIbkrWebSocketManager } from './ibkrWebSocket';
 
 // Event emitter for IBKR authentication events
 export const ibkrEvents = new EventEmitter();
@@ -124,11 +125,13 @@ export async function getCurrentOutgoingIp(): Promise<string | null> {
 }
 
 type PhaseStatus = { status: number | null; ts: string; requestId?: string };
+export type WebSocketStatus = { connected: boolean; authenticated: boolean; subscriptions: number; lastMessage?: string };
 export type IbkrDiagnostics = {
   oauth: PhaseStatus;
   sso: PhaseStatus;
   validate: PhaseStatus;
   init: PhaseStatus;
+  websocket?: WebSocketStatus;
 };
 
 type IbkrConfig = {
@@ -170,6 +173,8 @@ class IbkrClient {
   private accountSelected = false;
   // MUTEX: Prevent concurrent ensureReady() calls from corrupting session
   private ensureReadyPromise: Promise<void> | null = null;
+  // Track if authenticated event has been emitted (to avoid duplicates)
+  private hasEmittedAuthenticated = false;
   // Option conid cache - persists for current trading day (6 hour TTL)
   private optionConidCache: Map<string, { conid: number; cachedAt: number }> = new Map();
   private readonly OPTION_CONID_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
@@ -307,8 +312,19 @@ class IbkrClient {
     try {
       const subacctResp = await this.http.get('/v1/api/portfolio/subaccounts');
       console.log(`[IBKR][ensureAccountSelected] subaccounts status=${subacctResp.status}`);
+
+      // Only mark as selected if the subaccounts call succeeds
+      // This is the critical call that primes the session for market data
+      if (subacctResp.status >= 200 && subacctResp.status < 300) {
+        this.accountSelected = true;
+      } else {
+        console.warn(`[IBKR][ensureAccountSelected] subaccounts returned non-success status ${subacctResp.status}, will retry on next call`);
+        return; // Don't proceed, let next call retry
+      }
     } catch (err: any) {
-      console.warn(`[IBKR][ensureAccountSelected] subaccounts call failed (non-fatal):`, err.message);
+      console.warn(`[IBKR][ensureAccountSelected] subaccounts call failed:`, err.message);
+      // Don't set accountSelected = true on failure - allow retry on next call
+      return;
     }
 
     // Then try account selection (may return 401 for OAuth live accounts, which is OK)
@@ -324,9 +340,6 @@ class IbkrClient {
       // 401 is expected for OAuth live accounts - the subaccounts call is what matters
       console.log(`[IBKR][ensureAccountSelected] account select failed (expected for OAuth): ${err.message}`);
     }
-
-    // Mark as selected regardless - the subaccounts call primed the session
-    this.accountSelected = true;
   }
 
   /**
@@ -873,6 +886,47 @@ class IbkrClient {
     return r.status;
   }
 
+  /**
+   * Get session token from /tickle endpoint for WebSocket authentication
+   * IBKR WebSocket requires sending {"session": "TOKEN"} after connection
+   */
+  async getSessionToken(): Promise<string | null> {
+    // Use whatever auth method is available
+    let headers: any = {};
+
+    if (this.ssoAccessToken) {
+      headers = this.authHeaders();
+    } else if (this.accessToken) {
+      headers = { 'Authorization': `Bearer ${this.accessToken}` };
+    }
+
+    try {
+      console.log(`[IBKR][getSessionToken] Calling /tickle endpoint...`);
+      const r = await this.http.get('/v1/api/tickle', { headers });
+      const traceVal = (r.headers as any)['traceid'] || (r.headers as any)['x-traceid'] || (r.headers as any)['x-request-id'] || (r.headers as any)['x-correlation-id'];
+      console.log(`[IBKR][getSessionToken] status=${r.status} traceId=${traceVal ?? ''}`);
+      console.log(`[IBKR][getSessionToken] Response keys: ${Object.keys(r.data || {}).join(', ')}`);
+
+      if (r.status === 200 && r.data?.session) {
+        console.log(`[IBKR][getSessionToken] Got session token: ${r.data.session.substring(0, 8)}...`);
+        return r.data.session;
+      }
+
+      // Try alternative field names that IBKR might use
+      const possibleSession = r.data?.session || r.data?.sessionId || r.data?.ssoToken;
+      if (possibleSession) {
+        console.log(`[IBKR][getSessionToken] Found session in alternative field: ${possibleSession.substring(0, 8)}...`);
+        return possibleSession;
+      }
+
+      console.warn(`[IBKR][getSessionToken] No session in response. Full response:`, JSON.stringify(r.data).slice(0, 500));
+      return null;
+    } catch (err) {
+      console.error(`[IBKR][getSessionToken] Failed:`, err);
+      return null;
+    }
+  }
+
   private async initBrokerageWithSso(): Promise<void> {
     if (this.sessionReady) return;
 
@@ -954,8 +1008,11 @@ class IbkrClient {
     this.sessionReady = true;
 
     // Emit authenticated event for streaming auto-start
-    ibkrEvents.emit('authenticated');
-    console.log('[IBKR] Emitted authenticated event');
+    if (!this.hasEmittedAuthenticated) {
+      this.hasEmittedAuthenticated = true;
+      ibkrEvents.emit('authenticated');
+      console.log('[IBKR] Emitted authenticated event');
+    }
   }
 
   private async keepaliveSession(): Promise<void> {
@@ -1019,6 +1076,14 @@ class IbkrClient {
       if (tokenValid && ssoValid && sessionValid && !forceRefresh) {
         // Everything is still fresh, just maintain session
         await this.keepaliveSession();
+
+        // Emit authenticated event for streaming (in case it wasn't started yet)
+        // This handles the case where tokens are restored from storage
+        if (!this.hasEmittedAuthenticated) {
+          this.hasEmittedAuthenticated = true;
+          ibkrEvents.emit('authenticated');
+          console.log('[IBKR] Emitted authenticated event (session already valid)');
+        }
         return;
       }
 
@@ -1110,32 +1175,21 @@ class IbkrClient {
    */
   private async primeMarketData(): Promise<void> {
     const reqId = randomUUID().slice(0, 8);
-    console.log(`[IBKR][primeMarketData][${reqId}] Priming market data subscriptions...`);
+    console.log(`[IBKR][primeMarketData][${reqId}] Priming market data via WebSocket subscriptions (FREE)...`);
 
     try {
-      const conids = [756733, 13455763, 653400472]; // SPY, VIX, ARM
-      const fields = '31,84,86'; // last, bid, ask
-
-      // First call - subscribes to market data (returns minimal data)
-      console.log(`[IBKR][primeMarketData][${reqId}] First call to subscribe...`);
-      await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${conids.join(',')}&fields=${fields}`);
-
-      // Wait for IBKR to initialize subscription
-      await this.sleep(1500);
-
-      // Second call - should have actual data
-      console.log(`[IBKR][primeMarketData][${reqId}] Second call for data...`);
-      const response = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${conids.join(',')}&fields=${fields}`);
-
-      // Log what we got
-      const spyData = response.data?.find((d: any) => d.conid === 756733);
-      const vixData = response.data?.find((d: any) => d.conid === 13455763);
-      const armData = response.data?.find((d: any) => d.conid === 653400472);
-      console.log(`[IBKR][primeMarketData][${reqId}] SPY: price=${spyData?.['31'] || 0}, bid=${spyData?.['84'] || 0}, ask=${spyData?.['86'] || 0}`);
-      console.log(`[IBKR][primeMarketData][${reqId}] VIX: price=${vixData?.['31'] || 0}`);
-      console.log(`[IBKR][primeMarketData][${reqId}] ARM: price=${armData?.['31'] || 0}, bid=${armData?.['84'] || 0}, ask=${armData?.['86'] || 0}`);
+      // Subscribe to key symbols via WebSocket (FREE with streaming subscription)
+      const wsManager = getIbkrWebSocketManager();
+      if (wsManager) {
+        // Subscribe to SPY, VIX, ARM via WebSocket streaming
+        wsManager.subscribe(756733, { symbol: 'SPY', type: 'stock' });
+        wsManager.subscribe(13455763, { symbol: 'VIX', type: 'stock' });
+        wsManager.subscribe(653400472, { symbol: 'ARM', type: 'stock' });
+        console.log(`[IBKR][primeMarketData][${reqId}] Subscribed SPY, VIX, ARM via WebSocket`);
+      }
 
       // Prime option chain endpoints for SPY (prevents "no bridge" in Step 3)
+      // These are metadata calls, not market data snapshots - they're FREE
       console.log(`[IBKR][primeMarketData][${reqId}] Priming option chain endpoints...`);
       try {
         // Prime /secdef/search for options
@@ -1488,6 +1542,7 @@ class IbkrClient {
       'IWM': 9579976,
       'DIA': 37018770,
       'VIX': 13455763,
+      '^VIX': 13455763,  // VIX index (same conid, different symbol format)
       'AAPL': 265598,
       'MSFT': 272093,
       'AMZN': 3691937,
@@ -1612,13 +1667,23 @@ class IbkrClient {
     try {
       underlyingConid = await this.resolveConid(symbol);
       if (underlyingConid) {
-        // Get underlying price via snapshot
-        const snap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${underlyingConid}`);
-        if (snap.status === 200) {
-          const data = (snap.data as any[]) || [];
-          const last = data?.[0]?.["31"] ?? data?.[0]?.last;
-          if (last != null) underlyingPrice = Number(last);
-          console.log(`[IBKR][getOptionChain][${reqId}] Underlying price: ${underlyingPrice}`);
+        // Try WebSocket cache first (FREE - uses streaming subscription)
+        const wsManager = getIbkrWebSocketManager();
+        if (wsManager?.connected) {
+          const cached = wsManager.getCachedMarketData(underlyingConid);
+          if (cached && cached.last > 0) {
+            underlyingPrice = cached.last;
+            console.log(`[IBKR][getOptionChain][${reqId}] Underlying price from WebSocket cache: ${underlyingPrice}`);
+          }
+        }
+
+        // Fallback: historical data (also FREE)
+        if (underlyingPrice === 0) {
+          const histPrice = await this.getHistoricalLastPrice(underlyingConid);
+          if (histPrice > 0) {
+            underlyingPrice = histPrice;
+            console.log(`[IBKR][getOptionChain][${reqId}] Underlying price from history: ${underlyingPrice}`);
+          }
         }
       }
     } catch (err) {
@@ -1860,53 +1925,20 @@ class IbkrClient {
       diagnostics.conid = underlyingConid;
 
       if (underlyingConid) {
-        const snap = await this.httpGetWithBridgeRetry(
-          `/v1/api/iserver/marketdata/snapshot?conids=${underlyingConid}`,
-          `getOptionChainWithStrikes:underlying:${reqId}`
-        );
-        // Capture raw snapshot response for diagnostics
-        diagnostics.snapshotRaw = JSON.stringify(snap.data).slice(0, 500);
-        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Snapshot raw: ${diagnostics.snapshotRaw}`);
-
-        if (snap.status === 200) {
-          const data = (snap.data as any[]) || [];
-          const snapData = data?.[0];
-          // Check which price fields are present
-          const has31 = snapData?.["31"] != null;
-          const has84 = snapData?.["84"] != null;
-          const has86 = snapData?.["86"] != null;
-          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Price fields: 31(last)=${has31 ? snapData["31"] : 'MISSING'}, 84(bid)=${has84 ? snapData["84"] : 'MISSING'}, 86(ask)=${has86 ? snapData["86"] : 'MISSING'}`);
-
-          if (!has31 && !has84 && !has86) {
-            console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] ⚠️ NO PRICE DATA IN SNAPSHOT - Session may not have market data permissions or market is closed`);
-          }
-
-          // Try field 31 (last), then 84 (bid), then 86 (ask) as fallback
-          const last = snapData?.["31"] ?? snapData?.["84"] ?? snapData?.["86"] ?? snapData?.last;
-          if (last != null) underlyingPrice = Number(last);
-        }
-
-        // Retry once if price is 0
-        if (underlyingPrice === 0) {
-          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Retrying snapshot for underlying...`);
-          await new Promise(r => setTimeout(r, 500));
-          const retry = await this.httpGetWithBridgeRetry(
-            `/v1/api/iserver/marketdata/snapshot?conids=${underlyingConid}`,
-            `getOptionChainWithStrikes:underlying-retry:${reqId}`
-          );
-          diagnostics.snapshotRaw = JSON.stringify(retry.data).slice(0, 500);
-          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Retry snapshot raw: ${diagnostics.snapshotRaw}`);
-
-          if (retry.status === 200) {
-            const data = (retry.data as any[]) || [];
-            const last = data?.[0]?.["31"] ?? data?.[0]?.["84"] ?? data?.[0]?.["86"] ?? data?.[0]?.last;
-            if (last != null) underlyingPrice = Number(last);
+        // Try WebSocket cache first (FREE - uses streaming subscription)
+        const wsManager = getIbkrWebSocketManager();
+        if (wsManager?.connected) {
+          const cached = wsManager.getCachedMarketData(underlyingConid);
+          if (cached && cached.last > 0) {
+            underlyingPrice = cached.last;
+            diagnostics.snapshotRaw = `FROM_WS_CACHE: last=${cached.last}, bid=${cached.bid}, ask=${cached.ask}`;
+            console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Got price from WebSocket cache: $${underlyingPrice}`);
           }
         }
 
-        // Fallback: use historical data if snapshot still returns 0
+        // Fallback: use historical data if WebSocket cache unavailable (also FREE)
         if (underlyingPrice === 0 && underlyingConid) {
-          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Using historical data fallback for price...`);
+          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Using historical data for price...`);
           try {
             const histResp = await this.httpGetWithBridgeRetry(
               `/v1/api/iserver/marketdata/history?conid=${underlyingConid}&period=1d&bar=5mins`,
@@ -1916,6 +1948,7 @@ class IbkrClient {
               const lastBar = histResp.data.data[histResp.data.data.length - 1];
               if (lastBar?.c > 0) {
                 underlyingPrice = lastBar.c;
+                diagnostics.snapshotRaw = `FROM_HISTORY: price=${lastBar.c}`;
                 console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Got price from historical: $${underlyingPrice}`);
               }
             }
@@ -1933,15 +1966,32 @@ class IbkrClient {
     try {
       const vixConid = await this.resolveConid('VIX');
       if (vixConid) {
-        const vixSnap = await this.httpGetWithBridgeRetry(
-          `/v1/api/iserver/marketdata/snapshot?conids=${vixConid}`,
-          `getOptionChainWithStrikes:vix:${reqId}`
-        );
-        if (vixSnap.status === 200) {
-          const vixData = (vixSnap.data as any[]) || [];
-          const vixPrice = vixData?.[0]?.["31"] ?? vixData?.[0]?.["84"] ?? vixData?.[0]?.last;
-          if (vixPrice != null && Number(vixPrice) > 0) {
-            vix = Number(vixPrice);
+        // Try WebSocket cache first (FREE)
+        const wsManager = getIbkrWebSocketManager();
+        if (wsManager?.connected) {
+          const cached = wsManager.getCachedMarketData(vixConid);
+          if (cached && cached.last > 0) {
+            vix = cached.last;
+            console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] VIX from WebSocket cache: ${vix}`);
+          }
+        }
+
+        // Fallback: historical data (also FREE)
+        if (vix === 15) {
+          try {
+            const histResp = await this.httpGetWithBridgeRetry(
+              `/v1/api/iserver/marketdata/history?conid=${vixConid}&period=1d&bar=5mins`,
+              `getOptionChainWithStrikes:vix-history:${reqId}`
+            );
+            if (histResp.status === 200 && Array.isArray(histResp.data?.data) && histResp.data.data.length > 0) {
+              const lastBar = histResp.data.data[histResp.data.data.length - 1];
+              if (lastBar?.c > 0) {
+                vix = lastBar.c;
+                console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] VIX from history: ${vix}`);
+              }
+            }
+          } catch (histErr) {
+            console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] VIX history failed:`, histErr);
           }
         }
       }
@@ -2150,208 +2200,106 @@ class IbkrClient {
       }>();
 
       if (allConids.length > 0) {
-        // Request fields: 7308=delta, 7309=gamma, 7310=theta, 7633=vega, 7283=IV, 7311=OI
-        const fields = '31,84,86,7308,7309,7310,7633,7283,7311';
+        // ============================================================
+        // WEBSOCKET-ONLY MODE: Zero snapshot costs (covered by OPRA subscription)
+        // Replaced costly snapshot API calls ($0.03 each) with free WebSocket streaming
+        // ============================================================
 
-        // Phase 2a: PRIME all option conids (first request starts IBKR subscription)
-        // IBKR requires a "pre-flight" request before data becomes available
-        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Priming ${allConids.length} option conids...`);
-        for (let i = 0; i < allConids.length; i += 20) {
-          const batch = allConids.slice(i, i + 20);
-          const conidStr = batch.join(',');
-          try {
-            await this.httpGetWithBridgeRetry(
-              `/v1/api/iserver/marketdata/snapshot?conids=${conidStr}&fields=${fields}`,
-              `getOptionChainWithStrikes:opt-prime-${i}:${reqId}`
-            );
-          } catch (err) {
-            // Ignore priming errors - we'll retry in the fetch phase
-          }
-          if (i + 20 < allConids.length) {
-            await new Promise(r => setTimeout(r, 50));
+        const wsManager = getIbkrWebSocketManager();
+
+        // Phase 2a: Subscribe all option conids to WebSocket (FREE)
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Subscribing ${allConids.length} option conids to WebSocket (FREE - no snapshot costs)...`);
+        for (const conid of allConids) {
+          wsManager.subscribe(conid, { symbol, type: 'option' });
+        }
+
+        // Phase 2b: Wait for WebSocket data to arrive
+        // WebSocket streams bid/ask/last + Greeks (delta, gamma, theta, vega, iv, oi)
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Waiting 2500ms for WebSocket data stream...`);
+        await new Promise(r => setTimeout(r, 2500));
+
+        // Phase 2c: Read from WebSocket cache (FREE)
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Reading from WebSocket cache...`);
+        let wsHitCount = 0;
+        let wsMissCount = 0;
+
+        for (const conid of allConids) {
+          const cached = wsManager.getCachedMarketData(conid);
+          if (cached) {
+            wsHitCount++;
+            marketDataMap.set(conid, {
+              bid: cached.bid || 0,
+              ask: cached.ask || 0,
+              last: cached.last || 0,
+              delta: cached.delta,
+              gamma: cached.gamma,
+              theta: cached.theta,
+              vega: cached.vega,
+              iv: cached.iv,
+              openInterest: cached.openInterest,
+            });
+          } else {
+            wsMissCount++;
+            // Initialize with zeros for cache misses - will be filled by historical fallback if needed
+            marketDataMap.set(conid, {
+              bid: 0,
+              ask: 0,
+              last: 0,
+              delta: undefined,
+              gamma: undefined,
+              theta: undefined,
+              vega: undefined,
+              iv: undefined,
+              openInterest: undefined,
+            });
           }
         }
 
-        // Wait for IBKR to start streaming data after priming
-        // Increased from 750ms to 1500ms for more reliable data
-        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Waiting 1500ms for IBKR to prime data stream...`);
-        await new Promise(r => setTimeout(r, 1500));
-
-        // Phase 2b: FETCH real data (second request gets actual values)
-        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Fetching market data + Greeks for ${allConids.length} options...`);
-        for (let i = 0; i < allConids.length; i += 20) {
-          const batch = allConids.slice(i, i + 20);
-          const conidStr = batch.join(',');
-
-          try {
-            const snap = await this.httpGetWithBridgeRetry(
-              `/v1/api/iserver/marketdata/snapshot?conids=${conidStr}&fields=${fields}`,
-              `getOptionChainWithStrikes:opt-fetch-${i}:${reqId}`
-            );
-            // Check if response is valid JSON (not HTML error page)
-            if (!isValidJsonResponse(snap)) {
-              const preview = String(snap.data).slice(0, 100);
-              console.error(`[IBKR][getOptionChainWithStrikes][${reqId}] Non-JSON response (status=${snap.status}): ${preview}`);
-              continue; // Skip this batch
-            }
-            if (snap.status === 200 && Array.isArray(snap.data)) {
-              // DIAGNOSTIC: Log first snapshot raw response to verify field presence
-              if (i === 0 && snap.data.length > 0) {
-                console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] FIRST SNAPSHOT RAW:`, JSON.stringify(snap.data[0]).slice(0, 400));
-              }
-              for (const item of snap.data) {
-                const conid = item.conid || item.conidEx;
-                if (conid) {
-                  // Field codes:
-                  // 31 = last price, 84 = bid, 86 = ask
-                  // 7308 = delta, 7309 = gamma, 7310 = theta, 7633 = vega
-                  // 7283 = implied volatility, 7311 = open interest
-                  marketDataMap.set(conid, {
-                    bid: Number(item["84"]) || Number(item.bid) || 0,
-                    ask: Number(item["86"]) || Number(item.ask) || 0,
-                    last: Number(item["31"]) || Number(item.last) || 0,
-                    delta: item["7308"] != null ? Number(item["7308"]) : undefined,
-                    gamma: item["7309"] != null ? Number(item["7309"]) : undefined,
-                    theta: item["7310"] != null ? Number(item["7310"]) : undefined,
-                    vega: item["7633"] != null ? Number(item["7633"]) : undefined,
-                    iv: item["7283"] != null ? Number(item["7283"]) : undefined,
-                    openInterest: item["7311"] != null ? Number(item["7311"]) : undefined,
-                  });
-                }
-              }
-            }
-          } catch (err) {
-            console.error(`[IBKR][getOptionChainWithStrikes][${reqId}] Batch snapshot error:`, err);
-          }
-
-          // Small delay between batches
-          if (i + 20 < allConids.length) {
-            await new Promise(r => setTimeout(r, 100));
-          }
-        }
-
-        // Count how many got real data
-        let realDeltaCount = 0;
-        let emptyDeltaCount = 0;
+        // Log WebSocket cache stats
         let emptyBidAskCount = 0;
+        let realDeltaCount = 0;
         for (const data of marketDataMap.values()) {
-          if (data.delta != null) realDeltaCount++;
-          else emptyDeltaCount++;
           if (data.bid === 0 && data.ask === 0) emptyBidAskCount++;
+          if (data.delta != null) realDeltaCount++;
         }
-        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Got market data for ${marketDataMap.size} options (${realDeltaCount} with delta, ${emptyBidAskCount} with empty bid/ask)`);
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] WebSocket cache: ${wsHitCount} hits, ${wsMissCount} misses, ${realDeltaCount} with Greeks, ${emptyBidAskCount} empty bid/ask`);
 
-        // Phase 2b-RETRY: If >50% have empty bid/ask, retry after longer delay
-        if (emptyBidAskCount > marketDataMap.size * 0.5 && marketDataMap.size > 0) {
-          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] RETRY: ${emptyBidAskCount}/${marketDataMap.size} have empty bid/ask. Waiting 2000ms and retrying...`);
+        // Phase 2d: If >50% cache miss, wait longer and retry cache read
+        if (wsMissCount > allConids.length * 0.5) {
+          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] High cache miss rate - waiting 2000ms more for WebSocket data...`);
           await new Promise(r => setTimeout(r, 2000));
 
-          // Re-fetch all batches
-          for (let i = 0; i < allConids.length; i += 20) {
-            const batch = allConids.slice(i, i + 20);
-            const conidStr = batch.join(',');
-
-            try {
-              const snap = await this.httpGetWithBridgeRetry(
-                `/v1/api/iserver/marketdata/snapshot?conids=${conidStr}&fields=${fields}`,
-                `getOptionChainWithStrikes:opt-refetch-${i}:${reqId}`
-              );
-              if (snap.status === 200 && Array.isArray(snap.data)) {
-                for (const item of snap.data) {
-                  const conid = item.conid || item.conidEx;
-                  if (conid) {
-                    const existing = marketDataMap.get(conid);
-                    // Only update if we got better data (non-zero bid/ask)
-                    const newBid = Number(item["84"]) || Number(item.bid) || 0;
-                    const newAsk = Number(item["86"]) || Number(item.ask) || 0;
-                    if (newBid > 0 || newAsk > 0 || !existing) {
-                      marketDataMap.set(conid, {
-                        bid: newBid,
-                        ask: newAsk,
-                        last: Number(item["31"]) || Number(item.last) || existing?.last || 0,
-                        delta: item["7308"] != null ? Number(item["7308"]) : existing?.delta,
-                        gamma: item["7309"] != null ? Number(item["7309"]) : existing?.gamma,
-                        theta: item["7310"] != null ? Number(item["7310"]) : existing?.theta,
-                        vega: item["7633"] != null ? Number(item["7633"]) : existing?.vega,
-                        iv: item["7283"] != null ? Number(item["7283"]) : existing?.iv,
-                        openInterest: item["7311"] != null ? Number(item["7311"]) : existing?.openInterest,
-                      });
-                    }
-                  }
-                }
+          // Retry cache read
+          for (const conid of allConids) {
+            const existing = marketDataMap.get(conid);
+            if (existing && existing.bid === 0 && existing.ask === 0) {
+              const cached = wsManager.getCachedMarketData(conid);
+              if (cached && (cached.bid > 0 || cached.ask > 0)) {
+                marketDataMap.set(conid, {
+                  bid: cached.bid || 0,
+                  ask: cached.ask || 0,
+                  last: cached.last || 0,
+                  delta: cached.delta,
+                  gamma: cached.gamma,
+                  theta: cached.theta,
+                  vega: cached.vega,
+                  iv: cached.iv,
+                  openInterest: cached.openInterest,
+                });
               }
-            } catch (err) {
-              console.error(`[IBKR][getOptionChainWithStrikes][${reqId}] Retry batch error:`, err);
-            }
-
-            if (i + 20 < allConids.length) {
-              await new Promise(r => setTimeout(r, 100));
             }
           }
 
-          // Recount after retry
+          // Recount
           emptyBidAskCount = 0;
           for (const data of marketDataMap.values()) {
             if (data.bid === 0 && data.ask === 0) emptyBidAskCount++;
           }
-          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] After retry: ${emptyBidAskCount}/${marketDataMap.size} still have empty bid/ask`);
+          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] After retry: ${emptyBidAskCount}/${marketDataMap.size} still empty`);
         }
 
-        // Phase 2b-RETRY-GREEKS: If most options have no delta, retry after longer delay
-        // IBKR needs time to calculate Greeks for less liquid options (like ARM)
-        let deltaRetryCount = 0;
-        for (const data of marketDataMap.values()) {
-          if (data.delta == null) deltaRetryCount++;
-        }
-        if (deltaRetryCount > marketDataMap.size * 0.5 && marketDataMap.size > 0) {
-          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] GREEKS RETRY: ${deltaRetryCount}/${marketDataMap.size} missing delta. Waiting 3000ms for IBKR to calculate Greeks...`);
-          await new Promise(r => setTimeout(r, 3000));
-
-          // Re-fetch all batches to get Greeks
-          for (let i = 0; i < allConids.length; i += 20) {
-            const batch = allConids.slice(i, i + 20);
-            const conidStr = batch.join(',');
-
-            try {
-              const snap = await this.httpGetWithBridgeRetry(
-                `/v1/api/iserver/marketdata/snapshot?conids=${conidStr}&fields=${fields}`,
-                `getOptionChainWithStrikes:opt-greeks-${i}:${reqId}`
-              );
-              if (snap.status === 200 && Array.isArray(snap.data)) {
-                for (const item of snap.data) {
-                  const conid = item.conid || item.conidEx;
-                  if (conid) {
-                    const existing = marketDataMap.get(conid);
-                    // Update delta if now available
-                    if (item["7308"] != null && existing) {
-                      existing.delta = Number(item["7308"]);
-                    }
-                    // Also update other Greeks if available
-                    if (item["7309"] != null && existing) existing.gamma = Number(item["7309"]);
-                    if (item["7310"] != null && existing) existing.theta = Number(item["7310"]);
-                    if (item["7633"] != null && existing) existing.vega = Number(item["7633"]);
-                  }
-                }
-              }
-            } catch (err) {
-              console.error(`[IBKR][getOptionChainWithStrikes][${reqId}] Greeks refetch error:`, err);
-            }
-
-            if (i + 20 < allConids.length) {
-              await new Promise(r => setTimeout(r, 100));
-            }
-          }
-
-          // Recount after Greeks retry
-          let finalDeltaCount = 0;
-          for (const data of marketDataMap.values()) {
-            if (data.delta != null) finalDeltaCount++;
-          }
-          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] After Greeks retry: ${finalDeltaCount}/${marketDataMap.size} now have delta`);
-        }
-
-        // DIAGNOSTIC: Log marketDataMap stats after Phase 2b
-        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] marketDataMap populated: ${marketDataMap.size} entries`);
+        // DIAGNOSTIC: Log marketDataMap stats
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] marketDataMap populated: ${marketDataMap.size} entries (WebSocket-only, $0 snapshot cost)`);
 
         // Phase 2c: OFF-HOURS FALLBACK - If snapshot returned no data (market closed), use historical prices
         // Check if most options have no bid/ask data (indicates market is closed)
@@ -2471,6 +2419,7 @@ class IbkrClient {
 
   /**
    * Get real-time market data for a symbol from IBKR
+   * Uses WebSocket streaming cache (FREE) instead of snapshots ($0.01 each)
    */
   async getMarketData(symbol: string): Promise<{
     symbol: string;
@@ -2492,59 +2441,67 @@ class IbkrClient {
         throw new Error(`Could not resolve conid for ${symbol}`);
       }
 
-      let snap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${conid}&outsideRth=true`);
-      console.log(`[IBKR][getMarketData][${reqId}] IBKR snapshot response: status=${snap.status} raw=${JSON.stringify(snap.data).slice(0, 500)}`);
+      // Try WebSocket cache first (FREE - uses streaming subscription)
+      const wsManager = getIbkrWebSocketManager();
+      if (wsManager?.connected) {
+        const cached = wsManager.getCachedMarketData(conid);
+        if (cached && cached.last > 0) {
+          const { getMarketStatus } = await import('../services/marketCalendar.js');
+          const marketStatus = getMarketStatus();
 
-      // Handle "no bridge" error by re-establishing gateway and retrying
-      if (snap.status === 400 && JSON.stringify(snap.data).includes('no bridge')) {
-        console.log(`[IBKR][getMarketData][${reqId}] Got "no bridge" error, re-establishing gateway...`);
-        await this.establishGateway();
-        await new Promise(r => setTimeout(r, 1000)); // Brief pause after reconnect
-        snap = await this.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${conid}&outsideRth=true`);
-        console.log(`[IBKR][getMarketData][${reqId}] Retry after gateway: status=${snap.status}`);
+          let price: number;
+          let priceSource: string;
+          if (marketStatus.isOpen && cached.bid > 0 && cached.ask > 0) {
+            price = Number(((cached.bid + cached.ask) / 2).toFixed(2));
+            priceSource = 'ws-midpoint';
+          } else {
+            price = cached.last;
+            priceSource = 'ws-last';
+          }
+
+          console.log(`[IBKR][getMarketData][${reqId}] ${symbol}: FROM CACHE last=${cached.last}, bid=${cached.bid}, ask=${cached.ask}, price=${price} (${priceSource})`);
+
+          return {
+            symbol,
+            price,
+            bid: cached.bid,
+            ask: cached.ask,
+            volume: 0, // Not available in cache
+            change: 0,
+            changePercent: 0,
+            timestamp: cached.timestamp,
+          };
+        }
       }
 
-      if (snap.status !== 200 || !Array.isArray(snap.data) || snap.data.length === 0) {
-        throw new Error(`Snapshot request failed for ${symbol}`);
+      // Fallback: Use historical data (also FREE) when WebSocket cache unavailable
+      console.log(`[IBKR][getMarketData][${reqId}] WebSocket cache miss, using historical data for ${symbol}`);
+      const histPrice = await this.getHistoricalLastPrice(conid);
+
+      if (histPrice > 0) {
+        console.log(`[IBKR][getMarketData][${reqId}] ${symbol}: FROM HISTORY price=${histPrice}`);
+        return {
+          symbol,
+          price: histPrice,
+          bid: histPrice,
+          ask: histPrice,
+          volume: 0,
+          change: 0,
+          changePercent: 0,
+          timestamp: new Date(),
+        };
       }
 
-      const data = snap.data[0];
-      // Field codes: 31=last, 84=bid, 86=ask, 7762=volume, 82=change, 83=changePercent
-      const last = Number(data["31"]) || Number(data.last) || 0;
-      const bid = Number(data["84"]) || Number(data.bid) || 0;
-      const ask = Number(data["86"]) || Number(data.ask) || 0;
-      const volume = Number(data["7762"]) || Number(data.volume) || 0;
-      const change = Number(data["82"]) || Number(data.change) || 0;
-      const changePercent = Number(data["83"]) || Number(data.changePercent) || 0;
-
-      // Determine price based on market hours:
-      // - During market hours: use bid/ask midpoint (more accurate, what traders see)
-      // - Outside market hours: use last trade price (official close, matches Yahoo/Google)
-      const { getMarketStatus } = await import('../services/marketCalendar.js');
-      const marketStatus = getMarketStatus();
-
-      let price: number;
-      let priceSource: string;
-      if (marketStatus.isOpen && bid > 0 && ask > 0) {
-        // Market open - use midpoint for live trading
-        price = Number(((bid + ask) / 2).toFixed(2));
-        priceSource = 'midpoint';
-      } else {
-        // Market closed - use last trade (official close)
-        price = last;
-        priceSource = 'last';
-      }
-
-      console.log(`[IBKR][getMarketData][${reqId}] ${symbol}: last=${last}, bid=${bid}, ask=${ask}, price=${price} (${priceSource}, market ${marketStatus.isOpen ? 'OPEN' : 'CLOSED'})`);
-
+      // Last resort: return zero values (don't charge for snapshot)
+      console.warn(`[IBKR][getMarketData][${reqId}] No cached or historical data for ${symbol}`);
       return {
         symbol,
-        price,
-        bid,
-        ask,
-        volume,
-        change,
-        changePercent,
+        price: 0,
+        bid: 0,
+        ask: 0,
+        volume: 0,
+        change: 0,
+        changePercent: 0,
         timestamp: new Date(),
       };
     } catch (err) {
@@ -3717,6 +3674,8 @@ export function createIbkrProvider(config: IbkrConfig): BrokerProvider {
     getTrades: () => client.getTrades(),
     placeOrder: (trade: InsertTrade) => client.placeOrder(trade),
     getMarketData: (symbol: string) => client.getMarketData(symbol),
+    // Expose HTTP client for direct API calls (snapshot, etc.)
+    http: client.http,
   };
 }
 
@@ -3755,6 +3714,8 @@ export function createIbkrProviderWithCredentials(config: {
     placeOrder: (trade: InsertTrade) => client.placeOrder(trade),
     getMarketData: (symbol: string) => client.getMarketData(symbol),
     restoreTokenState: (state) => client.restoreTokenState(state),
+    // Expose HTTP client for direct API calls (snapshot, etc.)
+    http: client.http,
   };
 }
 
@@ -3850,6 +3811,13 @@ export async function getIbkrCookieString(): Promise<string> {
   return activeClient.getCookieString();
 }
 
+// Get session token for WebSocket authentication
+// IBKR WebSocket requires sending {"session": "TOKEN"} after connection
+export async function getIbkrSessionToken(): Promise<string | null> {
+  if (!activeClient) throw new Error('IBKR client not initialized');
+  return activeClient.getSessionToken();
+}
+
 // Resolve a symbol to its conid (useful for WebSocket subscriptions)
 export async function resolveSymbolConid(symbol: string): Promise<number | null> {
   if (!activeClient) throw new Error('IBKR client not initialized');
@@ -3858,11 +3826,12 @@ export async function resolveSymbolConid(symbol: string): Promise<number | null>
 
 /**
  * Get current VIX (CBOE Volatility Index) value from IBKR
- * Used for adaptive delta targeting based on market volatility
+ * Uses WebSocket cache (FREE) instead of snapshots ($0.01 each)
  * @returns VIX value (defaults to 15 if unavailable)
  */
 export async function getVixQuote(): Promise<number> {
   const DEFAULT_VIX = 15;
+  const VIX_CONID = 13455763; // Known VIX conid
 
   if (!activeClient) {
     console.warn('[IBKR][getVixQuote] Client not initialized, using default VIX:', DEFAULT_VIX);
@@ -3871,30 +3840,34 @@ export async function getVixQuote(): Promise<number> {
 
   try {
     await ensureIbkrReady();
-    const vixConid = await activeClient.resolveConid('VIX');
 
-    if (!vixConid) {
-      console.warn('[IBKR][getVixQuote] Could not resolve VIX conid, using default:', DEFAULT_VIX);
-      return DEFAULT_VIX;
-    }
-
-    const snap = await activeClient.http.get(
-      `/v1/api/iserver/marketdata/snapshot?conids=${vixConid}&outsideRth=true`
-    );
-
-    if (snap.status === 200 && Array.isArray(snap.data) && snap.data.length > 0) {
-      const data = snap.data[0];
-      // Try different fields: "31" (last price), "84" (close), or "last"
-      const vixPrice = data?.["31"] ?? data?.["84"] ?? data?.last;
-
-      if (vixPrice != null && Number(vixPrice) > 0) {
-        const vix = Number(vixPrice);
-        console.log(`[IBKR][getVixQuote] VIX: ${vix.toFixed(2)}`);
-        return vix;
+    // Try WebSocket cache first (FREE - uses streaming subscription)
+    const wsManager = getIbkrWebSocketManager();
+    if (wsManager?.connected) {
+      const cached = wsManager.getCachedMarketData(VIX_CONID);
+      if (cached && cached.last > 0) {
+        console.log(`[IBKR][getVixQuote] VIX from WebSocket cache: ${cached.last.toFixed(2)}`);
+        return cached.last;
       }
     }
 
-    console.warn('[IBKR][getVixQuote] Could not parse VIX from snapshot, using default:', DEFAULT_VIX);
+    // Fallback: Use historical data (also FREE)
+    try {
+      const histResp = await activeClient.http.get(
+        `/v1/api/iserver/marketdata/history?conid=${VIX_CONID}&period=1d&bar=5mins`
+      );
+      if (histResp.status === 200 && Array.isArray(histResp.data?.data) && histResp.data.data.length > 0) {
+        const lastBar = histResp.data.data[histResp.data.data.length - 1];
+        if (lastBar?.c > 0) {
+          console.log(`[IBKR][getVixQuote] VIX from history: ${lastBar.c.toFixed(2)}`);
+          return lastBar.c;
+        }
+      }
+    } catch (histErr) {
+      console.warn('[IBKR][getVixQuote] Historical fallback failed:', histErr);
+    }
+
+    console.warn('[IBKR][getVixQuote] No cached or historical VIX data, using default:', DEFAULT_VIX);
     return DEFAULT_VIX;
   } catch (err) {
     console.error('[IBKR][getVixQuote] Error fetching VIX:', err);

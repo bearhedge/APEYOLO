@@ -12,6 +12,7 @@
 import { useAgentStore, AgentPhase } from '@/lib/agentStore';
 import { ActivityLog } from './agent/ActivityLog';
 import { BrowserPreview } from './agent/BrowserPreview';
+import { Toolbox } from './agent/Toolbox';
 import { useQuery } from '@tanstack/react-query';
 import { getAccount } from '@/lib/api';
 import { useBrokerStatus } from '@/hooks/useBrokerStatus';
@@ -93,7 +94,7 @@ function APEYOLOWorkspace() {
   const { data: market } = useQuery({
     queryKey: ['/api/agent/market'],
     queryFn: fetchIBKRMarket,
-    refetchInterval: 15000,
+    refetchInterval: false, // DISABLED - IBKR snapshots cost money
     staleTime: 5000,
   });
   const { data: account } = useQuery({
@@ -249,35 +250,40 @@ export function AgentContextPanel() {
 
   return (
     <div className="w-96 h-full flex flex-col bg-charcoal border-l border-white/20">
-      {/* WORKSPACE - Data collected by agent */}
-      <div className="px-4 pt-4">
-        <APEYOLOWorkspace />
-      </div>
-
-      {/* ACTIVITY LOG - Manus-style event visibility */}
-      <div className="px-4 pt-4">
-        <Card title="Activity Log">
-          <ActivityLog />
-        </Card>
-      </div>
-
-      {/* BROWSER PREVIEW - Shows when browser tool is used */}
-      {hasBrowserScreenshots && (
+      {/* Scrollable content area */}
+      <div className="flex-1 overflow-y-auto">
+        {/* WORKSPACE - Data collected by agent */}
         <div className="px-4 pt-4">
-          <Card title="Browser">
-            <BrowserPreview />
+          <APEYOLOWorkspace />
+        </div>
+
+        {/* ACTIVITY LOG - Manus-style event visibility */}
+        <div className="px-4 pt-4">
+          <Card title="Activity Log">
+            <ActivityLog />
           </Card>
         </div>
-      )}
 
-      {/* Spacer to push status to bottom */}
-      <div className="flex-1" />
+        {/* BROWSER PREVIEW - Shows when browser tool is used */}
+        {hasBrowserScreenshots && (
+          <div className="px-4 pt-4">
+            <Card title="Browser">
+              <BrowserPreview />
+            </Card>
+          </div>
+        )}
 
-      {/* STATUS - Agent status and controls */}
+        {/* TOOLBOX - Available tools for the agent */}
+        <div className="px-4 py-4">
+          <Toolbox collapsed={true} />
+        </div>
+      </div>
+
+      {/* STATUS - Agent status and controls (fixed at bottom) */}
       {isActive ? (
         <MinimalStatusBar />
       ) : (
-        <div className="p-4 pt-4">
+        <div className="p-4 border-t border-white/10">
           <StatusBox />
         </div>
       )}

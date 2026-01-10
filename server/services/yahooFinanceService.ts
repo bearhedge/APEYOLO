@@ -123,9 +123,18 @@ interface CacheEntry<T> {
 
 const cache = new Map<string, CacheEntry<any>>();
 const CACHE_TTL = {
-  quote: 30 * 1000, // 30 seconds for quotes
+  quote: 120 * 1000, // 2 minutes for quotes (increased to reduce rate limiting)
   history: 5 * 60 * 1000 // 5 minutes for historical data
 };
+
+// Last known good data - survives cache expiration and API errors
+// This ensures we always have SOME data to return even during rate limits
+const lastKnownGood = new Map<string, { data: any; timestamp: number }>();
+const STALE_DATA_MAX_AGE = 30 * 60 * 1000; // Serve stale data up to 30 minutes old
+
+// Rate limit tracking
+let lastRequestTime = 0;
+const MIN_REQUEST_INTERVAL = 2000; // 2 seconds between requests (increased)
 
 function getCached<T>(key: string, ttl: number): T | null {
   const entry = cache.get(key);
@@ -137,39 +146,86 @@ function getCached<T>(key: string, ttl: number): T | null {
 
 function setCache<T>(key: string, data: T): void {
   cache.set(key, { data, timestamp: Date.now() });
+  // Also update last known good
+  lastKnownGood.set(key, { data, timestamp: Date.now() });
 }
 
 /**
- * Fetch current quote for a symbol
+ * Get stale data as fallback when API fails
+ */
+function getStaleData<T>(key: string): T | null {
+  const entry = lastKnownGood.get(key);
+  if (entry && Date.now() - entry.timestamp < STALE_DATA_MAX_AGE) {
+    console.log(`[YahooFinance] Serving stale data for ${key} (${Math.round((Date.now() - entry.timestamp) / 1000)}s old)`);
+    return entry.data;
+  }
+  return null;
+}
+
+/**
+ * Wait for rate limit
+ */
+async function waitForRateLimit(): Promise<void> {
+  const now = Date.now();
+  const timeSinceLastRequest = now - lastRequestTime;
+  if (timeSinceLastRequest < MIN_REQUEST_INTERVAL) {
+    await new Promise(resolve => setTimeout(resolve, MIN_REQUEST_INTERVAL - timeSinceLastRequest));
+  }
+  lastRequestTime = Date.now();
+}
+
+/**
+ * Fetch current quote for a symbol with retry logic
  */
 export async function fetchQuote(symbol: string): Promise<QuoteData> {
   const cacheKey = `quote:${symbol}`;
   const cached = getCached<QuoteData>(cacheKey, CACHE_TTL.quote);
   if (cached) return cached;
 
-  try {
-    const quote = await yahooFinance.quote(symbol);
+  // Retry up to 3 times with exponential backoff
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      await waitForRateLimit();
+      const quote = await yahooFinance.quote(symbol);
 
-    const data: QuoteData = {
-      symbol: quote.symbol,
-      price: quote.regularMarketPrice ?? 0,
-      change: quote.regularMarketChange ?? 0,
-      changePercent: quote.regularMarketChangePercent ?? 0,
-      open: quote.regularMarketOpen ?? 0,
-      high: quote.regularMarketDayHigh ?? 0,
-      low: quote.regularMarketDayLow ?? 0,
-      previousClose: quote.regularMarketPreviousClose ?? 0,
-      volume: quote.regularMarketVolume ?? 0,
-      marketState: mapMarketState(quote.marketState),
-      lastUpdate: new Date()
-    };
+      const data: QuoteData = {
+        symbol: quote.symbol,
+        price: quote.regularMarketPrice ?? 0,
+        change: quote.regularMarketChange ?? 0,
+        changePercent: quote.regularMarketChangePercent ?? 0,
+        open: quote.regularMarketOpen ?? 0,
+        high: quote.regularMarketDayHigh ?? 0,
+        low: quote.regularMarketDayLow ?? 0,
+        previousClose: quote.regularMarketPreviousClose ?? 0,
+        volume: quote.regularMarketVolume ?? 0,
+        marketState: mapMarketState(quote.marketState),
+        lastUpdate: new Date()
+      };
 
-    setCache(cacheKey, data);
-    return data;
-  } catch (error) {
-    console.error(`[YahooFinance] Error fetching quote for ${symbol}:`, error);
-    throw new Error(`Failed to fetch quote for ${symbol}`);
+      setCache(cacheKey, data);
+      return data;
+    } catch (error: any) {
+      lastError = error;
+      const isRateLimit = error.message?.includes('Too Many Requests') || error.message?.includes('429');
+      if (isRateLimit && attempt < 2) {
+        console.log(`[YahooFinance] Rate limited for ${symbol}, retry ${attempt + 1} in ${(attempt + 1) * 2}s`);
+        await new Promise(resolve => setTimeout(resolve, (attempt + 1) * 2000));
+        continue;
+      }
+      break;
+    }
   }
+
+  // Try to return stale data if available
+  const staleData = getStaleData<QuoteData>(cacheKey);
+  if (staleData) {
+    console.log(`[YahooFinance] API failed for ${symbol}, returning stale data`);
+    return staleData;
+  }
+
+  console.error(`[YahooFinance] Error fetching quote for ${symbol}:`, lastError);
+  throw new Error(`Failed to fetch quote for ${symbol}`);
 }
 
 /**
@@ -283,16 +339,16 @@ export async function fetchSPYData(): Promise<QuoteData> {
 
 /**
  * Get combined market data for AI consumption
+ * Fetches sequentially to avoid rate limits
  */
 export async function fetchMarketSnapshot(): Promise<{
   vix: VIXContext;
   spy: QuoteData;
   timestamp: Date;
 }> {
-  const [vix, spy] = await Promise.all([
-    fetchVIXData(),
-    fetchSPYData()
-  ]);
+  // Fetch sequentially to avoid hitting rate limits
+  const spy = await fetchSPYData();
+  const vix = await fetchVIXData();
 
   return {
     vix,
@@ -323,4 +379,51 @@ function mapMarketState(state?: string): QuoteData['marketState'] {
  */
 export function clearCache(): void {
   cache.clear();
+}
+
+/**
+ * Bootstrap cache with fallback values
+ * Called on server startup to ensure we always have SOME data
+ * even if Yahoo Finance is completely rate limited
+ */
+export function bootstrapCache(): void {
+  const now = new Date();
+
+  // Reasonable fallback values (updated periodically)
+  // These are approximate values - better than showing 0.00
+  const fallbackSPY: QuoteData = {
+    symbol: 'SPY',
+    price: 588.00,  // Approximate SPY price
+    change: 0,
+    changePercent: 0,
+    open: 588.00,
+    high: 590.00,
+    low: 586.00,
+    previousClose: 588.00,
+    volume: 0,
+    marketState: 'CLOSED',
+    lastUpdate: now
+  };
+
+  const fallbackVIX: VIXContext = {
+    current: 15.50,  // Approximate VIX
+    open: 15.50,
+    high: 16.00,
+    low: 15.00,
+    close: 15.50,
+    change: 0,
+    changePercent: 0,
+    trend: 'flat',
+    level: 'normal',
+    marketState: 'CLOSED',
+    lastUpdate: now
+  };
+
+  // Seed the lastKnownGood cache (not the regular cache)
+  // This ensures we have fallback data when Yahoo is rate limited
+  lastKnownGood.set('quote:SPY', { data: fallbackSPY, timestamp: now.getTime() });
+  lastKnownGood.set('quote:^VIX', { data: fallbackVIX, timestamp: now.getTime() });
+  lastKnownGood.set('vix:context', { data: fallbackVIX, timestamp: now.getTime() });
+
+  console.log('[YahooFinance] Bootstrapped fallback cache with static values');
 }

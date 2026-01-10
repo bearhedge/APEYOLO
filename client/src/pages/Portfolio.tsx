@@ -402,7 +402,7 @@ export function Portfolio() {
   const { data: positions } = useQuery<Position[]>({
     queryKey: ['/api/positions'],
     queryFn: getPositions,
-    refetchInterval: 30000, // Sync with account data refresh
+    refetchInterval: false, // DISABLED - IBKR snapshots cost money
   });
 
   const { data: account, isLoading: accountLoading, isError: accountError, refetch: refetchAccount } = useQuery<AccountInfo>({
@@ -412,7 +412,7 @@ export function Portfolio() {
       if (!res.ok) throw new Error('Failed to fetch account');
       return res.json();
     },
-    refetchInterval: 30000, // Refresh every 30s
+    refetchInterval: false, // DISABLED - IBKR snapshots cost money
     retry: 2, // Retry twice before giving up
   });
 
@@ -449,7 +449,7 @@ export function Portfolio() {
           return { symbol, price: 0 };
         }
       },
-      refetchInterval: 10000, // Refresh every 10s
+      refetchInterval: false, // DISABLED - IBKR snapshots cost money
       staleTime: 5000,
       retry: 2, // Retry twice on failure
     })),
@@ -474,7 +474,7 @@ export function Portfolio() {
       if (!res.ok) return [];
       return res.json();
     },
-    refetchInterval: 30000,
+    refetchInterval: false, // DISABLED - IBKR snapshots cost money
   });
 
   // Calculate position metrics including Greeks and risk values

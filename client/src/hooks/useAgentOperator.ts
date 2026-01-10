@@ -197,7 +197,7 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
     queryKey: ['/api/agent/status'],
     queryFn: fetchAgentStatus,
     enabled: enableStatusPolling,
-    refetchInterval: 30000,
+    refetchInterval: false, // DISABLED - reduce API calls
     staleTime: 10000,
     retry: 1,
   });
@@ -236,7 +236,7 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
    */
   const operate = useCallback(async (
     operation: OperationType,
-    params?: { message?: string; proposalId?: string; strategy?: StrategyPreference }
+    params?: { message?: string; proposalId?: string; strategy?: StrategyPreference; userReasoning?: string }
   ) => {
     if (isProcessing && operation !== 'execute') return;
 
@@ -281,6 +281,7 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
           message: params?.message,
           proposalId: params?.proposalId,
           strategy: params?.strategy,  // Pass strategy to backend
+          userReasoning: params?.userReasoning,  // WHY user made this trade (RLHF gold)
         }),
         signal: abortControllerRef.current.signal,
       });
@@ -510,12 +511,13 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
 
   /**
    * Execute the active proposal
+   * @param userReasoning - WHY the user is making this trade (gold for RLHF learning)
    */
-  const executeProposal = useCallback(async () => {
+  const executeProposal = useCallback(async (userReasoning?: string) => {
     if (!activeProposal || !activeCritique?.approved) return;
 
     setIsExecuting(true);
-    await operate('execute', { proposalId: activeProposal.id });
+    await operate('execute', { proposalId: activeProposal.id, userReasoning });
     setIsExecuting(false);
   }, [activeProposal, activeCritique, operate]);
 

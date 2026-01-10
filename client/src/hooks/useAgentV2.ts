@@ -8,7 +8,7 @@
  * - Streaming responses
  */
 
-import { useState, useCallback, useRef } from 'react';
+import { useState, useCallback, useRef, useEffect } from 'react';
 import { useAgentStore } from '@/lib/agentStore';
 
 export type OrchestratorState =
@@ -42,8 +42,32 @@ interface AgentV2Event {
   [key: string]: unknown;
 }
 
+const CONVERSATION_STORAGE_KEY = 'apeyolo_conversation_id';
+
 function generateId(): string {
   return `msg_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;
+}
+
+// Load conversationId from localStorage on init
+function loadStoredConversationId(): string | undefined {
+  try {
+    return localStorage.getItem(CONVERSATION_STORAGE_KEY) || undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+// Save conversationId to localStorage
+function saveConversationId(id: string | undefined) {
+  try {
+    if (id) {
+      localStorage.setItem(CONVERSATION_STORAGE_KEY, id);
+    } else {
+      localStorage.removeItem(CONVERSATION_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore localStorage errors
+  }
 }
 
 export function useAgentV2() {
@@ -51,11 +75,51 @@ export function useAgentV2() {
   const [isStreaming, setIsStreaming] = useState(false);
   const [state, setState] = useState<OrchestratorState>('IDLE');
   const [plan, setPlan] = useState<ExecutionPlan | null>(null);
-  const [conversationId, setConversationId] = useState<string | undefined>();
+  const [conversationId, setConversationId] = useState<string | undefined>(loadStoredConversationId);
+  const [isLoadingHistory, setIsLoadingHistory] = useState(false);
   const abortControllerRef = useRef<AbortController | null>(null);
 
   // Get agent store actions for context panel updates
   const { handleSSEEvent, resetState, addActivityEntry, addBrowserScreenshot, clearActivityLog } = useAgentStore.getState();
+
+  // Auto-load conversation from server on mount if we have a stored conversationId
+  useEffect(() => {
+    const storedConvId = loadStoredConversationId();
+    if (storedConvId && messages.length === 0 && !isLoadingHistory) {
+      // Load conversation history from server
+      setIsLoadingHistory(true);
+      fetch(`/api/agent/conversations/${storedConvId}`, {
+        credentials: 'include',
+      })
+        .then(res => res.ok ? res.json() : null)
+        .then(data => {
+          if (data?.success && data.conversation?.messages?.length > 0) {
+            const loadedMessages: AgentV2Message[] = data.conversation.messages.map((m: {
+              id: number;
+              role: 'user' | 'assistant';
+              content: string;
+              createdAt: string;
+            }) => ({
+              id: `msg_${m.id}`,
+              role: m.role,
+              content: m.content,
+              timestamp: new Date(m.createdAt),
+            }));
+            setMessages(loadedMessages);
+            setConversationId(storedConvId);
+          }
+        })
+        .catch(err => {
+          console.warn('[useAgentV2] Failed to restore conversation:', err);
+          // Clear invalid conversationId
+          saveConversationId(undefined);
+        })
+        .finally(() => {
+          setIsLoadingHistory(false);
+        });
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // Only run on mount
 
   const sendMessage = useCallback(async (content: string) => {
     if (!content.trim() || isStreaming) return;
@@ -287,6 +351,12 @@ export function useAgentV2() {
                   if (event.finalResponse) {
                     fullContent = event.finalResponse as string;
                   }
+                  // Capture conversationId from server for persistence
+                  if (event.conversationId) {
+                    const newConvId = event.conversationId as string;
+                    setConversationId(newConvId);
+                    saveConversationId(newConvId);
+                  }
                   setMessages(prev =>
                     prev.map(m =>
                       m.id === assistantId
@@ -348,18 +418,77 @@ export function useAgentV2() {
   const clearMessages = useCallback(() => {
     setMessages([]);
     setConversationId(undefined);
+    saveConversationId(undefined); // Clear localStorage
     setPlan(null);
     setState('IDLE');
     resetState();
   }, [resetState]);
 
+  /**
+   * Start a new conversation (clears history and localStorage)
+   */
+  const newConversation = useCallback(() => {
+    clearMessages();
+  }, [clearMessages]);
+
+  /**
+   * Load a specific conversation from the server
+   */
+  const loadConversation = useCallback(async (convId: string) => {
+    setIsLoadingHistory(true);
+    try {
+      const response = await fetch(`/api/agent/conversations/${convId}`, {
+        credentials: 'include',
+      });
+
+      if (!response.ok) {
+        throw new Error('Failed to load conversation');
+      }
+
+      const data = await response.json();
+      if (!data.success || !data.conversation) {
+        throw new Error('Invalid conversation data');
+      }
+
+      const conv = data.conversation;
+
+      // Convert server messages to AgentV2Message format
+      const loadedMessages: AgentV2Message[] = conv.messages.map((m: {
+        id: number;
+        role: 'user' | 'assistant';
+        content: string;
+        createdAt: string;
+      }) => ({
+        id: `msg_${m.id}`,
+        role: m.role,
+        content: m.content,
+        timestamp: new Date(m.createdAt),
+      }));
+
+      setMessages(loadedMessages);
+      setConversationId(convId);
+      saveConversationId(convId);
+      setPlan(null);
+      setState('IDLE');
+    } catch (error) {
+      console.error('[useAgentV2] Failed to load conversation:', error);
+      throw error;
+    } finally {
+      setIsLoadingHistory(false);
+    }
+  }, []);
+
   return {
     messages,
     isStreaming,
+    isLoadingHistory,
     state,
     plan,
+    conversationId,
     sendMessage,
     cancelStreaming,
     clearMessages,
+    newConversation,
+    loadConversation,
   };
 }

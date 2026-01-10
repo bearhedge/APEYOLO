@@ -43,6 +43,47 @@ export interface ToolCall {
 // =============================================================================
 
 /**
+ * Get current time in multiple timezones
+ */
+const getCurrentTimeTool: Tool = {
+  name: 'get_current_time',
+  description: 'Get the current date and time in multiple timezones (Hong Kong, New York, UTC)',
+  parameters: {},
+  execute: async (): Promise<ToolResult> => {
+    const now = new Date();
+    return {
+      success: true,
+      data: {
+        utc: now.toISOString(),
+        hkt: now.toLocaleString('en-US', {
+          timeZone: 'Asia/Hong_Kong',
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: true
+        }),
+        nyt: now.toLocaleString('en-US', {
+          timeZone: 'America/New_York',
+          weekday: 'long',
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          hour: '2-digit',
+          minute: '2-digit',
+          second: '2-digit',
+          hour12: true
+        }),
+        timestamp: now.getTime(),
+      },
+    };
+  },
+};
+
+/**
  * Get current market data (VIX, SPY price, market status)
  */
 const getMarketDataTool: Tool = {
@@ -407,6 +448,17 @@ const closeTradeTool: Tool = {
 // =============================================================================
 
 export const toolRegistry: Record<string, Tool> = {
+  // New time tool
+  get_current_time: getCurrentTimeTool,
+
+  // Market and position tools (snake_case for Ollama compatibility)
+  get_market_data: getMarketDataTool,
+  get_positions: getPositionsTool,
+  run_engine: runEngineTool,
+  execute_trade: executeTradeTool,
+  close_trade: closeTradeTool,
+
+  // Legacy camelCase aliases (for backwards compatibility)
   getMarketData: getMarketDataTool,
   getPositions: getPositionsTool,
   runEngine: runEngineTool,

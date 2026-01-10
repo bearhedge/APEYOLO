@@ -191,6 +191,114 @@ export class AgentMemory {
     `).run(conversationId, eventType, JSON.stringify(eventData));
   }
 
+  /**
+   * Get all conversations for a user
+   */
+  getUserConversations(userId: string, limit: number = 50): Array<{
+    id: string;
+    createdAt: Date;
+    lastActivity: Date;
+    summary: string | null;
+    messageCount: number;
+  }> {
+    const rows = this.db.prepare(`
+      SELECT
+        c.id,
+        c.created_at,
+        c.last_activity,
+        c.summary,
+        COUNT(m.id) as message_count
+      FROM conversations c
+      LEFT JOIN messages m ON m.conversation_id = c.id
+      WHERE c.user_id = ?
+      GROUP BY c.id
+      ORDER BY c.last_activity DESC
+      LIMIT ?
+    `).all(userId, limit) as Array<{
+      id: string;
+      created_at: string;
+      last_activity: string;
+      summary: string | null;
+      message_count: number;
+    }>;
+
+    return rows.map(row => ({
+      id: row.id,
+      createdAt: new Date(row.created_at),
+      lastActivity: new Date(row.last_activity),
+      summary: row.summary,
+      messageCount: row.message_count,
+    }));
+  }
+
+  /**
+   * Get a single conversation with its messages
+   */
+  getConversation(conversationId: string, userId: string): {
+    id: string;
+    createdAt: Date;
+    lastActivity: Date;
+    summary: string | null;
+    messages: Message[];
+  } | null {
+    const conv = this.db.prepare(`
+      SELECT id, created_at, last_activity, summary
+      FROM conversations
+      WHERE id = ? AND user_id = ?
+    `).get(conversationId, userId) as {
+      id: string;
+      created_at: string;
+      last_activity: string;
+      summary: string | null;
+    } | undefined;
+
+    if (!conv) return null;
+
+    const messages = this.getMessages(conversationId);
+
+    return {
+      id: conv.id,
+      createdAt: new Date(conv.created_at),
+      lastActivity: new Date(conv.last_activity),
+      summary: conv.summary,
+      messages,
+    };
+  }
+
+  /**
+   * Delete a conversation and all its messages
+   */
+  deleteConversation(conversationId: string, userId: string): boolean {
+    // Verify ownership
+    const conv = this.db.prepare(`
+      SELECT id FROM conversations WHERE id = ? AND user_id = ?
+    `).get(conversationId, userId);
+
+    if (!conv) return false;
+
+    // Delete messages first (foreign key)
+    this.db.prepare(`
+      DELETE FROM messages WHERE conversation_id = ?
+    `).run(conversationId);
+
+    // Delete cache
+    this.db.prepare(`
+      DELETE FROM context_cache WHERE conversation_id = ?
+    `).run(conversationId);
+
+    // Delete audit log
+    this.db.prepare(`
+      DELETE FROM audit_log WHERE conversation_id = ?
+    `).run(conversationId);
+
+    // Delete conversation
+    this.db.prepare(`
+      DELETE FROM conversations WHERE id = ?
+    `).run(conversationId);
+
+    return true;
+  }
+
   cleanup(maxAgeHours: number = 24): void {
     const cutoff = new Date(Date.now() - maxAgeHours * 60 * 60 * 1000).toISOString();
 

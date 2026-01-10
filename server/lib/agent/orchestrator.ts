@@ -1,17 +1,39 @@
 // server/lib/agent/orchestrator.ts
-// Simplified 3-step linear flow: Intent → Data → Answer
+// ReAct Agent Loop - Reason, Act, Observe, Repeat
 
 import { AgentEvent, OrchestratorState } from './types';
 import { AgentMemory, getAgentMemory } from './memory';
-import { extractIntent } from './intent-extractor';
-import { fetchData } from './data-fetcher';
-import { synthesizeAnswer } from './answer-synthesizer';
+import { chatWithTools, LLMMessage, LLMToolMessage, LLMAssistantMessage } from '../llm-client';
+import { AGENT_TOOLS } from './tools/definitions';
+import { toolRegistry } from '../agent-tools';
+import { classifyQuery } from './classifier';
+import { classifyError, formatErrorForUser, isCriticalTool, AgentErrorType } from './errors';
 
 export interface RunInput {
   userMessage: string;
   userId: string;
   conversationId?: string;
 }
+
+interface ReActOptions {
+  model: string;
+  maxIterations?: number;
+  think?: boolean;
+}
+
+const AGENT_SYSTEM_PROMPT = `You are APEYOLO, a helpful 0DTE SPY options trading assistant.
+
+You have access to tools to help answer questions. When you need information, call the appropriate tool.
+
+IMPORTANT RULES:
+1. For time/date questions, use get_current_time
+2. For market data (SPY price, VIX, market status), use get_market_data
+3. For portfolio information, use get_positions
+4. For trading analysis, use run_engine
+5. Be concise and direct in your responses
+6. Always use tools when needed - don't guess or make up data
+
+After receiving tool results, provide a helpful response to the user.`;
 
 export class AgentOrchestrator {
   private state: OrchestratorState = 'IDLE';
@@ -22,10 +44,10 @@ export class AgentOrchestrator {
   }
 
   /**
-   * Run the agent using a simple 3-step flow:
-   * 1. Extract intent (what data do we need?)
-   * 2. Fetch data (parallel execution with timeouts)
-   * 3. Synthesize answer (generate response from data only)
+   * Run the agent using ReAct pattern:
+   * 1. Classify query complexity
+   * 2. Run ReAct loop (Reason → Act → Observe → Repeat)
+   * 3. Return final response
    */
   async *run(input: RunInput): AsyncGenerator<AgentEvent> {
     const startTime = Date.now();
@@ -42,63 +64,22 @@ export class AgentOrchestrator {
     });
 
     try {
-      console.log(`[Orchestrator] Starting 3-step flow for: "${input.userMessage.slice(0, 50)}..."`);
+      // Classify query to determine model and approach
+      const classification = classifyQuery(input.userMessage);
+      console.log(`[Orchestrator] Query classified as: ${classification.complexity} (${classification.reason})`);
 
-      // Step 1: Extract intent
+      yield { type: 'thought', content: `Analyzing: ${classification.reason}` };
       yield* this.transitionTo('PLANNING');
-      console.log(`[Orchestrator] Step 1: Extracting intent...`);
 
-      const intent = await extractIntent(input.userMessage);
-      console.log(`[Orchestrator] Intent extracted:`, intent.needs);
+      // Select options based on complexity
+      const options: ReActOptions = {
+        model: classification.suggestedModel,
+        maxIterations: classification.complexity === 'trade' ? 5 : 3,
+        think: classification.complexity === 'trade', // Enable reasoning for trade queries
+      };
 
-      yield { type: 'thought', content: `Understanding request: ${intent.reasoning}` };
-
-      // Step 2: Fetch data
-      yield* this.transitionTo('EXECUTING');
-      console.log(`[Orchestrator] Step 2: Fetching data...`);
-
-      // Emit tool starts for UI
-      if (intent.needs.market_status || intent.needs.spy_price || intent.needs.vix) {
-        yield { type: 'tool_start', tool: 'get_market_data' };
-      }
-      if (intent.needs.positions) {
-        yield { type: 'tool_start', tool: 'get_positions' };
-      }
-      if (intent.needs.web_search) {
-        yield { type: 'tool_start', tool: 'web_browse' };
-        yield { type: 'thought', content: `Searching: "${intent.needs.web_search}"` };
-      }
-
-      const data = await fetchData(intent.needs);
-
-      // Emit tool completions
-      if (intent.needs.market_status || intent.needs.spy_price || intent.needs.vix) {
-        yield { type: 'tool_done', tool: 'get_market_data', result: data.market_status || data.spy_price || data.vix };
-      }
-      if (intent.needs.positions) {
-        yield { type: 'tool_done', tool: 'get_positions', result: data.positions?.summary };
-      }
-      if (intent.needs.web_search) {
-        yield { type: 'tool_done', tool: 'web_browse', result: data.web_content?.url };
-      }
-
-      // Emit screenshot if web browse returned one
-      if (data.web_content?.screenshot) {
-        yield {
-          type: 'browser_screenshot',
-          data: {
-            base64: data.web_content.screenshot,
-            url: data.web_content.url,
-            timestamp: Date.now(),
-          },
-        };
-      }
-
-      // Step 3: Synthesize answer
-      yield* this.transitionTo('RESPONDING');
-      console.log(`[Orchestrator] Step 3: Synthesizing answer...`);
-
-      const answer = await synthesizeAnswer(input.userMessage, data);
+      // Run ReAct loop (with conversation history)
+      const response = yield* this.runReActLoop(input.userMessage, options, conversationId);
 
       const elapsed = Date.now() - startTime;
       console.log(`[Orchestrator] Complete in ${elapsed}ms`);
@@ -106,24 +87,148 @@ export class AgentOrchestrator {
       // Save to memory
       this.memory.addMessage(conversationId, {
         role: 'assistant',
-        content: answer,
+        content: response,
       });
 
-      yield { type: 'response_chunk', content: answer };
-      yield { type: 'done', finalResponse: answer };
+      yield { type: 'response_chunk', content: response };
+      yield { type: 'done', finalResponse: response, conversationId };
       yield* this.transitionTo('IDLE');
 
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      console.error(`[Orchestrator] Fatal error:`, errorMessage);
+      const agentError = classifyError(
+        error instanceof Error ? error : new Error(String(error)),
+        { userMessage: input.userMessage, conversationId }
+      );
 
-      this.memory.logAudit(conversationId, 'error', { error: errorMessage });
+      console.error(`[Orchestrator] ${agentError.type}:`, agentError.message);
+
+      this.memory.logAudit(conversationId, 'error', {
+        type: agentError.type,
+        message: agentError.message,
+        recoverable: agentError.recoverable,
+      });
+
+      const userMessage = formatErrorForUser(agentError);
 
       yield {
         type: 'done',
-        finalResponse: "I'm sorry, something went wrong while processing your request. Please try again.",
+        finalResponse: userMessage,
+        conversationId,
       };
       yield* this.transitionTo('IDLE');
+    }
+  }
+
+  /**
+   * ReAct Loop: Reason → Act → Observe → Repeat
+   * The LLM decides what tools to call and sees the results.
+   */
+  private async *runReActLoop(
+    userMessage: string,
+    options: ReActOptions,
+    conversationId: string
+  ): AsyncGenerator<AgentEvent, string> {
+    // Load conversation history from memory (8000 token budget)
+    const historyContext = this.memory.getContext(conversationId, 8000);
+
+    // Build system prompt with history if available
+    let systemContent = AGENT_SYSTEM_PROMPT;
+    if (historyContext) {
+      systemContent += `\n\n## Previous Conversation\n${historyContext}`;
+    }
+
+    const messages: (LLMMessage | LLMToolMessage | LLMAssistantMessage)[] = [
+      { role: 'system', content: systemContent },
+      { role: 'user', content: userMessage },
+    ];
+
+    yield* this.transitionTo('EXECUTING');
+
+    for (let iteration = 0; iteration < (options.maxIterations || 3); iteration++) {
+      console.log(`[Orchestrator] ReAct iteration ${iteration + 1}`);
+
+      // Call LLM with tools
+      const response = await chatWithTools({
+        model: options.model,
+        messages,
+        tools: AGENT_TOOLS,
+        think: options.think,
+      });
+
+      // Check if LLM wants to call tools
+      if (response.message.tool_calls && response.message.tool_calls.length > 0) {
+        // Add assistant message with tool calls to context
+        messages.push({
+          role: 'assistant',
+          content: response.message.content || '',
+          tool_calls: response.message.tool_calls,
+        });
+
+        // Execute each tool call with error recovery
+        for (const toolCall of response.message.tool_calls) {
+          const toolName = toolCall.function.name;
+          const toolArgs = toolCall.function.arguments;
+
+          console.log(`[Orchestrator] Tool call: ${toolName}`, toolArgs);
+          yield { type: 'tool_start', tool: toolName };
+
+          // Execute the tool with timing
+          const toolStartTime = Date.now();
+          const result = await this.executeTool(toolName, toolArgs);
+          const durationMs = Date.now() - toolStartTime;
+
+          console.log(`[Orchestrator] Tool result:`, result.success ? 'success' : result.error);
+          yield { type: 'tool_done', tool: toolName, result: result.data || result.error, durationMs };
+
+          // Check for critical tool failures
+          if (!result.success && isCriticalTool(toolName)) {
+            // Critical tools (like trade execution) must succeed
+            const errorMsg = `Critical operation failed: ${result.error}`;
+            console.error(`[Orchestrator] ${errorMsg}`);
+            yield* this.transitionTo('RESPONDING');
+            return errorMsg;
+          }
+
+          // Add tool result to context (LLM can work with partial data)
+          messages.push({
+            role: 'tool',
+            tool_name: toolName,
+            content: JSON.stringify(result),
+          });
+        }
+
+        // Continue loop - LLM will see results and decide next action
+      } else {
+        // No tool calls - LLM is ready to respond
+        yield* this.transitionTo('RESPONDING');
+        return response.message.content || "I'm not sure how to answer that.";
+      }
+    }
+
+    // Max iterations reached - return whatever we have
+    yield* this.transitionTo('RESPONDING');
+    return "I've gathered some information but couldn't complete the analysis. Please try asking in a different way.";
+  }
+
+  /**
+   * Execute a tool by name with given arguments
+   */
+  private async executeTool(
+    name: string,
+    args: Record<string, unknown>
+  ): Promise<{ success: boolean; data?: unknown; error?: string }> {
+    // Check if tool exists in registry
+    const tool = toolRegistry[name];
+    if (!tool) {
+      return { success: false, error: `Unknown tool: ${name}` };
+    }
+
+    try {
+      const result = await tool.execute(args as Record<string, any>);
+      return result;
+    } catch (error: any) {
+      console.error(`[Orchestrator] Tool ${name} error:`, error);
+      return { success: false, error: error.message || 'Tool execution failed' };
     }
   }
 

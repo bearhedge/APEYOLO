@@ -30,90 +30,166 @@ type OptionChainCallback = (update: OptionChainUpdate, symbol: string) => void;
 const chartPriceCallbacks = new Set<ChartPriceCallback>();
 const optionChainCallbacks = new Set<OptionChainCallback>();
 
+// Reconnection settings
+const INITIAL_RECONNECT_DELAY = 1000; // 1 second
+const MAX_RECONNECT_DELAY = 30000; // 30 seconds
+const HEARTBEAT_INTERVAL = 30000; // 30 seconds
+
 export function useWebSocket() {
   const [isConnected, setIsConnected] = useState(false);
   const [lastMessage, setLastMessage] = useState<WebSocketMessage | null>(null);
   const wsRef = useRef<WebSocket | null>(null);
+  const reconnectDelayRef = useRef(INITIAL_RECONNECT_DELAY);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const heartbeatIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const isUnmountingRef = useRef(false);
 
   useEffect(() => {
-    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-    const wsUrl = `${protocol}//${window.location.host}/ws`;
+    isUnmountingRef.current = false;
 
-    try {
-      const ws = new WebSocket(wsUrl);
-      wsRef.current = ws;
+    const connect = () => {
+      // Don't reconnect if unmounting
+      if (isUnmountingRef.current) return;
 
-      ws.onopen = () => {
-        console.log('Connected to WebSocket');
-        setIsConnected(true);
-      };
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+      const wsUrl = `${protocol}//${window.location.host}/ws`;
 
-      ws.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data);
-          setLastMessage(message);
+      try {
+        const ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
 
-          // Handle chart_price_update messages
-          if (message.type === 'chart_price_update' && message.data) {
-            const { symbol, price, timestamp } = message.data;
-            if (price > 0) {
-              chartPriceCallbacks.forEach(callback => {
-                try {
-                  callback(price, symbol, timestamp);
-                } catch (err) {
-                  console.error('[WebSocket] Chart price callback error:', err);
-                }
-              });
-            }
+        ws.onopen = () => {
+          console.log('[WebSocket] Connected');
+          setIsConnected(true);
+          // Reset reconnect delay on successful connection
+          reconnectDelayRef.current = INITIAL_RECONNECT_DELAY;
+
+          // Start heartbeat to keep connection alive
+          if (heartbeatIntervalRef.current) {
+            clearInterval(heartbeatIntervalRef.current);
           }
+          heartbeatIntervalRef.current = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'ping' }));
+            }
+          }, HEARTBEAT_INTERVAL);
+        };
 
-          // Handle option_chain_update messages
-          if (message.type === 'option_chain_update' && message.data) {
-            const { symbol } = message;
-            optionChainCallbacks.forEach(callback => {
-              try {
-                callback(message.data as OptionChainUpdate, symbol);
-              } catch (err) {
-                console.error('[WebSocket] Option chain callback error:', err);
+        ws.onmessage = (event) => {
+          try {
+            const message = JSON.parse(event.data);
+
+            // Ignore pong responses
+            if (message.type === 'pong') return;
+
+            setLastMessage(message);
+
+            // Handle chart_price_update messages
+            if (message.type === 'chart_price_update' && message.data) {
+              const { symbol, price, timestamp } = message.data;
+              if (price > 0) {
+                chartPriceCallbacks.forEach(callback => {
+                  try {
+                    callback(price, symbol, timestamp);
+                  } catch (err) {
+                    console.error('[WebSocket] Chart price callback error:', err);
+                  }
+                });
               }
-            });
-          }
+            }
 
-          // Handle underlying_price_update messages (also update chart)
-          if (message.type === 'underlying_price_update') {
-            const { symbol, price, timestamp } = message;
-            if (price > 0) {
-              chartPriceCallbacks.forEach(callback => {
+            // Handle option_chain_update messages
+            if (message.type === 'option_chain_update' && message.data) {
+              const { symbol } = message;
+              optionChainCallbacks.forEach(callback => {
                 try {
-                  callback(price, symbol, new Date(timestamp).getTime());
+                  callback(message.data as OptionChainUpdate, symbol);
                 } catch (err) {
-                  console.error('[WebSocket] Underlying price callback error:', err);
+                  console.error('[WebSocket] Option chain callback error:', err);
                 }
               });
             }
+
+            // Handle underlying_price_update messages (also update chart)
+            if (message.type === 'underlying_price_update') {
+              const { symbol, price, timestamp } = message;
+              if (price > 0) {
+                chartPriceCallbacks.forEach(callback => {
+                  try {
+                    callback(price, symbol, new Date(timestamp).getTime());
+                  } catch (err) {
+                    console.error('[WebSocket] Underlying price callback error:', err);
+                  }
+                });
+              }
+            }
+          } catch (error) {
+            console.error('[WebSocket] Failed to parse message:', error);
           }
-        } catch (error) {
-          console.error('Failed to parse WebSocket message:', error);
+        };
+
+        ws.onclose = (event) => {
+          console.log(`[WebSocket] Disconnected (code: ${event.code}, reason: ${event.reason || 'none'})`);
+          setIsConnected(false);
+          wsRef.current = null;
+
+          // Clear heartbeat
+          if (heartbeatIntervalRef.current) {
+            clearInterval(heartbeatIntervalRef.current);
+            heartbeatIntervalRef.current = null;
+          }
+
+          // Schedule reconnect with exponential backoff
+          if (!isUnmountingRef.current) {
+            const delay = reconnectDelayRef.current;
+            console.log(`[WebSocket] Reconnecting in ${delay / 1000}s...`);
+            reconnectTimeoutRef.current = setTimeout(() => {
+              // Increase delay for next reconnect (exponential backoff)
+              reconnectDelayRef.current = Math.min(
+                reconnectDelayRef.current * 2,
+                MAX_RECONNECT_DELAY
+              );
+              connect();
+            }, delay);
+          }
+        };
+
+        ws.onerror = (error) => {
+          console.error('[WebSocket] Error:', error);
+          // onclose will be called after onerror, which handles reconnection
+        };
+
+      } catch (error) {
+        console.error('[WebSocket] Failed to create connection:', error);
+        // Schedule reconnect on failure
+        if (!isUnmountingRef.current) {
+          reconnectTimeoutRef.current = setTimeout(connect, reconnectDelayRef.current);
         }
-      };
+      }
+    };
 
-      ws.onclose = () => {
-        console.log('Disconnected from WebSocket');
-        setIsConnected(false);
-      };
-
-      ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
-        setIsConnected(false);
-      };
-
-    } catch (error) {
-      console.error('Failed to create WebSocket connection:', error);
-    }
+    // Initial connection
+    connect();
 
     return () => {
+      isUnmountingRef.current = true;
+
+      // Clear reconnect timeout
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
+
+      // Clear heartbeat
+      if (heartbeatIntervalRef.current) {
+        clearInterval(heartbeatIntervalRef.current);
+        heartbeatIntervalRef.current = null;
+      }
+
+      // Close WebSocket
       if (wsRef.current) {
         wsRef.current.close();
+        wsRef.current = null;
       }
     };
   }, []);

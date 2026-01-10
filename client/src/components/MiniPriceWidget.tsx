@@ -28,7 +28,7 @@ export function MiniPriceWidget({ symbol, showLink = true, testId }: MiniPriceWi
         changePct: data.changePct || 0,
       };
     },
-    refetchInterval: 5000,
+    refetchInterval: false, // DISABLED - IBKR snapshots cost money
   });
 
   // Generate sparkline data

@@ -100,7 +100,7 @@ export function useAgentChat(options: UseAgentChatOptions = {}) {
     queryKey: ['/api/agent/status'],
     queryFn: fetchAgentStatus,
     enabled: enableStatusPolling,
-    refetchInterval: 30000, // Poll every 30s
+    refetchInterval: false, // DISABLED - IBKR snapshots cost money
     staleTime: 10000,
     retry: 1,
   });

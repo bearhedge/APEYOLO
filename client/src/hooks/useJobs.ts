@@ -155,7 +155,7 @@ export function useJobs() {
   const jobsQuery = useQuery({
     queryKey: ['jobs'],
     queryFn: fetchJobs,
-    refetchInterval: 30000, // Poll every 30s
+    refetchInterval: false, // DISABLED - reduce API calls
     select: (data) => data.jobs,
   });
 
@@ -163,7 +163,7 @@ export function useJobs() {
   const historyQuery = useQuery({
     queryKey: ['job-history'],
     queryFn: () => fetchJobHistory(50),
-    refetchInterval: 30000,
+    refetchInterval: false, // DISABLED - reduce API calls
     select: (data) => data.history,
   });
 
@@ -171,7 +171,7 @@ export function useJobs() {
   const calendarQuery = useQuery({
     queryKey: ['market-calendar'],
     queryFn: fetchMarketCalendar,
-    refetchInterval: 60000, // Poll every minute
+    refetchInterval: false, // DISABLED - reduce API calls
   });
 
   // Run job mutation

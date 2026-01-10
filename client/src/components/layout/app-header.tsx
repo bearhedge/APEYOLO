@@ -80,7 +80,7 @@ export default function AppHeader() {
 
   const { data: account } = useQuery<AccountInfo>({
     queryKey: ['/api/account'],
-    refetchInterval: 30000, // Refresh every 30 seconds
+    refetchInterval: false, // DISABLED - IBKR snapshots cost money
   });
 
   // Unified broker status - same query key as Engine and Settings

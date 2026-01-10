@@ -6,6 +6,7 @@ import { registerRoutes } from "./routes";
 import { serveStatic, log } from "./utils"; // Production-safe utilities
 import { testDatabaseConnection } from "./db";
 import { startFiveMinuteCapture } from "./services/jobs/fiveMinuteDataCapture";
+import { autoStartMarketDataStream } from "./services/marketDataAutoStart";
 
 const app = express();
 app.use(express.json());
@@ -70,5 +71,13 @@ app.use((req, res, next) => {
 
     // Start the 5-minute option data capture scheduler
     startFiveMinuteCapture();
+
+    // Auto-start IBKR WebSocket for market data streaming
+    // Delay slightly to allow database connection to stabilize
+    setTimeout(() => {
+      autoStartMarketDataStream().catch(err => {
+        console.error('[Startup] Market data auto-start failed:', err.message);
+      });
+    }, 3000);
   });
 })();

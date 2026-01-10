@@ -19,6 +19,7 @@ import { paperTrades, orders, engineRuns } from "../shared/schema";
 import { eq, and } from "drizzle-orm";
 import { enforceMandate } from "./services/mandateService";
 import type { EngineAnalyzeResponse, TradeProposal, RiskProfile } from "../shared/types/engine";
+import type { EngineStreamEvent } from "../shared/types/engineStream";
 
 const router = Router();
 
@@ -390,6 +391,189 @@ router.post('/execute', requireAuth, async (req, res) => {
   }
 });
 
+// ============================================
+// SSE Streaming Analysis Endpoint
+// ============================================
+
+// GET /api/engine/analyze/stream - Run analysis with real-time SSE progress
+// This endpoint streams progress events as each step executes
+router.get('/analyze/stream', requireAuth, async (req, res) => {
+  // Set SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+  res.flushHeaders();
+
+  // Helper to send SSE event
+  const send = (event: EngineStreamEvent) => {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+  };
+
+  try {
+    const { riskTier = 'balanced', stopMultiplier = '6', strategy } = req.query;
+
+    // Get symbol from query params, default to SPY
+    const requestedSymbol = ((req.query.symbol as string) || 'SPY').toUpperCase() as TradingSymbol;
+    const symbol = SYMBOL_CONFIG[requestedSymbol] ? requestedSymbol : 'SPY';
+    const symbolConfig = SYMBOL_CONFIG[symbol];
+    const expirationMode = symbolConfig.expirationMode;
+
+    // Parse strategy preference
+    const strategyPreference = strategy as 'strangle' | 'put-only' | 'call-only' | undefined;
+
+    // Map riskTier to riskProfile
+    const riskProfileMap: Record<string, RiskProfile> = {
+      'conservative': 'CONSERVATIVE',
+      'balanced': 'BALANCED',
+      'aggressive': 'AGGRESSIVE'
+    };
+    const riskProfile = riskProfileMap[riskTier as string] || 'BALANCED';
+    const stopMult = parseInt(stopMultiplier as string, 10) || 3;
+
+    // Emit start event
+    send({ type: 'start', timestamp: Date.now() });
+
+    // Multi-tenant: Get broker for the authenticated user
+    let broker = await getBrokerForUser(req.user!.id);
+
+    // Fallback to shared broker if per-user broker not available
+    if (!broker.api) {
+      console.log('[Engine/stream] No per-user broker, falling back to shared broker');
+      broker = getBroker();
+    }
+
+    // Check if we have a valid broker API
+    if (!broker.api) {
+      send({
+        type: 'error',
+        timestamp: Date.now(),
+        error: 'No IBKR connection available. Please check broker configuration.',
+      });
+      res.end();
+      return;
+    }
+
+    // Ensure IBKR is ready if using it
+    if (broker.status.provider === 'ibkr') {
+      try {
+        await ensureIbkrReady();
+      } catch (err) {
+        console.log('[Engine/stream] IBKR ensureIbkrReady error:', err instanceof Error ? err.message : err);
+      }
+    }
+
+    // Check trading window
+    const tradingWindow = isWithinTradingWindow();
+
+    // Get account info
+    const account = await broker.api.getAccount();
+
+    // Get current underlying price for the engine
+    let underlyingPrice = symbol === 'SPY' ? 450 : 150;
+    try {
+      const { getMarketData } = await import('./services/marketDataService.js');
+      const marketData = await getMarketData(symbol);
+      underlyingPrice = marketData.price;
+    } catch (error) {
+      console.error(`[Engine/stream] Error fetching ${symbol} price:`, error);
+    }
+
+    // Create or get engine instance
+    const needNewInstance = !engineInstance ||
+      engineInstance['config'].riskProfile !== riskProfile ||
+      engineInstance['config'].underlyingSymbol !== symbol ||
+      engineInstance['config'].forcedStrategy !== strategyPreference;
+
+    if (needNewInstance) {
+      engineInstance = new TradingEngine({
+        riskProfile,
+        underlyingSymbol: symbol,
+        expirationMode,
+        underlyingPrice,
+        mockMode: broker.status.provider === 'mock',
+        forcedStrategy: strategyPreference,
+      });
+    } else {
+      engineInstance['config'].underlyingPrice = underlyingPrice;
+    }
+
+    // Execute with streaming - pass progress callback
+    const decision = await Promise.race([
+      engineInstance.executeTradingDecisionStreaming(
+        {
+          buyingPower: account.buyingPower,
+          cashBalance: account.totalCash,
+          netLiquidation: account.netLiquidation,
+          currentPositions: 0
+        },
+        send  // Pass SSE send function as progress callback
+      ),
+      createTimeoutPromise(ENGINE_TIMEOUT_MS, 'Engine streaming analysis')
+    ]);
+
+    // Apply guard rails validation
+    const guardRailViolations: string[] = [];
+
+    if (decision.positionSize && decision.positionSize.contracts > currentGuardRails.maxContractsPerTrade) {
+      guardRailViolations.push(`Position size (${decision.positionSize.contracts}) exceeds max contracts per trade (${currentGuardRails.maxContractsPerTrade})`);
+    }
+
+    if (decision.strikes) {
+      if (decision.strikes.putStrike && Math.abs(decision.strikes.putStrike.delta) > currentGuardRails.maxDelta) {
+        guardRailViolations.push(`Put delta (${Math.abs(decision.strikes.putStrike.delta)}) exceeds max delta (${currentGuardRails.maxDelta})`);
+      }
+      if (decision.strikes.callStrike && Math.abs(decision.strikes.callStrike.delta) > currentGuardRails.maxDelta) {
+        guardRailViolations.push(`Call delta (${Math.abs(decision.strikes.callStrike.delta)}) exceeds max delta (${currentGuardRails.maxDelta})`);
+      }
+    }
+
+    // Transform to standardized response using adapter
+    const response: EngineAnalyzeResponse = adaptTradingDecision(
+      decision,
+      {
+        buyingPower: account.buyingPower,
+        cashBalance: account.totalCash,
+        totalValue: account.netLiquidation
+      },
+      {
+        riskProfile,
+        stopMultiplier: stopMult,
+        guardRailViolations,
+        tradingWindowOpen: tradingWindow.allowed,
+        symbol,
+        expirationMode,
+      }
+    );
+
+    // Send complete event with full result
+    send({ type: 'complete', timestamp: Date.now(), result: response });
+
+  } catch (error) {
+    console.error('[Engine/stream] Error:', error);
+
+    // Check if it's an EngineError with step context
+    if (error instanceof EngineError) {
+      console.error(`[Engine/stream] EngineError at Step ${error.step} (${error.stepName}): ${error.reason}`);
+      send({
+        type: 'error',
+        timestamp: Date.now(),
+        error: `Step ${error.step} (${error.stepName}) failed: ${error.reason}`,
+        diagnostics: error.diagnostics ? { ...error.diagnostics } : undefined,
+      });
+    } else {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      send({
+        type: 'error',
+        timestamp: Date.now(),
+        error: errorMessage,
+      });
+    }
+  } finally {
+    res.end();
+  }
+});
+
 // GET /api/engine/analyze - Run analysis and return standardized response
 // This is the NEW endpoint that returns the EngineAnalyzeResponse format
 router.get('/analyze', requireAuth, async (req, res) => {
@@ -586,6 +770,17 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
         }
       });
     }
+    if (!tradeProposal.expirationDate) {
+      console.log('[Engine/execute] ERROR: expirationDate missing. Received:', JSON.stringify(tradeProposal, null, 2));
+      return res.status(400).json({
+        error: 'Invalid trade proposal: missing expirationDate',
+        received: {
+          expirationDate: tradeProposal.expirationDate,
+          expiration: tradeProposal.expiration,
+          keys: Object.keys(tradeProposal)
+        }
+      });
+    }
 
     // Check trading window
     const tradingWindow = isWithinTradingWindow();
@@ -638,7 +833,8 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
 
         // Use expiration date from trade proposal (e.g., "2024-12-13" for Friday weekly)
         // Convert from YYYY-MM-DD to YYYYMMDD format for IBKR
-        const expiration = tradeProposal.expirationDate.replace(/-/g, '');
+        // Defensive: fallback to today if expirationDate is somehow undefined (should be caught by validation above)
+        const expiration = (tradeProposal.expirationDate || new Date().toISOString().slice(0, 10)).replace(/-/g, '');
         console.log(`[Engine/execute] Using expiration date: ${tradeProposal.expirationDate} → ${expiration}`);
 
         // Calculate per-leg stop prices (6x each leg's individual premium)
@@ -728,6 +924,39 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
       }
     }
 
+    // Capture entry commission from IBKR fills
+    // Wait briefly for fills to settle, then query IBKR for commission data
+    let entryCommission: number | null = null;
+    if (broker.status.provider === 'ibkr' && ibkrOrderIds.length > 0) {
+      try {
+        // Give IBKR a moment to process the fills
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        // Get recent executions from IBKR
+        const recentTrades = await broker.api.getTrades();
+
+        // Sum commission from fills that match our order IDs
+        // IBKR returns commission per execution
+        entryCommission = 0;
+        for (const trade of recentTrades) {
+          // Match by symbol containing our underlying (e.g., "SPY" in "SPY 250110P00590000")
+          if (trade.symbol?.includes(tradeProposal.symbol) && trade.entryCommission) {
+            entryCommission += trade.entryCommission;
+          }
+        }
+
+        if (entryCommission > 0) {
+          console.log(`[Engine/execute] Captured entry commission: $${entryCommission.toFixed(2)}`);
+        } else {
+          console.log('[Engine/execute] No commission data found in recent fills');
+          entryCommission = null; // Will fall back to estimate in tradeMonitor
+        }
+      } catch (commErr) {
+        console.warn('[Engine/execute] Could not fetch entry commission:', commErr);
+        entryCommission = null;
+      }
+    }
+
     // Insert trade record into database
     // Use expiration from proposal (Friday for weekly options)
     const expirationDate = new Date(tradeProposal.expirationDate);
@@ -781,6 +1010,8 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
         ibkrOrderIds: ibkrOrderIds.length > 0 ? ibkrOrderIds : null,
         userId: req.user?.id ?? null, // Multi-tenant: attach user ID from auth
         fullProposal: tradeProposal,
+        // Commission tracking - captured from IBKR fills
+        entryCommission: entryCommission,
       }).returning();
 
         engineTradeId = engineTrade.id;

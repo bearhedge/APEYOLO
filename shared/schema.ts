@@ -363,6 +363,13 @@ export const paperTrades = pgTable("paper_trades", {
   exitReason: text("exit_reason"),
   realizedPnl: decimal("realized_pnl", { precision: 10, scale: 2 }),
 
+  // Commission & P&L breakdown
+  entryCommission: doublePrecision("entry_commission"),
+  exitCommission: doublePrecision("exit_commission"),
+  totalCommissions: doublePrecision("total_commissions"),
+  grossPnl: doublePrecision("gross_pnl"),
+  netPnl: doublePrecision("net_pnl"),
+
   // IBKR integration
   ibkrOrderIds: jsonb("ibkr_order_ids"),  // Array of order IDs from IBKR
 
@@ -872,6 +879,7 @@ export const directionPredictions = pgTable("direction_predictions", {
 
   // What you actually chose
   userChoice: text("user_choice").notNull(),
+  userReasoning: text("user_reasoning"), // WHY you made this choice - this is your edge
 
   // Did you agree with AI?
   agreedWithAi: boolean("agreed_with_ai"),
@@ -954,33 +962,176 @@ export type InsertIndicatorSnapshot = z.infer<typeof insertIndicatorSnapshotSche
 
 // ==================== END INDICATOR SNAPSHOTS ====================
 
-// ==================== USER SETTINGS ====================
-// User-specific settings and preferences for RLHF features
+// ==================== RLHF TRAINING EXAMPLES ====================
 
-export const userSettings = pgTable("user_settings", {
-  id: varchar("id", { length: 36 }).primaryKey().default(sql`gen_random_uuid()`),
-  userId: varchar("user_id", { length: 36 }).notNull().references(() => users.id, { onDelete: "cascade" }).unique(),
+/**
+ * Training examples for the RLHF model.
+ *
+ * Each row represents a historical trading day snapshot with:
+ * - Market conditions at decision time (11 AM snapshot)
+ * - The actual outcome (what happened by 4 PM)
+ * - The optimal direction and efficiency score
+ *
+ * This data comes from Theta historical options data and is used
+ * to train the Global Edge model.
+ */
+export const trainingExamples = pgTable("training_examples", {
+  id: varchar("id", { length: 36 }).primaryKey().$defaultFn(() => crypto.randomUUID()),
 
-  // Auto-run feature for RLHF earned autonomy
-  autoRunEnabled: boolean("auto_run_enabled").notNull().default(false),
+  // When this snapshot was taken
+  date: timestamp("date").notNull(),
+  snapshotTime: text("snapshot_time").notNull(), // e.g., "11:00:00"
 
-  // Timestamps
+  // Market snapshot at decision time (features)
+  snapshot: jsonb("snapshot").notNull(), // { ohlcBars: [...], indicators: {...}, vix: number }
+
+  // Underlying price at snapshot time
+  underlyingPrice: doublePrecision("underlying_price").notNull(),
+  vix: doublePrecision("vix"),
+
+  // What actually happened (labels)
+  actualOutcome: doublePrecision("actual_outcome").notNull(), // % change by 4 PM
+  intradayHigh: doublePrecision("intraday_high"),
+  intradayLow: doublePrecision("intraday_low"),
+
+  // Optimal trade parameters
+  optimalDirection: text("optimal_direction").notNull(), // PUT | CALL | STRANGLE | NO_TRADE
+  conviction: text("conviction").notNull(), // STRONG | MEDIUM | WEAK
+  optimalStrike: doublePrecision("optimal_strike"), // Best strike given outcome
+
+  // Efficiency scoring
+  theoreticalMaxPnl: doublePrecision("theoretical_max_pnl"), // Best possible P&L
+  efficiencyScore: doublePrecision("efficiency_score"), // 0-1, how close to optimal
+
+  // Source tracking
+  source: text("source").notNull().default('theta'), // 'theta' | 'live' | 'backfill'
+
   createdAt: timestamp("created_at").notNull().defaultNow(),
-  updatedAt: timestamp("updated_at").notNull().defaultNow(),
 }, (table) => [
-  index("user_settings_user_id_idx").on(table.userId),
+  index("training_examples_date_idx").on(table.date),
+  index("training_examples_direction_idx").on(table.optimalDirection),
 ]);
 
-export const insertUserSettingsSchema = createInsertSchema(userSettings).omit({
+export const insertTrainingExampleSchema = createInsertSchema(trainingExamples).omit({
   id: true,
   createdAt: true,
-  updatedAt: true,
 });
+export type TrainingExample = typeof trainingExamples.$inferSelect;
+export type InsertTrainingExample = z.infer<typeof insertTrainingExampleSchema>;
 
-export type UserSettings = typeof userSettings.$inferSelect;
-export type InsertUserSettings = z.infer<typeof insertUserSettingsSchema>;
+// ==================== END RLHF TRAINING EXAMPLES ====================
 
-// ==================== END USER SETTINGS ====================
+// ==================== LIVE DATA CAPTURE (DD Page) ====================
+
+/**
+ * Live 1-minute candles - captured in real-time during market hours
+ * ~1 GB/year for SPY at 1-minute resolution
+ */
+export const liveCandles = pgTable("live_candles", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  symbol: varchar("symbol", { length: 10 }).notNull(),
+  timestamp: timestamp("timestamp").notNull(),
+  open: doublePrecision("open").notNull(),
+  high: doublePrecision("high").notNull(),
+  low: doublePrecision("low").notNull(),
+  close: doublePrecision("close").notNull(),
+  volume: bigint("volume", { mode: 'number' }),
+}, (table) => [
+  uniqueIndex("live_candles_symbol_timestamp_idx").on(table.symbol, table.timestamp),
+]);
+
+export const insertLiveCandleSchema = createInsertSchema(liveCandles).omit({
+  id: true,
+});
+export type LiveCandle = typeof liveCandles.$inferSelect;
+export type InsertLiveCandle = z.infer<typeof insertLiveCandleSchema>;
+
+/**
+ * Live 1-minute options snapshots - captured alongside candles
+ */
+export const liveOptions = pgTable("live_options", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  symbol: varchar("symbol", { length: 10 }).notNull(),
+  timestamp: timestamp("timestamp").notNull(),
+  strike: doublePrecision("strike").notNull(),
+  right: varchar("right", { length: 4 }).notNull(), // PUT/CALL
+  bid: doublePrecision("bid"),
+  ask: doublePrecision("ask"),
+  delta: doublePrecision("delta"),
+  gamma: doublePrecision("gamma"),
+  theta: doublePrecision("theta"),
+  vega: doublePrecision("vega"),
+  iv: doublePrecision("iv"),
+  volume: integer("volume"),
+  openInterest: integer("open_interest"),
+}, (table) => [
+  uniqueIndex("live_options_idx").on(table.symbol, table.timestamp, table.strike, table.right),
+]);
+
+export const insertLiveOptionSchema = createInsertSchema(liveOptions).omit({
+  id: true,
+});
+export type LiveOption = typeof liveOptions.$inferSelect;
+export type InsertLiveOption = z.infer<typeof insertLiveOptionSchema>;
+
+// ==================== END LIVE DATA CAPTURE ====================
+
+// ==================== TRAINING MODE (DD Page) ====================
+
+/**
+ * Research observations - logged during Research mode when exploring patterns
+ */
+export const observations = pgTable("observations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").references(() => users.id),
+  symbol: varchar("symbol", { length: 10 }).notNull(),
+  date: varchar("date", { length: 10 }).notNull(), // YYYY-MM-DD
+  timestamp: varchar("timestamp", { length: 5 }).notNull(), // HH:MM
+  direction: varchar("direction", { length: 20 }).notNull(),
+  confidence: varchar("confidence", { length: 10 }).notNull(),
+  notes: text("notes"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  index("observations_user_idx").on(table.userId),
+  index("observations_date_idx").on(table.date),
+]);
+
+export const insertObservationSchema = createInsertSchema(observations).omit({
+  id: true,
+  createdAt: true,
+});
+export type Observation = typeof observations.$inferSelect;
+export type InsertObservation = z.infer<typeof insertObservationSchema>;
+
+/**
+ * Training decisions - logged during Train mode with fixed time windows
+ */
+export const trainDecisions = pgTable("train_decisions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").references(() => users.id),
+  symbol: varchar("symbol", { length: 10 }).notNull(),
+  date: varchar("date", { length: 10 }).notNull(),
+  windowNumber: integer("window_number").notNull(), // 1, 2, or 3
+  direction: varchar("direction", { length: 20 }).notNull(),
+  reasoning: text("reasoning"),
+  spotPriceAtDecision: doublePrecision("spot_price_at_decision"),
+  outcomeDirection: varchar("outcome_direction", { length: 20 }),
+  outcomePnl: doublePrecision("outcome_pnl"),
+  wasCorrect: boolean("was_correct"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  index("train_decisions_user_idx").on(table.userId),
+  index("train_decisions_date_idx").on(table.date),
+]);
+
+export const insertTrainDecisionSchema = createInsertSchema(trainDecisions).omit({
+  id: true,
+  createdAt: true,
+});
+export type TrainDecision = typeof trainDecisions.$inferSelect;
+export type InsertTrainDecision = z.infer<typeof insertTrainDecisionSchema>;
+
+// ==================== END TRAINING MODE ====================
 
 // Option chain types
 export type OptionData = {
