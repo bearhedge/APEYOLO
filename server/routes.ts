@@ -2398,7 +2398,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         diag.validate.status === 200 &&
         diag.init.status === 200;
 
-      // If all steps are successful, establish the gateway for future orders
+      // If all steps are successful, establish the gateway for future orders AND start WebSocket
       if (allConnected) {
         console.log('[IBKR Test] All auth steps successful, establishing gateway for trading...');
         try {
@@ -2407,8 +2407,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
             await (userBroker.api as any).establishGateway();
             console.log('[IBKR Test] Gateway established successfully');
           }
+
+          // Initialize WebSocket for real-time data streaming
+          const cookieString = await getIbkrCookieString();
+          const sessionToken = await getIbkrSessionToken();
+          if (cookieString) {
+            console.log('[IBKR Test] Starting WebSocket for real-time data...');
+            const wsManager = initIbkrWebSocket(cookieString, sessionToken);
+            await wsManager.connect();
+            // Subscribe to SPY and VIX
+            wsManager.subscribe(756733, { symbol: 'SPY', type: 'stock' }); // SPY
+            wsManager.subscribe(13455763, { symbol: 'VIX', type: 'stock' }); // VIX
+            console.log('[IBKR Test] WebSocket connected and subscribed to SPY/VIX');
+          }
         } catch (err) {
-          console.error('[IBKR Test] Failed to establish gateway:', err);
+          console.error('[IBKR Test] Failed to establish gateway or WebSocket:', err);
         }
       }
 

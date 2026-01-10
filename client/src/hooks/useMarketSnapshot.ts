@@ -11,12 +11,9 @@ import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 
 export type DataSourceMode = 'websocket' | 'http';
 
-// Helper to get data source preference from localStorage
+// Helper to get data source preference - always WebSocket now (HTTP removed)
 function getDataSourcePreference(): DataSourceMode {
-  if (typeof window !== 'undefined') {
-    return (localStorage.getItem('apeyolo-data-source') as DataSourceMode) || 'http';
-  }
-  return 'http';
+  return 'websocket';
 }
 
 export interface MarketSnapshot {

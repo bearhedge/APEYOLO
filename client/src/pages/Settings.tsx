@@ -728,12 +728,6 @@ export function Settings() {
                   Real-time push updates • ~50ms latency • Covered by OPRA subscription
                 </p>
               </div>
-
-              <div className="mt-3 p-3 bg-amber-900/20 border border-amber-500/30 rounded-lg">
-                <p className="text-xs text-amber-400">
-                  <span className="font-medium">Note:</span> HTTP Snapshot mode was removed because it used costly snapshot API calls ($0.01-$0.03 each), which added up to ~$72/hour during market hours.
-                </p>
-              </div>
             </div>
 
             {/* CREDENTIALS Section */}
