@@ -410,7 +410,12 @@ function RunHistoryTable({ history }: { history: JobRun[] }) {
 // Main Jobs Page
 // ============================================
 
-export function Jobs() {
+interface JobsProps {
+  /** Hide LeftNav when embedded in another page (e.g., Review page) */
+  hideLeftNav?: boolean;
+}
+
+export function Jobs({ hideLeftNav = false }: JobsProps = {}) {
   const {
     jobs,
     history,
@@ -442,7 +447,7 @@ export function Jobs() {
 
   return (
     <div className="flex h-[calc(100vh-64px)]">
-      <LeftNav />
+      {!hideLeftNav && <LeftNav />}
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
         {/* Header */}
         <div className="mb-6">

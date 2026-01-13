@@ -18,12 +18,18 @@ export const IBKR_FIELDS = {
   LAST_PRICE: '31',
   BID: '84',
   ASK: '86',
-  DELTA: '7308',
-  GAMMA: '7309',
+  // Stock-specific fields
+  DAY_HIGH: '7308',        // Stock: Day high price
+  DAY_LOW: '7309',         // Stock: Day low price
+  OPEN_PRICE: '7283',      // Stock: Opening price
+  PREVIOUS_CLOSE: '7311',  // Stock: Previous day close
+  // Option-specific fields (same codes, different meanings)
+  DELTA: '7308',           // Option: Delta
+  GAMMA: '7309',           // Option: Gamma
   THETA: '7310',
   VEGA: '7633',
-  IV: '7283',
-  OPEN_INTEREST: '7311',
+  IV: '7283',              // Option: Implied Volatility
+  OPEN_INTEREST: '7311',   // Option: Open Interest
   // Extended hours fields
   AFTER_HOURS_LAST: '7762',
   PRE_MARKET_LAST: '7741',
@@ -45,11 +51,15 @@ const DEFAULT_OPTION_FIELDS = [
   IBKR_FIELDS.OPEN_INTEREST,
 ];
 
-// Default fields for stock streaming (includes extended hours)
+// Default fields for stock streaming (includes extended hours + day range)
 const DEFAULT_STOCK_FIELDS = [
   IBKR_FIELDS.LAST_PRICE,
   IBKR_FIELDS.BID,
   IBKR_FIELDS.ASK,
+  IBKR_FIELDS.DAY_HIGH,        // ✅ Real day high
+  IBKR_FIELDS.DAY_LOW,         // ✅ Real day low
+  IBKR_FIELDS.OPEN_PRICE,      // ✅ Opening price
+  IBKR_FIELDS.PREVIOUS_CLOSE,  // ✅ Previous close
   IBKR_FIELDS.AFTER_HOURS_LAST,
   IBKR_FIELDS.PRE_MARKET_LAST,
   IBKR_FIELDS.OVERNIGHT_LAST,
@@ -86,6 +96,10 @@ export interface CachedMarketData {
   last: number;
   bid: number;
   ask: number;
+  dayHigh?: number;        // ✅ Real day high from IBKR
+  dayLow?: number;         // ✅ Real day low from IBKR
+  openPrice?: number;      // ✅ Opening price from IBKR
+  previousClose?: number;  // ✅ Previous close from IBKR
   timestamp: Date;
 }
 
@@ -622,6 +636,15 @@ export class IbkrWebSocketManager {
 
     if (msg[IBKR_FIELDS.BID]) update.bid = parsePrice(msg[IBKR_FIELDS.BID]);
     if (msg[IBKR_FIELDS.ASK]) update.ask = parsePrice(msg[IBKR_FIELDS.ASK]);
+
+    // Stock-specific fields (day range, open, previous close)
+    // Note: For options, these same field codes mean delta/gamma/IV/openInterest
+    const dayHigh = parsePrice(msg[IBKR_FIELDS.DAY_HIGH]);
+    const dayLow = parsePrice(msg[IBKR_FIELDS.DAY_LOW]);
+    const openPrice = parsePrice(msg[IBKR_FIELDS.OPEN_PRICE]);
+    const previousClose = parsePrice(msg[IBKR_FIELDS.PREVIOUS_CLOSE]);
+
+    // Option-specific fields (for options subscriptions)
     if (msg[IBKR_FIELDS.DELTA]) update.delta = parseFloat(msg[IBKR_FIELDS.DELTA]);
     if (msg[IBKR_FIELDS.GAMMA]) update.gamma = parseFloat(msg[IBKR_FIELDS.GAMMA]);
     if (msg[IBKR_FIELDS.THETA]) update.theta = parseFloat(msg[IBKR_FIELDS.THETA]);
@@ -641,6 +664,11 @@ export class IbkrWebSocketManager {
     if (update.last != null) cached.last = update.last;
     if (update.bid != null) cached.bid = update.bid;
     if (update.ask != null) cached.ask = update.ask;
+    // Store stock-specific fields (day high/low, open, previous close)
+    if (dayHigh != null) cached.dayHigh = dayHigh;
+    if (dayLow != null) cached.dayLow = dayLow;
+    if (openPrice != null) cached.openPrice = openPrice;
+    if (previousClose != null) cached.previousClose = previousClose;
     cached.timestamp = update.timestamp;
     this.marketDataCache.set(conid, cached);
 

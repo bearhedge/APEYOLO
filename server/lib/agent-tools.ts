@@ -26,11 +26,23 @@ export interface ToolResult {
   error?: string;
 }
 
+export interface ToolProgressEvent {
+  type: 'step_update';
+  step: number;
+  status: 'running' | 'complete' | 'error';
+  message: string;
+  data?: any;
+}
+
+export interface ToolExecutionContext {
+  onProgress?: (event: ToolProgressEvent) => void;
+}
+
 export interface Tool {
   name: string;
   description: string;
   parameters: Record<string, ToolParameter>;
-  execute: (args: Record<string, any>) => Promise<ToolResult>;
+  execute: (args: Record<string, any>, context?: ToolExecutionContext) => Promise<ToolResult>;
 }
 
 export interface ToolCall {
@@ -49,7 +61,7 @@ const getCurrentTimeTool: Tool = {
   name: 'get_current_time',
   description: 'Get the current date and time in multiple timezones (Hong Kong, New York, UTC)',
   parameters: {},
-  execute: async (): Promise<ToolResult> => {
+  execute: async (args, context): Promise<ToolResult> => {
     const now = new Date();
     return {
       success: true,
@@ -236,18 +248,22 @@ const runEngineTool: Tool = {
       enum: ['strangle', 'put-only', 'call-only'],
     },
   },
-  execute: async (args): Promise<ToolResult> => {
+  execute: async (args, context): Promise<ToolResult> => {
     try {
-      // Dynamic import to avoid circular dependencies
-      const { TradingEngine } = await import('../engine');
-      const { api } = getBroker();
-
       const symbol = args.symbol || 'SPY';
       const riskProfile = args.riskProfile || 'BALANCED';
       const strategy = args.strategy as 'strangle' | 'put-only' | 'call-only' | undefined;
 
-      // Get current underlying price
-      let underlyingPrice = 600; // Default fallback
+      // If context.onProgress provided, use streaming variant
+      if (context?.onProgress) {
+        return await executeEngineStreaming(symbol, riskProfile, strategy, context.onProgress);
+      }
+
+      // Fallback: Non-streaming execution (backwards compatibility)
+      const { TradingEngine } = await import('../engine');
+      const { api } = getBroker();
+
+      let underlyingPrice = 600;
       if (api) {
         try {
           const marketData = await api.getMarketData(symbol);
@@ -257,7 +273,6 @@ const runEngineTool: Tool = {
         }
       }
 
-      // Get account info for position sizing
       let accountInfo = {
         cashBalance: 150000,
         buyingPower: 500000,
@@ -279,13 +294,12 @@ const runEngineTool: Tool = {
         }
       }
 
-      // Create and run engine
       const engine = new TradingEngine({
         riskProfile,
         underlyingSymbol: symbol,
         underlyingPrice,
-        mockMode: !api, // Use mock if no broker
-        forcedStrategy: strategy, // Force PUT-only or CALL-only if specified
+        mockMode: !api,
+        forcedStrategy: strategy,
       });
 
       const result = await engine.executeTradingDecision(accountInfo);
@@ -299,17 +313,14 @@ const runEngineTool: Tool = {
           direction: result.direction?.direction,
           confidence: result.direction?.confidence,
           strikes: result.strikes && typeof result.strikes === 'object' && !Array.isArray(result.strikes) ? {
-            // Put strike details
             put: result.strikes.putStrike?.strike,
             putDelta: result.strikes.putStrike?.delta,
             putBid: result.strikes.putStrike?.bid,
             putAsk: result.strikes.putStrike?.ask,
-            // Call strike details
             call: result.strikes.callStrike?.strike,
             callDelta: result.strikes.callStrike?.delta,
             callBid: result.strikes.callStrike?.bid,
             callAsk: result.strikes.callStrike?.ask,
-            // Summary
             premium: result.strikes.expectedPremium,
             reasoning: result.strikes.reasoning,
           } : null,
@@ -332,6 +343,128 @@ const runEngineTool: Tool = {
     }
   },
 };
+
+/**
+ * Streaming variant of runEngine - connects to Engine SSE endpoint and forwards events
+ */
+async function executeEngineStreaming(
+  symbol: string,
+  riskProfile: string,
+  strategy: string | undefined,
+  onProgress: (event: ToolProgressEvent) => void
+): Promise<ToolResult> {
+  return new Promise(async (resolve, reject) => {
+    try {
+      // Build query params for streaming endpoint
+      const params = new URLSearchParams({
+        symbol,
+        riskTier: riskProfile.toLowerCase(),
+        stopMultiplier: '3',
+        strategy: strategy || 'strangle',
+      });
+
+      const url = `http://localhost:${process.env.PORT || 8080}/api/engine/analyze/stream?${params}`;
+
+      // Use node-fetch or native fetch to connect to SSE
+      const fetch = (await import('node-fetch')).default;
+      const response = await fetch(url, {
+        method: 'GET',
+        headers: {
+          'Accept': 'text/event-stream',
+        },
+      });
+
+      if (!response.ok) {
+        throw new Error(`Engine stream failed: ${response.status}`);
+      }
+
+      let buffer = '';
+      let finalResult: any = null;
+
+      // Process SSE stream
+      response.body?.on('data', (chunk: Buffer) => {
+        buffer += chunk.toString();
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue;
+
+          try {
+            const event = JSON.parse(line.slice(6));
+
+            if (event.type === 'step_start') {
+              onProgress({
+                type: 'step_update',
+                step: event.step,
+                status: 'running',
+                message: `Step ${event.step}: ${event.stepName || 'Processing'}`,
+              });
+            } else if (event.type === 'step_complete') {
+              // Format step log with reasoning
+              let message = `Step ${event.step}: Complete`;
+              if (event.stepLog?.reasoning) {
+                const reasoning = event.stepLog.reasoning
+                  .map((r: any) => `→ ${r.question}: ${r.answer}`)
+                  .join('\n');
+                message += `\n${reasoning}`;
+              }
+              if (event.stepLog?.metrics) {
+                const metrics = event.stepLog.metrics
+                  .map((m: any) => `→ ${m.label}: ${m.value}${m.unit || ''}`)
+                  .join('\n');
+                message += `\n${metrics}`;
+              }
+
+              onProgress({
+                type: 'step_update',
+                step: event.step,
+                status: 'complete',
+                message,
+                data: event.stepLog,
+              });
+            } else if (event.type === 'step_error') {
+              onProgress({
+                type: 'step_update',
+                step: event.step,
+                status: 'error',
+                message: `Step ${event.step}: ${event.error}`,
+              });
+            } else if (event.type === 'complete') {
+              finalResult = event.result;
+            }
+          } catch (e) {
+            console.error('[AgentTools] Failed to parse SSE event:', e);
+          }
+        }
+      });
+
+      response.body?.on('end', () => {
+        if (finalResult) {
+          resolve({
+            success: true,
+            data: {
+              canTrade: finalResult.canTrade,
+              direction: finalResult.direction?.direction,
+              strikes: finalResult.q3Strikes?.smartCandidates || finalResult.q3Strikes?.candidates,
+              premium: finalResult.tradeProposal?.entryPremiumTotal,
+              reason: finalResult.reason,
+            },
+          });
+        } else {
+          reject(new Error('Engine stream ended without result'));
+        }
+      });
+
+      response.body?.on('error', (error) => {
+        reject(error);
+      });
+    } catch (error: any) {
+      console.error('[AgentTools] executeEngineStreaming error:', error);
+      reject(error);
+    }
+  });
+}
 
 /**
  * Execute a trade via IBKR (NOT YET IMPLEMENTED - placeholder for safety)
@@ -362,7 +495,7 @@ const executeTradeTool: Tool = {
       description: 'Number of contracts (max 2)',
     },
   },
-  execute: async (args): Promise<ToolResult> => {
+  execute: async (args, context): Promise<ToolResult> => {
     // Safety check: max 2 contracts
     if (args.contracts > 2) {
       return {
@@ -430,7 +563,7 @@ const closeTradeTool: Tool = {
       description: 'Contract ID or position identifier to close',
     },
   },
-  execute: async (args): Promise<ToolResult> => {
+  execute: async (args, context): Promise<ToolResult> => {
     // TODO: Implement position closing
     return {
       success: false,

@@ -247,9 +247,13 @@ export function useMarketSnapshot() {
               ivRank: data.symbol === 'VIX' && data.ivRank != null
                 ? data.ivRank
                 : prev?.ivRank ?? null,
-              // Preserve day high/low from HTTP snapshot (SSE doesn't provide these)
-              dayHigh: prev?.dayHigh || lastSpyPriceRef.current * 1.005,
-              dayLow: prev?.dayLow || lastSpyPriceRef.current * 0.995,
+              // Use REAL day high/low from SSE stream (IBKR WebSocket data)
+              dayHigh: data.symbol === 'SPY' && data.dayHigh != null
+                ? data.dayHigh
+                : prev?.dayHigh || lastSpyPriceRef.current,
+              dayLow: data.symbol === 'SPY' && data.dayLow != null
+                ? data.dayLow
+                : prev?.dayLow || lastSpyPriceRef.current,
               // Use server-provided marketState instead of hardcoding
               marketState: data.marketState || prev?.marketState || 'CLOSED',
               source: 'ibkr-sse',

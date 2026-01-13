@@ -398,7 +398,12 @@ const formatOptionSymbol = (symbol: string, assetType?: 'option' | 'stock'): str
   return `${underlying} ${mm}/${dd} $${strike} ${optType}`;
 };
 
-export function Portfolio() {
+interface PortfolioProps {
+  /** Hide LeftNav when embedded in another page (e.g., Review page) */
+  hideLeftNav?: boolean;
+}
+
+export function Portfolio({ hideLeftNav = false }: PortfolioProps = {}) {
   const { data: positions } = useQuery<Position[]>({
     queryKey: ['/api/positions'],
     queryFn: getPositions,
@@ -704,7 +709,7 @@ export function Portfolio() {
 
   return (
     <div className="flex h-[calc(100vh-64px)]">
-      <LeftNav />
+      {!hideLeftNav && <LeftNav />}
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
         <div className="mb-6">
           <h1 className="text-3xl font-bold tracking-wide">Portfolio</h1>

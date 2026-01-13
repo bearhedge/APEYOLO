@@ -1,15 +1,11 @@
 import { Link, useLocation } from 'wouter';
-import { Bot, Briefcase, BarChart2, List, Settings, Zap, Trophy, Coins } from 'lucide-react';
+import { Zap, LineChart, BarChart2, Coins } from 'lucide-react';
 
 const navItems = [
-  { path: '/agent', label: 'Agent', icon: Bot },         // Primary interface
+  { path: '/trade', label: 'Trade', icon: Zap },           // Engine + Agent
+  { path: '/review', label: 'Review', icon: LineChart },  // Track + Portfolio + Jobs + Settings
   { path: '/dd', label: 'DD', icon: BarChart2 },
   { path: '/defi', label: 'DeFi', icon: Coins },
-  { path: '/jobs', label: 'Jobs', icon: List },
-  { path: '/engine', label: 'Engine', icon: Zap },
-  { path: '/portfolio', label: 'Portfolio', icon: Briefcase },
-  { path: '/track-record', label: 'Track', icon: Trophy },
-  { path: '/settings', label: 'Settings', icon: Settings },
 ];
 
 export function LeftNav() {
@@ -19,7 +15,8 @@ export function LeftNav() {
     <div className="w-20 bg-charcoal border-r border-white/10 flex flex-col items-center py-6 space-y-2">
       {navItems.map((item) => {
         const Icon = item.icon;
-        const isActive = location === item.path;
+        // Handle active state for routes with query params (e.g., /review?tab=...)
+        const isActive = location.startsWith(item.path);
         return (
           <Link
             key={item.path}

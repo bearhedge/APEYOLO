@@ -10,7 +10,7 @@
 
 import { Loader2, CheckCircle, XCircle, Brain, Zap, AlertTriangle, User, Bot } from 'lucide-react';
 
-export type ActivityType = 'action' | 'result' | 'thinking' | 'error' | 'info' | 'user-message' | 'assistant-message';
+export type ActivityType = 'action' | 'result' | 'thinking' | 'error' | 'info' | 'user-message' | 'assistant-message' | 'tool_progress';
 
 export interface ActivityEntryData {
   id: string;
@@ -137,6 +137,40 @@ export function ActivityEntry({ entry }: ActivityEntryProps) {
             </div>
             <div className="text-sm text-white whitespace-pre-wrap">
               {content || '...'}
+            </div>
+          </div>
+        </div>
+      );
+
+    case 'tool_progress':
+      return (
+        <div className="py-2 pl-6">
+          <div className={`border-l-4 rounded p-3 ${
+            status === 'error'
+              ? 'border-red-500 bg-red-950/20'
+              : status === 'done'
+              ? 'border-green-500 bg-green-950/20'
+              : 'border-amber-500 bg-amber-950/20'
+          }`}>
+            <div className="flex items-start gap-2">
+              <span className="text-lg flex-shrink-0">⚙️</span>
+              <div className="flex-1 min-w-0">
+                <div className="text-sm text-white font-mono whitespace-pre-wrap">
+                  {content}
+                </div>
+                <div className="flex items-center gap-2 mt-1">
+                  <span className="text-xs text-silver/60">{timeStr}</span>
+                  {status === 'running' && (
+                    <Loader2 className="w-3 h-3 text-amber-400 animate-spin" />
+                  )}
+                  {status === 'done' && (
+                    <CheckCircle className="w-3 h-3 text-green-400" />
+                  )}
+                  {status === 'error' && (
+                    <XCircle className="w-3 h-3 text-red-400" />
+                  )}
+                </div>
+              </div>
             </div>
           </div>
         </div>

@@ -266,12 +266,12 @@ export function Step1Market({
         {isLoading ? (
           <>
             <Minus className="w-5 h-5 animate-spin" />
-            Analyzing...
+            Agent analyzing...
           </>
         ) : (
           <>
-            Run Engine
-            <ArrowRight className="w-5 h-5" />
+            <Zap className="w-5 h-5" />
+            Analyze Market
           </>
         )}
       </Button>

@@ -231,27 +231,40 @@ class IbkrClient {
     accessToken: string | null;
     accessTokenExpiryMs: number;
     ssoToken: string | null;
-    ssoSessionId: string | null;
-    ssoTokenExpiryMs: number;
-    cookieJarJson: string | null;
+    ssoSessionId?: string | null;
+    ssoTokenExpiryMs?: number;
+    ssoExpiryMs?: number; // Alias for ssoTokenExpiryMs
+    cookieJarJson?: string | null;
   }): void {
     const now = Date.now();
+    const ssoExpiry = state.ssoTokenExpiryMs ?? state.ssoExpiryMs ?? 0;
 
-    // Only restore if tokens haven't expired
-    if (state.accessToken && state.accessTokenExpiryMs > now) {
+    // If null is explicitly passed, clear the tokens
+    if (state.accessToken === null) {
+      this.accessToken = null;
+      this.accessTokenExpiryMs = 0;
+      console.log('[IBKR] Cleared access token');
+    } else if (state.accessToken && state.accessTokenExpiryMs > now) {
+      // Only restore if tokens haven't expired
       this.accessToken = state.accessToken;
       this.accessTokenExpiryMs = state.accessTokenExpiryMs;
       console.log('[IBKR] Restored access token, expires in',
         Math.round((state.accessTokenExpiryMs - now) / 1000 / 60), 'minutes');
     }
 
-    if (state.ssoToken && state.ssoTokenExpiryMs > now) {
+    if (state.ssoToken === null) {
+      this.ssoAccessToken = null;
+      this.ssoSessionId = null;
+      this.ssoAccessTokenExpiryMs = 0;
+      this.sessionReady = false;
+      console.log('[IBKR] Cleared SSO session');
+    } else if (state.ssoToken && ssoExpiry > now) {
       this.ssoAccessToken = state.ssoToken;
-      this.ssoSessionId = state.ssoSessionId;
-      this.ssoAccessTokenExpiryMs = state.ssoTokenExpiryMs;
+      this.ssoSessionId = state.ssoSessionId ?? null;
+      this.ssoAccessTokenExpiryMs = ssoExpiry;
       this.sessionReady = true;
       console.log('[IBKR] Restored SSO session, expires in',
-        Math.round((state.ssoTokenExpiryMs - now) / 1000 / 60), 'minutes');
+        Math.round((ssoExpiry - now) / 1000 / 60), 'minutes');
     }
 
     // Restore cookies
@@ -273,6 +286,20 @@ class IbkrClient {
         console.warn('[IBKR] Failed to restore cookie jar:', e);
       }
     }
+  }
+
+  /**
+   * Reset diagnostics to initial state (all disconnected)
+   */
+  public resetDiagnostics(): void {
+    this.last = {
+      oauth: { status: null, ts: "" },
+      sso: { status: null, ts: "" },
+      validate: { status: null, ts: "" },
+      init: { status: null, ts: "" },
+    };
+    this.sessionReady = false;
+    this.accountSelected = false;
   }
 
   /**
@@ -3822,6 +3849,27 @@ export async function getIbkrSessionToken(): Promise<string | null> {
 export async function resolveSymbolConid(symbol: string): Promise<number | null> {
   if (!activeClient) throw new Error('IBKR client not initialized');
   return activeClient.resolveConid(symbol);
+}
+
+/**
+ * Clear the cached IBKR session to force fresh re-authentication.
+ * Called when switching connection modes to ensure clean state.
+ */
+export function clearIbkrSession(): void {
+  if (!activeClient) {
+    console.log('[IBKR] clearIbkrSession: No active client');
+    return;
+  }
+  // Reset all token state
+  activeClient.restoreTokenState({
+    accessToken: null,
+    accessTokenExpiryMs: 0,
+    ssoToken: null,
+    ssoExpiryMs: 0,
+  });
+  // Reset diagnostics so status shows as disconnected
+  activeClient.resetDiagnostics();
+  console.log('[IBKR] Session and diagnostics cleared - status will show disconnected');
 }
 
 /**

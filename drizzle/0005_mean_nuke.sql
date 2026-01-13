@@ -1,0 +1,1 @@
+ALTER TABLE "ibkr_credentials" ADD COLUMN "connection_type" text DEFAULT 'oauth' NOT NULL;

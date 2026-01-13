@@ -56,6 +56,7 @@ import {
   getMetrics,
   getVWAP,
 } from "./services/marketMetrics.js";
+import { getSPYVWAP, getCachedVWAP } from "./services/yahooVwapService.js";
 
 // Helper function to get session from request
 async function getSessionFromRequest(req: any) {
@@ -412,6 +413,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } catch (error) {
       console.error('[Settings] Activate IBKR credentials error:', error);
       res.status(500).json({ error: 'Failed to activate IBKR credentials' });
+    }
+  });
+
+  // GET /api/settings/connection-mode - Get current connection mode (OAuth vs TWS/Gateway)
+  // This is in-memory only - no database storage
+  app.get('/api/settings/connection-mode', requireAuth, (req, res) => {
+    try {
+      const { getConnectionMode } = require('./services/marketDataAutoStart');
+      const mode = getConnectionMode();
+      console.log(`[Settings] GET connection-mode: ${mode}`);
+      return res.json({ mode });
+    } catch (error) {
+      console.error('[Settings] Get connection mode error:', error);
+      res.status(500).json({ error: 'Failed to get connection mode' });
+    }
+  });
+
+  // PUT /api/settings/connection-mode - Set connection mode (OAuth vs TWS/Gateway)
+  // When switching to 'relay', disconnects OAuth WebSocket so user can use local TWS
+  app.put('/api/settings/connection-mode', requireAuth, (req, res) => {
+    try {
+      const { mode } = req.body;
+      if (mode !== 'oauth' && mode !== 'relay') {
+        return res.status(400).json({ error: 'Invalid mode. Must be "oauth" or "relay"' });
+      }
+
+      const { setConnectionMode, getConnectionMode } = require('./services/marketDataAutoStart');
+      setConnectionMode(mode);
+      console.log(`[Settings] PUT connection-mode: ${mode}`);
+
+      return res.json({
+        success: true,
+        mode: getConnectionMode(),
+        message: mode === 'relay'
+          ? 'Switched to TWS/Gateway mode. OAuth WebSocket disconnected.'
+          : 'Switched to OAuth mode. Will reconnect within 30 seconds.'
+      });
+    } catch (error) {
+      console.error('[Settings] Set connection mode error:', error);
+      res.status(500).json({ error: 'Failed to set connection mode' });
     }
   });
 
@@ -2021,8 +2062,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           spyBid,
           spyAsk,
           spyPrevClose: metrics.spyPrevClose,
-          dayHigh: spyPrice * 1.005,
-          dayLow: spyPrice * 0.995,
+          dayHigh: spyData.dayHigh || 0,  // ✅ Real IBKR data (not fake ±0.5%)
+          dayLow: spyData.dayLow || 0,    // ✅ Real IBKR data (not fake ±0.5%)
+          openPrice: spyData.openPrice,   // ✅ Real open price
           vix: vixPrice,
           vixChange,
           vixChangePct,
@@ -2124,6 +2166,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
     let isClientConnected = true;
     let isRequestInFlight = false;  // Prevent concurrent requests
 
+    // Track day high/low from WebSocket prices (reset daily at market open)
+    let dayHigh = 0;
+    let dayLow = Infinity;
+    let lastResetDate: string | null = null;
+
+    // Reset day high/low at midnight
+    const checkDayReset = () => {
+      const today = new Date().toISOString().split('T')[0];
+      if (lastResetDate !== today) {
+        dayHigh = 0;
+        dayLow = Infinity;
+        lastResetDate = today;
+        console.log('[SSE] Day high/low reset for new trading day');
+      }
+    };
+
+    // Fetch initial VWAP from Yahoo Finance (free, ~15min delayed)
+    console.log('[SSE] Fetching initial VWAP...');
+    getSPYVWAP().catch(err => {
+      console.warn('[SSE] Initial VWAP fetch failed:', err.message);
+    });
+
+    // Update VWAP every 1 minute (Yahoo Finance free tier)
+    const vwapUpdateInterval = setInterval(() => {
+      if (!isClientConnected) {
+        clearInterval(vwapUpdateInterval);
+        return;
+      }
+      getSPYVWAP().catch(err => {
+        console.warn('[SSE] VWAP update failed:', err.message);
+      });
+    }, 1 * 60 * 1000); // 1 minute
+
     // Polling interval based on mode:
     // - websocket: 250ms (low latency from cache)
     // - http: 1000ms (consolidated NBBO, needs network call)
@@ -2181,6 +2256,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
             lastSpyPrice = spyPrice;
             updateCount++;
 
+            // Check if we need to reset day high/low (new trading day)
+            checkDayReset();
+
+            // Update day high/low from observed prices
+            if (spyPrice > dayHigh) dayHigh = spyPrice;
+            if (spyPrice < dayLow) dayLow = spyPrice;
+
             const marketStatus = getMarketStatus();
             const marketState = marketStatus?.isOpen ? 'REGULAR' : 'CLOSED';
             const metrics = getMetrics();
@@ -2188,7 +2270,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             // DEBUG: Log what we're sending
             if (updateCount <= 3) {
-              console.log(`[SSE] SPY update #${updateCount}: price=$${spyPrice.toFixed(2)}, prevClose=${metrics.spyPrevClose?.toFixed(2) ?? 'NULL'}, changePct=${changePct.toFixed(2)}%`);
+              console.log(`[SSE] SPY update #${updateCount}: price=$${spyPrice.toFixed(2)}, prevClose=${metrics.spyPrevClose?.toFixed(2) ?? 'NULL'}, changePct=${changePct.toFixed(2)}%, dayHigh=${dayHigh.toFixed(2)}, dayLow=${dayLow === Infinity ? 'N/A' : dayLow.toFixed(2)}`);
             }
 
             const spyEvent = {
@@ -2202,7 +2284,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
               prevClose: metrics.spyPrevClose,
               ivRank: null,
               marketState,
-              vwap: getVWAP(),
+              // VWAP from Yahoo Finance (updated every 1 minute, ~15min delayed)
+              vwap: getCachedVWAP(),
+              // Real day high/low tracked from WebSocket prices (FREE!)
+              dayHigh: dayHigh > 0 ? dayHigh : null,
+              dayLow: dayLow < Infinity ? dayLow : null,
               timestamp: new Date().toISOString(),
               updateNumber: updateCount,
               source: dataSource
@@ -2257,6 +2343,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       isClientConnected = false;
       clearInterval(pollInterval);
       clearInterval(heartbeatInterval);
+      clearInterval(vwapUpdateInterval);
     });
   });
 
@@ -2274,12 +2361,84 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Get broker for this specific user (no fallback to shared broker)
       const userBroker = await getBrokerForUser(userId);
 
-      // If user has no IBKR credentials configured, return unconfigured status
+      // If user has no IBKR credentials in database, check for env var configuration
       if (!userBroker.api || userBroker.status.provider === 'none') {
+        // Check if global broker is configured via environment variables
+        const envConfigured = !!(process.env.IBKR_CLIENT_ID && process.env.IBKR_PRIVATE_KEY);
+
+        if (envConfigured) {
+          console.log(`[IBKR Status] User ${userId} using env var credentials`);
+          // Use the global broker for status
+          const diag = getIbkrDiagnostics();
+          const allStepsConnected =
+            diag.oauth.status === 200 &&
+            diag.sso.status === 200 &&
+            diag.validate.status === 200 &&
+            diag.init.status === 200;
+
+          // Get connection mode for relay detection
+          const { getConnectionMode } = require('./services/marketDataAutoStart');
+          const currentMode = getConnectionMode();
+
+          // In relay mode, OAuth is not connected (WebSocket is intentionally disconnected)
+          const isConnected = currentMode === 'relay' ? false : allStepsConnected;
+
+          return res.json({
+            configured: true,
+            connected: isConnected,
+            connectionMode: getConnectionMode(), // 'oauth' | 'relay'
+            environment: (process.env.IBKR_ENV as string) || 'live',
+            accountId: process.env.IBKR_ACCOUNT_ID || 'Configured',
+            clientId: (process.env.IBKR_CLIENT_ID || '').substring(0, 10) + '***',
+            multiUserMode: true, // Multi-user mode enabled
+            diagnostics: {
+              oauth: {
+                status: diag.oauth.status,
+                message: diag.oauth.status === 200 ? 'Connected' : diag.oauth.status === 0 ? 'Not attempted' : 'Failed',
+                success: diag.oauth.status === 200
+              },
+              sso: {
+                status: diag.sso.status,
+                message: diag.sso.status === 200 ? 'Active' : diag.sso.status === 0 ? 'Not attempted' : 'Failed',
+                success: diag.sso.status === 200
+              },
+              validate: {
+                status: diag.validate.status,
+                message: diag.validate.status === 200 ? 'Validated' : diag.validate.status === 0 ? 'Not attempted' : 'Failed',
+                success: diag.validate.status === 200
+              },
+              init: {
+                status: diag.init.status,
+                message: diag.init.status === 200 ? 'Ready' : diag.init.status === 0 ? 'Not attempted' : 'Failed',
+                success: diag.init.status === 200
+              },
+              websocket: (() => {
+                const wsStatus = getIbkrWebSocketStatus();
+                if (!wsStatus) {
+                  return { status: 0, message: 'Not initialized', success: false, connected: false, authenticated: false, subscriptions: 0 };
+                }
+                return {
+                  status: wsStatus.connected && wsStatus.authenticated ? 200 : (wsStatus.connected ? 100 : 0),
+                  message: wsStatus.connected && wsStatus.authenticated
+                    ? `Streaming (${wsStatus.subscriptions} subs)`
+                    : wsStatus.connected ? 'Connected (authenticating...)' : 'Disconnected',
+                  success: wsStatus.connected && wsStatus.authenticated,
+                  connected: wsStatus.connected,
+                  authenticated: wsStatus.authenticated,
+                  subscriptions: wsStatus.subscriptions
+                };
+              })()
+            }
+          });
+        }
+
         console.log(`[IBKR Status] User ${userId} has no credentials: provider=${userBroker.status.provider}`);
+        // Get connection mode even for unconfigured users
+        const { getConnectionMode: getMode } = require('./services/marketDataAutoStart');
         return res.json({
           configured: false,
           connected: false,
+          connectionMode: getMode(), // 'oauth' | 'relay'
           environment: 'paper',
           multiUserMode: true,  // Always show multi-user mode is enabled
           message: 'No IBKR credentials configured for your account. Configure them in the Settings page.'
@@ -2309,9 +2468,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
+      // Get connection mode for relay detection
+      const { getConnectionMode: getConnMode } = require('./services/marketDataAutoStart');
+      const currentConnMode = getConnMode();
+
+      // In relay mode, OAuth is not connected (WebSocket is intentionally disconnected)
+      const isConnected = currentConnMode === 'relay' ? false : allStepsConnected;
+
       return res.json({
         configured: true,
-        connected: allStepsConnected,
+        connected: isConnected,
+        connectionMode: currentConnMode, // 'oauth' | 'relay'
         environment: userBroker.status.env,
         accountId,
         clientId,
@@ -3241,6 +3408,44 @@ export async function registerRoutes(app: Express): Promise<Server> {
         error: 'Failed to fetch chart bounds',
         message: error.message || String(error),
       });
+    }
+  });
+
+  // ============================================
+  // Public IBKR Market Data Endpoint (for Bear Hedge)
+  // ============================================
+  // Returns real-time SPY and VIX from IBKR WebSocket (no auth required, local only)
+  app.get('/api/ibkr/live-quotes', async (_req, res) => {
+    try {
+      const SPY_CONID = 756733;
+      const VIX_CONID = 13455763;
+
+      const wsManager = getIbkrWebSocketManager();
+      const spyData = wsManager?.getCachedMarketData(SPY_CONID);
+      const vixData = wsManager?.getCachedMarketData(VIX_CONID);
+
+      // Allow CORS from localhost:3000 (Bear Hedge)
+      res.setHeader('Access-Control-Allow-Origin', 'http://localhost:3000');
+
+      res.json({
+        spy: spyData ? {
+          price: spyData.last,
+          bid: spyData.bid,
+          ask: spyData.ask,
+          prevClose: spyData.previousClose,
+          timestamp: spyData.timestamp
+        } : null,
+        vix: vixData ? {
+          price: vixData.last,
+          bid: vixData.bid,
+          ask: vixData.ask,
+          prevClose: vixData.previousClose,
+          timestamp: vixData.timestamp
+        } : null,
+        source: 'ibkr-websocket'
+      });
+    } catch (err: any) {
+      res.status(500).json({ error: err.message });
     }
   });
 

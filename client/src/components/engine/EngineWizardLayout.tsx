@@ -1,22 +1,19 @@
 /**
- * EngineWizardLayout - Main wizard container with sidebar
+ * EngineWizardLayout - Main wizard container (simplified)
  *
  * Layout:
  * - Header: Back button, title, broker status
  * - Progress: EngineStepper
- * - Content: 70% main area, 30% sidebar (EngineLog)
+ * - Content: Full width (logging happens in AgentSidebar)
  *
- * Mobile:
- * - Sidebar becomes bottom drawer (collapsible)
- * - Content takes full width
+ * Note: This layout no longer includes the Engine log panel.
+ * All execution logging flows through the unified AgentSidebar ActivityFeed.
  */
 
-import { ReactNode, useState, useMemo } from 'react';
-import { ArrowLeft, Zap, XCircle, ChevronUp, ChevronDown, Terminal } from 'lucide-react';
+import { ReactNode } from 'react';
+import { ArrowLeft, Zap, XCircle } from 'lucide-react';
 import { Link } from 'wouter';
 import { EngineStepper, StepId } from './EngineStepper';
-import { EngineLogSimple } from './EngineLogSimple';
-import type { EnhancedEngineLog } from '@shared/types/engineLog';
 
 interface EngineWizardLayoutProps {
   symbol: string;
@@ -26,8 +23,6 @@ interface EngineWizardLayoutProps {
   completedSteps: Set<StepId>;
   onStepClick: (step: StepId) => void;
   children: ReactNode;
-  engineLog: EnhancedEngineLog | null;
-  isRunning: boolean;
 }
 
 export function EngineWizardLayout({
@@ -38,36 +33,7 @@ export function EngineWizardLayout({
   completedSteps,
   onStepClick,
   children,
-  engineLog,
-  isRunning,
 }: EngineWizardLayoutProps) {
-  // Mobile drawer state
-  const [drawerOpen, setDrawerOpen] = useState(false);
-
-  // Filter engine log to only show steps up to current wizard step
-  // This creates a progressive reveal as user advances through the wizard
-  const filteredLog = useMemo((): EnhancedEngineLog | null => {
-    if (!engineLog) return null;
-
-    // Filter steps to only show up to current step
-    const visibleSteps = engineLog.steps.filter(step => step.step <= currentStep);
-
-    // Only show summary when user reaches final step (Step 5)
-    const showSummary = currentStep >= 5;
-
-    return {
-      ...engineLog,
-      steps: visibleSteps,
-      summary: showSummary ? engineLog.summary : {
-        strategy: '',
-        strike: '',
-        contracts: 0,
-        premium: 0,
-        stopLoss: '',
-        status: 'PENDING',
-      },
-    };
-  }, [engineLog, currentStep]);
 
   return (
     <div className="flex flex-col h-full">
@@ -108,63 +74,13 @@ export function EngineWizardLayout({
         />
       </div>
 
-      {/* Main Content Area - Desktop: Side by side, Mobile: Stacked */}
-      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden">
-        {/* Step Content */}
-        <main className="flex-1 overflow-y-auto p-4 md:p-6">
+      {/* Main Content Area - Full width (log moved to AgentSidebar) */}
+      <div className="flex-1 overflow-hidden">
+        <main className="h-full overflow-y-auto p-4 md:p-6">
           <div className="max-w-2xl mx-auto">
             {children}
           </div>
         </main>
-
-        {/* Sidebar - Hidden on mobile, shown on lg+ */}
-        <aside className="hidden lg:flex w-[400px] border-l border-zinc-800 overflow-hidden flex-col bg-zinc-950">
-          <div className="px-4 py-3 border-b border-zinc-800">
-            <h2 className="text-sm font-semibold text-zinc-400 uppercase tracking-wider">
-              Engine Log
-            </h2>
-          </div>
-          <div className="flex-1 overflow-y-auto">
-            <EngineLogSimple
-              log={filteredLog}
-              isRunning={isRunning}
-              className="border-0 rounded-none h-full"
-            />
-          </div>
-        </aside>
-      </div>
-
-      {/* Mobile Bottom Drawer - Only shown on mobile */}
-      <div className="lg:hidden border-t border-zinc-800 bg-zinc-950">
-        {/* Drawer Toggle */}
-        <button
-          onClick={() => setDrawerOpen(!drawerOpen)}
-          className="w-full flex items-center justify-between px-4 py-3 hover:bg-zinc-900/50 transition"
-        >
-          <div className="flex items-center gap-2">
-            <Terminal className="w-4 h-4 text-zinc-400" />
-            <span className="text-sm font-medium text-zinc-400">Engine Log</span>
-            {isRunning && (
-              <span className="w-2 h-2 rounded-full bg-blue-500 animate-pulse" />
-            )}
-          </div>
-          {drawerOpen ? (
-            <ChevronDown className="w-4 h-4 text-zinc-400" />
-          ) : (
-            <ChevronUp className="w-4 h-4 text-zinc-400" />
-          )}
-        </button>
-
-        {/* Drawer Content */}
-        {drawerOpen && (
-          <div className="h-64 overflow-y-auto border-t border-zinc-800">
-            <EngineLogSimple
-              log={filteredLog}
-              isRunning={isRunning}
-              className="border-0 rounded-none h-full"
-            />
-          </div>
-        )}
       </div>
     </div>
   );

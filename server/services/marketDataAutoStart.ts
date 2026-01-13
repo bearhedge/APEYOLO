@@ -12,7 +12,7 @@
 import { db } from '../db';
 import { ibkrCredentials } from '@shared/schema';
 import { initIbkrWebSocket, getIbkrWebSocketManager } from '../broker/ibkrWebSocket';
-import { ensureIbkrReady, getIbkrCookieString, getIbkrSessionToken } from '../broker/ibkr';
+import { ensureIbkrReady, getIbkrCookieString, getIbkrSessionToken, clearIbkrSession } from '../broker/ibkr';
 
 // Conids for key symbols
 const SPY_CONID = 756733;
@@ -25,6 +25,56 @@ const HEALTH_CHECK_INTERVAL_MS = 30000; // 30 seconds
 
 let healthCheckInterval: NodeJS.Timeout | null = null;
 let isStarting = false;
+
+// Connection mode: 'oauth' = use cloud OAuth, 'relay' = use local TWS/Gateway
+// This is in-memory only - no database changes needed
+let connectionMode: 'oauth' | 'relay' = 'oauth';
+
+/**
+ * Get the current connection mode
+ */
+export function getConnectionMode(): 'oauth' | 'relay' {
+  return connectionMode;
+}
+
+/**
+ * Set the connection mode and handle WebSocket state accordingly
+ * When switching to relay mode, disconnect OAuth WebSocket so user can use local TWS
+ */
+export function setConnectionMode(mode: 'oauth' | 'relay'): void {
+  const previousMode = connectionMode;
+  connectionMode = mode;
+  console.log(`[MarketDataAutoStart] Connection mode changed: ${previousMode} -> ${mode}`);
+
+  if (mode === 'relay') {
+    // Fully disconnect OAuth - clear session and disconnect WebSocket
+    console.log('[MarketDataAutoStart] Clearing OAuth session for TWS/Gateway mode...');
+    clearIbkrSession();
+
+    const wsManager = getIbkrWebSocketManager();
+    if (wsManager?.connected) {
+      console.log('[MarketDataAutoStart] Disconnecting OAuth WebSocket for relay mode...');
+      wsManager.disconnect();
+    }
+  } else if (mode === 'oauth') {
+    // Clear cached session to force fresh re-authentication
+    // This fixes 401 errors after switching back from TWS/Gateway mode
+    console.log('[MarketDataAutoStart] Clearing cached IBKR session for fresh auth...');
+    clearIbkrSession();
+
+    // Immediately try to reconnect WebSocket when switching back to OAuth
+    const wsManager = getIbkrWebSocketManager();
+    if (!wsManager?.connected) {
+      console.log('[MarketDataAutoStart] Reconnecting OAuth WebSocket immediately...');
+      // Run async reconnection (don't await - let it happen in background)
+      startWebSocketStream().then(() => {
+        console.log('[MarketDataAutoStart] OAuth WebSocket reconnected successfully');
+      }).catch((err) => {
+        console.error('[MarketDataAutoStart] Failed to reconnect OAuth WebSocket:', err.message);
+      });
+    }
+  }
+}
 
 /**
  * Auto-start WebSocket streaming for market data
@@ -71,19 +121,32 @@ async function startWebSocketStream(): Promise<void> {
   isStarting = true;
 
   try {
-    // Check if we have any IBKR credentials in the database
-    if (!db) {
-      throw new Error('Database not available');
+    // Check if we have IBKR credentials (either in database or env vars)
+    let hasCredentials = false;
+
+    // First check environment variables
+    const envConfigured = !!(process.env.IBKR_CLIENT_ID && process.env.IBKR_PRIVATE_KEY);
+    if (envConfigured) {
+      console.log('[MarketDataAutoStart] Using IBKR credentials from environment variables');
+      hasCredentials = true;
     }
 
-    const [creds] = await db.select({
-      userId: ibkrCredentials.userId,
-    })
-      .from(ibkrCredentials)
-      .limit(1);
+    // Also check database if available
+    if (!hasCredentials && db) {
+      const [creds] = await db.select({
+        userId: ibkrCredentials.userId,
+      })
+        .from(ibkrCredentials)
+        .limit(1);
 
-    if (!creds) {
-      throw new Error('No IBKR credentials found in database');
+      if (creds) {
+        console.log('[MarketDataAutoStart] Using IBKR credentials from database');
+        hasCredentials = true;
+      }
+    }
+
+    if (!hasCredentials) {
+      throw new Error('No IBKR credentials found (checked env vars and database)');
     }
 
     console.log('[MarketDataAutoStart] Found IBKR credentials, initializing...');
@@ -178,6 +241,12 @@ function startHealthCheck(): void {
   console.log('[MarketDataAutoStart] Starting health check every 30s');
 
   healthCheckInterval = setInterval(async () => {
+    // Skip reconnect if in relay mode - user is using local TWS/Gateway
+    if (connectionMode === 'relay') {
+      console.log('[MarketDataAutoStart][HealthCheck] Relay mode active - skipping OAuth reconnect');
+      return;
+    }
+
     const wsManager = getIbkrWebSocketManager();
 
     if (!wsManager?.connected) {

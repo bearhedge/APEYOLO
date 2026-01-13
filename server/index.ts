@@ -54,11 +54,11 @@ app.use((req, res, next) => {
     const { setupVite } = await import("./vite");
     await setupVite(app, server);
   } else {
-    // Hard redirect any onboarding route to /agent to avoid black-screen flow
+    // Hard redirect any onboarding route to /trade to avoid black-screen flow
     // while we move IBKR setup to Settings
     // Express 5 (path-to-regexp v8): use a RegExp for wildcard redirect
     app.get(/^\/onboarding(?:\/.*)?$/, (_req, res) => {
-      res.redirect(302, "/agent");
+      res.redirect(302, "/trade");
     });
     serveStatic(app);
   }

@@ -222,7 +222,12 @@ function calculateKPIs(trades: PnlRow[]) {
   };
 }
 
-export function TrackRecord() {
+interface TrackRecordProps {
+  /** Hide LeftNav when embedded in another page (e.g., Review page) */
+  hideLeftNav?: boolean;
+}
+
+export function TrackRecord({ hideLeftNav = false }: TrackRecordProps = {}) {
   const queryClient = useQueryClient();
   const [showAddFlow, setShowAddFlow] = useState(false);
   const [flowType, setFlowType] = useState<'deposit' | 'withdrawal'>('deposit');
@@ -496,7 +501,7 @@ export function TrackRecord() {
 
   return (
     <div className="flex h-[calc(100vh-64px)]">
-      <LeftNav />
+      {!hideLeftNav && <LeftNav />}
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
         {/* Header */}
         <div className="flex items-center justify-between mb-6">

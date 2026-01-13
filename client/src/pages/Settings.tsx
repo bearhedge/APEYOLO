@@ -50,7 +50,12 @@ interface IbkrCredentialsStatus {
   message?: string;
 }
 
-export function Settings() {
+interface SettingsProps {
+  /** Hide LeftNav when embedded in another page (e.g., Review page) */
+  hideLeftNav?: boolean;
+}
+
+export function Settings({ hideLeftNav = false }: SettingsProps = {}) {
   const [testResult, setTestResult] = useState<any>(null);
   const [orderResult, setOrderResult] = useState<any>(null);
   const [clearResult, setClearResult] = useState<any>(null);
@@ -82,6 +87,66 @@ export function Settings() {
   const [showPrivateKey, setShowPrivateKey] = useState(false);
   const [credSaveResult, setCredSaveResult] = useState<any>(null);
   const [credTestResult, setCredTestResult] = useState<any>(null);
+
+  // Connection Method Toggle - OAuth vs TWS/Gateway
+  const [connectionMethod, setConnectionMethod] = useState<'oauth' | 'relay'>(() => {
+    if (typeof window !== 'undefined') {
+      return (localStorage.getItem('apeyolo-connection-method') as 'oauth' | 'relay') || 'oauth';
+    }
+    return 'oauth';
+  });
+  const [connectionModeLoading, setConnectionModeLoading] = useState(false);
+
+  // Fetch current connection mode from server on mount
+  useEffect(() => {
+    const fetchConnectionMode = async () => {
+      try {
+        const response = await fetch('/api/settings/connection-mode', { credentials: 'include' });
+        if (response.ok) {
+          const data = await response.json();
+          if (data.mode === 'oauth' || data.mode === 'relay') {
+            setConnectionMethod(data.mode);
+            localStorage.setItem('apeyolo-connection-method', data.mode);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to fetch connection mode:', err);
+      }
+    };
+    fetchConnectionMode();
+  }, []);
+
+  const handleConnectionMethodChange = async (method: 'oauth' | 'relay') => {
+    setConnectionModeLoading(true);
+    try {
+      const response = await fetch('/api/settings/connection-mode', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ mode: method }),
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        setConnectionMethod(data.mode);
+        localStorage.setItem('apeyolo-connection-method', data.mode);
+        console.log('Connection mode changed:', data.message);
+
+        // Refetch IBKR status to update WebSocket status display
+        // Small delay to allow WebSocket to fully disconnect
+        setTimeout(() => {
+          queryClient.invalidateQueries({ queryKey: ['/api/ibkr/status'] });
+        }, 500);
+      } else {
+        const error = await response.json();
+        console.error('Failed to change connection mode:', error);
+      }
+    } catch (err) {
+      console.error('Failed to change connection mode:', err);
+    } finally {
+      setConnectionModeLoading(false);
+    }
+  };
 
   // Solana wallet and SAS setup state
   const { connected: solanaConnected, publicKey: solanaPublicKey, signTransaction, disconnect: disconnectSolana } = useWallet();
@@ -332,6 +397,17 @@ export function Settings() {
 
   // Auto-reconnect effect with interval-based retry
   useEffect(() => {
+    // Skip if in relay mode (intentionally disconnected for TWS/Gateway)
+    if (ibkrStatus?.connectionMode === 'relay') {
+      // Reset retry state when in relay mode
+      if (retryCount > 0) {
+        setBackoffMs(3000);
+        setRetryCount(0);
+        setIsAutoConnecting(false);
+      }
+      return;
+    }
+
     // Skip if not configured or already connected
     if (!ibkrStatus?.configured || ibkrStatus?.connected) {
       if (ibkrStatus?.connected && retryCount > 0) {
@@ -394,7 +470,7 @@ export function Settings() {
     // Set up interval for subsequent attempts
     const intervalId = setInterval(attemptReconnect, backoffMs);
     return () => clearInterval(intervalId);
-  }, [ibkrStatus?.configured, ibkrStatus?.connected, isAutoConnecting, backoffMs, retryCount, warmMutation.isPending, reconnectMutation.isPending]);
+  }, [ibkrStatus?.configured, ibkrStatus?.connected, ibkrStatus?.connectionMode, isAutoConnecting, backoffMs, retryCount, warmMutation.isPending, reconnectMutation.isPending]);
 
   // Test order mutation
   const testOrderMutation = useMutation({
@@ -557,6 +633,10 @@ export function Settings() {
 
   const getConnectionIcon = () => {
     if (!ibkrStatus?.configured) return <AlertCircle className="w-5 h-5 text-yellow-500" />;
+    // In relay mode, show neutral icon (not connected to OAuth, using TWS/Gateway)
+    if (ibkrStatus?.connectionMode === 'relay') {
+      return <Database className="w-5 h-5 text-purple-500" />;
+    }
     if (ibkrStatus?.connected) return <CheckCircle className="w-5 h-5 text-green-500" />;
     if (isAutoConnecting || warmMutation.isPending || reconnectMutation.isPending) {
       return <RefreshCw className="w-5 h-5 text-blue-500 animate-spin" />;
@@ -566,6 +646,10 @@ export function Settings() {
 
   const getConnectionStatus = () => {
     if (!ibkrStatus?.configured) return 'Not Configured';
+    // In relay mode, show TWS Mode status (OAuth intentionally disconnected)
+    if (ibkrStatus?.connectionMode === 'relay') {
+      return 'TWS Mode';
+    }
     if (ibkrStatus?.connected) return 'Connected';
     if (isAutoConnecting || warmMutation.isPending || reconnectMutation.isPending) {
       return 'Connecting...';
@@ -574,6 +658,8 @@ export function Settings() {
   };
 
   const getConnectionStatusColor = () => {
+    // In relay mode, show purple color (neutral, different from OAuth connected)
+    if (ibkrStatus?.connectionMode === 'relay') return 'text-purple-500';
     if (ibkrStatus?.connected) return 'text-green-500';
     if (isAutoConnecting || warmMutation.isPending || reconnectMutation.isPending) return 'text-blue-500';
     if (ibkrStatus?.configured) return 'text-red-500';
@@ -582,7 +668,7 @@ export function Settings() {
 
   return (
     <div className="flex h-[calc(100vh-64px)]">
-      <LeftNav />
+      {!hideLeftNav && <LeftNav />}
       <div className="flex-1 overflow-y-auto p-6 space-y-6">
         <SectionHeader
           title="Settings"
@@ -608,8 +694,60 @@ export function Settings() {
               </div>
             </div>
 
-            {/* CONNECTION Section */}
+            {/* CONNECTION METHOD Toggle */}
             <div className="p-6 border-b border-white/10">
+              <h4 className="text-sm font-medium text-silver uppercase tracking-wider mb-4">Connection Method</h4>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => handleConnectionMethodChange('oauth')}
+                  disabled={connectionModeLoading}
+                  className={`flex-1 p-4 rounded-lg border-2 transition-all ${
+                    connectionMethod === 'oauth'
+                      ? 'border-electric bg-electric/10 text-white'
+                      : 'border-white/10 bg-dark-gray text-silver hover:border-white/30'
+                  } ${connectionModeLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  <div className="flex items-center gap-3">
+                    {connectionModeLoading && connectionMethod !== 'oauth' ? (
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                    ) : (
+                      <Key className="w-5 h-5" />
+                    )}
+                    <div className="text-left">
+                      <p className="font-medium">OAuth 2.0</p>
+                      <p className="text-xs opacity-70">Direct API connection via IBKR OAuth</p>
+                    </div>
+                  </div>
+                </button>
+                <button
+                  onClick={() => handleConnectionMethodChange('relay')}
+                  disabled={connectionModeLoading}
+                  className={`flex-1 p-4 rounded-lg border-2 transition-all ${
+                    connectionMethod === 'relay'
+                      ? 'border-electric bg-electric/10 text-white'
+                      : 'border-white/10 bg-dark-gray text-silver hover:border-white/30'
+                  } ${connectionModeLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  <div className="flex items-center gap-3">
+                    {connectionModeLoading && connectionMethod !== 'relay' ? (
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                    ) : (
+                      <Database className="w-5 h-5" />
+                    )}
+                    <div className="text-left">
+                      <p className="font-medium">TWS/Gateway</p>
+                      <p className="text-xs opacity-70">Local relay via TWS or IB Gateway</p>
+                    </div>
+                  </div>
+                </button>
+              </div>
+              {connectionMethod === 'relay' && (
+                <p className="text-xs text-electric mt-2">OAuth WebSocket disconnected. You can now connect TWS/Gateway locally.</p>
+              )}
+            </div>
+
+            {/* CONNECTION Section - OAuth */}
+            <div className={`p-6 border-b border-white/10 transition-opacity ${connectionMethod !== 'oauth' ? 'opacity-40' : ''}`}>
               <h4 className="text-sm font-medium text-silver uppercase tracking-wider mb-4">Connection</h4>
 
               <div className="grid grid-cols-3 gap-4 mb-4">
@@ -633,43 +771,54 @@ export function Settings() {
               {ibkrStatus?.configured && ibkrStatus.diagnostics && (
                 <div className="p-3 bg-dark-gray rounded-lg">
                   <p className="text-xs text-silver mb-2">Auth Pipeline</p>
-                  <div className="flex items-center gap-4 flex-wrap">
-                    <StatusStep
-                      name="OAuth"
-                      status={ibkrStatus.diagnostics.oauth?.status || 0}
-                      message={ibkrStatus.diagnostics.oauth?.message || 'Not attempted'}
-                      success={ibkrStatus.diagnostics.oauth?.success}
-                      compact
-                    />
-                    <StatusStep
-                      name="SSO"
-                      status={ibkrStatus.diagnostics.sso?.status || 0}
-                      message={ibkrStatus.diagnostics.sso?.message || 'Not attempted'}
-                      success={ibkrStatus.diagnostics.sso?.success}
-                      compact
-                    />
-                    <StatusStep
-                      name="Validate"
-                      status={ibkrStatus.diagnostics.validate?.status || ibkrStatus.diagnostics.validated?.status || 0}
-                      message={ibkrStatus.diagnostics.validate?.message || ibkrStatus.diagnostics.validated?.message || 'Not attempted'}
-                      success={ibkrStatus.diagnostics.validate?.success || ibkrStatus.diagnostics.validated?.success}
-                      compact
-                    />
-                    <StatusStep
-                      name="Init"
-                      status={ibkrStatus.diagnostics.init?.status || ibkrStatus.diagnostics.initialized?.status || 0}
-                      message={ibkrStatus.diagnostics.init?.message || ibkrStatus.diagnostics.initialized?.message || 'Not attempted'}
-                      success={ibkrStatus.diagnostics.init?.success || ibkrStatus.diagnostics.initialized?.success}
-                      compact
-                    />
-                    <StatusStep
-                      name="WebSocket"
-                      status={ibkrStatus.diagnostics.websocket?.status || 0}
-                      message={ibkrStatus.diagnostics.websocket?.message || 'Not initialized'}
-                      success={ibkrStatus.diagnostics.websocket?.success}
-                      compact
-                    />
-                  </div>
+                  {/* In relay mode, show all steps as inactive (OAuth not used) */}
+                  {ibkrStatus?.connectionMode === 'relay' ? (
+                    <div className="flex items-center gap-4 flex-wrap">
+                      <StatusStep name="OAuth" status={0} message="Not used in TWS mode" success={false} compact />
+                      <StatusStep name="SSO" status={0} message="Not used in TWS mode" success={false} compact />
+                      <StatusStep name="Validate" status={0} message="Not used in TWS mode" success={false} compact />
+                      <StatusStep name="Init" status={0} message="Not used in TWS mode" success={false} compact />
+                      <span className="text-xs text-silver">— WebSocket</span>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-4 flex-wrap">
+                      <StatusStep
+                        name="OAuth"
+                        status={ibkrStatus.diagnostics.oauth?.status || 0}
+                        message={ibkrStatus.diagnostics.oauth?.message || 'Not attempted'}
+                        success={ibkrStatus.diagnostics.oauth?.success}
+                        compact
+                      />
+                      <StatusStep
+                        name="SSO"
+                        status={ibkrStatus.diagnostics.sso?.status || 0}
+                        message={ibkrStatus.diagnostics.sso?.message || 'Not attempted'}
+                        success={ibkrStatus.diagnostics.sso?.success}
+                        compact
+                      />
+                      <StatusStep
+                        name="Validate"
+                        status={ibkrStatus.diagnostics.validate?.status || ibkrStatus.diagnostics.validated?.status || 0}
+                        message={ibkrStatus.diagnostics.validate?.message || ibkrStatus.diagnostics.validated?.message || 'Not attempted'}
+                        success={ibkrStatus.diagnostics.validate?.success || ibkrStatus.diagnostics.validated?.success}
+                        compact
+                      />
+                      <StatusStep
+                        name="Init"
+                        status={ibkrStatus.diagnostics.init?.status || ibkrStatus.diagnostics.initialized?.status || 0}
+                        message={ibkrStatus.diagnostics.init?.message || ibkrStatus.diagnostics.initialized?.message || 'Not attempted'}
+                        success={ibkrStatus.diagnostics.init?.success || ibkrStatus.diagnostics.initialized?.success}
+                        compact
+                      />
+                      <StatusStep
+                        name="WebSocket"
+                        status={ibkrStatus.diagnostics.websocket?.status || 0}
+                        message={ibkrStatus.diagnostics.websocket?.message || 'Not initialized'}
+                        success={ibkrStatus.diagnostics.websocket?.success}
+                        compact
+                      />
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -712,7 +861,7 @@ export function Settings() {
             </div>
 
             {/* DATA SOURCE Section */}
-            <div className="p-6 border-b border-white/10">
+            <div className={`p-6 border-b border-white/10 transition-opacity ${connectionMethod !== 'oauth' ? 'opacity-40' : ''}`}>
               <h4 className="text-sm font-medium text-silver uppercase tracking-wider mb-4">Data Source</h4>
               <p className="text-xs text-silver mb-4">
                 Market data is streamed via WebSocket (FREE with OPRA subscription).
@@ -731,7 +880,7 @@ export function Settings() {
             </div>
 
             {/* CREDENTIALS Section */}
-            <div className="p-6 border-b border-white/10">
+            <div className={`p-6 border-b border-white/10 transition-opacity ${connectionMethod !== 'oauth' ? 'opacity-40' : ''}`}>
               <div className="flex items-center justify-between mb-4">
                 <h4 className="text-sm font-medium text-silver uppercase tracking-wider">Credentials</h4>
                 <span className={`text-sm font-medium ${getCredentialStatusColor()}`}>
@@ -953,7 +1102,7 @@ export function Settings() {
             </div>
 
             {/* ACTIONS Section */}
-            <div className="p-6 bg-dark-gray/50">
+            <div className={`p-6 bg-dark-gray/50 transition-opacity ${connectionMethod !== 'oauth' ? 'opacity-40' : ''}`}>
               {!ibkrStatus?.configured && (
                 <div className="p-3 bg-yellow-900/20 border border-yellow-500/30 rounded-lg mb-4">
                   <p className="text-sm text-yellow-400">
@@ -1012,6 +1161,29 @@ export function Settings() {
                 )}
               </div>
             </div>
+
+            {/* TWS/GATEWAY RELAY Section - Only shown when relay is selected */}
+            {connectionMethod === 'relay' && (
+              <div className="p-6 border-t border-white/10">
+                <h4 className="text-sm font-medium text-silver uppercase tracking-wider mb-4">TWS/Gateway Relay</h4>
+                <div className="p-4 bg-dark-gray rounded-lg border border-white/10 mb-4">
+                  <p className="text-sm text-silver mb-3">
+                    Connect your local TWS or IB Gateway to APE-YOLO using the relay connector.
+                  </p>
+                  <div className="bg-black/30 rounded p-3 font-mono text-sm">
+                    <p className="text-silver mb-2">To connect:</p>
+                    <p className="text-electric">1. Start TWS or IB Gateway and log in</p>
+                    <p className="text-electric">2. Enable API connections in TWS settings</p>
+                    <p className="text-electric">3. Run the relay connector:</p>
+                    <p className="text-white mt-2 bg-black/50 p-2 rounded">npx apeyolo-connect --api-key YOUR_API_KEY</p>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 text-yellow-400">
+                  <AlertCircle className="w-4 h-4" />
+                  <span className="text-sm">Relay not connected</span>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Solana On-Chain Card */}

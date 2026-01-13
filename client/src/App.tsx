@@ -15,6 +15,8 @@ import { DeFi } from "@/pages/DeFi";
 import { DD } from "@/pages/DD";
 import { Jobs } from "@/pages/Jobs";
 import { Settings } from "@/pages/Settings";
+import { Trade } from "@/pages/Trade";
+import { Review } from "@/pages/Review";
 import { WalletProvider, useWalletContext } from "@/components/WalletProvider";
 import { getAccount, getDiag } from "@/lib/api";
 import { useWallet } from "@solana/wallet-adapter-react";
@@ -184,23 +186,36 @@ function App() {
             <Navigation />
             <Route path="/" component={Home} />
             <Route path="/onboarding" component={Onboarding} />
-            <Route path="/agent" component={Agent} />
-            <Route path="/engine" component={Engine} />
+
+            {/* New consolidated routes */}
+            <Route path="/trade" component={Trade} />
+            <Route path="/review" component={Review} />
+
+            {/* Old routes - redirect to new routes */}
+            <Route path="/agent">
+              <Redirect to="/trade" />
+            </Route>
+            <Route path="/engine">
+              <Redirect to="/trade" />
+            </Route>
             <Route path="/portfolio" component={Portfolio} />
             <Route path="/track-record" component={TrackRecord} />
-            <Route path="/defi" component={DeFi} />
-            <Route path="/dd" component={DD} />
             <Route path="/jobs" component={Jobs} />
             <Route path="/settings" component={Settings} />
-            {/* Redirects for old routes */}
+
+            {/* Other routes */}
+            <Route path="/defi" component={DeFi} />
+            <Route path="/dd" component={DD} />
+
+            {/* Legacy redirects */}
             <Route path="/dashboard">
-              <Redirect to="/agent" />
+              <Redirect to="/trade" />
             </Route>
             <Route path="/sessions">
-              <Redirect to="/agent" />
+              <Redirect to="/trade" />
             </Route>
             <Route path="/trades">
-              <Redirect to="/portfolio" />
+              <Redirect to="/review?tab=portfolio" />
             </Route>
           </div>
         </TooltipProvider>

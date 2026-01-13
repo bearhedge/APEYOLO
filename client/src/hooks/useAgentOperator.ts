@@ -71,7 +71,7 @@ interface AgentStatus {
 }
 
 interface OperateSSEEvent {
-  type: 'status' | 'action' | 'result' | 'thinking' | 'proposal' | 'critique' | 'execution' | 'done' | 'error';
+  type: 'status' | 'action' | 'result' | 'thinking' | 'proposal' | 'critique' | 'execution' | 'done' | 'error' | 'tool_progress';
   phase?: string;
   tool?: string;
   content?: string;
@@ -83,6 +83,10 @@ interface OperateSSEEvent {
   // Streaming flags - server sends accumulated content with these flags
   isUpdate?: boolean;   // Content is accumulated (update existing activity)
   isComplete?: boolean; // Final content (mark as complete)
+  // Tool progress fields (for tool_progress type)
+  step?: number;
+  status?: 'running' | 'complete' | 'error';
+  message?: string;
 }
 
 /**
@@ -158,6 +162,8 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
   const streamingResultIdRef = useRef<string | null>(null);
   // Track last tool action to mark it done when result arrives
   const lastToolActionIdRef = useRef<string | null>(null);
+  // Track tool step activity IDs for updates (key: "toolName_step_N", value: activity ID)
+  const toolStepActivityIdsRef = useRef<Map<string, string>>(new Map());
 
   // Persist state changes to sessionStorage
   useEffect(() => {
@@ -251,6 +257,7 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
     streamingThinkingIdRef.current = null;
     streamingResultIdRef.current = null;
     lastToolActionIdRef.current = null;
+    toolStepActivityIdsRef.current.clear();
 
     // Reset agent store state for context panel
     storeResetState();
@@ -470,6 +477,30 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
         }
         break;
 
+      case 'tool_progress':
+        // Engine step progress - create or update activity for each step
+        if (event.tool && event.step !== undefined && event.message) {
+          const stepKey = `${event.tool}_step_${event.step}`;
+          const existingId = toolStepActivityIdsRef.current.get(stepKey);
+
+          // Map status from backend ('running', 'complete', 'error') to activity status
+          const activityStatus = event.status === 'complete' ? 'done' : event.status === 'error' ? 'error' : 'running';
+
+          if (existingId) {
+            // Update existing step activity
+            updateActivity(existingId, {
+              content: event.message,
+              status: activityStatus,
+              data: event.data,
+            });
+          } else {
+            // Create new step activity (use 'tool_progress' type for step logs)
+            const id = addActivity('tool_progress', event.message, event.tool, activityStatus);
+            toolStepActivityIdsRef.current.set(stepKey, id);
+          }
+        }
+        break;
+
       case 'proposal':
         // Trade proposal ready
         if (event.proposal) {
@@ -505,6 +536,7 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
         streamingThinkingIdRef.current = null;
         streamingResultIdRef.current = null;
         lastToolActionIdRef.current = null;
+        toolStepActivityIdsRef.current.clear();
         break;
     }
   }, [addActivity, updateActivity, storeHandleSSEEvent, storeSetPhase]);

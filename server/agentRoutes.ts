@@ -1519,21 +1519,7 @@ router.post('/operate', requireAuth, async (req: Request, res: Response) => {
       });
     }
 
-    // FAIL FAST: Ensure IBKR is connected for all operations
-    try {
-      await ensureIbkrReady();
-      console.log('[AgentRoutes] IBKR connection verified for operate');
-    } catch (ibkrError: any) {
-      console.error('[AgentRoutes] IBKR connection failed:', ibkrError.message);
-      return res.status(503).json({
-        success: false,
-        error: 'IBKR broker not connected. Please check broker configuration.',
-        ibkrError: ibkrError.message,
-        offline: true,
-      });
-    }
-
-    // Set up SSE headers
+    // Set up SSE headers FIRST (must come before any response)
     res.setHeader('Content-Type', 'text/event-stream');
     res.setHeader('Cache-Control', 'no-cache');
     res.setHeader('Connection', 'keep-alive');
@@ -1542,6 +1528,21 @@ router.post('/operate', requireAuth, async (req: Request, res: Response) => {
     const sendEvent = (event: any) => {
       res.write(`data: ${JSON.stringify(event)}\n\n`);
     };
+
+    // Check IBKR connection and send error via SSE if not connected
+    try {
+      await ensureIbkrReady();
+      console.log('[AgentRoutes] IBKR connection verified for operate');
+    } catch (ibkrError: any) {
+      console.error('[AgentRoutes] IBKR connection failed:', ibkrError.message);
+      sendEvent({
+        type: 'error',
+        error: 'IBKR broker not connected. Please check broker configuration.',
+      });
+      sendEvent({ type: 'done' });
+      res.end();
+      return;
+    }
 
     try {
       switch (operation) {
@@ -1602,12 +1603,27 @@ router.post('/operate', requireAuth, async (req: Request, res: Response) => {
           const { spy, vix, regime } = marketResult.data;
           sendEvent({ type: 'result', content: `SPY $${spy?.price?.toFixed(2)} | VIX ${vix?.level?.toFixed(1)}` });
 
-          // Run the trading engine
+          // Run the trading engine with streaming support
           sendEvent({ type: 'status', phase: 'planning' });
           const strategyLabel = strategy === 'put-only' ? 'PUT-only' : strategy === 'call-only' ? 'CALL-only' : 'Strangle';
           sendEvent({ type: 'action', tool: 'runEngine', content: `Running ${strategyLabel} strategy...` });
 
-          const engineResult = await executeToolCall({ tool: 'runEngine', args: { symbol: 'SPY', strategy } });
+          const engineResult = await executeToolCall(
+            { tool: 'runEngine', args: { symbol: 'SPY', strategy } },
+            {
+              onProgress: (event) => {
+                // Forward Engine step updates as tool_progress events
+                sendEvent({
+                  type: 'tool_progress',
+                  tool: 'runEngine',
+                  step: event.step,
+                  status: event.status,
+                  message: event.message,
+                  data: event.data,
+                });
+              },
+            }
+          );
 
           if (!engineResult.success || !engineResult.data?.canTrade) {
             const reason = engineResult.data?.reason || engineResult.error || 'No trade opportunity found';

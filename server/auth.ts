@@ -217,9 +217,9 @@ router.get('/google/callback', async (req: Request, res: Response) => {
       maxAge: 7 * 24 * 60 * 60 * 1000 // 7 days
     });
 
-    // Redirect directly to the dashboard after successful login
+    // Redirect to Trade page after successful login
     // IBKR setup can be completed later in Settings
-    res.redirect(`${config.urls.client}/agent`);
+    res.redirect(`${config.urls.client}/trade`);
   } catch (error) {
     console.error('OAuth callback error:', error);
     res.redirect(`${config.urls.client}/onboarding?error=auth_failed`);
