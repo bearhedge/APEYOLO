@@ -210,23 +210,14 @@ export function Engine({ hideLeftNav = false, onAnalyze }: EngineProps = {}) {
 
   // Handle Step 1: Analyze direction (uses SSE streaming)
   const handleAnalyze = useCallback(() => {
-    // If custom onAnalyze handler provided (from Trade page), use it instead of direct Engine call
-    // This routes through Agent for transparent tool-use logging
-    if (onAnalyze) {
-      onAnalyze();
-      toast.loading('Agent analyzing market...', { id: 'engine-analyze' });
+    if (!onAnalyze) {
+      toast.error('Engine can only run through Agent. Use /trade page.', { id: 'engine-analyze' });
       return;
     }
 
-    // Fallback: Direct Engine call (for standalone Engine page)
-    startAnalysis({
-      riskTier,
-      stopMultiplier,
-      symbol: selectedSymbol,
-      strategy: strategyPreference
-    });
-    toast.loading('Analyzing market conditions...', { id: 'engine-analyze' });
-  }, [onAnalyze, startAnalysis, riskTier, stopMultiplier, selectedSymbol, strategyPreference]);
+    onAnalyze();
+    toast.loading('Agent analyzing...', { id: 'engine-analyze' });
+  }, [onAnalyze]);
 
   // Handle streaming completion
   useEffect(() => {

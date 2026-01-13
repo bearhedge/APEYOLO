@@ -392,6 +392,11 @@ router.post('/execute', requireAuth, async (req, res) => {
 });
 
 // ============================================
+/*
+// DEPRECATED: Old direct Engine execution path
+// Kept for reference only - use /api/agent/operate instead
+// ============================================
+
 // SSE Streaming Analysis Endpoint
 // ============================================
 
@@ -573,6 +578,7 @@ router.get('/analyze/stream', requireAuth, async (req, res) => {
     res.end();
   }
 });
+*/
 
 // GET /api/engine/analyze - Run analysis and return standardized response
 // This is the NEW endpoint that returns the EngineAnalyzeResponse format
