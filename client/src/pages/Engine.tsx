@@ -10,7 +10,7 @@ import {
   type StepId,
 } from '@/components/engine';
 import { useEngine } from '@/hooks/useEngine';
-import { useEngineStream } from '@/hooks/useEngineStream';
+import { useAgentEngineStream } from '@/hooks/useAgentEngineStream';
 import { useBrokerStatus } from '@/hooks/useBrokerStatus';
 import { useTradeEngineJob } from '@/hooks/useTradeEngineJob';
 import { useMarketSnapshot } from '@/hooks/useMarketSnapshot';
@@ -26,7 +26,14 @@ const SYMBOL_CONFIG: Record<TradingSymbol, { name: string; label: string; expira
   SPY: { name: 'SPY', label: 'S&P 500 ETF', expiration: 'Daily' },
 };
 
-export function Engine() {
+interface EngineProps {
+  /** Hide LeftNav when embedded in another page (e.g., Trade page) */
+  hideLeftNav?: boolean;
+  /** Custom analyze handler - if provided, bypasses direct Engine call and goes through Agent */
+  onAnalyze?: () => void;
+}
+
+export function Engine({ hideLeftNav = false, onAnalyze }: EngineProps = {}) {
   const {
     status,
     brokerConnected,
@@ -36,14 +43,13 @@ export function Engine() {
     executePaperTrade,
   } = useEngine();
 
-  // SSE streaming for real-time engine log updates
+  // Agent-driven Engine streaming hook
   const {
+    streamingAnalysis,
+    currentStep: agentCurrentStep,
+    completedSteps: agentCompletedSteps,
     isRunning: streamIsRunning,
-    engineLog: streamingEngineLog,
-    analysis: streamingAnalysis,
-    error: streamError,
-    startAnalysis,
-  } = useEngineStream();
+  } = useAgentEngineStream();
 
   // Use streaming analysis when available, fall back to regular analysis
   const effectiveAnalysis = streamingAnalysis || analysis;
@@ -63,6 +69,10 @@ export function Engine() {
   // Wizard state
   const [currentStep, setCurrentStep] = useState<StepId>(1);
   const [completedSteps, setCompletedSteps] = useState<Set<StepId>>(new Set());
+
+  // Merge agent-driven steps with manual UI navigation
+  const mergedCurrentStep = streamIsRunning ? agentCurrentStep : currentStep;
+  const mergedCompletedSteps = new Set([...agentCompletedSteps, ...completedSteps]);
 
   // Trading state
   const [isExecuting, setIsExecuting] = useState(false);
@@ -97,26 +107,54 @@ export function Engine() {
     connectBroker();
   }, [fetchStatus]);
 
-  // Sync localProposal when analysis.tradeProposal changes
+  // Sync localProposal when analysis.tradeProposal changes or user selects different strikes
   useEffect(() => {
     if (effectiveAnalysis?.tradeProposal) {
-      const legs = effectiveAnalysis.tradeProposal.legs.map(leg => ({
-        optionType: leg.optionType,
-        action: 'SELL' as const,
-        strike: leg.strike,
-        delta: leg.delta,
-        premium: leg.premium,
-        bid: leg.bid || leg.premium,
-        ask: leg.ask || leg.premium * 1.1,
-      }));
+      // Get all available candidates (same logic as Step 3 UI uses)
+      const smartPuts = effectiveAnalysis.q3Strikes?.smartCandidates?.puts ?? [];
+      const smartCalls = effectiveAnalysis.q3Strikes?.smartCandidates?.calls ?? [];
+
+      // Fallback to regular candidates if smartCandidates is empty
+      const allCandidates = effectiveAnalysis.q3Strikes?.candidates ?? [];
+      const fallbackPuts = smartPuts.length === 0
+        ? allCandidates.filter((c: any) => c.optionType === 'PUT')
+        : [];
+      const fallbackCalls = smartCalls.length === 0
+        ? allCandidates.filter((c: any) => c.optionType === 'CALL')
+        : [];
+
+      const putCandidates = smartPuts.length > 0 ? smartPuts : fallbackPuts;
+      const callCandidates = smartCalls.length > 0 ? smartCalls : fallbackCalls;
+
+      // Build legs using user-selected strikes (not just engine recommendations)
+      const legs = effectiveAnalysis.tradeProposal.legs.map(leg => {
+        // Check if user selected a different strike than the engine recommended
+        const userStrike = leg.optionType === 'PUT' ? selectedPutStrike : selectedCallStrike;
+        const candidates = leg.optionType === 'PUT' ? putCandidates : callCandidates;
+
+        // Find the user-selected candidate (or fall back to engine's choice)
+        const selectedCandidate = userStrike ? candidates.find((c: any) => c.strike === userStrike) : null;
+        const finalStrike = selectedCandidate?.strike ?? leg.strike;
+        const finalDelta = selectedCandidate?.delta ?? leg.delta;
+        const finalBid = selectedCandidate?.bid ?? leg.bid ?? leg.premium;
+
+        return {
+          optionType: leg.optionType,
+          action: 'SELL' as const,
+          strike: finalStrike,
+          delta: finalDelta,
+          premium: finalBid,
+          bid: finalBid,
+          ask: selectedCandidate?.ask ?? leg.ask ?? leg.premium * 1.1,
+        };
+      });
 
       let entryPremiumTotal = effectiveAnalysis.tradeProposal.entryPremiumTotal;
       const contracts = effectiveAnalysis.tradeProposal.contracts || 1;
 
-      if (entryPremiumTotal === 0 || !entryPremiumTotal) {
-        const legPremiumSum = legs.reduce((sum, leg) => sum + (leg.premium || 0), 0);
-        entryPremiumTotal = legPremiumSum * contracts * 100;
-      }
+      // Recalculate premium based on actual selected strikes
+      const legPremiumSum = legs.reduce((sum, leg) => sum + (leg.premium || 0), 0);
+      entryPremiumTotal = legPremiumSum * contracts * 100;
 
       const premiumPerShare = legs.reduce((sum, leg) => sum + (leg.premium || 0), 0);
       // Always calculate based on multiplier (user controls via buttons)
@@ -152,7 +190,7 @@ export function Engine() {
       };
       setLocalProposal(proposal);
     }
-  }, [effectiveAnalysis?.tradeProposal, effectiveAnalysis?.q1MarketRegime, effectiveAnalysis?.q2Direction, selectedSymbol, stopMultiplier, riskTier]);
+  }, [effectiveAnalysis?.tradeProposal, effectiveAnalysis?.q1MarketRegime, effectiveAnalysis?.q2Direction, effectiveAnalysis?.q3Strikes, selectedSymbol, stopMultiplier, riskTier, selectedPutStrike, selectedCallStrike]);
 
   // Handle step navigation
   const handleStepClick = useCallback((step: StepId) => {
@@ -172,7 +210,15 @@ export function Engine() {
 
   // Handle Step 1: Analyze direction (uses SSE streaming)
   const handleAnalyze = useCallback(() => {
-    // Start streaming analysis - this will update streamingEngineLog in real-time
+    // If custom onAnalyze handler provided (from Trade page), use it instead of direct Engine call
+    // This routes through Agent for transparent tool-use logging
+    if (onAnalyze) {
+      onAnalyze();
+      toast.loading('Agent analyzing market...', { id: 'engine-analyze' });
+      return;
+    }
+
+    // Fallback: Direct Engine call (for standalone Engine page)
     startAnalysis({
       riskTier,
       stopMultiplier,
@@ -180,7 +226,7 @@ export function Engine() {
       strategy: strategyPreference
     });
     toast.loading('Analyzing market conditions...', { id: 'engine-analyze' });
-  }, [startAnalysis, riskTier, stopMultiplier, selectedSymbol, strategyPreference]);
+  }, [onAnalyze, startAnalysis, riskTier, stopMultiplier, selectedSymbol, strategyPreference]);
 
   // Handle streaming completion
   useEffect(() => {
@@ -517,17 +563,15 @@ export function Engine() {
 
   return (
     <div className="flex h-[calc(100vh-64px)]">
-      <LeftNav />
+      {!hideLeftNav && <LeftNav />}
       <div className="flex-1 overflow-hidden">
         <EngineWizardLayout
           symbol={selectedSymbol}
           brokerConnected={brokerConnectedFinal}
           environment={environment || 'simulation'}
-          currentStep={currentStep}
-          completedSteps={completedSteps}
+          currentStep={mergedCurrentStep}
+          completedSteps={mergedCompletedSteps}
           onStepClick={handleStepClick}
-          engineLog={streamingEngineLog ?? effectiveAnalysis?.enhancedLog ?? null}
-          isRunning={streamIsRunning || isExecuting}
         >
           {renderStepContent()}
         </EngineWizardLayout>
