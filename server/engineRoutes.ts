@@ -998,7 +998,7 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
         maxLoss: tradeProposal.maxLoss.toString(),
 
         stopLossPrice: tradeProposal.stopLossPrice.toString(),
-        stopLossMultiplier: '6', // 6x stop multiplier
+        stopLossMultiplier: currentGuardRails.stopLossMultiplier.toString(),
         timeStopEt: tradeProposal.timeStop,
 
         entryVix: tradeProposal.context.vix?.toString() ?? null,
