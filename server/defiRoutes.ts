@@ -756,6 +756,9 @@ router.get('/trades', async (req: Request, res: Response) => {
         totalCommissions: t.totalCommissions ?? null,
         grossPnl: t.grossPnl ?? null,
         netPnl: t.netPnl ?? null,
+        // Stop loss data
+        stopLossPrice: t.stopLossPrice ? parseFloat(t.stopLossPrice as any) : null,
+        stopLossMultiplier: t.stopLossMultiplier ? parseFloat(t.stopLossMultiplier as any) : null,
       };
     });
 
