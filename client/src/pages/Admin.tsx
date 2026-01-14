@@ -121,12 +121,36 @@ export function Admin({ hideLeftNav = false }: AdminProps) {
     console.log('Attest:', selectedPeriod, previewData);
   };
 
-  // Build period rows for Period Summary
+  // Build period rows for Period Summary (with null checks to prevent toFixed crash)
   const periodRows = performanceData
     ? [
-        { period: 'MTD', ...performanceData.mtd, onChain: false },
-        { period: 'YTD', ...performanceData.ytd, onChain: false },
-        { period: 'ALL', ...performanceData.all, onChain: false },
+        {
+          period: 'MTD',
+          returnPercent: performanceData.mtd?.returnPercent ?? 0,
+          pnlUsd: performanceData.mtd?.pnlUsd ?? 0,
+          pnlHkd: performanceData.mtd?.pnlHkd,
+          tradeCount: performanceData.mtd?.tradeCount ?? 0,
+          winRate: performanceData.mtd?.winRate ?? 0,
+          isAttested: false,
+        },
+        {
+          period: 'YTD',
+          returnPercent: performanceData.ytd?.returnPercent ?? 0,
+          pnlUsd: performanceData.ytd?.pnlUsd ?? 0,
+          pnlHkd: performanceData.ytd?.pnlHkd,
+          tradeCount: performanceData.ytd?.tradeCount ?? 0,
+          winRate: performanceData.ytd?.winRate ?? 0,
+          isAttested: false,
+        },
+        {
+          period: 'ALL',
+          returnPercent: performanceData.all?.returnPercent ?? 0,
+          pnlUsd: performanceData.all?.pnlUsd ?? 0,
+          pnlHkd: performanceData.all?.pnlHkd,
+          tradeCount: performanceData.all?.tradeCount ?? 0,
+          winRate: performanceData.all?.winRate ?? 0,
+          isAttested: false,
+        },
       ]
     : [];
 
