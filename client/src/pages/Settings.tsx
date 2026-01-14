@@ -187,9 +187,8 @@ export function Settings({
   // Solana wallet and SAS setup state
   const { connected: solanaConnected, publicKey: solanaPublicKey, signTransaction, disconnect: disconnectSolana } = useWallet();
   const { connection: solanaConnection } = useConnection();
-  const { cluster, sasReady } = useWalletContext();
   const [sasLoading, setSasLoading] = useState(false);
-  const [sasError, setSasError] = useState<string | null>(null);
+  const [internalSasError, setInternalSasError] = useState<string | null>(null);
   const [sasCredentialAddress, setSasCredentialAddress] = useState<string | null>(null);
   const [sasSchemaAddress, setSasSchemaAddress] = useState<string | null>(null);
   const [sasCredentialTx, setSasCredentialTx] = useState<string | null>(null);
@@ -218,12 +217,12 @@ export function Settings({
 
   const handleCreateCredential = async () => {
     if (!solanaPublicKey || !signTransaction) {
-      setSasError('Wallet not connected');
+      setInternalSasError('Wallet not connected');
       return;
     }
 
     setSasLoading(true);
-    setSasError(null);
+    setInternalSasError(null);
 
     try {
       const authorityAddress = address(solanaPublicKey.toBase58());
@@ -269,7 +268,7 @@ export function Settings({
       setSasCredentialTx(signature);
     } catch (err: any) {
       if (err.message?.includes('already in use')) {
-        setSasError('Credential already exists! Proceed to create schema.');
+        setInternalSasError('Credential already exists! Proceed to create schema.');
         const authorityAddress = address(solanaPublicKey.toBase58());
         const [credentialPda] = await deriveCredentialPda({
           authority: authorityAddress,
@@ -278,7 +277,7 @@ export function Settings({
         setSasCredentialAddress(credentialPda);
         setSasCredentialTx('already-exists');
       } else {
-        setSasError(err.message || 'Failed to create credential');
+        setInternalSasError(err.message || 'Failed to create credential');
       }
     } finally {
       setSasLoading(false);
@@ -287,12 +286,12 @@ export function Settings({
 
   const handleCreateSchema = async () => {
     if (!solanaPublicKey || !signTransaction || !sasCredentialAddress) {
-      setSasError('Credential not created yet');
+      setInternalSasError('Credential not created yet');
       return;
     }
 
     setSasLoading(true);
-    setSasError(null);
+    setInternalSasError(null);
 
     try {
       const authorityAddress = address(solanaPublicKey.toBase58());
@@ -341,7 +340,7 @@ export function Settings({
       setSasSchemaTx(signature);
     } catch (err: any) {
       if (err.message?.includes('already in use')) {
-        setSasError('Schema already exists! Setup complete.');
+        setInternalSasError('Schema already exists! Setup complete.');
         const credentialAddress = sasCredentialAddress as Address;
         const [schemaPda] = await deriveSchemaPda({
           credential: credentialAddress,
@@ -351,7 +350,7 @@ export function Settings({
         setSasSchemaAddress(schemaPda);
         setSasSchemaTx('already-exists');
       } else {
-        setSasError(err.message || 'Failed to create schema');
+        setInternalSasError(err.message || 'Failed to create schema');
       }
     } finally {
       setSasLoading(false);
@@ -1416,9 +1415,9 @@ export function Settings({
                 </div>
 
                 {/* Error display */}
-                {sasError && (
+                {internalSasError && (
                   <div className="p-3 bg-red-900/20 border border-red-500/30 rounded-lg mb-4">
-                    <p className="text-sm text-red-400">{sasError}</p>
+                    <p className="text-sm text-red-400">{internalSasError}</p>
                   </div>
                 )}
 

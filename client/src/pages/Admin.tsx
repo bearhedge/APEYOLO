@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useLocation, useHistory } from 'react-router-dom';
+import { useLocation } from 'wouter';
 import { useQuery } from '@tanstack/react-query';
 import { LeftNav } from '@/components/LeftNav';
 import { Log } from './Log';
@@ -16,23 +16,40 @@ interface AdminProps {
 }
 
 export function Admin({ hideLeftNav = false }: AdminProps) {
-  const location = useLocation();
-  const history = useHistory();
+  const [location, setLocation] = useLocation();
 
-  // Parse tab from URL query param
-  const params = new URLSearchParams(location.search);
-  const tabParam = params.get('tab') as TabId | null;
-  const [activeTab, setActiveTab] = useState<TabId>(tabParam || 'log');
-
-  // Sync URL with active tab
-  useEffect(() => {
-    const params = new URLSearchParams(location.search);
-    const currentTab = params.get('tab');
-    if (currentTab !== activeTab) {
-      params.set('tab', activeTab);
-      history.replace({ search: params.toString() });
+  // Parse tab from query param (?tab=log)
+  const getActiveTabFromUrl = (): TabId => {
+    const params = new URLSearchParams(window.location.search);
+    const tabParam = params.get('tab') as TabId;
+    // Validate tab exists
+    const validTabs: TabId[] = ['log', 'track-record', 'portfolio', 'jobs', 'settings'];
+    if (tabParam && validTabs.includes(tabParam)) {
+      return tabParam;
     }
-  }, [activeTab, history, location.search]);
+    return 'log'; // Default tab
+  };
+
+  const [activeTab, setActiveTab] = useState<TabId>(getActiveTabFromUrl);
+
+  // Update URL when tab changes (without triggering navigation)
+  useEffect(() => {
+    const currentTab = getActiveTabFromUrl();
+    if (currentTab !== activeTab) {
+      const newUrl = `/admin?tab=${activeTab}`;
+      window.history.replaceState({}, '', newUrl);
+    }
+  }, [activeTab]);
+
+  // Listen for URL changes (back/forward buttons)
+  useEffect(() => {
+    const handlePopState = () => {
+      setActiveTab(getActiveTabFromUrl());
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   // Fetch DeFi data (performance, trades, mandate, attestations)
   const { data: performanceData } = useQuery({
