@@ -1591,7 +1591,7 @@ router.post('/operate', requireAuth, async (req: Request, res: Response) => {
 
           // First get market data
           const { executeToolCall } = await import('./lib/agent-tools');
-          sendEvent({ type: 'action', tool: 'getMarketData', content: 'Analyzing market conditions...' });
+          sendEvent({ type: 'action', tool: 'getMarketData', content: 'Fetching current market data' });
           const marketResult = await executeToolCall({ tool: 'getMarketData', args: {} });
 
           if (!marketResult.success) {
@@ -1601,12 +1601,13 @@ router.post('/operate', requireAuth, async (req: Request, res: Response) => {
           }
 
           const { spy, vix, regime } = marketResult.data;
-          sendEvent({ type: 'result', content: `SPY $${spy?.price?.toFixed(2)} | VIX ${vix?.level?.toFixed(1)}` });
+          const marketState = regime?.state || 'UNKNOWN';
+          sendEvent({ type: 'result', content: `Market snapshot: SPY ${spy?.price?.toFixed(2)} | VIX ${vix?.level?.toFixed(1)} | ${marketState}` });
 
           // Run the trading engine with streaming support
           sendEvent({ type: 'status', phase: 'planning' });
           const strategyLabel = strategy === 'put-only' ? 'PUT-only' : strategy === 'call-only' ? 'CALL-only' : 'Strangle';
-          sendEvent({ type: 'action', tool: 'runEngine', content: `Running ${strategyLabel} strategy...` });
+          sendEvent({ type: 'action', tool: 'runEngine', content: `Executing ${strategyLabel} analysis` });
 
           const engineResult = await executeToolCall(
             { tool: 'runEngine', args: { symbol: 'SPY', strategy } },
@@ -1663,7 +1664,7 @@ router.post('/operate', requireAuth, async (req: Request, res: Response) => {
 
           // Run dual-brain validation with timeout
           sendEvent({ type: 'status', phase: 'validating' });
-          sendEvent({ type: 'action', tool: 'validate', content: 'Validating with AI critic...' });
+          sendEvent({ type: 'action', tool: 'validate', content: 'Running risk validation' });
 
           // Build trading context for dual-brain
           const context: TradingContext = {

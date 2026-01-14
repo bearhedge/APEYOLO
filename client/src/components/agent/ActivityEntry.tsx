@@ -153,7 +153,7 @@ export function ActivityEntry({ entry }: ActivityEntryProps) {
               : 'border-amber-500 bg-amber-950/20'
           }`}>
             <div className="flex items-start gap-2">
-              <span className="text-lg flex-shrink-0">⚙️</span>
+              <span className="text-xs font-mono text-zinc-500 flex-shrink-0">STEP</span>
               <div className="flex-1 min-w-0">
                 <div className="text-sm text-white font-mono whitespace-pre-wrap">
                   {content}
