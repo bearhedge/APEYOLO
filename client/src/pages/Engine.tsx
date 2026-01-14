@@ -240,13 +240,6 @@ export function Engine({ hideLeftNav = false, onAnalyze }: EngineProps = {}) {
     }
   }, [streamingAnalysis, streamIsRunning]);
 
-  // Handle streaming error
-  useEffect(() => {
-    if (streamError) {
-      console.error('[Engine] Stream error:', streamError);
-      toast.error(streamError || 'Failed to analyze market', { id: 'engine-analyze' });
-    }
-  }, [streamError]);
 
   // Step 3 stream loading state
   const [isStreamLoading, setIsStreamLoading] = useState(false);
