@@ -1,11 +1,10 @@
 import { Link, useLocation } from 'wouter';
-import { Zap, LineChart, BarChart2, Coins } from 'lucide-react';
+import { Zap, BarChart2, Settings } from 'lucide-react';
 
 const navItems = [
-  { path: '/trade', label: 'Trade', icon: Zap },           // Engine + Agent
-  { path: '/review', label: 'Review', icon: LineChart },  // Track + Portfolio + Jobs + Settings
+  { path: '/trade', label: 'Trade', icon: Zap },
+  { path: '/admin', label: 'Admin', icon: Settings },  // Combined DeFi + Review
   { path: '/dd', label: 'DD', icon: BarChart2 },
-  { path: '/defi', label: 'DeFi', icon: Coins },
 ];
 
 export function LeftNav() {
