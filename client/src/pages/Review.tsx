@@ -1,8 +1,14 @@
 /**
- * Review Page - Unified analysis interface
+ * @deprecated This page has been consolidated into Admin.tsx
  *
- * Combines Track Record + Portfolio + Settings into tabbed interface.
- * Replaces /track-record, /portfolio, and /settings routes.
+ * Migration:
+ * - All tabs (Track Record, Portfolio, Jobs, Settings) moved to Admin
+ * - New "Log" tab added as first tab with DeFi data (Period Summary + Trade Log)
+ *
+ * This file is kept temporarily for rollback capability.
+ * Will be removed in future PR after Admin page is stable.
+ *
+ * Redirects: /review → /admin?tab=log
  */
 
 import { useState, useEffect } from 'react';

@@ -1,8 +1,15 @@
 /**
- * DeFi Page - Bloomberg Terminal Style
+ * @deprecated This page has been consolidated into Admin.tsx
  *
- * Trading credentials and on-chain attestations.
- * Two-column layout: controls (left), data display (right).
+ * Migration:
+ * - Period Summary + Trade Log → Admin > Log tab (first tab)
+ * - Attestation Controls → Admin > Settings tab
+ * - Mandate Summary → Admin > Settings tab
+ *
+ * This file is kept temporarily for rollback capability.
+ * Will be removed in future PR after Admin page is stable.
+ *
+ * Redirects: /defi → /admin?tab=log
  */
 
 import { useState, useMemo, useEffect } from 'react';
