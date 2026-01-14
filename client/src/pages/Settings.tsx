@@ -20,6 +20,9 @@ import {
   TRADING_MANDATE_SCHEMA_FIELDS,
   TRADING_MANDATE_SCHEMA_LAYOUT,
 } from '@/lib/sas-client';
+import { ChainStatusPanel } from '@/components/admin/ChainStatusPanel';
+import { AttestationControls } from '@/components/defi/AttestationControls';
+import { MandateSummary } from '@/components/defi/MandateSummary';
 import { SectionHeader } from '@/components/SectionHeader';
 import { LeftNav } from '@/components/LeftNav';
 import { Button } from '@/components/ui/button';
@@ -53,9 +56,42 @@ interface IbkrCredentialsStatus {
 interface SettingsProps {
   /** Hide LeftNav when embedded in another page (e.g., Review page) */
   hideLeftNav?: boolean;
+  // Attestation props
+  selectedPeriod?: any;
+  onPeriodChange?: (period: any) => void;
+  previewData?: any | null;
+  onPreview?: () => void;
+  onAttest?: () => void;
+  isPreviewLoading?: boolean;
+  // Mandate props
+  mandate?: any | null;
+  violationCount?: number;
+  mandateLoading?: boolean;
+  // Attestation context
+  attestations?: any[];
+  cluster?: 'devnet' | 'mainnet-beta';
+  sasReady?: boolean;
+  checkingSas?: boolean;
+  sasError?: string | null;
 }
 
-export function Settings({ hideLeftNav = false }: SettingsProps = {}) {
+export function Settings({
+  hideLeftNav = false,
+  selectedPeriod = 'last_week',
+  onPeriodChange,
+  previewData,
+  onPreview,
+  onAttest,
+  isPreviewLoading = false,
+  mandate,
+  violationCount = 0,
+  mandateLoading = false,
+  attestations = [],
+  cluster = 'devnet',
+  sasReady = false,
+  checkingSas = false,
+  sasError = null,
+}: SettingsProps = {}) {
   const [testResult, setTestResult] = useState<any>(null);
   const [orderResult, setOrderResult] = useState<any>(null);
   const [clearResult, setClearResult] = useState<any>(null);
@@ -1235,6 +1271,78 @@ export function Settings({ hideLeftNav = false }: SettingsProps = {}) {
               ) : (
                 <WalletMultiButton className="!bg-electric !text-black hover:!bg-electric/90 !rounded-lg !h-10 !px-6 !font-medium" />
               )}
+            </div>
+
+            {/* NEW: Attestation Controls - Only show when wallet connected */}
+            {solanaConnected && sasReady && onPeriodChange && onPreview && onAttest && (
+              <div className="p-6 border-b border-white/10">
+                <h4 className="text-sm font-medium text-silver uppercase tracking-wider mb-4">
+                  Attestation Controls
+                </h4>
+                <AttestationControls
+                  selectedPeriod={selectedPeriod}
+                  onPeriodChange={onPeriodChange}
+                  onPreview={onPreview}
+                  onAttest={onAttest}
+                  isLoading={isPreviewLoading}
+                  hasPreview={!!previewData}
+                  sasReady={sasReady}
+                  disabled={!solanaConnected}
+                />
+
+                {/* Preview Data Display */}
+                {previewData && (
+                  <div className="mt-4 bg-dark-gray rounded-lg p-4 border border-white/10">
+                    <div className="grid grid-cols-2 gap-4 text-sm">
+                      <div>
+                        <div className="text-silver">Return</div>
+                        <div className="text-white font-medium">
+                          {previewData.return_pct?.toFixed(2)}%
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-silver">P&L</div>
+                        <div className="text-white font-medium">
+                          ${previewData.pnl?.toFixed(2)}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-silver">Trades</div>
+                        <div className="text-white font-medium">
+                          {previewData.trade_count}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-silver">Details Hash</div>
+                        <div className="text-white font-mono text-xs truncate">
+                          {previewData.details_hash}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* NEW: Chain Status Panel */}
+            <div className="p-6 border-b border-white/10">
+              <ChainStatusPanel
+                sasReady={sasReady}
+                cluster={cluster}
+                attestationCount={attestations.length}
+                checkingSas={checkingSas}
+                sasError={sasError}
+              />
+            </div>
+
+            {/* NEW: Mandate Summary */}
+            <div className="p-6 border-b border-white/10">
+              <MandateSummary
+                mandate={mandate}
+                violationCount={violationCount}
+                onCreateClick={() => {/* TODO: Handle create mandate */}}
+                loading={mandateLoading}
+              />
             </div>
 
             {/* SAS Setup Section - Only show when connected */}
