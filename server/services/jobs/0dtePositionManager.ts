@@ -378,21 +378,19 @@ export async function execute0dtePositionManager(): Promise<JobResult> {
             closeResult.orderId = orderResult.orderId;
             console.log(`[0DTE-Manager] Order submitted successfully: ${orderResult.orderId}`);
 
-            // Update paper_trades to mark as closing
+            // Update paper_trades to mark as closing (not closed yet)
+            // TradeMonitor will calculate actual P&L from IBKR executions and set final status
             const exitReasonText = `Auto-closed by 0DTE manager: ${risky.reason}`;
             await db
               .update(paperTrades)
               .set({
                 exitReason: exitReasonText,
-                status: 'closed',
-                closedAt: new Date(),
+                status: 'closing',  // TradeMonitor will finalize to 'closed' after calculating P&L
               })
               .where(eq(paperTrades.id, risky.tradeId));
 
-            // Link outcome to engine_run for RLHF
-            // Note: P&L will be calculated and updated by tradeMonitor when it detects the position is closed
-            // For now, we just mark it as auto_close - the actual P&L will be linked later
-            await linkTradeOutcome(risky.tradeId, 0, normalizeExitReason(exitReasonText));
+            // Note: P&L and RLHF linkage will be done by tradeMonitor when it processes this trade
+            console.log(`[0DTE-Manager] Trade ${risky.tradeId} marked as 'closing' - tradeMonitor will calculate P&L`);
 
             break;
           } else {

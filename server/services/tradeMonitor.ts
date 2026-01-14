@@ -135,18 +135,19 @@ export async function monitorOpenTrades(): Promise<JobResult> {
   }
 
   try {
-    // 1. Get all open trades from database
+    // 1. Get all open and closing trades from database
+    // 'closing' status is set by 0DTE manager when it auto-closes a position
     const openTrades = await db
       .select()
       .from(paperTrades)
-      .where(eq(paperTrades.status, 'open'));
+      .where(inArray(paperTrades.status, ['open', 'closing']));
 
     if (openTrades.length === 0) {
-      console.log('[TradeMonitor] No open trades to monitor');
+      console.log('[TradeMonitor] No open/closing trades to monitor');
       return { success: true, data: { processed: 0, closed: 0 } };
     }
 
-    console.log(`[TradeMonitor] Found ${openTrades.length} open trades`);
+    console.log(`[TradeMonitor] Found ${openTrades.length} open/closing trades`);
 
     // 2. Get current positions and recent trades from IBKR
     const broker = getBroker();
@@ -231,7 +232,14 @@ export async function monitorOpenTrades(): Promise<JobResult> {
       const leg1Strike = trade.leg1Strike ? parseFloat(trade.leg1Strike as any) : null;
       const leg2Strike = trade.leg2Strike ? parseFloat(trade.leg2Strike as any) : null;
 
-      const hasOpenPosition = ibkrPositions.some((pos) => {
+      // If status is 'closing' (set by 0DTE manager), the position was already closed
+      // We just need to calculate and record the P&L
+      const isClosingStatus = trade.status === 'closing';
+      if (isClosingStatus) {
+        console.log(`[TradeMonitor] Trade has 'closing' status, calculating P&L: ${tradeInfo}`);
+      }
+
+      const hasOpenPosition = !isClosingStatus && ibkrPositions.some((pos) => {
         const posSymbol = pos.symbol || '';
         const underlying = trade.symbol;
 
@@ -251,8 +259,8 @@ export async function monitorOpenTrades(): Promise<JobResult> {
         return false;
       });
 
-      if (!hasOpenPosition && ibkrPositions.length > 0) {
-        console.log(`[TradeMonitor] Trade CLOSED (position not found): ${tradeInfo}`);
+      if (!hasOpenPosition && (ibkrPositions.length > 0 || isClosingStatus)) {
+        console.log(`[TradeMonitor] Trade CLOSED ${isClosingStatus ? '(0DTE manager)' : '(position not found)'}: ${tradeInfo}`);
 
         // Position is closed - calculate realized P&L from actual IBKR executions
         const entryPremium = parseFloat(trade.entryPremiumTotal as any) || 0;
@@ -279,9 +287,10 @@ export async function monitorOpenTrades(): Promise<JobResult> {
         const grossPnl = realizedPnl; // P&L before commissions
         const netPnl = grossPnl - totalCommissions;
 
-        const exitReason = matchingExecs.length > 0
+        // Preserve exitReason if already set (e.g., by 0DTE manager)
+        const exitReason = trade.exitReason || (matchingExecs.length > 0
           ? 'Closed via IBKR'
-          : 'Position closed (no fill data)';
+          : 'Position closed (no fill data)');
 
         console.log(`[TradeMonitor] ${tradeInfo}: entry=$${entryPremium.toFixed(2)}, exit=$${exitPrice.toFixed(4)}, grossP&L=$${grossPnl.toFixed(2)}, commission=$${totalCommissions.toFixed(2)}, netP&L=$${netPnl.toFixed(2)}`);
 
