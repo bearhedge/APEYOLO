@@ -738,7 +738,7 @@ async function fetchFullOptionChain(symbol: string, expirationStr?: string): Pro
       const putResult = convertCachedToStrikes(cachedChain, 'PUT');
       const callResult = convertCachedToStrikes(cachedChain, 'CALL');
 
-      if (putResult.strikes.length > 0 || callResult.strikes.length > 0) {
+      if (putResult.strikes.length > 0 && callResult.strikes.length > 0) {
         console.log(`[Step3] Using WebSocket cache: ${putResult.strikes.length} PUTs, ${callResult.strikes.length} CALLs, underlying: $${cachedChain.underlyingPrice}`);
         return {
           putStrikes: putResult.strikes,

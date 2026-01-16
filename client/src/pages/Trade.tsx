@@ -2,27 +2,36 @@
  * Trade Page - Unified trading interface
  *
  * Combines Engine workflow (center) + Agent sidebar (right).
- * This is the main trading page that replaces both /engine and /agent routes.
+ * Engine uses useEngineAnalysis (direct API).
+ * Agent sidebar uses its own useAgentOperator (separate state).
  */
 
 import { useState, useEffect } from 'react';
 import { LeftNav } from '@/components/LeftNav';
 import { Engine } from '@/pages/Engine';
 import { AgentSidebar } from '@/components/agent/AgentSidebar';
-import { useAgentOperator } from '@/hooks/useAgentOperator';
+import { useEngineAnalysis } from '@/hooks/useEngineAnalysis';
 
 export function Trade() {
-  // Agent operator hook for triggering analysis through Agent
-  const { operate } = useAgentOperator({
-    enableStatusPolling: true,
+  // Engine analysis - completely separate from Agent
+  const {
+    analyze,
+    isAnalyzing,
+    currentStep,
+    completedSteps,
+    analysis,
+    error,
+  } = useEngineAnalysis({
+    symbol: 'SPY',
+    strategy: 'strangle',
+    riskTier: 'balanced',
   });
 
   // Load Agent sidebar collapsed state from localStorage
   const [isAgentCollapsed, setIsAgentCollapsed] = useState(() => {
     const saved = localStorage.getItem('agent-sidebar-collapsed');
-    // Default to collapsed on smaller screens
     if (saved !== null) return saved === 'true';
-    return window.innerWidth < 1280; // Auto-collapse below 1280px
+    return window.innerWidth < 1280;
   });
 
   // Persist collapsed state to localStorage
@@ -44,23 +53,30 @@ export function Trade() {
 
   const toggleAgentSidebar = () => setIsAgentCollapsed(!isAgentCollapsed);
 
+  console.log('[Trade] isAnalyzing:', isAnalyzing, 'currentStep:', currentStep);
+
   return (
     <div className="flex h-[calc(100vh-64px)]">
       {/* Left Navigation */}
       <LeftNav />
 
-      {/* Engine Workflow (Center) - 55% of remaining space */}
+      {/* Engine Workflow (Center) */}
       <div
         className="min-w-0 overflow-hidden"
         style={{ flex: isAgentCollapsed ? '1 0 0' : '55 0 0' }}
       >
         <Engine
           hideLeftNav={true}
-          onAnalyze={() => operate('propose', {})}
+          isAnalyzing={isAnalyzing}
+          currentStep={currentStep}
+          completedSteps={completedSteps}
+          streamAnalysis={analysis}
+          streamError={error}
+          onAnalyze={analyze}
         />
       </div>
 
-      {/* Agent Sidebar (Right) - 45% of remaining space when expanded */}
+      {/* Agent Sidebar (Right) - Uses its own useAgentOperator */}
       <AgentSidebar
         isCollapsed={isAgentCollapsed}
         onToggleCollapse={toggleAgentSidebar}

@@ -254,10 +254,12 @@ const runEngineTool: Tool = {
       const riskProfile = args.riskProfile || 'BALANCED';
       const strategy = args.strategy as 'strangle' | 'put-only' | 'call-only' | undefined;
 
-      // If context.onProgress provided, use streaming variant
-      if (context?.onProgress) {
-        return await executeEngineStreaming(symbol, riskProfile, strategy, context.onProgress);
-      }
+      // DISABLED: Streaming variant makes HTTP call that fails without auth cookies
+      // TODO: Rewrite executeEngineStreaming to call engine directly with step callbacks
+      // if (context?.onProgress) {
+      //   return await executeEngineStreaming(symbol, riskProfile, strategy, context.onProgress);
+      // }
+      console.log('[AgentTools] runEngine: Using direct engine execution (streaming disabled)');
 
       // Fallback: Non-streaming execution (backwards compatibility)
       const { TradingEngine } = await import('../engine');
@@ -690,7 +692,7 @@ export function parseToolCall(content: string): ToolCall | null {
 /**
  * Execute a tool call and return the result
  */
-export async function executeToolCall(toolCall: ToolCall): Promise<ToolResult> {
+export async function executeToolCall(toolCall: ToolCall, context?: ToolExecutionContext): Promise<ToolResult> {
   const tool = toolRegistry[toolCall.tool];
   if (!tool) {
     return { success: false, error: `Unknown tool: ${toolCall.tool}` };
@@ -699,7 +701,7 @@ export async function executeToolCall(toolCall: ToolCall): Promise<ToolResult> {
   console.log(`[AgentTools] Executing ${toolCall.tool} with args:`, toolCall.args);
 
   try {
-    const result = await tool.execute(toolCall.args);
+    const result = await tool.execute(toolCall.args, context);
     console.log(`[AgentTools] ${toolCall.tool} result:`, result.success ? 'success' : result.error);
     return result;
   } catch (error: any) {

@@ -33,7 +33,7 @@ export function PeriodSummarySection({
       {/* Trade Log Table */}
       <div className="w-full overflow-x-auto">
         <TradeLogTable
-          trades={trades}
+          trades={trades || []}
           loading={loading}
         />
       </div>

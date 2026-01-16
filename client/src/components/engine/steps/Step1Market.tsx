@@ -57,6 +57,8 @@ export function Step1Market({
   onAnalyze,
   isLoading,
 }: Step1MarketProps) {
+  console.log('[Step1Market] Rendering with onAnalyze:', !!onAnalyze, 'isLoading:', isLoading);
+
   // Determine if we're in overnight trading session
   const isOvernight = marketState === 'OVERNIGHT';
   const isPreMarket = marketState === 'PRE';

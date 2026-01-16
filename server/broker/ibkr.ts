@@ -336,8 +336,9 @@ class IbkrClient {
 
     // CRITICAL: Call /portfolio/subaccounts first to prime the session for market data
     // (Required by IBKR before iserver endpoints will work - fixes "Please query /accounts first" error)
+    // Use Bearer auth - SSO DH flow doesn't set cookies
     try {
-      const subacctResp = await this.http.get('/v1/api/portfolio/subaccounts');
+      const subacctResp = await this.authenticatedGet('/v1/api/portfolio/subaccounts');
       console.log(`[IBKR][ensureAccountSelected] subaccounts status=${subacctResp.status}`);
 
       // Only mark as selected if the subaccounts call succeeds
@@ -356,9 +357,8 @@ class IbkrClient {
 
     // Then try account selection (may return 401 for OAuth live accounts, which is OK)
     try {
-      const resp = await this.http.post('/v1/api/iserver/account', { acctId: acct }, {
-        headers: { 'Content-Type': 'application/json' },
-      });
+      // Use authenticatedPost - SSO DH auth requires Bearer token
+      const resp = await this.authenticatedPost('/v1/api/iserver/account', { acctId: acct });
       console.log(`[IBKR][ensureAccountSelected] account select status=${resp.status} acctId=${acct}`);
       if (resp.status >= 200 && resp.status < 300) {
         await this.sleep(500);
@@ -398,7 +398,8 @@ class IbkrClient {
    */
   private async getOptionHistoricalPrice(conid: number): Promise<{ close: number; timestamp: number } | null> {
     try {
-      const histResp = await this.http.get(
+      // Use Bearer auth - SSO DH flow doesn't set cookies
+      const histResp = await this.authenticatedGet(
         `/v1/api/iserver/marketdata/history?conid=${conid}&period=1d&bar=5mins&outsideRth=true`
       );
       if (histResp.status === 200 && Array.isArray(histResp.data?.data) && histResp.data.data.length > 0) {
@@ -1148,8 +1149,9 @@ class IbkrClient {
 
       await this.initBrokerageWithSso();
 
-      // Establish gateway connection for trading
-      await this.establishGateway();
+      // REMOVED: establishGateway() causes infinite 401 loop with SSO DH auth
+      // The init already establishes the gateway (returns authenticated=true)
+      // await this.establishGateway();
 
       // Prime market data subscriptions (IBKR requires first call to "subscribe")
       await this.primeMarketData();
@@ -1217,11 +1219,12 @@ class IbkrClient {
 
       // Prime option chain endpoints for SPY (prevents "no bridge" in Step 3)
       // These are metadata calls, not market data snapshots - they're FREE
+      // Use Bearer auth - SSO DH flow doesn't set cookies
       console.log(`[IBKR][primeMarketData][${reqId}] Priming option chain endpoints...`);
       try {
         // Prime /secdef/search for options
         const searchUrl = `/v1/api/iserver/secdef/search?symbol=SPY&secType=OPT`;
-        await this.http.get(searchUrl);
+        await this.authenticatedGet(searchUrl);
         console.log(`[IBKR][primeMarketData][${reqId}] Primed /secdef/search for SPY options`);
 
         // Get current month code for strikes priming
@@ -1231,7 +1234,7 @@ class IbkrClient {
 
         // Prime /secdef/strikes for current month
         const strikesUrl = `/v1/api/iserver/secdef/strikes?conid=756733&sectype=OPT&month=${monthCode}`;
-        await this.http.get(strikesUrl);
+        await this.authenticatedGet(strikesUrl);
         console.log(`[IBKR][primeMarketData][${reqId}] Primed /secdef/strikes for ${monthCode}`);
       } catch (optErr: any) {
         console.warn(`[IBKR][primeMarketData][${reqId}] Option priming warning (non-fatal): ${optErr.message}`);
@@ -1249,6 +1252,32 @@ class IbkrClient {
     } as Record<string, string>;
   }
 
+  /**
+   * Make an authenticated GET request with Bearer token
+   * SSO DH auth doesn't set cookies, so we must pass Bearer token explicitly
+   */
+  async authenticatedGet(url: string): Promise<AxiosResponse> {
+    const headers: Record<string, string> = {};
+    if (this.ssoAccessToken) {
+      headers['Authorization'] = `Bearer ${this.ssoAccessToken}`;
+    }
+    return this.http.get(url, { headers });
+  }
+
+  /**
+   * Make an authenticated POST request with Bearer token
+   * SSO DH auth doesn't set cookies, so we must pass Bearer token explicitly
+   */
+  async authenticatedPost(url: string, body: any): Promise<AxiosResponse> {
+    const headers: Record<string, string> = {
+      'Content-Type': 'application/json'
+    };
+    if (this.ssoAccessToken) {
+      headers['Authorization'] = `Bearer ${this.ssoAccessToken}`;
+    }
+    return this.http.post(url, body, { headers });
+  }
+
   async getAccount(): Promise<AccountInfo> {
     const maxRetries = 3;
     const retryDelay = 2000;
@@ -1259,8 +1288,8 @@ class IbkrClient {
       try {
         await this.ensureReady();
         await this.ensureAccountSelected();
-      // CP endpoint - use cookie auth only, no Authorization header
-      const resp = await this.http.get(`/v1/api/portfolio/${encodeURIComponent(accountId)}/summary`);
+      // Use Bearer auth - SSO DH flow doesn't set cookies
+      const resp = await this.authenticatedGet(`/v1/api/portfolio/${encodeURIComponent(accountId)}/summary`);
       if (resp.status !== 200) throw new Error(`status ${resp.status}`);
       const data = resp.data as any;
 
@@ -1361,8 +1390,8 @@ class IbkrClient {
     };
 
     try {
-      // CP endpoint - use cookie auth only, no Authorization header
-      const resp = await this.http.get(`/v1/api/portfolio/${encodeURIComponent(accountId)}/positions`);
+      // Use Bearer auth - SSO DH flow doesn't set cookies
+      const resp = await this.authenticatedGet(`/v1/api/portfolio/${encodeURIComponent(accountId)}/positions`);
       const bodySnippet = typeof resp.data === 'string' ? resp.data.slice(0, 200) : JSON.stringify(resp.data || {}).slice(0, 200);
       console.log(`[IBKR][getPositions] status=${resp.status} body=${bodySnippet}`);
       if (resp.status !== 200) throw new Error(`status ${resp.status}`);
@@ -1426,8 +1455,32 @@ class IbkrClient {
   private async establishGateway(): Promise<void> {
     console.log('[IBKR][Gateway] Establishing gateway connection...');
     try {
-      // Call reauthenticate endpoint to establish gateway
-      // CP API endpoints use cookie authentication, no Authorization header
+      // FIRST: Wait for session state to propagate from init
+      // IBKR's session state isn't immediately available after init returns
+      await this.sleep(2000);
+
+      // Check if session is already authenticated via SSO DH init
+      // SSO DH auth doesn't work with /reauthenticate (which expects cookie-based portal auth)
+      // So we check status first and skip reauthenticate if already authenticated
+      const statusUrl = '/v1/api/iserver/auth/status';
+      const initialStatusResp = await this.http.post(statusUrl, {});
+
+      const initialAuth = initialStatusResp.data?.authenticated === true;
+      const initialConn = initialStatusResp.data?.connected === true;
+
+      console.log(`[IBKR][Gateway] Initial auth status: authenticated=${initialAuth} connected=${initialConn}`);
+
+      // If already authenticated via SSO DH init, we're done - no need for reauthenticate
+      if (initialAuth && initialConn) {
+        console.log('[IBKR][Gateway] Session already authenticated via SSO DH init, skipping reauthenticate');
+        this.sessionReady = true;
+        await this.sleep(1000); // Small delay to let gateway stabilize
+        return;
+      }
+
+      // Only call reauthenticate for cookie-based portal auth (fallback path)
+      // Note: This path is rarely used since we primarily use SSO DH auth
+      console.log('[IBKR][Gateway] Not authenticated, trying reauthenticate (portal auth fallback)...');
       const reauthUrl = '/v1/api/iserver/reauthenticate';
       const reauthResp = await this.http.post(reauthUrl, {});
       console.log(`[IBKR][Gateway] Reauthenticate status=${reauthResp.status}`);
@@ -1440,8 +1493,7 @@ class IbkrClient {
         await this.sleep(1000);
       }
 
-      // Call auth/status to check gateway status
-      const statusUrl = '/v1/api/iserver/auth/status';
+      // Re-check auth status after reauthenticate attempt
       const statusResp = await this.http.post(statusUrl, {});
 
       const isAuthenticated = statusResp.data?.authenticated === true;
@@ -1545,16 +1597,15 @@ class IbkrClient {
    * Use this for all IBKR API calls that may encounter cold bridge issues.
    */
   private async httpGetWithBridgeRetry(url: string, context: string): Promise<AxiosResponse> {
-    let resp = await this.http.get(url);
+    // Use Bearer auth - SSO DH flow doesn't set cookies
+    let resp = await this.authenticatedGet(url);
 
     if (resp.status === 400) {
       const body = JSON.stringify(resp.data).slice(0, 300);
       if (body.includes('no bridge')) {
-        console.log(`[IBKR][${context}] Got "no bridge" error, re-establishing gateway...`);
-        await this.establishGateway();
-        await new Promise(r => setTimeout(r, 2000)); // Wait 2 seconds for gateway to stabilize
-        resp = await this.http.get(url); // Retry once
-        console.log(`[IBKR][${context}] Retry after gateway: status=${resp.status}`);
+        console.log(`[IBKR][${context}] Got "no bridge" error - SSO DH auth, skipping gateway retry`);
+        // REMOVED: establishGateway() causes infinite 401 loop with SSO DH auth
+        // await this.establishGateway();
       }
     }
     return resp;
@@ -1636,30 +1687,22 @@ class IbkrClient {
       return null;
     };
     try {
-      // CP endpoint - use cookie auth only, no Authorization header
-      const resp = await this.http.get(`${url}?symbol=${encodeURIComponent(symbol)}&name=${encodeURIComponent(symbol)}&secType=STK`);
+      // Use Bearer auth - SSO DH flow doesn't set cookies
+      const resp = await this.authenticatedGet(`${url}?symbol=${encodeURIComponent(symbol)}&name=${encodeURIComponent(symbol)}&secType=STK`);
       const bodySnippet = typeof resp.data === 'string' ? resp.data.slice(0, 200) : JSON.stringify(resp.data || {}).slice(0, 200);
       console.log(`[IBKR][resolveConid] attempt1 status=${resp.status} body=${bodySnippet}`);
 
-      // If we get "no bridge" error, try to establish gateway
+      // If we get "no bridge" error, just log it - SSO DH auth doesn't need gateway re-establishment
       if (resp.status === 400 && bodySnippet.includes('no bridge')) {
-        console.log('[IBKR][resolveConid] Got "no bridge" error, establishing gateway...');
-        await this.establishGateway();
-        // Retry after establishing gateway
-        const retryResp = await this.http.get(`${url}?symbol=${encodeURIComponent(symbol)}&name=${encodeURIComponent(symbol)}&secType=STK`);
-        const retrySnippet = typeof retryResp.data === 'string' ? retryResp.data.slice(0, 200) : JSON.stringify(retryResp.data || {}).slice(0, 200);
-        console.log(`[IBKR][resolveConid] retry after gateway status=${retryResp.status} body=${retrySnippet}`);
-        if (retryResp.status === 200) {
-          const c = parse(retryResp.data);
-          if (typeof c === 'number') return c;
-        }
+        console.log('[IBKR][resolveConid] Got "no bridge" error - SSO DH auth, skipping gateway call');
+        // REMOVED: establishGateway() causes infinite 401 loop with SSO DH auth
       }
       // If we get "not authenticated" error, re-authenticate
       else if (resp.status === 401 && bodySnippet.includes('not authenticated')) {
         console.log('[IBKR][resolveConid] Got "not authenticated" error, re-authenticating...');
         await this.ensureReady();
-        // Retry after re-authentication
-        const retryResp = await this.http.get(`${url}?symbol=${encodeURIComponent(symbol)}&name=${encodeURIComponent(symbol)}&secType=STK`);
+        // Retry after re-authentication (with Bearer auth)
+        const retryResp = await this.authenticatedGet(`${url}?symbol=${encodeURIComponent(symbol)}&name=${encodeURIComponent(symbol)}&secType=STK`);
         const retrySnippet = typeof retryResp.data === 'string' ? retryResp.data.slice(0, 200) : JSON.stringify(retryResp.data || {}).slice(0, 200);
         console.log(`[IBKR][resolveConid] retry after re-auth status=${retryResp.status} body=${retrySnippet}`);
         if (retryResp.status === 200) {
@@ -1672,8 +1715,8 @@ class IbkrClient {
       }
     } catch {}
     try {
-      // CP endpoint - use cookie auth only, no Authorization header
-      const resp2 = await this.http.get(`${url}?symbol=${encodeURIComponent(symbol)}`);
+      // Use Bearer auth - SSO DH flow doesn't set cookies
+      const resp2 = await this.authenticatedGet(`${url}?symbol=${encodeURIComponent(symbol)}`);
       const bodySnippet2 = typeof resp2.data === 'string' ? resp2.data.slice(0, 200) : JSON.stringify(resp2.data || {}).slice(0, 200);
       console.log(`[IBKR][resolveConid] attempt2 status=${resp2.status} body=${bodySnippet2}`);
       if (resp2.status === 200) return parse(resp2.data);
@@ -1745,10 +1788,11 @@ class IbkrClient {
       // MANDATORY FIRST STEP: Call /secdef/search to activate options data
       // Per IBKR docs: "you must request the secdef/search endpoint... before requesting strikes"
       // Source: https://www.interactivebrokers.com/campus/ibkr-quant-news/handling-options-chains/
+      // Use Bearer auth - SSO DH flow doesn't set cookies
       const searchUrl = `/v1/api/iserver/secdef/search?symbol=${symbol}&secType=OPT`;
       console.log(`[IBKR][getOptionChain][${reqId}] Step 1a: Calling /secdef/search (REQUIRED)...`);
       try {
-        const searchResp = await this.http.get(searchUrl);
+        const searchResp = await this.authenticatedGet(searchUrl);
         console.log(`[IBKR][getOptionChain][${reqId}] /secdef/search response:`, JSON.stringify(searchResp.data).slice(0, 300));
         await this.sleep(500);
       } catch (err: any) {
@@ -1760,9 +1804,9 @@ class IbkrClient {
       console.log(`[IBKR][getOptionChain][${reqId}] Step 1b: Fetching strikes: ${strikesUrl}`);
 
       // Prime the endpoint first (IBKR requires first call to subscribe)
-      await this.http.get(strikesUrl);
+      await this.authenticatedGet(strikesUrl);
       await this.sleep(1500);
-      const strikesResp = await this.http.get(strikesUrl);
+      const strikesResp = await this.authenticatedGet(strikesUrl);
       if (strikesResp.status !== 200 || !strikesResp.data) {
         console.warn(`[IBKR][getOptionChain][${reqId}] Failed to get strikes: status=${strikesResp.status}`);
         return { symbol, underlyingPrice, underlyingChange: 0, options: [] };
@@ -2119,7 +2163,7 @@ class IbkrClient {
         }
         console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Attempt ${attempt + 1} returned empty, retrying after ${retryDelays[attempt]}ms...`);
         await this.sleep(retryDelays[attempt]);
-        strikesResp = await this.http.get(strikesUrl);
+        strikesResp = await this.authenticatedGet(strikesUrl);
         strikesData = strikesResp.data as { call?: number[]; put?: number[] };
       }
       diagnostics.strikesStatus = strikesResp.status;
@@ -2552,7 +2596,8 @@ class IbkrClient {
 
     try {
       // IBKR Client Portal API endpoint for trade executions (up to 7 days)
-      const resp = await this.http.get(`/v1/api/iserver/account/trades?days=7`);
+      // Use Bearer auth - SSO DH flow doesn't set cookies
+      const resp = await this.authenticatedGet(`/v1/api/iserver/account/trades?days=7`);
       console.log(`[IBKR][getTrades] status=${resp.status} count=${Array.isArray(resp.data) ? resp.data.length : 0}`);
 
       if (resp.status !== 200) {
@@ -2622,7 +2667,8 @@ class IbkrClient {
 
     const url = `/v1/api/iserver/account/${encodeURIComponent(accountId)}/orders`;
     const reqId = randomUUID();
-    const resp = await this.http.post(url, body, { headers: { 'Content-Type': 'application/json' } });
+    // Use authenticatedPost - SSO DH auth requires Bearer token for all API calls
+    const resp = await this.authenticatedPost(url, body);
 
     const http = resp.status;
     const raw: any = resp.data;
@@ -2746,8 +2792,8 @@ class IbkrClient {
     const body = { orders: [ order ] };
     const url2 = `/v1/api/iserver/account/${encodeURIComponent(accountId)}/orders`;
     const reqId2 = randomUUID();
-    // CP endpoint - use cookie auth only, no Authorization header
-    const resp2 = await this.http.post(url2, body, { headers: { 'Content-Type': 'application/json' } });
+    // Use authenticatedPost - SSO DH auth requires Bearer token for all API calls
+    const resp2 = await this.authenticatedPost(url2, body);
     const http2 = resp2.status;
     const raw2: any = resp2.data;
 
@@ -3041,7 +3087,8 @@ class IbkrClient {
     console.log(`[IBKR][placeOptionOrder][${reqId}] Submitting order to ${url}:`, JSON.stringify(body));
 
     try {
-      const resp = await this.http.post(url, body, { headers: { 'Content-Type': 'application/json' } });
+      // Use authenticatedPost - SSO DH auth requires Bearer token for all API calls
+      const resp = await this.authenticatedPost(url, body);
       const raw = resp.data;
 
       console.log(`[IBKR][placeOptionOrder][${reqId}] Response: status=${resp.status} data=${JSON.stringify(raw).slice(0, 500)}`);
@@ -3053,7 +3100,7 @@ class IbkrClient {
         console.log(`[IBKR][placeOptionOrder][${reqId}] Order requires confirmation (id=${confirmId}): ${raw[0].message}`);
 
         const confirmUrl = `/v1/api/iserver/reply/${confirmId}`;
-        const confirmResp = await this.http.post(confirmUrl, { confirmed: true });
+        const confirmResp = await this.authenticatedPost(confirmUrl, { confirmed: true });
         console.log(`[IBKR][placeOptionOrder][${reqId}] Confirmation response: status=${confirmResp.status} data=${JSON.stringify(confirmResp.data).slice(0, 300)}`);
 
         // Use confirmed response as raw
@@ -3228,7 +3275,8 @@ class IbkrClient {
     console.log(`[IBKR][placeOptionOrderWithStop][${reqId}] Submitting bracket order to ${url}:`, JSON.stringify(body));
 
     try {
-      const resp = await this.http.post(url, body, { headers: { 'Content-Type': 'application/json' } });
+      // Use authenticatedPost - SSO DH auth requires Bearer token for all API calls
+      const resp = await this.authenticatedPost(url, body);
       const raw = resp.data;
 
       console.log(`[IBKR][placeOptionOrderWithStop][${reqId}] Response: status=${resp.status} data=${JSON.stringify(raw).slice(0, 800)}`);
@@ -3241,7 +3289,7 @@ class IbkrClient {
         console.log(`[IBKR][placeOptionOrderWithStop][${reqId}] Order requires confirmation (id=${confirmId}): ${raw[0].message}`);
 
         const confirmUrl = `/v1/api/iserver/reply/${confirmId}`;
-        const confirmResp = await this.http.post(confirmUrl, { confirmed: true });
+        const confirmResp = await this.authenticatedPost(confirmUrl, { confirmed: true });
         console.log(`[IBKR][placeOptionOrderWithStop][${reqId}] Confirmation response: status=${confirmResp.status} data=${JSON.stringify(confirmResp.data).slice(0, 500)}`);
 
         if (confirmResp.status >= 200 && confirmResp.status < 300) {
@@ -3252,7 +3300,7 @@ class IbkrClient {
             const confirmId2 = confirmedRaw[0].id;
             console.log(`[IBKR][placeOptionOrderWithStop][${reqId}] Second confirmation needed (id=${confirmId2}): ${confirmedRaw[0].message}`);
 
-            const confirmResp2 = await this.http.post(`/v1/api/iserver/reply/${confirmId2}`, { confirmed: true });
+            const confirmResp2 = await this.authenticatedPost(`/v1/api/iserver/reply/${confirmId2}`, { confirmed: true });
             console.log(`[IBKR][placeOptionOrderWithStop][${reqId}] Second confirmation response: status=${confirmResp2.status}`);
 
             if (confirmResp2.status >= 200 && confirmResp2.status < 300) {
@@ -3415,10 +3463,11 @@ class IbkrClient {
     console.log(`[IBKR][OPEN_ORDERS ${reqId}] Account selection state: accountId=${this.accountId}, env=${process.env.IBKR_ACCOUNT_ID}`);
 
     // Initialize portfolio subaccounts (per IBKR documentation requirement)
+    // Use Bearer auth - SSO DH flow doesn't set cookies
     try {
       const subacctUrl = `/v1/api/portfolio/subaccounts`;
       console.log(`[IBKR][OPEN_ORDERS ${reqId}] Initializing portfolio subaccounts: GET ${subacctUrl}`);
-      const subacctResp = await this.http.get(subacctUrl);
+      const subacctResp = await this.authenticatedGet(subacctUrl);
       console.log(`[IBKR][OPEN_ORDERS ${reqId}] Subaccounts response: ${subacctResp.status}, data=${JSON.stringify(subacctResp.data).slice(0, 200)}`);
     } catch (err) {
       console.warn(`[IBKR][OPEN_ORDERS ${reqId}] Portfolio subaccounts init failed (non-fatal):`, err instanceof Error ? err.message : String(err));
@@ -3466,10 +3515,11 @@ class IbkrClient {
       return [];
     }
 
+    // Use Bearer auth - SSO DH flow doesn't set cookies
     const url1 = `/v1/api/iserver/account/${encodeURIComponent(acct)}/orders`;
     console.log(`[IBKR][OPEN_ORDERS ${reqId}] PRIMARY: GET ${url1}`);
     try {
-      const r1 = await this.http.get(url1);
+      const r1 = await this.authenticatedGet(url1);
       console.log(`[IBKR][OPEN_ORDERS ${reqId}] PRIMARY -> ${r1.status}`);
       console.log(`[IBKR][OPEN_ORDERS ${reqId}] PRIMARY body (first 500 chars): ${(typeof r1.data==='string'?r1.data:JSON.stringify(r1.data)||'').slice(0,500)}`);
 
@@ -3486,7 +3536,7 @@ class IbkrClient {
     const url2 = `/v1/api/iserver/account/orders`;
     console.log(`[IBKR][OPEN_ORDERS ${reqId}] FALLBACK: GET ${url2}`);
     try {
-      const r2 = await this.http.get(url2);
+      const r2 = await this.authenticatedGet(url2);
       console.log(`[IBKR][OPEN_ORDERS ${reqId}] FALLBACK -> ${r2.status}`);
       console.log(`[IBKR][OPEN_ORDERS ${reqId}] FALLBACK body (first 500 chars): ${(typeof r2.data==='string'?r2.data:JSON.stringify(r2.data)||'').slice(0,500)}`);
 
@@ -3503,7 +3553,7 @@ class IbkrClient {
     const url3 = `/v1/api/portfolio/${encodeURIComponent(acct)}/orders`;
     console.log(`[IBKR][OPEN_ORDERS ${reqId}] LIVE ORDERS: GET ${url3}`);
     try {
-      const r3 = await this.http.get(url3);
+      const r3 = await this.authenticatedGet(url3);
       console.log(`[IBKR][OPEN_ORDERS ${reqId}] LIVE ORDERS -> ${r3.status}`);
       console.log(`[IBKR][OPEN_ORDERS ${reqId}] LIVE ORDERS body (first 500 chars): ${(typeof r3.data==='string'?r3.data:JSON.stringify(r3.data)||'').slice(0,500)}`);
 
@@ -3900,8 +3950,9 @@ export async function getVixQuote(): Promise<number> {
     }
 
     // Fallback: Use historical data (also FREE)
+    // Use Bearer auth - SSO DH flow doesn't set cookies
     try {
-      const histResp = await activeClient.http.get(
+      const histResp = await activeClient.authenticatedGet(
         `/v1/api/iserver/marketdata/history?conid=${VIX_CONID}&period=1d&bar=5mins`
       );
       if (histResp.status === 200 && Array.isArray(histResp.data?.data) && histResp.data.data.length > 0) {
@@ -4065,8 +4116,9 @@ export async function fetchIbkrHistoricalData(
 
   // Add explicit timeout wrapper in case axios timeout doesn't trigger
   // Increased to 60s for large historical data requests
+  // Use authenticatedGet - SSO DH flow doesn't set cookies
   const resp = await Promise.race([
-    (activeClient as any).http.get(url),
+    activeClient.authenticatedGet(url),
     new Promise<never>((_, reject) =>
       setTimeout(() => reject(new Error('IBKR historical data timeout (60s)')), 60000)
     )

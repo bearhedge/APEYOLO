@@ -20,6 +20,11 @@ import { eq, and } from "drizzle-orm";
 import { enforceMandate } from "./services/mandateService";
 import type { EngineAnalyzeResponse, TradeProposal, RiskProfile } from "../shared/types/engine";
 import type { EngineStreamEvent } from "../shared/types/engineStream";
+// Step-by-step imports for individual step endpoints
+import { analyzeMarketRegime } from "./engine/step1";
+import { selectDirection, type StrategyPreference } from "./engine/step2";
+import { selectStrikes, type RiskAssessment } from "./engine/step3";
+import { calculatePositionSize } from "./engine/step4";
 
 const router = Router();
 
@@ -754,6 +759,191 @@ router.get('/analyze', requireAuth, async (req, res) => {
     });
   }
 });
+
+// ==============================================================================
+// STEP-BY-STEP ENDPOINTS - Run each step individually for faster UX
+// ==============================================================================
+
+/**
+ * GET /api/engine/step1 - Market Regime Check ONLY
+ * Fast check of VIX, SPY price, trading window status
+ * Returns in ~200ms instead of waiting for full analysis
+ */
+router.get('/step1', requireAuth, async (req, res) => {
+  try {
+    const startTime = Date.now();
+    const symbol = ((req.query.symbol as string) || 'SPY').toUpperCase() as TradingSymbol;
+
+    // Get broker for market data
+    let broker = await getBrokerForUser(req.user!.id);
+    if (!broker.api) {
+      broker = getBroker();
+    }
+
+    if (!broker.api) {
+      return res.status(503).json({ error: 'Broker not connected' });
+    }
+
+    // Ensure IBKR ready
+    if (broker.status.provider === 'ibkr') {
+      try {
+        await ensureIbkrReady();
+      } catch (err) {
+        console.log('[Engine/step1] IBKR ensureIbkrReady warning:', err instanceof Error ? err.message : err);
+      }
+    }
+
+    // Run Step 1 only
+    const marketRegime = await analyzeMarketRegime(true, symbol);
+    const tradingWindow = isWithinTradingWindow();
+
+    console.log(`[Engine/step1] Completed in ${Date.now() - startTime}ms`);
+
+    res.json({
+      step: 1,
+      name: 'Market Regime Check',
+      durationMs: Date.now() - startTime,
+      result: {
+        ...marketRegime,
+        tradingWindowOpen: tradingWindow.allowed,
+        tradingWindowContext: tradingWindow.context,
+        tradingWindowReason: tradingWindow.reason,
+      }
+    });
+  } catch (error) {
+    console.error('[Engine/step1] Error:', error);
+    res.status(500).json({
+      step: 1,
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+/**
+ * POST /api/engine/step2 - Direction Selection ONLY
+ * Uses market regime from Step 1 to determine PUT/CALL/STRANGLE
+ */
+router.post('/step2', requireAuth, async (req, res) => {
+  try {
+    const startTime = Date.now();
+    const { marketRegime, symbol = 'SPY', expirationMode = '0DTE', forcedStrategy } = req.body;
+
+    if (!marketRegime) {
+      return res.status(400).json({ error: 'marketRegime required (from step1)' });
+    }
+
+    // Run Step 2 only
+    const direction = await selectDirection(
+      marketRegime,
+      symbol,
+      expirationMode as '0DTE' | 'WEEKLY',
+      undefined,
+      forcedStrategy as StrategyPreference | undefined
+    );
+
+    console.log(`[Engine/step2] Completed in ${Date.now() - startTime}ms - Direction: ${direction.direction}`);
+
+    res.json({
+      step: 2,
+      name: 'Direction Selection',
+      durationMs: Date.now() - startTime,
+      result: direction
+    });
+  } catch (error) {
+    console.error('[Engine/step2] Error:', error);
+    res.status(500).json({
+      step: 2,
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+/**
+ * POST /api/engine/step3 - Strike Selection ONLY
+ * Uses direction from Step 2 to select optimal strikes
+ */
+router.post('/step3', requireAuth, async (req, res) => {
+  try {
+    const startTime = Date.now();
+    const { direction, symbol = 'SPY', expirationMode = '0DTE', underlyingPrice, accountInfo, riskProfile = 'BALANCED' } = req.body;
+
+    if (!direction) {
+      return res.status(400).json({ error: 'direction required (from step2)' });
+    }
+    if (!underlyingPrice) {
+      return res.status(400).json({ error: 'underlyingPrice required' });
+    }
+
+    // Run Step 3 only
+    const strikes = await selectStrikes(
+      direction.direction,
+      underlyingPrice,
+      symbol,
+      expirationMode as '0DTE' | 'WEEKLY',
+      accountInfo?.netLiquidation,
+      riskProfile as RiskProfile
+    );
+
+    console.log(`[Engine/step3] Completed in ${Date.now() - startTime}ms`);
+
+    res.json({
+      step: 3,
+      name: 'Strike Selection',
+      durationMs: Date.now() - startTime,
+      result: strikes
+    });
+  } catch (error) {
+    console.error('[Engine/step3] Error:', error);
+    res.status(500).json({
+      step: 3,
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+/**
+ * POST /api/engine/step4 - Position Sizing ONLY
+ * Uses strikes from Step 3 to calculate optimal position size
+ */
+router.post('/step4', requireAuth, async (req, res) => {
+  try {
+    const startTime = Date.now();
+    const { strikes, accountInfo, riskProfile = 'BALANCED' } = req.body;
+
+    if (!strikes) {
+      return res.status(400).json({ error: 'strikes required (from step3)' });
+    }
+    if (!accountInfo) {
+      return res.status(400).json({ error: 'accountInfo required' });
+    }
+
+    // Run Step 4 only
+    const positionSize = await calculatePositionSize(
+      strikes,
+      accountInfo,
+      riskProfile as RiskProfile
+    );
+
+    console.log(`[Engine/step4] Completed in ${Date.now() - startTime}ms - Contracts: ${positionSize.contracts}`);
+
+    res.json({
+      step: 4,
+      name: 'Position Sizing',
+      durationMs: Date.now() - startTime,
+      result: positionSize
+    });
+  } catch (error) {
+    console.error('[Engine/step4] Error:', error);
+    res.status(500).json({
+      step: 4,
+      error: error instanceof Error ? error.message : 'Unknown error'
+    });
+  }
+});
+
+// ==============================================================================
+// END STEP-BY-STEP ENDPOINTS
+// ==============================================================================
 
 // POST /api/engine/execute-trade - Execute LIVE trade with bracket orders (SELL + STOP)
 router.post('/execute-paper', requireAuth, async (req, res) => {

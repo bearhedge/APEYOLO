@@ -72,8 +72,12 @@ export function AgentSidebar({ isCollapsed, onToggleCollapse }: AgentSidebarProp
 
   // Merge operator activities with V2 chat messages into unified feed
   const unifiedActivities = useMemo((): ActivityEntryData[] => {
+    // Defensive checks: ensure both are arrays
+    const safeActivities = Array.isArray(activities) ? activities : [];
+    const safeMessages = Array.isArray(v2Messages) ? v2Messages : [];
+
     // Convert V2 messages to activity format
-    const chatActivities: ActivityEntryData[] = v2Messages.map(msg => ({
+    const chatActivities: ActivityEntryData[] = safeMessages.map(msg => ({
       id: msg.id,
       type: msg.role === 'user' ? 'user-message' : 'assistant-message',
       timestamp: msg.timestamp,
@@ -82,7 +86,7 @@ export function AgentSidebar({ isCollapsed, onToggleCollapse }: AgentSidebarProp
     }));
 
     // Merge and sort by timestamp
-    const merged = [...activities, ...chatActivities];
+    const merged = [...safeActivities, ...chatActivities];
     merged.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
     return merged;
   }, [activities, v2Messages]);

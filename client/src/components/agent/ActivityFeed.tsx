@@ -22,14 +22,17 @@ export function ActivityFeed({
   const scrollRef = useRef<HTMLDivElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
+  // Defensive check: ensure activities is always an array
+  const safeActivities = Array.isArray(activities) ? activities : [];
+
   // Auto-scroll to bottom when new activities arrive
   useEffect(() => {
     if (bottomRef.current) {
       bottomRef.current.scrollIntoView({ behavior: 'smooth' });
     }
-  }, [activities.length]);
+  }, [safeActivities.length]);
 
-  if (activities.length === 0) {
+  if (safeActivities.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center p-8">
         <div className="text-center">
@@ -56,7 +59,7 @@ export function ActivityFeed({
 
   return (
     <div className="p-4 space-y-1" ref={scrollRef}>
-      {activities.map((activity) => (
+      {safeActivities.map((activity) => (
         <ActivityEntry key={activity.id} entry={activity} />
       ))}
 

@@ -75,8 +75,11 @@ export const useStore = create<AppState & { hasHydrated: boolean }>()(
           // eslint-disable-next-line no-console
           console.error('[Zustand] Rehydration error', error);
         }
-        // mark store hydrated so views can avoid race conditions
-        useStore.setState({ hasHydrated: true });
+        // Mark store hydrated so views can avoid race conditions
+        // Note: Direct mutation is safe here; avoid useStore.setState() to prevent circular reference
+        if (state) {
+          state.hasHydrated = true;
+        }
         // eslint-disable-next-line no-console
         console.log('[Zustand] Hydration complete');
       },

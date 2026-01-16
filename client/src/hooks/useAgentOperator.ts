@@ -244,7 +244,11 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
     operation: OperationType,
     params?: { message?: string; proposalId?: string; strategy?: StrategyPreference; userReasoning?: string }
   ) => {
-    if (isProcessing && operation !== 'execute') return;
+    console.log('[useAgentOperator] operate called:', operation, 'isProcessing:', isProcessing);
+    if (isProcessing && operation !== 'execute') {
+      console.log('[useAgentOperator] Skipping - already processing');
+      return;
+    }
 
     // Clear previous proposal when starting new operation
     if (operation === 'analyze' || operation === 'propose') {
@@ -279,6 +283,7 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
     const actionId = addActivity('action', actionLabels[operation], operation, 'running');
 
     try {
+      console.log('[useAgentOperator] Making fetch to /api/agent/operate');
       const response = await fetch('/api/agent/operate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -292,6 +297,8 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
         }),
         signal: abortControllerRef.current.signal,
       });
+
+      console.log('[useAgentOperator] Fetch response status:', response.status, response.ok);
 
       if (!response.ok) {
         const errorData = await response.json();
@@ -486,16 +493,21 @@ export function useAgentOperator(options: UseAgentOperatorOptions = {}) {
           // Map status from backend ('running', 'complete', 'error') to activity status
           const activityStatus = event.status === 'complete' ? 'done' : event.status === 'error' ? 'error' : 'running';
 
+          // Ensure step number is included in data for useAgentEngineStream parsing
+          const activityData = { ...event.data, step: event.step };
+
           if (existingId) {
             // Update existing step activity
             updateActivity(existingId, {
               content: event.message,
               status: activityStatus,
-              data: event.data,
+              data: activityData,
             });
           } else {
             // Create new step activity (use 'tool_progress' type for step logs)
             const id = addActivity('tool_progress', event.message, event.tool, activityStatus);
+            // Update the activity we just created to include data
+            updateActivity(id, { data: activityData });
             toolStepActivityIdsRef.current.set(stepKey, id);
           }
         }

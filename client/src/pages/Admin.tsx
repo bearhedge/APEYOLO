@@ -62,12 +62,14 @@ export function Admin({ hideLeftNav = false }: AdminProps) {
     refetchInterval: 60000, // 60s
   });
 
-  const { data: trades = [] } = useQuery({
+  const { data: trades = [], isError: isTradesError, error: tradesError } = useQuery({
     queryKey: ['defi-trades'],
     queryFn: async () => {
       const res = await fetch('/api/defi/trades', { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch trades');
-      return res.json();
+      const data = await res.json();
+      // Ensure we always return an array
+      return Array.isArray(data) ? data : [];
     },
     refetchInterval: 60000,
   });
@@ -179,14 +181,23 @@ export function Admin({ hideLeftNav = false }: AdminProps) {
         {/* Tab Content */}
         <div className="flex-1 overflow-y-auto">
           {activeTab === 'log' && (
-            <Log
-              hideLeftNav={true}
-              periodSummaryRows={periodRows}
-              trades={trades}
-              cluster="devnet"
-              loading={false}
-              onAttest={handleAttest}
-            />
+            <>
+              {isTradesError && (
+                <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-4 m-4">
+                  <p className="text-red-400 text-sm">
+                    Error loading trades: {tradesError?.message || 'Unknown error'}
+                  </p>
+                </div>
+              )}
+              <Log
+                hideLeftNav={true}
+                periodSummaryRows={periodRows}
+                trades={trades}
+                cluster="devnet"
+                loading={false}
+                onAttest={handleAttest}
+              />
+            </>
           )}
           {activeTab === 'track-record' && <TrackRecord hideLeftNav={true} />}
           {activeTab === 'portfolio' && <Portfolio hideLeftNav={true} />}

@@ -44,7 +44,7 @@ export interface IStorage {
   closePosition(id: string): Promise<void>;
   
   // Trade management
-  getTrades(): Promise<Trade[]>;
+  getTrades(userId?: string): Promise<Trade[]>;
   createTrade(trade: InsertTrade): Promise<Trade>;
   updateTradeStatus(id: string, status: string): Promise<Trade>;
   
@@ -54,7 +54,7 @@ export interface IStorage {
   createOrUpdateRiskRules(rules: InsertRiskRules): Promise<RiskRules>;
   
   // Audit logs
-  getAuditLogs(): Promise<AuditLog[]>;
+  getAuditLogs(userId?: string): Promise<AuditLog[]>;
   createAuditLog(log: InsertAuditLog): Promise<AuditLog>;
   
   // Option chain data (mock for now)
@@ -225,18 +225,23 @@ export class MemStorage implements IStorage {
     this.positions.set(id, position);
   }
 
-  async getTrades(): Promise<Trade[]> {
+  async getTrades(userId?: string): Promise<Trade[]> {
     // Try database first, fall back to memory
     if (db) {
       try {
-        const dbTrades = await db.select().from(trades).orderBy(desc(trades.submittedAt));
-        console.log(`[Storage] Fetched ${dbTrades.length} trades from database`);
+        let query = db.select().from(trades);
+        if (userId) {
+          query = query.where(eq(trades.userId, userId));
+        }
+        const dbTrades = await query.orderBy(desc(trades.submittedAt));
+        console.log(`[Storage] Fetched ${dbTrades.length} trades from database for user ${userId || 'all'}`);
         return dbTrades;
       } catch (err) {
         console.error('[Storage] Failed to fetch trades from DB, using memory:', err);
       }
     }
-    return Array.from(this.trades.values());
+    const allTrades = Array.from(this.trades.values());
+    return userId ? allTrades.filter(t => t.userId === userId) : allTrades;
   }
 
   async createTrade(insertTrade: InsertTrade): Promise<Trade> {
@@ -344,18 +349,24 @@ export class MemStorage implements IStorage {
     }
   }
 
-  async getAuditLogs(): Promise<AuditLog[]> {
+  async getAuditLogs(userId?: string): Promise<AuditLog[]> {
     // Try database first
     if (db) {
       try {
-        const dbLogs = await db.select().from(auditLogs).orderBy(desc(auditLogs.timestamp)).limit(100);
+        let query = db.select().from(auditLogs);
+        if (userId) {
+          query = query.where(eq(auditLogs.userId, userId));
+        }
+        const dbLogs = await query.orderBy(desc(auditLogs.timestamp)).limit(100);
         return dbLogs;
       } catch (err) {
         console.error('[Storage] Failed to fetch audit logs from DB:', err);
       }
     }
-    return Array.from(this.auditLogs.values())
-      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+    // Fall back to memory, filtered
+    const allLogs = Array.from(this.auditLogs.values());
+    const filtered = userId ? allLogs.filter(l => l.userId === userId) : allLogs;
+    return filtered.sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
   }
 
   async createAuditLog(insertLog: InsertAuditLog): Promise<AuditLog> {

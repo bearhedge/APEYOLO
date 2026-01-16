@@ -416,6 +416,9 @@ function ValidationModal({ trade, onClose }: { trade: Trade; onClose: () => void
 export function TradeLogTable({ trades, loading }: TradeLogTableProps) {
   const [selectedTrade, setSelectedTrade] = useState<Trade | null>(null);
 
+  // Defensive check: ensure trades is always an array
+  const safeTrades = Array.isArray(trades) ? trades : [];
+
   if (loading) {
     return (
       <div className="bg-terminal-panel terminal-grid">
@@ -463,15 +466,15 @@ export function TradeLogTable({ trades, loading }: TradeLogTableProps) {
               </tr>
             </thead>
             <tbody>
-              {trades.map((trade, i) => (
+              {safeTrades.map((trade, i) => (
                 <tr
                   key={trade.id}
                   onClick={() => setSelectedTrade(trade)}
                   className={`text-sm font-mono cursor-pointer ${
-                    i < trades.length - 1 ? 'border-b border-terminal' : ''
+                    i < safeTrades.length - 1 ? 'border-b border-terminal' : ''
                   } hover:bg-white/10 transition-colors`}
                 >
-                  <td className="px-3 py-2.5 text-center text-bloomberg-amber font-medium">{trades.length - i}</td>
+                  <td className="px-3 py-2.5 text-center text-bloomberg-amber font-medium">{safeTrades.length - i}</td>
                   <td className="px-3 py-2.5 text-terminal-dim whitespace-nowrap">{trade.dateFormatted}</td>
                   <td className="px-3 py-2.5 text-right text-terminal-bright tabular-nums whitespace-nowrap">
                     {trade.openingNav ? `$${Math.round(trade.openingNav).toLocaleString()}` : '—'}

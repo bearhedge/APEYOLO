@@ -50,6 +50,7 @@ export function Step2Direction({
           buttonClass: 'border-green-500/50 hover:bg-green-500/20',
         };
       case 'STRANGLE':
+      default:
         return {
           icon: ArrowLeftRight,
           label: 'STRANGLE',

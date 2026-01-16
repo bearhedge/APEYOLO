@@ -7,7 +7,6 @@ import { Route, Link, useLocation, Redirect } from "wouter";
 import { CheckCircle, XCircle, LogOut, Clock, Wallet } from "lucide-react";
 import { Home } from "@/pages/Home";
 import { Onboarding } from "@/pages/Onboarding";
-import { Agent } from "@/pages/Agent";
 import { Engine } from "@/pages/Engine";
 import { Portfolio } from "@/pages/Portfolio";
 import { TrackRecord } from "@/pages/TrackRecord";
@@ -201,9 +200,6 @@ function App() {
             </Route>
 
             {/* Old routes - redirect to new routes */}
-            <Route path="/agent">
-              <Redirect to="/trade" />
-            </Route>
             <Route path="/engine">
               <Redirect to="/trade" />
             </Route>

@@ -3,14 +3,13 @@ import { LeftNav } from '@/components/LeftNav';
 import {
   EngineWizardLayout,
   Step1Market,
-  Step2Direction,
   Step3Strikes,
   Step4Size,
   Step5Exit,
   type StepId,
 } from '@/components/engine';
 import { useEngine } from '@/hooks/useEngine';
-import { useAgentEngineStream } from '@/hooks/useAgentEngineStream';
+// useAgentEngineStream removed - now processing activities from parent directly
 import { useBrokerStatus } from '@/hooks/useBrokerStatus';
 import { useTradeEngineJob } from '@/hooks/useTradeEngineJob';
 import { useMarketSnapshot } from '@/hooks/useMarketSnapshot';
@@ -29,11 +28,29 @@ const SYMBOL_CONFIG: Record<TradingSymbol, { name: string; label: string; expira
 interface EngineProps {
   /** Hide LeftNav when embedded in another page (e.g., Trade page) */
   hideLeftNav?: boolean;
-  /** Custom analyze handler - if provided, bypasses direct Engine call and goes through Agent */
+  /** Callback to trigger analysis */
   onAnalyze?: () => void;
+  /** Is engine currently analyzing? */
+  isAnalyzing?: boolean;
+  /** Current step number (1-5) from streaming */
+  currentStep?: number;
+  /** Set of completed step numbers from streaming */
+  completedSteps?: Set<number>;
+  /** Final analysis result from stream */
+  streamAnalysis?: any;
+  /** Error from stream */
+  streamError?: string | null;
 }
 
-export function Engine({ hideLeftNav = false, onAnalyze }: EngineProps = {}) {
+export function Engine({
+  hideLeftNav = false,
+  onAnalyze,
+  isAnalyzing = false,
+  currentStep: propCurrentStep,
+  completedSteps: propCompletedSteps,
+  streamAnalysis,
+  streamError,
+}: EngineProps = {}) {
   const {
     status,
     brokerConnected,
@@ -43,16 +60,28 @@ export function Engine({ hideLeftNav = false, onAnalyze }: EngineProps = {}) {
     executePaperTrade,
   } = useEngine();
 
-  // Agent-driven Engine streaming hook
-  const {
-    streamingAnalysis,
-    currentStep: agentCurrentStep,
-    completedSteps: agentCompletedSteps,
-    isRunning: streamIsRunning,
-  } = useAgentEngineStream();
+  // Use props for step tracking when analyzing via streaming
+  const streamCurrentStep = propCurrentStep ?? 1;
+  const streamCompletedSteps = propCompletedSteps ?? new Set<number>();
+  const streamIsRunning = isAnalyzing;
 
-  // Use streaming analysis when available, fall back to regular analysis
-  const effectiveAnalysis = streamingAnalysis || analysis;
+  // Merge stream analysis with useEngine analysis
+  const effectiveAnalysis = useMemo(() => {
+    // Prefer stream analysis when available (from useEngineAnalysis)
+    if (streamAnalysis) {
+      console.log('[Engine] Using streamAnalysis, q3Strikes:', JSON.stringify({
+        hasQ3Strikes: !!streamAnalysis.q3Strikes,
+        smartCandidatesPuts: streamAnalysis.q3Strikes?.smartCandidates?.puts?.length ?? 'undefined',
+        smartCandidatesCalls: streamAnalysis.q3Strikes?.smartCandidates?.calls?.length ?? 'undefined',
+        selectedPut: streamAnalysis.q3Strikes?.selectedPut?.strike ?? 'null',
+        selectedCall: streamAnalysis.q3Strikes?.selectedCall?.strike ?? 'null',
+        candidates: streamAnalysis.q3Strikes?.candidates?.length ?? 'undefined',
+      }));
+      return streamAnalysis;
+    }
+    // Fall back to useEngine analysis
+    return analysis;
+  }, [streamAnalysis, analysis]);
 
   // Unified broker status hook
   const { connected: brokerConnectedHook, environment } = useBrokerStatus();
@@ -70,9 +99,9 @@ export function Engine({ hideLeftNav = false, onAnalyze }: EngineProps = {}) {
   const [currentStep, setCurrentStep] = useState<StepId>(1);
   const [completedSteps, setCompletedSteps] = useState<Set<StepId>>(new Set());
 
-  // Merge agent-driven steps with manual UI navigation
-  const mergedCurrentStep = streamIsRunning ? agentCurrentStep : currentStep;
-  const mergedCompletedSteps = new Set([...agentCompletedSteps, ...completedSteps]);
+  // Merge streaming steps with manual UI navigation
+  const mergedCurrentStep = streamIsRunning ? streamCurrentStep : currentStep;
+  const mergedCompletedSteps = new Set([...streamCompletedSteps, ...completedSteps]);
 
   // Trading state
   const [isExecuting, setIsExecuting] = useState(false);
@@ -203,51 +232,56 @@ export function Engine({ hideLeftNav = false, onAnalyze }: EngineProps = {}) {
   // Advance to next step
   const advanceStep = useCallback(() => {
     setCompletedSteps(prev => new Set([...prev, currentStep]));
-    if (currentStep < 5) {
+    if (currentStep < 4) {
       setCurrentStep((currentStep + 1) as StepId);
     }
   }, [currentStep]);
 
   // Handle Step 1: Analyze direction (uses SSE streaming)
   const handleAnalyze = useCallback(() => {
+    console.log('[Engine] handleAnalyze called');
+    console.log('[Engine] onAnalyze exists:', !!onAnalyze);
+
     if (!onAnalyze) {
+      console.log('[Engine] onAnalyze is missing - showing error toast');
       toast.error('Engine can only run through Agent. Use /trade page.', { id: 'engine-analyze' });
       return;
     }
 
+    console.log('[Engine] Calling onAnalyze');
     onAnalyze();
     toast.loading('Agent analyzing...', { id: 'engine-analyze' });
   }, [onAnalyze]);
 
   // Handle streaming completion
   useEffect(() => {
-    if (streamingAnalysis && !streamIsRunning) {
+    if (streamAnalysis && !streamIsRunning) {
       // Streaming just completed
-      if (streamingAnalysis.canTrade) {
+      if (streamAnalysis.canTrade) {
         // Set default strikes from engine recommendation
-        if (streamingAnalysis.q3Strikes?.smartCandidates) {
-          setSelectedPutStrike(streamingAnalysis.q3Strikes.selectedPut?.strike ?? null);
-          setSelectedCallStrike(streamingAnalysis.q3Strikes.selectedCall?.strike ?? null);
+        if (streamAnalysis.q3Strikes?.smartCandidates) {
+          setSelectedPutStrike(streamAnalysis.q3Strikes.selectedPut?.strike ?? null);
+          setSelectedCallStrike(streamAnalysis.q3Strikes.selectedCall?.strike ?? null);
         }
 
-        toast.success('Analysis complete!', { id: 'engine-analyze' });
-        // Skip step 2 (direction) - go straight to step 3 (strikes)
-        setCompletedSteps(prev => new Set([...prev, 1, 2]));
-        setCurrentStep(3);
+        toast.success('Analysis complete! Select your strikes.', { id: 'engine-analyze' });
+        // Mark step 1 as completed and advance to step 2 (Strikes)
+        setCompletedSteps(new Set([1]));
+        setCurrentStep(2); // Advance to step 2 (Strikes) so user can select
       } else {
-        toast.error(`Cannot trade: ${streamingAnalysis.reason}`, { id: 'engine-analyze' });
+        toast.error(`Cannot trade: ${streamAnalysis.reason}`, { id: 'engine-analyze' });
       }
     }
-  }, [streamingAnalysis, streamIsRunning]);
+  }, [streamAnalysis, streamIsRunning]);
 
 
   // Step 3 stream loading state
   const [isStreamLoading, setIsStreamLoading] = useState(false);
   const [streamLoadingMessage, setStreamLoadingMessage] = useState('');
 
-  // Start option chain streaming when entering Step 3
+  // Start option chain streaming when entering Step 2 (Strikes)
   useEffect(() => {
-    if (currentStep === 3) {
+    if (currentStep === 2) {
       // Trigger streaming if not already active
       setIsStreamLoading(true);
       setStreamLoadingMessage('Connecting to broker...');
@@ -319,6 +353,28 @@ export function Engine({ hideLeftNav = false, onAnalyze }: EngineProps = {}) {
       return;
     }
 
+    // Filter legs based on user's strike selections
+    const legsToExecute = localProposal.legs.filter(leg => {
+      if (leg.optionType === 'PUT') return selectedPutStrike !== null;
+      if (leg.optionType === 'CALL') return selectedCallStrike !== null;
+      return true;
+    });
+
+    if (legsToExecute.length === 0) {
+      toast.error('No strikes selected');
+      return;
+    }
+
+    // Create filtered proposal for execution
+    const contracts = localProposal.contracts || 1;
+    const entryPremiumTotal = legsToExecute.reduce((sum, leg) => sum + (leg.premium || 0), 0) * contracts * 100;
+    const proposalToExecute = {
+      ...localProposal,
+      legs: legsToExecute,
+      entryPremiumTotal,
+      entryPremiumPerContract: entryPremiumTotal / contracts,
+    };
+
     if (environment !== 'live') {
       toast('Paper mode: Order goes to paper account', { icon: 'ℹ️' });
     }
@@ -327,22 +383,22 @@ export function Engine({ hideLeftNav = false, onAnalyze }: EngineProps = {}) {
       setIsExecuting(true);
       toast.loading('Executing trade...', { id: 'execute' });
 
-      const result = await executePaperTrade(localProposal);
+      const result = await executePaperTrade(proposalToExecute);
       toast.success(`Trade executed! ${result.message || 'ID: ' + result.tradeId}`, { id: 'execute' });
 
-      // Mark step 5 complete
-      setCompletedSteps(prev => new Set([...prev, 5]));
+      // Mark step 4 complete
+      setCompletedSteps(prev => new Set([...prev, 4]));
     } catch (err: any) {
       console.error('[Engine] Execute error:', err);
       toast.error(err.message || 'Failed to execute trade', { id: 'execute' });
     } finally {
       setIsExecuting(false);
     }
-  }, [localProposal, executePaperTrade, environment]);
+  }, [localProposal, selectedPutStrike, selectedCallStrike, executePaperTrade, environment]);
 
-  // Handle Step 5: Cancel
+  // Handle Step 4 (Exit): Cancel - go back to Strikes
   const handleCancel = useCallback(() => {
-    setCurrentStep(3);
+    setCurrentStep(2);
   }, []);
 
   // Derived values
@@ -372,6 +428,28 @@ export function Engine({ hideLeftNav = false, onAnalyze }: EngineProps = {}) {
   const maxRiskPercent = accountValue > 0
     ? ((premiumPerContract * recommendedContracts * 100 * (stopMultiplier - 1)) / accountValue) * 100
     : 0;
+
+  // Filter proposal to only include legs for strikes the user actually selected
+  const filteredProposal = useMemo(() => {
+    if (!localProposal) return null;
+
+    const filteredLegs = localProposal.legs.filter(leg => {
+      if (leg.optionType === 'PUT') return selectedPutStrike !== null;
+      if (leg.optionType === 'CALL') return selectedCallStrike !== null;
+      return true;
+    });
+
+    // Recalculate totals based on filtered legs
+    const contracts = localProposal.contracts || 1;
+    const entryPremiumTotal = filteredLegs.reduce((sum, leg) => sum + (leg.premium || 0), 0) * contracts * 100;
+
+    return {
+      ...localProposal,
+      legs: filteredLegs,
+      entryPremiumTotal,
+      entryPremiumPerContract: entryPremiumTotal / contracts,
+    };
+  }, [localProposal, selectedPutStrike, selectedCallStrike]);
 
   // Get market data - ALWAYS use live snapshot for display (analysis data gets stale)
   // Use last traded price when valid, fall back to midpoint when last is stale
@@ -434,23 +512,11 @@ export function Engine({ hideLeftNav = false, onAnalyze }: EngineProps = {}) {
             strategy={strategyPreference}
             onStrategyChange={setStrategyPreference}
             onAnalyze={handleAnalyze}
-            isLoading={isExecuting || loading || streamIsRunning}
+            isLoading={isExecuting || loading || streamIsRunning || isAnalyzing}
           />
         );
 
       case 2:
-        return (
-          <Step2Direction
-            direction={effectiveDirection}
-            confidence={confidence}
-            signals={signals}
-            onOverride={handleDirectionOverride}
-            onContinue={advanceStep}
-            isComplete={!!effectiveAnalysis?.q2Direction}
-          />
-        );
-
-      case 3:
         // Use smartCandidates if available, fall back to candidates (less filtered)
         const smartPuts = effectiveAnalysis?.q3Strikes?.smartCandidates?.puts ?? [];
         const smartCalls = effectiveAnalysis?.q3Strikes?.smartCandidates?.calls ?? [];
@@ -504,7 +570,7 @@ export function Engine({ hideLeftNav = false, onAnalyze }: EngineProps = {}) {
           />
         );
 
-      case 4:
+      case 3:
         return (
           <Step4Size
             riskTier={riskTier}
@@ -518,11 +584,11 @@ export function Engine({ hideLeftNav = false, onAnalyze }: EngineProps = {}) {
           />
         );
 
-      case 5:
-        if (!localProposal) {
+      case 4:
+        if (!filteredProposal || filteredProposal.legs.length === 0) {
           return (
             <div className="text-center py-12 text-zinc-400">
-              <p>No trade proposal available. Please complete previous steps.</p>
+              <p>No trade proposal available. Please select at least one strike.</p>
             </div>
           );
         }
@@ -531,10 +597,10 @@ export function Engine({ hideLeftNav = false, onAnalyze }: EngineProps = {}) {
           <Step5Exit
             stopMultiplier={stopMultiplier}
             onStopMultiplierChange={(m) => setStopMultiplier(m)}
-            proposal={localProposal}
-            entryPremium={localProposal.entryPremiumTotal}
-            stopLossPrice={localProposal.stopLossPrice || 0}
-            maxLoss={localProposal.maxLoss || 0}
+            proposal={filteredProposal}
+            entryPremium={filteredProposal.entryPremiumTotal}
+            stopLossPrice={filteredProposal.stopLossPrice || 0}
+            maxLoss={filteredProposal.maxLoss || 0}
             guardRailsPassed={effectiveAnalysis?.guardRails?.passed ?? true}
             violations={effectiveAnalysis?.guardRails?.violations ?? []}
             onExecute={handleExecuteTrade}

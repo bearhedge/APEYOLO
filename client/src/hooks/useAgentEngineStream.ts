@@ -21,29 +21,41 @@ export function useAgentEngineStream() {
 
     if (engineSteps.length === 0) return;
 
-    // Find latest completed step
-    const latestStep = engineSteps[engineSteps.length - 1];
+    // Process all step events to track progress
+    const completed = new Set<number>();
+    let maxStep = 1;
 
-    // Parse step number from activity
-    const stepMatch = latestStep.content?.match(/Step (\d+):/);
-    if (stepMatch) {
-      const stepNum = parseInt(stepMatch[1], 10);
-      setCurrentStep(stepNum);
+    engineSteps.forEach(activity => {
+      // Parse step number from activity data or content
+      const stepNum = activity.data?.step ?? (() => {
+        const match = activity.content?.match(/Step (\d+):/);
+        return match ? parseInt(match[1], 10) : null;
+      })();
 
-      // Mark all steps up to current as complete if status is 'done'
-      if (latestStep.status === 'done') {
-        setCompletedSteps(prev => {
-          const updated = new Set(prev);
-          for (let i = 1; i <= stepNum; i++) {
-            updated.add(i);
-          }
-          return updated;
-        });
+      if (stepNum) {
+        maxStep = Math.max(maxStep, stepNum);
+
+        // Mark step as completed if status is 'done'
+        if (activity.status === 'done') {
+          completed.add(stepNum);
+        }
       }
-    }
+    });
 
-    // Build EngineAnalysis when proposal is available
-    if (activeProposal) {
+    // Set current step to the highest step number seen
+    setCurrentStep(maxStep);
+
+    // Update completed steps from engine progress
+    setCompletedSteps(prev => {
+      const updated = new Set(prev);
+      completed.forEach(step => updated.add(step));
+      return updated;
+    });
+  }, [activities]);
+
+  // Build EngineAnalysis when proposal is available (separate effect)
+  useEffect(() => {
+    if (activeProposal && !isProcessing) {
       const putLeg = activeProposal.legs.find(l => l.optionType === 'PUT');
       const callLeg = activeProposal.legs.find(l => l.optionType === 'CALL');
 
@@ -93,11 +105,10 @@ export function useAgentEngineStream() {
         },
       });
 
-      // Jump to Step 3 (Strike Selection) when analysis complete
-      setCurrentStep(3);
+      // When proposal is available and processing is done, mark all steps as completed
       setCompletedSteps(new Set([1, 2, 3, 4, 5]));
     }
-  }, [activities, activeProposal]);
+  }, [activeProposal, isProcessing]);
 
   // Debug logging to verify state updates
   useEffect(() => {

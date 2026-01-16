@@ -1684,22 +1684,11 @@ router.post('/operate', requireAuth, async (req: Request, res: Response) => {
             },
           };
 
-          // Timeout wrapper for dual-brain validation (30 second max)
-          const VALIDATION_TIMEOUT_MS = 30000;
-          let dualBrainResult: DualBrainResult | null = null;
-
-          try {
-            const timeoutPromise = new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error('Validation timeout')), VALIDATION_TIMEOUT_MS)
-            );
-            dualBrainResult = await Promise.race([
-              analyzeTradeOpportunity(context),
-              timeoutPromise,
-            ]);
-          } catch (error: any) {
-            console.warn('[AgentRoutes] Dual-brain validation failed/timed out:', error.message);
-            sendEvent({ type: 'result', content: `Skipping AI validation (${error.message})` });
-          }
+          // BYPASSED: LLM validation disabled for debugging
+          // TODO: Re-enable when LLM issues are resolved
+          const dualBrainResult: DualBrainResult | null = null;
+          console.log('[AgentRoutes] LLM validation bypassed - using engine data directly');
+          sendEvent({ type: 'result', content: 'Validation bypassed (debug mode)' });
 
           // Build proposal from engine data (primary) or dual-brain (fallback enhancement)
           const proposalId = `prop_${Date.now()}_${Math.random().toString(36).slice(2, 9)}`;

@@ -860,8 +860,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      // Get trades from local DB (legacy trades table)
-      const localTrades = await storage.getTrades();
+      // Get trades from local DB (legacy trades table) - filtered by userId
+      const localTrades = await storage.getTrades(userId);
       console.log(`[API][/api/pnl] Local DB trades: ${localTrades.length}`);
 
       // Also try to get live trades from IBKR
@@ -2962,10 +2962,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // Audit logs
-  app.get('/api/logs', async (req, res) => {
+  // Audit logs - requires authentication and filters by user
+  app.get('/api/logs', requireAuth, async (req, res) => {
     try {
-      const logs = await storage.getAuditLogs();
+      const userId = req.user!.id;
+      const logs = await storage.getAuditLogs(userId);
       res.json(logs);
     } catch (error) {
       res.status(500).json({ error: 'Failed to fetch audit logs' });
