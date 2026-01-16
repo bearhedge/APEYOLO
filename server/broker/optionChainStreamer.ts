@@ -72,7 +72,7 @@ interface SymbolCache {
 }
 
 // Stale threshold in milliseconds (5 seconds)
-const STALE_THRESHOLD_MS = 600000; // 10 minutes - temporary workaround while WS cache update is debugged
+const STALE_THRESHOLD_MS = 5000; // 5 seconds - use cached data if fresh
 
 // Helper: Get the start of a 5-minute interval
 function getIntervalStart(date: Date, intervalMinutes: number = 5): Date {

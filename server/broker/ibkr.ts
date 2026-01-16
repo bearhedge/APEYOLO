@@ -1805,7 +1805,7 @@ class IbkrClient {
 
       // Prime the endpoint first (IBKR requires first call to subscribe)
       await this.authenticatedGet(strikesUrl);
-      await this.sleep(1500);
+      await this.sleep(750); // Reduced from 1500ms for faster loading
       const strikesResp = await this.authenticatedGet(strikesUrl);
       if (strikesResp.status !== 200 || !strikesResp.data) {
         console.warn(`[IBKR][getOptionChain][${reqId}] Failed to get strikes: status=${strikesResp.status}`);
@@ -2146,7 +2146,7 @@ class IbkrClient {
       console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Priming strikes endpoint...`);
       try {
         await this.httpGetWithBridgeRetry(strikesUrl, `getOptionChainWithStrikes:strikes-prime:${reqId}`);
-        await this.sleep(1500);
+        await this.sleep(750); // Reduced from 1500ms for faster loading
       } catch (err: any) {
         console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] Strikes prime warning: ${err.message}`);
       }
@@ -2224,9 +2224,9 @@ class IbkrClient {
           return null;
         };
 
-        // Process in small parallel batches to balance speed vs IBKR rate limits
-        // Batch size 3 with 500ms delays: ~60% faster than sequential
-        const batchSize = 3;
+        // Process in parallel batches to balance speed vs IBKR rate limits
+        // Batch size 8 with 250ms delays: optimized for faster loading
+        const batchSize = 8;
         const allStrikesWithType = [
           ...otmPuts.map(s => ({ strike: s, type: 'PUT' as const })),
           ...otmCalls.map(s => ({ strike: s, type: 'CALL' as const })),
@@ -2249,7 +2249,7 @@ class IbkrClient {
 
           // Delay between batches to respect IBKR rate limits
           if (i + batchSize < allStrikesWithType.length) {
-            await new Promise(r => setTimeout(r, 500)); // 500ms between batches
+            await new Promise(r => setTimeout(r, 250)); // 250ms between batches (optimized)
           }
         }
 
