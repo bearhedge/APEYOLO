@@ -3274,12 +3274,71 @@ class IbkrClient {
 
     console.log(`[IBKR][placeOptionOrderWithStop][${reqId}] Submitting bracket order to ${url}:`, JSON.stringify(body));
 
-    try {
-      // Use authenticatedPost - SSO DH auth requires Bearer token for all API calls
+    // Helper to submit the order (allows retry on 401)
+    const submitOrder = async (isRetry = false): Promise<{ resp: any; raw: any }> => {
       const resp = await this.authenticatedPost(url, body);
       const raw = resp.data;
+      console.log(`[IBKR][placeOptionOrderWithStop][${reqId}] Response${isRetry ? ' (retry)' : ''}: status=${resp.status} data=${JSON.stringify(raw).slice(0, 800)}`);
+      return { resp, raw };
+    };
 
-      console.log(`[IBKR][placeOptionOrderWithStop][${reqId}] Response: status=${resp.status} data=${JSON.stringify(raw).slice(0, 800)}`);
+    try {
+      // Use authenticatedPost - SSO DH auth requires Bearer token for all API calls
+      let { resp, raw } = await submitOrder();
+
+      // Check for HTTP error status FIRST before parsing body
+      // If 401, force refresh session and retry ONCE
+      if (resp.status === 401) {
+        console.warn(`[IBKR][placeOptionOrderWithStop][${reqId}] Got 401 - force refreshing session and retrying...`);
+        try {
+          await this.ensureReady(true, true); // forceRefresh = true
+          const retryResult = await submitOrder(true);
+          resp = retryResult.resp;
+          raw = retryResult.raw;
+
+          if (resp.status === 401) {
+            // Still failing after refresh - actual auth problem
+            console.error(`[IBKR][placeOptionOrderWithStop][${reqId}] Still 401 after session refresh - auth is broken`);
+            await storage.createAuditLog({
+              eventType: "IBKR_BRACKET_ORDER",
+              details: `FAILED: Authentication error (401) persists after session refresh`,
+              status: "FAILED"
+            });
+            return {
+              status: "rejected_401_auth",
+              raw,
+              error: "IBKR authentication failed after session refresh. Check IBKR connection status."
+            };
+          }
+          console.log(`[IBKR][placeOptionOrderWithStop][${reqId}] Retry succeeded after session refresh`);
+        } catch (refreshErr) {
+          console.error(`[IBKR][placeOptionOrderWithStop][${reqId}] Session refresh failed:`, refreshErr);
+          await storage.createAuditLog({
+            eventType: "IBKR_BRACKET_ORDER",
+            details: `FAILED: 401 and session refresh failed`,
+            status: "FAILED"
+          });
+          return {
+            status: "rejected_401_auth",
+            raw,
+            error: "IBKR authentication failed and could not refresh session."
+          };
+        }
+      }
+
+      if (resp.status >= 400) {
+        console.error(`[IBKR][placeOptionOrderWithStop][${reqId}] HTTP error ${resp.status}`);
+        await storage.createAuditLog({
+          eventType: "IBKR_BRACKET_ORDER",
+          details: `FAILED: HTTP ${resp.status}`,
+          status: "FAILED"
+        });
+        return {
+          status: `rejected_${resp.status}`,
+          raw,
+          error: `IBKR returned HTTP ${resp.status}`
+        };
+      }
 
       // Handle order confirmation prompts (IBKR may require confirmation for each order)
       let confirmedRaw = raw;
@@ -3391,7 +3450,7 @@ class IbkrClient {
         return {
           status: "rejected_no_order_id",
           raw: confirmedRaw,
-          error: "IBKR rejected order - no valid order ID returned (check margin/buying power)"
+          error: `IBKR rejected order - no valid order ID returned. Raw response: ${JSON.stringify(confirmedRaw).slice(0, 200)}`
         };
       }
 
@@ -3866,12 +3925,14 @@ export async function clearAllPaperOrders() {
 }
 
 // Ensure IBKR client is ready and return latest diagnostics
-export async function ensureIbkrReady(): Promise<IbkrDiagnostics> {
+// forceRefresh=true will clear all cached tokens and force fresh OAuth + SSO auth
+export async function ensureIbkrReady(forceRefresh = false): Promise<IbkrDiagnostics> {
   if (!activeClient) throw new Error('IBKR client not initialized');
   // @ts-ignore ensureReady is defined on IbkrClient
   if (typeof (activeClient as any).ensureReady === 'function') {
     // Await readiness bootstrap (OAuth → SSO → validate → etc.)
-    await (activeClient as any).ensureReady();
+    // Pass forceRefresh to ensure we get fresh credentials when needed
+    await (activeClient as any).ensureReady(true, forceRefresh);
   }
   return activeClient.getDiagnostics();
 }

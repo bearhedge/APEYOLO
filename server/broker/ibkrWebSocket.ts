@@ -254,13 +254,27 @@ export class IbkrWebSocketManager {
               console.log(`[IbkrWS] Auth phase msg: topic=${msg.topic} keys=${Object.keys(msg).join(',')}`);
             }
 
-            // Check for sts (status) message - this indicates we can subscribe
+            // Check for sts (status) message - this indicates connection status
             if (msg.topic === 'sts') {
               console.log(`[IbkrWS] Received sts message: ${JSON.stringify(msg)}`);
+
+              // CRITICAL: Check if IBKR actually authenticated us
+              // IBKR returns {"topic":"sts","authenticated":false} when session is invalid
+              if (msg.authenticated === false) {
+                console.error('[IbkrWS] IBKR returned authenticated=false! Session token is invalid.');
+                console.error('[IbkrWS] Triggering force reconnect with fresh credentials...');
+                clearTimeout(connectionTimeout);
+                // Don't resolve - let the connection fail and trigger reconnect
+                this.forceReconnectWithFreshCredentials();
+                reject(new Error('IBKR WebSocket authentication failed - session invalid'));
+                return;
+              }
+
+              // authenticated=true or no authenticated field (legacy) - we're good
               this.isAuthenticated = true;
               clearTimeout(connectionTimeout);
               // Now that we've received sts, subscribe to market data
-              console.log('[IbkrWS] sts received - subscribing to market data');
+              console.log('[IbkrWS] sts received with auth success - subscribing to market data');
               this.resubscribeAll();
               resolve();
               return;

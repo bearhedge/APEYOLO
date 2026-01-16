@@ -168,13 +168,15 @@ async function startWebSocketStream(): Promise<void> {
     const wsManager = initIbkrWebSocket(cookieString, sessionToken);
 
     // Set up credential refresh callback for reconnections
+    // CRITICAL: Must force refresh to get fresh OAuth + SSO tokens when WebSocket auth fails
     wsManager.setCredentialRefreshCallback(async () => {
-      console.log('[MarketDataAutoStart] Refreshing credentials for WebSocket reconnection...');
+      console.log('[MarketDataAutoStart] Refreshing credentials for WebSocket reconnection (forcing full refresh)...');
       try {
-        await ensureIbkrReady();
+        // Force refresh = true to clear cached tokens and get fresh ones from IBKR
+        await ensureIbkrReady(true);
         const newCookieString = await getIbkrCookieString();
         const newSessionToken = await getIbkrSessionToken();
-        console.log(`[MarketDataAutoStart] Credentials refreshed: cookies=${!!newCookieString}, session=${!!newSessionToken}`);
+        console.log(`[MarketDataAutoStart] Credentials refreshed: cookies=${!!newCookieString} (len=${newCookieString?.length || 0}), session=${!!newSessionToken}`);
         return {
           cookieString: newCookieString || '',
           sessionToken: newSessionToken,
