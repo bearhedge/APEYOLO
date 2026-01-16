@@ -17,6 +17,7 @@ import { AgentContextPanel } from '@/components/AgentContextPanel';
 import { useAgentOperator } from '@/hooks/useAgentOperator';
 import { useAgentV2 } from '@/hooks/useAgentV2';
 import { useBrokerStatus } from '@/hooks/useBrokerStatus';
+import { useApeAgentLogs, mapApeTypeToActivityType } from '@/hooks/useApeAgentLogs';
 import { ChatInput } from '@/components/agent/ChatInput';
 import { ChevronsLeft, ChevronsRight, Circle, AlertTriangle } from 'lucide-react';
 
@@ -58,6 +59,9 @@ export function AgentSidebar({ isCollapsed, onToggleCollapse }: AgentSidebarProp
     environment: ibkrEnvironment,
   } = useBrokerStatus();
 
+  // APE Agent autonomous trading logs
+  const { logs: apeAgentLogs, status: apeStatus } = useApeAgentLogs(20);
+
   // Agent can only operate if both LLM and IBKR are connected
   const canOperate = isOnline && ibkrConnected;
 
@@ -70,11 +74,12 @@ export function AgentSidebar({ isCollapsed, onToggleCollapse }: AgentSidebarProp
     activeProposalRef.current = activeProposal;
   }, [activeProposal]);
 
-  // Merge operator activities with V2 chat messages into unified feed
+  // Merge operator activities with V2 chat messages and APE Agent logs into unified feed
   const unifiedActivities = useMemo((): ActivityEntryData[] => {
     // Defensive checks: ensure both are arrays
     const safeActivities = Array.isArray(activities) ? activities : [];
     const safeMessages = Array.isArray(v2Messages) ? v2Messages : [];
+    const safeApeLogs = Array.isArray(apeAgentLogs) ? apeAgentLogs : [];
 
     // Convert V2 messages to activity format
     const chatActivities: ActivityEntryData[] = safeMessages.map(msg => ({
@@ -85,11 +90,20 @@ export function AgentSidebar({ isCollapsed, onToggleCollapse }: AgentSidebarProp
       status: msg.isStreaming ? 'running' : undefined,
     }));
 
+    // Convert APE Agent logs to activity format
+    const apeActivities: ActivityEntryData[] = safeApeLogs.map(log => ({
+      id: `ape_${log.id}`,
+      type: mapApeTypeToActivityType(log.type) as ActivityEntryData['type'],
+      timestamp: new Date(log.timestamp),
+      toolName: `APE: ${log.type}`,
+      content: log.message,
+    }));
+
     // Merge and sort by timestamp
-    const merged = [...safeActivities, ...chatActivities];
+    const merged = [...safeActivities, ...chatActivities, ...apeActivities];
     merged.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
     return merged;
-  }, [activities, v2Messages]);
+  }, [activities, v2Messages, apeAgentLogs]);
 
   // Handle strike modification - calls /api/agent/negotiate
   const handleModifyStrike = useCallback(async (legIndex: number, newStrike: number): Promise<ModificationImpact | null> => {
@@ -254,6 +268,17 @@ export function AgentSidebar({ isCollapsed, onToggleCollapse }: AgentSidebarProp
               </span>
             )}
           </div>
+
+          {/* APE Agent Status */}
+          {apeStatus.isRunning && (
+            <div className="flex items-center gap-2 border-l border-white/10 pl-4">
+              <Circle className="w-2.5 h-2.5 fill-purple-500 text-purple-500" />
+              <span className="text-xs font-medium">APE</span>
+              <span className="text-[10px] text-silver">
+                {apeStatus.nextRun ? `Next: ${apeStatus.nextRun}` : 'Running'}
+              </span>
+            </div>
+          )}
         </div>
 
         <button
