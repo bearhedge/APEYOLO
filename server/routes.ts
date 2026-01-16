@@ -35,6 +35,7 @@ import marketRoutes from "./marketRoutes.js";
 import jobRoutes, { initializeJobsSystem } from "./jobRoutes.js";
 import defiRoutes from "./defiRoutes.js";
 import agentRoutes from "./agentRoutes.js";
+import apeAgentRoutes from "./agent/routes.js";
 import dataCaptureRoutes from "./routes/dataCaptureRoutes.js";
 import researchRoutes from "./routes/researchRoutes.js";
 import schedulerRoutes from "./routes/schedulerRoutes.js";
@@ -110,6 +111,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Register Agent routes (LLM chat)
   app.use('/api/agent', agentRoutes);
+
+  // Register APE Agent routes (autonomous trading agent)
+  app.use('/api/ape-agent', apeAgentRoutes);
 
   // Register Data Capture routes (DD research terminal)
   app.use('/api/data-capture', dataCaptureRoutes);

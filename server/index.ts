@@ -7,6 +7,7 @@ import { serveStatic, log } from "./utils"; // Production-safe utilities
 import { testDatabaseConnection } from "./db";
 import { startFiveMinuteCapture } from "./services/jobs/fiveMinuteDataCapture";
 import { autoStartMarketDataStream } from "./services/marketDataAutoStart";
+import { startAutonomousAgent } from "./agent/scheduler";
 
 const app = express();
 app.use(express.json());
@@ -79,5 +80,13 @@ app.use((req, res, next) => {
         console.error('[Startup] Market data auto-start failed:', err.message);
       });
     }, 3000);
+
+    // Start autonomous agent scheduler if enabled
+    if (process.env.ENABLE_AUTONOMOUS_AGENT === 'true') {
+      setTimeout(() => {
+        startAutonomousAgent();
+        console.log('[Startup] APE Agent autonomous scheduler started');
+      }, 5000);
+    }
   });
 })();

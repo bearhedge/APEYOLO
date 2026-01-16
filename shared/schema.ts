@@ -799,6 +799,53 @@ export type InsertAgentTick = z.infer<typeof insertAgentTickSchema>;
 
 // ==================== END AGENT KNOWLEDGE BASE ====================
 
+// ==================== AUTONOMOUS AGENT (APE AGENT) ====================
+// Logs and observations for the autonomous trading agent
+
+// Agent logs - structured pipe-delimited entries
+export const agentLogs = pgTable("agent_logs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  sessionId: text("session_id").notNull(),
+  timestamp: timestamp("timestamp").notNull().defaultNow(),
+  type: text("type").notNull(), // WAKE, DATA, THINK, TOOL, OBSERVE, ESCALATE, DECIDE, ACTION, SLEEP, ERROR
+  message: text("message").notNull(),
+}, (table) => [
+  index("agent_logs_session_id_idx").on(table.sessionId),
+  index("agent_logs_timestamp_idx").on(table.timestamp),
+  index("agent_logs_type_idx").on(table.type),
+]);
+
+// Agent observations - market context snapshots
+export const agentObservations = pgTable("agent_observations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  sessionId: text("session_id").notNull(),
+  timestamp: timestamp("timestamp").notNull().defaultNow(),
+  spyPrice: doublePrecision("spy_price"),
+  vixLevel: doublePrecision("vix_level"),
+  positions: jsonb("positions"), // Current position summary
+  context: jsonb("context"), // Full context JSON for LLM consumption
+}, (table) => [
+  index("agent_observations_session_id_idx").on(table.sessionId),
+  index("agent_observations_timestamp_idx").on(table.timestamp),
+]);
+
+// Insert schemas for autonomous agent
+export const insertAgentLogSchema = createInsertSchema(agentLogs).omit({
+  id: true,
+});
+
+export const insertAgentObservationSchema = createInsertSchema(agentObservations).omit({
+  id: true,
+});
+
+// Types for autonomous agent
+export type AgentLog = typeof agentLogs.$inferSelect;
+export type InsertAgentLog = z.infer<typeof insertAgentLogSchema>;
+export type AgentObservation = typeof agentObservations.$inferSelect;
+export type InsertAgentObservation = z.infer<typeof insertAgentObservationSchema>;
+
+// ==================== END AUTONOMOUS AGENT ====================
+
 // ==================== ENGINE RUNS (RLHF TRACKING) ====================
 // Tracks every engine run for RLHF - links user adjustments and trade outcomes to AI decisions
 
