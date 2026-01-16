@@ -9,6 +9,7 @@ import { useState, useMemo } from 'react';
 import { useAgentStore, ActivityLogEntry } from '@/lib/agentStore';
 import { useQuery } from '@tanstack/react-query';
 import { ChevronDown, ChevronRight, Zap, Clock, CheckCircle, XCircle, AlertTriangle } from 'lucide-react';
+import { useApeAgentLogs, ApeAgentLog, mapApeTypeToActivityType } from '@/hooks/useApeAgentLogs';
 
 // Types for job run history from /api/jobs/history
 interface JobRun {
@@ -131,6 +132,40 @@ function tradeToActivity(trade: Trade): ActivityLogEntry {
   };
 }
 
+// Transform an APE Agent log into an ActivityLogEntry
+function apeLogToActivity(log: ApeAgentLog): ActivityLogEntry {
+  const eventType = mapApeTypeToActivityType(log.type);
+
+  // Build title based on log type
+  let title = `APE: ${log.type}`;
+  if (log.type === 'WAKE') title = 'APE Agent: Wake-up';
+  else if (log.type === 'DATA') title = 'APE Agent: Market Data';
+  else if (log.type === 'THINK') title = 'APE Agent: Analysis';
+  else if (log.type === 'OBSERVE') title = 'APE Agent: Observation';
+  else if (log.type === 'ESCALATE') title = 'APE Agent: Escalating';
+  else if (log.type === 'DECIDE') title = 'APE Agent: Decision';
+  else if (log.type === 'ACTION') title = 'APE Agent: Executing';
+  else if (log.type === 'SLEEP') title = 'APE Agent: Sleeping';
+  else if (log.type === 'ERROR') title = 'APE Agent: Error';
+  else if (log.type === 'TOOL') title = 'APE Agent: Tool Call';
+
+  return {
+    id: `ape_${log.id}`,
+    timestamp: new Date(log.timestamp).getTime(),
+    eventType,
+    title,
+    summary: log.message.length > 60 ? log.message.slice(0, 60) + '...' : log.message,
+    details: {
+      result: {
+        sessionId: log.sessionId,
+        type: log.type,
+        message: log.message,
+      },
+    },
+    isExpandable: log.message.length > 60,
+  };
+}
+
 // Transform a job run into an ActivityLogEntry
 function jobRunToActivity(run: JobRun): ActivityLogEntry {
   const isTradeEngine = run.jobId === 'trade-engine';
@@ -189,6 +224,9 @@ export function ActivityLog() {
   const { activityLog } = useAgentStore();
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
+  // Fetch APE Agent logs (autonomous trading agent)
+  const { logs: apeAgentLogs, status: apeStatus } = useApeAgentLogs(20);
+
   // Fetch job run history
   const { data: jobHistory } = useQuery({
     queryKey: ['/api/jobs/history'],
@@ -205,10 +243,11 @@ export function ActivityLog() {
     staleTime: 5000,
   });
 
-  // Merge agent activity log with job runs and trades, sorted by timestamp (newest first)
+  // Merge agent activity log with job runs, trades, and APE Agent logs - sorted by timestamp (newest first)
   const mergedLog = useMemo(() => {
     const jobEntries: ActivityLogEntry[] = [];
     const tradeEntries: ActivityLogEntry[] = [];
+    const apeEntries: ActivityLogEntry[] = [];
 
     if (jobHistory?.history) {
       // Only include meaningful job runs (not routine skipped checks)
@@ -236,12 +275,19 @@ export function ActivityLog() {
       }
     }
 
+    // Add APE Agent logs (autonomous trading agent)
+    if (apeAgentLogs && apeAgentLogs.length > 0) {
+      for (const log of apeAgentLogs) {
+        apeEntries.push(apeLogToActivity(log));
+      }
+    }
+
     // Merge and sort by timestamp (newest first)
-    const merged = [...activityLog, ...jobEntries, ...tradeEntries];
+    const merged = [...activityLog, ...jobEntries, ...tradeEntries, ...apeEntries];
     merged.sort((a, b) => b.timestamp - a.timestamp);
 
     return merged.slice(0, 50); // Keep last 50 entries
-  }, [activityLog, jobHistory, tradesData]);
+  }, [activityLog, jobHistory, tradesData, apeAgentLogs]);
 
   const toggleExpand = (id: string) => {
     setExpandedIds(prev => {
@@ -267,6 +313,7 @@ export function ActivityLog() {
       case 'trade_loss': return '−';
       case 'trade_open': return '○';
       case 'trade_closed': return '✓';
+      case 'info': return 'ℹ';
       default: return '·';
     }
   };
@@ -285,6 +332,8 @@ export function ActivityLog() {
       case 'trade_loss': return 'text-red-400';
       case 'trade_open': return 'text-blue-400';
       case 'trade_closed': return 'text-silver/70';
+      case 'thought': return 'text-cyan-400';
+      case 'info': return 'text-purple-400';
       default: return 'text-silver/50';
     }
   };
