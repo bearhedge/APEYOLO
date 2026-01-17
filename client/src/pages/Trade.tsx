@@ -11,8 +11,12 @@ import { LeftNav } from '@/components/LeftNav';
 import { Engine } from '@/pages/Engine';
 import { AgentSidebar } from '@/components/agent/AgentSidebar';
 import { useEngineAnalysis } from '@/hooks/useEngineAnalysis';
+import type { StrategyPreference } from '@shared/types/engine';
 
 export function Trade() {
+  // Strategy state - user can select PUT/CALL/strangle in Step 1
+  const [strategy, setStrategy] = useState<StrategyPreference>('strangle');
+
   // Engine analysis - completely separate from Agent
   const {
     analyze,
@@ -23,7 +27,7 @@ export function Trade() {
     error,
   } = useEngineAnalysis({
     symbol: 'SPY',
-    strategy: 'strangle',
+    strategy,  // Use dynamic strategy from user selection
     riskTier: 'balanced',
   });
 
@@ -73,6 +77,7 @@ export function Trade() {
           streamAnalysis={analysis}
           streamError={error}
           onAnalyze={analyze}
+          onStrategyPrefChange={setStrategy}
         />
       </div>
 

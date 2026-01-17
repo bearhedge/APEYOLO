@@ -40,6 +40,8 @@ interface EngineProps {
   streamAnalysis?: any;
   /** Error from stream */
   streamError?: string | null;
+  /** Callback when user changes strategy selection */
+  onStrategyPrefChange?: (strategy: StrategyPreference) => void;
 }
 
 export function Engine({
@@ -50,6 +52,7 @@ export function Engine({
   completedSteps: propCompletedSteps,
   streamAnalysis,
   streamError,
+  onStrategyPrefChange,
 }: EngineProps = {}) {
   const {
     status,
@@ -510,7 +513,10 @@ export function Engine({
             dataSourceMode={dataSourceMode}
             timestamp={dataTimestamp}
             strategy={strategyPreference}
-            onStrategyChange={setStrategyPreference}
+            onStrategyChange={(newStrategy) => {
+              setStrategyPreference(newStrategy);
+              onStrategyPrefChange?.(newStrategy);
+            }}
             onAnalyze={handleAnalyze}
             isLoading={isExecuting || loading || streamIsRunning || isAnalyzing}
           />
@@ -549,8 +555,12 @@ export function Engine({
               .map((c: any) => convertToSmartCandidate(c, 'CALL', effectiveAnalysis?.q3Strikes?.selectedCall?.strike))
           : [];
 
-        const putCandidates = smartPuts.length > 0 ? smartPuts : fallbackPuts;
-        const callCandidates = smartCalls.length > 0 ? smartCalls : fallbackCalls;
+        // Filter strikes based on user's strategy selection
+        const showPuts = strategyPreference === 'strangle' || strategyPreference === 'put-only';
+        const showCalls = strategyPreference === 'strangle' || strategyPreference === 'call-only';
+
+        const putCandidates = showPuts ? (smartPuts.length > 0 ? smartPuts : fallbackPuts) : [];
+        const callCandidates = showCalls ? (smartCalls.length > 0 ? smartCalls : fallbackCalls) : [];
 
         return (
           <Step3Strikes

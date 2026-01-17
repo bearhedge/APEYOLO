@@ -20,8 +20,8 @@ interface Step3StrikesProps {
   selectedCallStrike: number | null;
   recommendedPutStrike: number | null;
   recommendedCallStrike: number | null;
-  onPutSelect: (strike: number) => void;
-  onCallSelect: (strike: number) => void;
+  onPutSelect: (strike: number | null) => void;
+  onCallSelect: (strike: number | null) => void;
   onContinue: () => void;
   expectedPremium: number;
   isStreamLoading?: boolean;
@@ -280,7 +280,7 @@ export function Step3Strikes({
                   isSelected={selectedPutStrike === candidate.strike}
                   isRecommended={recommendedPutStrike === candidate.strike}
                   optionType="PUT"
-                  onSelect={() => onPutSelect(candidate.strike)}
+                  onSelect={() => onPutSelect(selectedPutStrike === candidate.strike ? null : candidate.strike)}
                 />
               ))
             ) : (
@@ -315,7 +315,7 @@ export function Step3Strikes({
                   isSelected={selectedCallStrike === candidate.strike}
                   isRecommended={recommendedCallStrike === candidate.strike}
                   optionType="CALL"
-                  onSelect={() => onCallSelect(candidate.strike)}
+                  onSelect={() => onCallSelect(selectedCallStrike === candidate.strike ? null : candidate.strike)}
                 />
               ))
             ) : (

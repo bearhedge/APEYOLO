@@ -1115,7 +1115,12 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
         }
       } catch (orderErr: any) {
         console.error('[Engine/execute] IBKR bracket order error:', orderErr);
-        // Re-throw to let the caller know the order failed
+
+        // Check if it's an auth error (should be rare now with auto-retry)
+        if (orderErr.message?.includes('401') || orderErr.message?.includes('authentication')) {
+          throw new Error('IBKR authentication failed - order could not be placed. Check IBKR connection status.');
+        }
+
         throw new Error(`IBKR order failed: ${orderErr.message || orderErr}`);
       }
     }
