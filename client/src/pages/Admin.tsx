@@ -68,8 +68,8 @@ export function Admin({ hideLeftNav = false }: AdminProps) {
       const res = await fetch('/api/defi/trades', { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch trades');
       const data = await res.json();
-      // Ensure we always return an array
-      return Array.isArray(data) ? data : [];
+      // API returns { success, trades, count } - extract trades array
+      return data.trades || [];
     },
     refetchInterval: 60000,
   });
