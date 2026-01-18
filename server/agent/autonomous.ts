@@ -50,10 +50,10 @@ export class AutonomousAgent {
       const triage = await deepseekClient.triage(context, recentMemory);
       this.log(sessionId, 'THINK', triage.reasoning);
 
-      // 4. If escalation needed, call Kimi K2
+      // 4. If escalation needed, call Kimi K2 with function calling
       if (triage.escalate) {
         this.log(sessionId, 'ESCALATE', triage.reason);
-        const decision = await kimiClient.decide(context, triage.reason);
+        const decision = await kimiClient.decide(context, triage.reason, sessionId);
         this.log(sessionId, 'DECIDE', this.formatDecision(decision));
 
         // Update memory with decision

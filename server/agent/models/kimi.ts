@@ -1,15 +1,31 @@
+/**
+ * Kimi K2 Client - Decision layer with function calling
+ *
+ * Moonshot API (Kimi) supports OpenAI-compatible function calling.
+ * This client handles tool calls in a loop until a final decision is made.
+ */
+
 import { AgentContext, Decision } from '../types';
+import { APE_TOOLS, executeTool, ToolCall, FunctionDefinition } from '../tools';
+import { logger } from '../logger';
 
 const DECISION_SYSTEM_PROMPT = `You are the decision maker for APE Agent, an autonomous 0DTE SPY options seller.
 
 You've been escalated because the triage layer thinks there's a potential trade opportunity or position that needs attention.
 
-Your job:
-1. Analyze the context deeply
-2. Decide whether to trade, wait, or close existing position
-3. If trading, specify exact parameters
+You have access to tools to gather data and execute trades. Use them to:
+1. Check current market conditions (get_market_data)
+2. Review existing positions (get_positions)
+3. Run the trading engine for analysis (run_engine)
+4. Execute trades if conditions are right (execute_trade)
+5. Close positions when needed (close_position)
 
-Respond with JSON only:
+WORKFLOW:
+1. If you need more data, call the appropriate tool
+2. Analyze the results
+3. When ready to decide, respond with your final decision JSON
+
+FINAL DECISION FORMAT (respond with this when done analyzing):
 {
   "action": "TRADE" | "WAIT" | "CLOSE",
   "reasoning": "your full thinking (3-5 sentences, be specific)",
@@ -35,9 +51,28 @@ DECISION FRAMEWORK:
 
 Be decisive. Don't hedge with "maybe" or "could". Make a call.`;
 
+interface ChatMessage {
+  role: 'system' | 'user' | 'assistant' | 'tool';
+  content: string;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
+}
+
+interface KimiResponse {
+  choices: Array<{
+    message: {
+      role: string;
+      content?: string;
+      tool_calls?: ToolCall[];
+    };
+    finish_reason: string;
+  }>;
+}
+
 export class KimiClient {
   private apiKey: string;
   private baseUrl = 'https://api.moonshot.cn';
+  private maxToolCalls = 5; // Prevent infinite loops
 
   constructor() {
     const key = process.env.KIMI_API_KEY;
@@ -47,7 +82,11 @@ export class KimiClient {
     this.apiKey = key || '';
   }
 
-  async decide(context: AgentContext, escalationReason: string): Promise<Decision> {
+  async decide(
+    context: AgentContext,
+    escalationReason: string,
+    sessionId?: string
+  ): Promise<Decision> {
     if (!this.apiKey) {
       return {
         action: 'WAIT',
@@ -55,45 +94,116 @@ export class KimiClient {
       };
     }
 
-    const userContent = JSON.stringify({
-      escalationReason,
-      currentContext: context,
-    }, null, 2);
+    const messages: ChatMessage[] = [
+      { role: 'system', content: DECISION_SYSTEM_PROMPT },
+      {
+        role: 'user',
+        content: JSON.stringify({
+          escalationReason,
+          currentContext: context,
+        }, null, 2),
+      },
+    ];
+
+    let toolCallCount = 0;
 
     try {
-      const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.apiKey}`,
-        },
-        body: JSON.stringify({
-          model: 'moonshot-v1-8k',
-          messages: [
-            { role: 'system', content: DECISION_SYSTEM_PROMPT },
-            { role: 'user', content: userContent },
-          ],
-          temperature: 0.2,
-          max_tokens: 500,
-        }),
-      });
+      while (toolCallCount < this.maxToolCalls) {
+        const response = await this.callKimi(messages, APE_TOOLS);
 
-      if (!response.ok) {
-        const error = await response.text();
-        throw new Error(`Kimi API error: ${response.status} - ${error}`);
+        const message = response.choices[0]?.message;
+        if (!message) {
+          throw new Error('No message in response');
+        }
+
+        // Check if model wants to call tools
+        if (message.tool_calls && message.tool_calls.length > 0) {
+          toolCallCount++;
+
+          // Add assistant message with tool calls
+          messages.push({
+            role: 'assistant',
+            content: message.content || '',
+            tool_calls: message.tool_calls,
+          });
+
+          // Execute each tool call
+          for (const toolCall of message.tool_calls) {
+            if (sessionId) {
+              logger.log({
+                sessionId,
+                type: 'TOOL',
+                message: `Kimi calling: ${toolCall.function.name}`,
+              });
+            }
+
+            const result = await executeTool(toolCall, sessionId || 'unknown', context);
+
+            // Add tool result to conversation
+            messages.push({
+              role: 'tool',
+              content: JSON.stringify(result.success ? result.result : { error: result.error }),
+              tool_call_id: toolCall.id,
+            });
+          }
+
+          // Continue loop to get next response
+          continue;
+        }
+
+        // No tool calls - model is returning final decision
+        const content = message.content || '';
+        return this.parseDecisionResponse(content);
       }
 
-      const data = await response.json();
-      const content = data.choices?.[0]?.message?.content || '';
-
-      return this.parseDecisionResponse(content);
-    } catch (error: any) {
-      console.error('[Kimi] Decision error:', error.message);
+      // Max tool calls reached
       return {
         action: 'WAIT',
-        reasoning: `Error making decision: ${error.message}. Defaulting to WAIT for safety.`,
+        reasoning: `Max tool calls (${this.maxToolCalls}) reached without decision. Defaulting to WAIT.`,
+      };
+
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      console.error('[Kimi] Decision error:', errorMessage);
+      return {
+        action: 'WAIT',
+        reasoning: `Error making decision: ${errorMessage}. Defaulting to WAIT for safety.`,
       };
     }
+  }
+
+  private async callKimi(
+    messages: ChatMessage[],
+    tools?: FunctionDefinition[]
+  ): Promise<KimiResponse> {
+    const body: Record<string, unknown> = {
+      model: 'moonshot-v1-8k',
+      messages,
+      temperature: 0.2,
+      max_tokens: 1000,
+    };
+
+    // Only include tools if provided
+    if (tools && tools.length > 0) {
+      body.tools = tools;
+      body.tool_choice = 'auto';
+    }
+
+    const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${this.apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Kimi API error: ${response.status} - ${error}`);
+    }
+
+    return response.json() as Promise<KimiResponse>;
   }
 
   private parseDecisionResponse(content: string): Decision {
@@ -136,11 +246,12 @@ export class KimiClient {
       }
 
       return decision;
-    } catch (error: any) {
+    } catch (error: unknown) {
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       console.error('[Kimi] Failed to parse response:', content);
       return {
         action: 'WAIT',
-        reasoning: `Failed to parse LLM decision: ${error.message}. Defaulting to WAIT.`,
+        reasoning: `Failed to parse LLM decision: ${errorMessage}. Defaulting to WAIT.`,
       };
     }
   }
