@@ -68,7 +68,7 @@ interface JobResults {
 // ============================================
 
 const DELTA_THRESHOLD = 0.30; // Close if |delta| > 0.30
-const STRIKE_PROXIMITY_DOLLARS = 1.00; // Close if strike within $1 of spot (catches near-ATM with low delta)
+const STRIKE_PROXIMITY_DOLLARS = 0.50; // Close if strike within $0.50 of spot (catches near-ATM with low delta)
 const MAX_RETRY_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 2000;
 
