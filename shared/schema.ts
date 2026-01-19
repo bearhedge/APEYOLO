@@ -381,6 +381,9 @@ export const paperTrades = pgTable("paper_trades", {
   spotPriceAtClose: decimal("spot_price_at_close", { precision: 10, scale: 2 }),
   validationStatus: text("validation_status").default("pending"),  // pending | verified | discrepancy
 
+  // Assignment tracking (when ITM option is exercised)
+  assignmentDetails: jsonb("assignment_details"),  // { sharesAssigned, assignmentPrice, liquidationOrderId, liquidationPrice, liquidationTime, netAssignmentPnl }
+
   createdAt: timestamp("created_at").notNull().defaultNow(),
   closedAt: timestamp("closed_at"),
 });

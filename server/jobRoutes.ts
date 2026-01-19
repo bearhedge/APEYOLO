@@ -256,6 +256,7 @@ router.get('/position-monitor/status', async (_req: Request, res: Response) => {
  * - trade-monitor-eod (4:05 PM ET) - Mark all expired options with realized P&L
  * - trade-engine (11:00 AM ET) - Automated 5-step trading engine
  * - economic-calendar-refresh (monthly) - FRED data
+ * - assignment-monitor (4:05 AM ET) - Detect assignments and auto-liquidate in pre-market
  */
 export async function initializeJobsSystem(): Promise<void> {
   console.log('[JobRoutes] Initializing jobs system...');
@@ -298,6 +299,17 @@ export async function initializeJobsSystem(): Promise<void> {
     console.log('[JobRoutes] optionBarCapture initialization complete');
   } catch (err) {
     console.error('[JobRoutes] FAILED to initialize optionBarCapture:', err);
+  }
+
+  // Assignment monitor (4:05 AM ET - auto-liquidate assigned shares in pre-market)
+  try {
+    const { initAssignmentMonitorJob, ensureAssignmentMonitorJob } = await import('./services/jobs/assignmentMonitor');
+    console.log('[JobRoutes] Loaded assignmentMonitor module, calling initAssignmentMonitorJob...');
+    initAssignmentMonitorJob();
+    await ensureAssignmentMonitorJob();
+    console.log('[JobRoutes] assignmentMonitor initialization complete');
+  } catch (err) {
+    console.error('[JobRoutes] FAILED to initialize assignmentMonitor:', err);
   }
 
   // Seed default jobs in database

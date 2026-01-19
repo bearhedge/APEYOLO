@@ -54,6 +54,17 @@ interface Trade {
   totalCommissions?: number | null;
   grossPnl?: number | null;
   netPnl?: number | null;
+  // Assignment tracking
+  assignmentDetails?: {
+    sharesAssigned?: number;
+    assignmentPrice?: number;
+    liquidationOrderId?: string;
+    liquidationPrice?: number;
+    liquidationTime?: string;
+    netAssignmentPnl?: number;
+    liquidationStatus?: 'pending' | 'filled' | 'partial' | 'failed';
+    attempts?: number;
+  } | null;
 }
 
 interface TradeLogTableProps {
@@ -367,6 +378,63 @@ function ValidationModal({ trade, onClose }: { trade: Trade; onClose: () => void
                       {formatUSD(trade.netPnl)}
                     </div>
                   </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Assignment Details (for exercised trades) */}
+          {trade.assignmentDetails && (
+            <div className="space-y-2">
+              <h3 className="text-xs uppercase text-terminal-dim tracking-wide">Assignment Details</h3>
+              <div className="bg-white/5 rounded p-3 space-y-2 font-mono text-sm">
+                <div className="grid grid-cols-3 gap-4">
+                  <div>
+                    <div className="text-terminal-dim text-xs">Shares Assigned</div>
+                    <div className="text-terminal-bright">{trade.assignmentDetails.sharesAssigned || '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-terminal-dim text-xs">Assignment Price</div>
+                    <div className="text-terminal-bright">${trade.assignmentDetails.assignmentPrice?.toFixed(2) || '—'}</div>
+                  </div>
+                  <div>
+                    <div className="text-terminal-dim text-xs">Liquidation Status</div>
+                    <div className={
+                      trade.assignmentDetails.liquidationStatus === 'filled' ? 'text-bloomberg-green' :
+                      trade.assignmentDetails.liquidationStatus === 'pending' ? 'text-bloomberg-amber' :
+                      trade.assignmentDetails.liquidationStatus === 'failed' ? 'text-bloomberg-red' :
+                      'text-terminal-dim'
+                    }>
+                      {trade.assignmentDetails.liquidationStatus?.toUpperCase() || 'PENDING'}
+                    </div>
+                  </div>
+                </div>
+
+                {trade.assignmentDetails.liquidationPrice && (
+                  <div className="border-t border-terminal pt-2 mt-2 grid grid-cols-3 gap-4">
+                    <div>
+                      <div className="text-terminal-dim text-xs">Liquidation Price</div>
+                      <div className="text-terminal-bright">${trade.assignmentDetails.liquidationPrice?.toFixed(2)}</div>
+                    </div>
+                    <div>
+                      <div className="text-terminal-dim text-xs">Assignment P&L</div>
+                      <div className={(trade.assignmentDetails.netAssignmentPnl ?? 0) >= 0 ? 'text-bloomberg-green' : 'text-bloomberg-red'}>
+                        ${trade.assignmentDetails.netAssignmentPnl?.toFixed(2) || '—'}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-terminal-dim text-xs">Liquidation Time</div>
+                      <div className="text-terminal-dim text-xs">
+                        {trade.assignmentDetails.liquidationTime
+                          ? new Date(trade.assignmentDetails.liquidationTime).toLocaleString()
+                          : '—'}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                <div className="text-xs text-terminal-dim mt-2 pt-2 border-t border-terminal">
+                  Total P&L = Premium Received + Assignment P&L
                 </div>
               </div>
             </div>
