@@ -68,6 +68,7 @@ interface JobResults {
 // ============================================
 
 const DELTA_THRESHOLD = 0.30; // Close if |delta| > 0.30
+const STRIKE_PROXIMITY_DOLLARS = 1.00; // Close if strike within $1 of spot (catches near-ATM with low delta)
 const MAX_RETRY_ATTEMPTS = 3;
 const RETRY_DELAY_MS = 2000;
 
@@ -315,8 +316,16 @@ export async function execute0dtePositionManager(): Promise<JobResult> {
           }
         }
 
-        // Check if risky (|delta| > threshold)
-        if (delta > DELTA_THRESHOLD) {
+        // Check if risky: delta > threshold OR strike within $1 of spot
+        const spotPrice = spotPrices.get(underlying);
+        const strikeDistance = spotPrice ? Math.abs(spotPrice - posStrike) : Infinity;
+        const isNearStrike = strikeDistance < STRIKE_PROXIMITY_DOLLARS;
+
+        if (delta > DELTA_THRESHOLD || isNearStrike) {
+          const reason = delta > DELTA_THRESHOLD
+            ? `Delta ${delta.toFixed(2)} > ${DELTA_THRESHOLD} threshold`
+            : `Strike $${strikeDistance.toFixed(2)} from spot (< $${STRIKE_PROXIMITY_DOLLARS} threshold)`;
+
           const risky: RiskyPosition = {
             tradeId: trade.id,
             symbol: posSymbol,
@@ -326,14 +335,14 @@ export async function execute0dtePositionManager(): Promise<JobResult> {
             delta,
             deltaSource,
             strike: posStrike,
-            spotPrice: spotPrices.get(underlying),
-            isITM,
-            reason: `Delta ${delta.toFixed(2)} > ${DELTA_THRESHOLD} threshold`,
+            spotPrice,
+            isITM: isITM || isNearStrike,
+            reason,
           };
           riskyPositions.push(risky);
-          console.log(`[0DTE-Manager] RISKY POSITION: ${posSymbol} - ${risky.reason}`);
+          console.log(`[0DTE-Manager] RISKY POSITION: ${posSymbol} - ${reason}`);
         } else {
-          console.log(`[0DTE-Manager] Position safe: ${posSymbol} delta=${delta.toFixed(2)} <= ${DELTA_THRESHOLD}`);
+          console.log(`[0DTE-Manager] Position safe: ${posSymbol} delta=${delta.toFixed(2)}, strike $${strikeDistance.toFixed(2)} from spot`);
         }
       }
     }
@@ -473,9 +482,10 @@ export function init0dtePositionManagerJob(): void {
 
 /**
  * Create the jobs in the database if they don't exist
- * Creates two schedules:
- * - Normal days: 3:55 PM ET
- * - Early close days: 12:55 PM ET (time validation will skip the 3:55 PM run)
+ * Creates three schedules:
+ * - Normal days: 3:55 PM ET (first check)
+ * - Normal days: 3:59 PM ET (last-minute safety check)
+ * - Early close days: 12:55 PM ET (time validation will skip the 3:55/3:59 PM runs)
  */
 export async function ensure0dtePositionManagerJob(): Promise<void> {
   if (!db) return;
@@ -489,13 +499,14 @@ export async function ensure0dtePositionManagerJob(): Promise<void> {
       await db.insert(jobs).values({
         id: '0dte-position-manager',
         name: '0DTE Position Manager',
-        description: 'Auto-close risky 0DTE positions (delta > 0.30) before market close at 3:55 PM ET',
+        description: 'Auto-close risky 0DTE positions (delta > 0.30 or within $1 of strike) before market close at 3:55 PM ET',
         type: '0dte-position-manager',
         schedule: '55 15 * * 1-5', // 3:55 PM ET on weekdays
         timezone: 'America/New_York',
         enabled: true,
         config: {
           deltaThreshold: DELTA_THRESHOLD,
+          strikeProximityDollars: STRIKE_PROXIMITY_DOLLARS,
           maxRetries: MAX_RETRY_ATTEMPTS,
         },
       });
@@ -522,6 +533,29 @@ export async function ensure0dtePositionManagerJob(): Promise<void> {
         },
       });
       console.log('[0DTE-Manager] Early close schedule job created');
+    }
+
+    // Check for last-minute schedule (3:59 PM) - catches positions that went risky in final minutes
+    const [existingLateJob] = await db.select().from(jobs).where(eq(jobs.id, '0dte-position-manager-late')).limit(1);
+
+    if (!existingLateJob) {
+      console.log('[0DTE-Manager] Creating last-minute schedule job (3:59 PM ET)...');
+      await db.insert(jobs).values({
+        id: '0dte-position-manager-late',
+        name: '0DTE Position Manager (Last Minute)',
+        description: 'Final safety check at 3:59 PM ET - catches positions that became risky in the last 4 minutes',
+        type: '0dte-position-manager',
+        schedule: '59 15 * * 1-5', // 3:59 PM ET on weekdays
+        timezone: 'America/New_York',
+        enabled: true,
+        config: {
+          deltaThreshold: DELTA_THRESHOLD,
+          strikeProximityDollars: STRIKE_PROXIMITY_DOLLARS,
+          maxRetries: MAX_RETRY_ATTEMPTS,
+          lastMinuteCheck: true,
+        },
+      });
+      console.log('[0DTE-Manager] Last-minute schedule job created');
     }
   } catch (err) {
     console.warn('[0DTE-Manager] Could not ensure jobs exist:', err);

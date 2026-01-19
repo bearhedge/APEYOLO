@@ -289,24 +289,32 @@ async function detectAssignments(): Promise<DetectedAssignment[]> {
       return [];
     }
 
+    // Look for trades that:
+    // 1. Have expired (expiration < now)
+    // 2. Are either 'open' or 'expired' status (not already marked as 'exercised' or 'closed')
+    // 3. Don't have assignmentDetails yet (not already processed)
     const expiredTrades = await db.select()
       .from(paperTrades)
       .where(
         and(
           lt(paperTrades.expiration, new Date()),  // Expired
-          eq(paperTrades.status, 'expired'),  // Status is expired (not already marked as exercised)
           isNull(paperTrades.assignmentDetails)  // Not already processed for assignment
         )
       );
 
-    console.log(`[AssignmentMonitor] Found ${expiredTrades.length} recently expired trades to check`);
+    // Filter to only trades that could be assigned (not already exercised/closed)
+    const eligibleTrades = expiredTrades.filter(t =>
+      t.status === 'expired' || t.status === 'open'
+    );
+
+    console.log(`[AssignmentMonitor] Found ${eligibleTrades.length} eligible expired trades to check (${expiredTrades.length} total expired)`);
 
     // 3. Match stock positions to expired options
     for (const stockPos of stockPositions) {
       const symbol = stockPos.symbol.toUpperCase();
 
       // Find matching expired option
-      for (const trade of expiredTrades) {
+      for (const trade of eligibleTrades) {
         if (trade.symbol.toUpperCase() !== symbol) continue;
 
         // Check if option was ITM at expiration
@@ -481,6 +489,16 @@ async function liquidateAssignment(
     lastAttempt.fillPrice = fillPrice;
   }
 
+  // Calculate net assignment P&L
+  const netAssignmentPnl = fillPrice ? (fillPrice - assignmentPrice) * shares : undefined;
+
+  // Calculate realized P&L (entry premium + assignment P&L)
+  // For a PUT, if assigned: you received premium, then bought shares at strike, then sold at fillPrice
+  // Total P&L = premium received + (sellPrice - strikePrice) * shares
+  const realizedPnl = netAssignmentPnl !== undefined
+    ? originatingTrade.entryPremiumTotal + netAssignmentPnl
+    : undefined;
+
   // Update paperTrades with assignment details
   const assignmentDetails: AssignmentDetails = {
     sharesAssigned: shares,
@@ -488,7 +506,7 @@ async function liquidateAssignment(
     liquidationOrderId: orderId,
     liquidationPrice: fillPrice,
     liquidationTime: filled ? new Date().toISOString() : undefined,
-    netAssignmentPnl: fillPrice ? (fillPrice - assignmentPrice) * shares : undefined,
+    netAssignmentPnl,
     liquidationStatus: filled ? 'filled' : 'pending',
     attempts: attempt,
   };
@@ -499,16 +517,27 @@ async function liquidateAssignment(
   }
 
   try {
+    // Get current spot price to save if not already set
+    const quote = await getQuote(symbol);
+    const spotPriceAtClose = quote?.last;
+
     await db.update(paperTrades)
       .set({
         status: 'exercised',
-        exitReason: 'assignment',
+        exitReason: `${originatingTrade.legType} assigned at expiration`,
         assignmentDetails: assignmentDetails as unknown as Record<string, unknown>,
         closedAt: filled ? new Date() : null,
+        // Set realized P&L if liquidation is complete
+        realizedPnl: realizedPnl !== undefined ? String(realizedPnl) : undefined,
+        // Set spot price at close if not already set
+        spotPriceAtClose: spotPriceAtClose ? String(spotPriceAtClose) : undefined,
       })
       .where(eq(paperTrades.id, originatingTrade.id));
 
-    console.log(`[AssignmentMonitor] Updated trade ${originatingTrade.id} with assignment details`);
+    console.log(`[AssignmentMonitor] Updated trade ${originatingTrade.id}:`);
+    console.log(`  - Status: exercised`);
+    console.log(`  - Assignment P&L: $${netAssignmentPnl?.toFixed(2) ?? 'pending'}`);
+    console.log(`  - Realized P&L: $${realizedPnl?.toFixed(2) ?? 'pending'}`);
   } catch (err) {
     console.error(`[AssignmentMonitor] Failed to update trade:`, err);
     results.errors.push(`DB update error: ${err instanceof Error ? err.message : String(err)}`);
