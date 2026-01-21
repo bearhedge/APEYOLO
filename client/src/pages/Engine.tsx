@@ -182,7 +182,7 @@ export function Engine({
       });
 
       let entryPremiumTotal = effectiveAnalysis.tradeProposal.entryPremiumTotal;
-      const contracts = effectiveAnalysis.tradeProposal.contracts || 1;
+      const contracts = riskTier === 'conservative' ? 1 : riskTier === 'balanced' ? 2 : 3;
 
       // Recalculate premium based on actual selected strikes
       const legPremiumSum = legs.reduce((sum, leg) => sum + (leg.premium || 0), 0);
@@ -258,8 +258,15 @@ export function Engine({
 
   // Handle streaming completion
   useEffect(() => {
+    console.log('[Engine] useEffect check:', {
+      hasStreamAnalysis: !!streamAnalysis,
+      streamIsRunning,
+      canTrade: streamAnalysis?.canTrade,
+      reason: streamAnalysis?.reason,
+    });
     if (streamAnalysis && !streamIsRunning) {
       // Streaming just completed
+      console.log('[Engine] Analysis complete, canTrade:', streamAnalysis.canTrade);
       if (streamAnalysis.canTrade) {
         // Set default strikes from engine recommendation
         if (streamAnalysis.q3Strikes?.smartCandidates) {
@@ -269,9 +276,11 @@ export function Engine({
 
         toast.success('Analysis complete! Select your strikes.', { id: 'engine-analyze' });
         // Mark step 1 as completed and advance to step 2 (Strikes)
+        console.log('[Engine] Setting currentStep to 2');
         setCompletedSteps(new Set([1]));
         setCurrentStep(2); // Advance to step 2 (Strikes) so user can select
       } else {
+        console.log('[Engine] Cannot trade - not advancing step. Reason:', streamAnalysis.reason);
         toast.error(`Cannot trade: ${streamAnalysis.reason}`, { id: 'engine-analyze' });
       }
     }
@@ -491,6 +500,7 @@ export function Engine({
 
   // Render current step content
   const renderStepContent = () => {
+    console.log('[Engine] renderStepContent with currentStep:', currentStep, 'mergedCurrentStep:', mergedCurrentStep);
     switch (currentStep) {
       case 1:
         return (
