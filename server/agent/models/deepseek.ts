@@ -28,25 +28,13 @@ Don't escalate when:
 Be concise. No verbose explanations.`;
 
 export class DeepSeekClient {
-  private apiKey: string;
-  private baseUrl = 'https://api.deepseek.com';
+  private baseUrl = 'https://nonperversive-dianne-sketchily.ngrok-free.dev';  // Ollama via ngrok
 
   constructor() {
-    const key = process.env.DEEPSEEK_API_KEY;
-    if (!key) {
-      console.warn('[DeepSeek] DEEPSEEK_API_KEY not set - client will fail on calls');
-    }
-    this.apiKey = key || '';
+    console.log('[DeepSeek] Using local Ollama at', this.baseUrl);
   }
 
   async triage(context: AgentContext, recentMemory: Observation[]): Promise<TriageResult> {
-    if (!this.apiKey) {
-      return {
-        escalate: false,
-        reason: 'DeepSeek API key not configured',
-        reasoning: 'Cannot triage without API access',
-      };
-    }
 
     const userContent = JSON.stringify({
       context,
@@ -64,16 +52,15 @@ export class DeepSeekClient {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Authorization': `Bearer ${this.apiKey}`,
         },
         body: JSON.stringify({
-          model: 'deepseek-chat',
+          model: 'deepseek-r1:70b',
           messages: [
             { role: 'system', content: TRIAGE_SYSTEM_PROMPT },
             { role: 'user', content: userContent },
           ],
           temperature: 0.3,
-          max_tokens: 300,
+          max_tokens: 500,  // Extra tokens for thinking
         }),
       });
 
@@ -98,17 +85,36 @@ export class DeepSeekClient {
 
   private parseTriageResponse(content: string): TriageResult {
     try {
+      // Extract <think>...</think> reasoning from deepseek-r1
+      const thinkMatch = content.match(/<think>([\s\S]*?)<\/think>/);
+      const thinkingRaw = thinkMatch ? thinkMatch[1].trim() : '';
+
+      // Remove thinking tags to get the answer
+      const answerContent = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+
+      // Log thinking if present
+      if (thinkingRaw) {
+        console.log('[DeepSeek] Thinking:', thinkingRaw.substring(0, 300));
+      }
+
       // Extract JSON from response (handle markdown code blocks)
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      const jsonMatch = answerContent.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
         throw new Error('No JSON found in response');
       }
 
       const parsed = JSON.parse(jsonMatch[0]);
+
+      // Use the model's thinking as part of reasoning if available
+      const modelReasoning = String(parsed.reasoning || 'No reasoning provided');
+      const fullReasoning = thinkingRaw
+        ? `[Thinking] ${thinkingRaw.substring(0, 150)}... | ${modelReasoning}`
+        : modelReasoning;
+
       return {
         escalate: Boolean(parsed.escalate),
         reason: String(parsed.reason || 'No reason provided'),
-        reasoning: String(parsed.reasoning || 'No reasoning provided'),
+        reasoning: fullReasoning,
       };
     } catch (error: any) {
       console.error('[DeepSeek] Failed to parse response:', content);

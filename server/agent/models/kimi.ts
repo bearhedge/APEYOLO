@@ -1,34 +1,24 @@
 /**
- * Kimi K2 Client - Decision layer with function calling
+ * Ollama Decision Client - Decision layer using local deepseek-r1:70b
  *
- * Moonshot API (Kimi) supports OpenAI-compatible function calling.
- * This client handles tool calls in a loop until a final decision is made.
+ * Uses local Ollama for decision making. Since deepseek-r1 doesn't support
+ * OpenAI-style function calling, we provide all context upfront and let
+ * the model make decisions based on that information.
  */
 
 import { AgentContext, Decision } from '../types';
-import { APE_TOOLS, executeTool, ToolCall, FunctionDefinition } from '../tools';
 import { logger } from '../logger';
 
 const DECISION_SYSTEM_PROMPT = `You are the decision maker for APE Agent, an autonomous 0DTE SPY options seller.
 
 You've been escalated because the triage layer thinks there's a potential trade opportunity or position that needs attention.
 
-You have access to tools to gather data and execute trades. Use them to:
-1. Check current market conditions (get_market_data)
-2. Review existing positions (get_positions)
-3. Run the trading engine for analysis (run_engine)
-4. Execute trades if conditions are right (execute_trade)
-5. Close positions when needed (close_position)
+Analyze the provided market context and make a trading decision. All relevant data is included in the context.
 
-WORKFLOW:
-1. If you need more data, call the appropriate tool
-2. Analyze the results
-3. When ready to decide, respond with your final decision JSON
-
-FINAL DECISION FORMAT (respond with this when done analyzing):
+RESPOND WITH JSON ONLY:
 {
   "action": "TRADE" | "WAIT" | "CLOSE",
-  "reasoning": "your full thinking (3-5 sentences, be specific)",
+  "reasoning": "your thinking (3-5 sentences, be specific about why)",
   "params": {
     "direction": "PUT" | "CALL",
     "strike": number,
@@ -43,43 +33,35 @@ GUARDRAILS YOU MUST RESPECT:
 - Stop loss at 3x premium (already calculated, monitor it)
 - Max contracts based on account size (see maxContracts in context)
 - Only SELL options, never buy
+- Strike should be OTM (below SPY for puts, above SPY for calls)
 
 DECISION FRAMEWORK:
 - TRADE: High conviction setup, clear direction, acceptable risk
 - WAIT: Uncertainty, poor risk/reward, too early, no clear edge
 - CLOSE: Position at profit target (50%+) or approaching stop loss
 
-Be decisive. Don't hedge with "maybe" or "could". Make a call.`;
+Think step by step, then output your JSON decision.`;
 
 interface ChatMessage {
-  role: 'system' | 'user' | 'assistant' | 'tool';
+  role: 'system' | 'user' | 'assistant';
   content: string;
-  tool_calls?: ToolCall[];
-  tool_call_id?: string;
 }
 
-interface KimiResponse {
+interface OllamaResponse {
   choices: Array<{
     message: {
       role: string;
       content?: string;
-      tool_calls?: ToolCall[];
     };
     finish_reason: string;
   }>;
 }
 
 export class KimiClient {
-  private apiKey: string;
-  private baseUrl = 'https://api.moonshot.cn';
-  private maxToolCalls = 5; // Prevent infinite loops
+  private baseUrl = 'https://nonperversive-dianne-sketchily.ngrok-free.dev';  // Ollama via ngrok
 
   constructor() {
-    const key = process.env.KIMI_API_KEY;
-    if (!key) {
-      console.warn('[Kimi] KIMI_API_KEY not set - client will fail on calls');
-    }
-    this.apiKey = key || '';
+    console.log('[Decision] Using local Ollama at', this.baseUrl);
   }
 
   async decide(
@@ -87,13 +69,6 @@ export class KimiClient {
     escalationReason: string,
     sessionId?: string
   ): Promise<Decision> {
-    if (!this.apiKey) {
-      return {
-        action: 'WAIT',
-        reasoning: 'Kimi API key not configured - cannot make trading decisions',
-      };
-    }
-
     const messages: ChatMessage[] = [
       { role: 'system', content: DECISION_SYSTEM_PROMPT },
       {
@@ -105,66 +80,28 @@ export class KimiClient {
       },
     ];
 
-    let toolCallCount = 0;
-
     try {
-      while (toolCallCount < this.maxToolCalls) {
-        const response = await this.callKimi(messages, APE_TOOLS);
-
-        const message = response.choices[0]?.message;
-        if (!message) {
-          throw new Error('No message in response');
-        }
-
-        // Check if model wants to call tools
-        if (message.tool_calls && message.tool_calls.length > 0) {
-          toolCallCount++;
-
-          // Add assistant message with tool calls
-          messages.push({
-            role: 'assistant',
-            content: message.content || '',
-            tool_calls: message.tool_calls,
-          });
-
-          // Execute each tool call
-          for (const toolCall of message.tool_calls) {
-            if (sessionId) {
-              logger.log({
-                sessionId,
-                type: 'TOOL',
-                message: `Kimi calling: ${toolCall.function.name}`,
-              });
-            }
-
-            const result = await executeTool(toolCall, sessionId || 'unknown', context);
-
-            // Add tool result to conversation
-            messages.push({
-              role: 'tool',
-              content: JSON.stringify(result.success ? result.result : { error: result.error }),
-              tool_call_id: toolCall.id,
-            });
-          }
-
-          // Continue loop to get next response
-          continue;
-        }
-
-        // No tool calls - model is returning final decision
-        const content = message.content || '';
-        return this.parseDecisionResponse(content);
+      if (sessionId) {
+        logger.log({
+          sessionId,
+          type: 'TOOL',
+          message: 'Calling local deepseek-r1:70b for decision...',
+        });
       }
 
-      // Max tool calls reached
-      return {
-        action: 'WAIT',
-        reasoning: `Max tool calls (${this.maxToolCalls}) reached without decision. Defaulting to WAIT.`,
-      };
+      const response = await this.callOllama(messages);
+
+      const message = response.choices[0]?.message;
+      if (!message) {
+        throw new Error('No message in response');
+      }
+
+      const content = message.content || '';
+      return this.parseDecisionResponse(content, sessionId);
 
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      console.error('[Kimi] Decision error:', errorMessage);
+      console.error('[Decision] Error:', errorMessage);
       return {
         action: 'WAIT',
         reasoning: `Error making decision: ${errorMessage}. Defaulting to WAIT for safety.`,
@@ -172,44 +109,50 @@ export class KimiClient {
     }
   }
 
-  private async callKimi(
-    messages: ChatMessage[],
-    tools?: FunctionDefinition[]
-  ): Promise<KimiResponse> {
-    const body: Record<string, unknown> = {
-      model: 'moonshot-v1-8k',
+  private async callOllama(messages: ChatMessage[]): Promise<OllamaResponse> {
+    const body = {
+      model: 'deepseek-r1:70b',
       messages,
       temperature: 0.2,
-      max_tokens: 1000,
+      max_tokens: 1500,  // Extra tokens for thinking
     };
-
-    // Only include tools if provided
-    if (tools && tools.length > 0) {
-      body.tools = tools;
-      body.tool_choice = 'auto';
-    }
 
     const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${this.apiKey}`,
       },
       body: JSON.stringify(body),
     });
 
     if (!response.ok) {
       const error = await response.text();
-      throw new Error(`Kimi API error: ${response.status} - ${error}`);
+      throw new Error(`Ollama API error: ${response.status} - ${error}`);
     }
 
-    return response.json() as Promise<KimiResponse>;
+    return response.json() as Promise<OllamaResponse>;
   }
 
-  private parseDecisionResponse(content: string): Decision {
+  private parseDecisionResponse(content: string, sessionId?: string): Decision {
     try {
+      // Extract <think>...</think> reasoning from deepseek-r1
+      const thinkMatch = content.match(/<think>([\s\S]*?)<\/think>/);
+      const thinkingRaw = thinkMatch ? thinkMatch[1].trim() : '';
+
+      // Remove thinking tags to get the answer
+      const answerContent = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+
+      // Log thinking to APE activity log if present
+      if (thinkingRaw && sessionId) {
+        logger.log({
+          sessionId,
+          type: 'THINK',
+          message: `[R1 Reasoning] ${thinkingRaw.substring(0, 500)}${thinkingRaw.length > 500 ? '...' : ''}`,
+        });
+      }
+
       // Extract JSON from response
-      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      const jsonMatch = answerContent.match(/\{[\s\S]*\}/);
       if (!jsonMatch) {
         throw new Error('No JSON found in response');
       }
@@ -221,9 +164,12 @@ export class KimiClient {
         throw new Error(`Invalid action: ${action}`);
       }
 
+      // Include thinking in reasoning if available
+      const modelReasoning = String(parsed.reasoning || 'No reasoning provided');
+
       const decision: Decision = {
         action: action as Decision['action'],
-        reasoning: String(parsed.reasoning || 'No reasoning provided'),
+        reasoning: modelReasoning,
       };
 
       // Validate params if TRADE
@@ -248,13 +194,14 @@ export class KimiClient {
       return decision;
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      console.error('[Kimi] Failed to parse response:', content);
+      console.error('[Decision] Failed to parse response:', content);
       return {
         action: 'WAIT',
         reasoning: `Failed to parse LLM decision: ${errorMessage}. Defaulting to WAIT.`,
       };
     }
   }
+
 }
 
 // Singleton
