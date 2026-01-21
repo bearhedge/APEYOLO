@@ -3,7 +3,7 @@ import { agentLogs } from '@shared/schema';
 import { EventEmitter } from 'events';
 
 // Log entry types
-export type LogType = 'WAKE' | 'DATA' | 'THINK' | 'TOOL' | 'OBSERVE' | 'ESCALATE' | 'DECIDE' | 'ACTION' | 'SLEEP' | 'ERROR';
+export type LogType = 'WAKE' | 'DATA' | 'THINK' | 'TOOL' | 'OBSERVE' | 'ESCALATE' | 'DECIDE' | 'ACTION' | 'SLEEP' | 'ERROR' | 'TOOLKIT' | 'OVERRIDE';
 
 export interface LogEntry {
   sessionId: string;
