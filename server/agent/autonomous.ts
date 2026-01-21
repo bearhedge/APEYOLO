@@ -2,7 +2,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { logger, LogType } from './logger';
 import { memory } from './memory';
 import { deepseekClient } from './models/deepseek';
-import { kimiClient } from './models/kimi';
+import { AgentOrchestrator } from './models/orchestrator';
 import { getBroker } from '../broker';
 import { AgentContext, Decision } from './types';
 
@@ -47,23 +47,30 @@ export class AutonomousAgent {
       // 3. Ask DeepSeek for triage
       this.log(sessionId, 'THINK', 'Analyzing market conditions...');
       const recentMemory = await memory.getRecent(5);
-      const triage = await deepseekClient.triage(context, recentMemory);
+      const triage = await deepseekClient.triage(context, recentMemory, sessionId);
       this.log(sessionId, 'THINK', triage.reasoning);
 
-      // 4. If escalation needed, call Kimi K2 with function calling
+      // 4. If escalation needed, run the LLM-driven orchestrator
       if (triage.escalate) {
         this.log(sessionId, 'ESCALATE', triage.reason);
-        const decision = await kimiClient.decide(context, triage.reason, sessionId);
-        this.log(sessionId, 'DECIDE', this.formatDecision(decision));
 
-        // Update memory with decision
-        await memory.storeObservation(sessionId, context, triage, decision);
+        // Run the LLM-driven orchestrator with toolkit
+        const orchestrator = new AgentOrchestrator(sessionId);
+        const result = await orchestrator.run({
+          time: context.currentTime,
+          tradesToday: context.tradesToday,
+          dailyPnl: context.dailyPnl,
+          hasPosition: context.hasPosition,
+        });
 
-        // 5. Execute if decided to trade
-        if (decision.action === 'TRADE' && decision.params) {
-          await this.executeTrade(sessionId, decision, context);
-        } else if (decision.action === 'CLOSE') {
-          await this.closePosition(sessionId, context);
+        // Update memory with result
+        await memory.storeObservation(sessionId, context, triage, {
+          action: result.traded ? 'TRADE' : 'WAIT',
+          reasoning: result.summary,
+        });
+
+        if (result.traded) {
+          this.log(sessionId, 'ACTION', result.summary);
         }
       } else {
         this.log(sessionId, 'OBSERVE', triage.reason);
