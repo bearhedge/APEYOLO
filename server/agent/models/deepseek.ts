@@ -1,4 +1,6 @@
 import { AgentContext, Observation, TriageResult } from '../types';
+import { logger } from '../logger';
+import { extractJSON } from '../utils/parseJson';
 
 const TRIAGE_SYSTEM_PROMPT = `You are the triage layer for APE Agent, an autonomous 0DTE SPY options trader.
 
@@ -34,7 +36,7 @@ export class DeepSeekClient {
     console.log('[DeepSeek] Using local Ollama at', this.baseUrl);
   }
 
-  async triage(context: AgentContext, recentMemory: Observation[]): Promise<TriageResult> {
+  async triage(context: AgentContext, recentMemory: Observation[], sessionId?: string): Promise<TriageResult> {
 
     const userContent = JSON.stringify({
       context,
@@ -72,7 +74,7 @@ export class DeepSeekClient {
       const data = await response.json();
       const content = data.choices?.[0]?.message?.content || '';
 
-      return this.parseTriageResponse(content);
+      return this.parseTriageResponse(content, sessionId);
     } catch (error: any) {
       console.error('[DeepSeek] Triage error:', error.message);
       return {
@@ -83,47 +85,38 @@ export class DeepSeekClient {
     }
   }
 
-  private parseTriageResponse(content: string): TriageResult {
-    try {
-      // Extract <think>...</think> reasoning from deepseek-r1
-      const thinkMatch = content.match(/<think>([\s\S]*?)<\/think>/);
-      const thinkingRaw = thinkMatch ? thinkMatch[1].trim() : '';
+  private parseTriageResponse(content: string, sessionId?: string): TriageResult {
+    const { json, thinking, error } = extractJSON<{
+      escalate: boolean;
+      reason: string;
+      reasoning: string;
+    }>(content);
 
-      // Remove thinking tags to get the answer
-      const answerContent = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
+    // Log thinking if present
+    if (thinking) {
+      logger.log({
+        sessionId: sessionId || 'triage',
+        type: 'THINK',
+        message: `[R1] ${thinking.substring(0, 500)}${thinking.length > 500 ? '...' : ''}`,
+      });
+    }
 
-      // Log thinking if present
-      if (thinkingRaw) {
-        console.log('[DeepSeek] Thinking:', thinkingRaw.substring(0, 300));
-      }
-
-      // Extract JSON from response (handle markdown code blocks)
-      const jsonMatch = answerContent.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        throw new Error('No JSON found in response');
-      }
-
-      const parsed = JSON.parse(jsonMatch[0]);
-
-      // Use the model's thinking as part of reasoning if available
-      const modelReasoning = String(parsed.reasoning || 'No reasoning provided');
-      const fullReasoning = thinkingRaw
-        ? `[Thinking] ${thinkingRaw.substring(0, 150)}... | ${modelReasoning}`
-        : modelReasoning;
-
-      return {
-        escalate: Boolean(parsed.escalate),
-        reason: String(parsed.reason || 'No reason provided'),
-        reasoning: fullReasoning,
-      };
-    } catch (error: any) {
-      console.error('[DeepSeek] Failed to parse response:', content);
+    if (!json) {
+      console.error('[DeepSeek] Parse failed:', error, '\nRaw:', content.substring(0, 500));
       return {
         escalate: false,
         reason: 'Failed to parse LLM response',
-        reasoning: content.substring(0, 200),
+        reasoning: error || content.substring(0, 200),
       };
     }
+
+    return {
+      escalate: Boolean(json.escalate),
+      reason: String(json.reason || 'No reason provided'),
+      reasoning: thinking
+        ? `[Thinking] ${thinking.substring(0, 150)}... | ${json.reasoning}`
+        : String(json.reasoning || 'No reasoning provided'),
+    };
   }
 }
 

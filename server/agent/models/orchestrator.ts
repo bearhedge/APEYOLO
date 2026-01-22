@@ -8,6 +8,7 @@
 import { logger, LogType } from '../logger';
 import { toolkit, resetToolkitState } from '../toolkit';
 import { ORCHESTRATOR_SYSTEM_PROMPT, buildContextMessage } from './orchestratorPrompt';
+import { extractJSON } from '../utils/parseJson';
 import type { LLMResponse, OrchestratorResult, ToolName } from '../toolkit/types';
 
 interface ChatMessage {
@@ -144,34 +145,22 @@ export class AgentOrchestrator {
   }
 
   /**
-   * Parse LLM response, handling <think> tags
+   * Parse LLM response, handling <think> tags and markdown code blocks
    */
   private parseResponse(content: string): LLMResponse | null {
-    try {
-      // Extract <think>...</think> if present
-      const thinkMatch = content.match(/<think>([\s\S]*?)<\/think>/);
-      const thinking = thinkMatch ? thinkMatch[1].trim() : '';
+    const { json, thinking, error } = extractJSON<LLMResponse>(content);
 
-      // Remove thinking tags to get JSON
-      const jsonContent = content.replace(/<think>[\s\S]*?<\/think>/g, '').trim();
-
-      // Extract JSON
-      const jsonMatch = jsonContent.match(/\{[\s\S]*\}/);
-      if (!jsonMatch) {
-        return null;
-      }
-
-      const parsed = JSON.parse(jsonMatch[0]);
-
-      // Add extracted thinking if not in JSON
-      if (!parsed.thinking && thinking) {
-        parsed.thinking = thinking;
-      }
-
-      return parsed as LLMResponse;
-    } catch {
+    if (!json) {
+      console.error('[Orchestrator] Parse failed:', error, '\nRaw:', content.substring(0, 500));
       return null;
     }
+
+    // Add thinking if not in JSON
+    if (!json.thinking && thinking) {
+      json.thinking = thinking;
+    }
+
+    return json;
   }
 
   /**
