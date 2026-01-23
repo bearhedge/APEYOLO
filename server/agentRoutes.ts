@@ -2326,7 +2326,7 @@ router.post('/codeact/wake', async (req: Request, res: Response) => {
     const orchestrator = createCodeActOrchestrator();
     await orchestrator.run({
       type: 'scheduled',
-      message: `Scheduled wake-up. Current time: ${timeStr} ET. Mode: ${mode}.`
+      message: `Time: ${timeStr} ET. Mode: ${mode}. Analyze the market data above and provide your assessment.`
     });
 
     res.json({

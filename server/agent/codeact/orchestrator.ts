@@ -17,7 +17,20 @@ interface OrchestratorConfig {
 
 // System prompt for the CodeAct agent
 // Note: Using template literal but escaping Python f-strings to prevent JS interpretation
-const SYSTEM_PROMPT = `You are APE, an AI trading assistant for 0DTE SPY options.
+const SYSTEM_PROMPT = `=== CRITICAL: DATA INTEGRITY ===
+You have NO knowledge of current market prices. The ONLY prices you know are from code execution results shown to you.
+
+When you see "Code output:" messages, those contain REAL data. Analyze ONLY that data.
+
+NEVER:
+- Guess prices before seeing code output
+- Make up numbers like "$685" or "VIX at 14.5"
+- Assume any market values
+
+Your analysis must ONLY reference numbers from actual code output.
+=== END DATA INTEGRITY ===
+
+You are APE, an AI trading assistant for 0DTE SPY options.
 
 You can write Python code to perform actions. The code will be executed and you'll see the output.
 
@@ -129,6 +142,83 @@ export class CodeActOrchestrator {
     // Add trigger message
     this.messages.push({ role: 'user', content: trigger.message });
     await memoryService.logEvent(this.sessionId, 'trigger', trigger.message, { type: trigger.type });
+
+    // ============================================
+    // BULLETPROOF: Pre-fetch real market data BEFORE LLM runs
+    // This prevents hallucination by showing the LLM "it already called tools"
+    // Includes retry logic for IBKR warmup delay (~30 seconds after auth)
+    // ============================================
+    const prefetchCode = `spy = broker.get_price("SPY")
+vix = broker.get_price("VIX")
+account = broker.get_account()
+positions = broker.get_positions()
+print(f"SPY: \${spy:.2f}")
+print(f"VIX: {vix:.2f}")
+print(f"Account: {account}")
+print(f"Positions: {positions}")`;
+
+    // Helper to check if data is valid (non-zero SPY price)
+    const isValidData = (result: { success: boolean; stdout?: string }) => {
+      if (!result.success) return false;
+      // Check for various 0 patterns
+      if (result.stdout?.includes('SPY: $0.00')) return false;
+      if (result.stdout?.includes('SPY: 0.00')) return false;
+      if (result.stdout?.match(/SPY: \$?0[^0-9]/)) return false;
+      return true;
+    };
+
+    // Retry with exponential backoff for IBKR warmup
+    const MAX_RETRIES = 6;  // 6 retries = ~63 seconds total wait
+    const INITIAL_DELAY_MS = 2000;  // Start with 2 seconds
+    let prefetchResult = { success: false, stdout: '', stderr: '', error: null as string | null };
+    let attempt = 0;
+
+    logger.start('GRABBING_DATA', 'Pre-fetching market data (waiting for IBKR...)');
+
+    while (attempt < MAX_RETRIES) {
+      attempt++;
+      prefetchResult = await executePython(prefetchCode);
+
+      if (isValidData(prefetchResult)) {
+        // Got valid data!
+        break;
+      }
+
+      if (attempt < MAX_RETRIES) {
+        const delayMs = INITIAL_DELAY_MS * Math.pow(2, attempt - 1);  // 2s, 4s, 8s, 16s, 32s
+        logger.append(`\n[Attempt ${attempt}/${MAX_RETRIES}] Got 0.0, IBKR warming up... retrying in ${delayMs / 1000}s`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+      }
+    }
+
+    // Check final result
+    if (!isValidData(prefetchResult)) {
+      logger.start('BAD_BANANA', `Data fetch failed after ${attempt} attempts: ` + (prefetchResult.error || prefetchResult.stderr || 'Broker returned invalid data (0.0)'));
+
+      // Give LLM error context instead of fake data
+      this.messages.push({
+        role: 'user',
+        content: `ERROR: Broker returned invalid data (0.0 or connection failed) after ${attempt} retry attempts. This indicates a connection problem.
+
+DO NOT analyze market conditions - we have no valid data.
+Instead, report this error and wait for human intervention.
+
+Error details: ${prefetchResult.error || prefetchResult.stderr || 'Prices returned as 0.0 after retries'}`
+      });
+    } else {
+      logger.start('FOUND_BANANA', prefetchResult.stdout || '(no output)');
+
+      // Pre-seed the conversation: show LLM it "already" called tools
+      this.messages.push({
+        role: 'assistant',
+        content: `<python>\n${prefetchCode}\n</python>`
+      });
+
+      this.messages.push({
+        role: 'user',
+        content: `Code output:\n${prefetchResult.stdout}\n${prefetchResult.stderr ? 'Errors: ' + prefetchResult.stderr : ''}\n\nAnalyze this data and decide on next steps.`
+      });
+    }
 
     // Agent loop - max 10 iterations to prevent runaway
     for (let i = 0; i < 10; i++) {
