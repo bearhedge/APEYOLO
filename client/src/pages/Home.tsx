@@ -490,28 +490,26 @@ const animationStyles = `
     left: 0;
     right: 0;
     bottom: 0;
-    background: linear-gradient(90deg, #ff1493, #00ffff, #39ff14, #ff00ff, #00d4ff, #ff073a, #ff1493);
-    background-size: 400% 100%;
+    background: linear-gradient(135deg, rgba(255, 20, 147, 0.3), rgba(0, 255, 255, 0.2), rgba(255, 0, 255, 0.3));
     opacity: 0;
-    transition: opacity 0.3s ease;
+    transition: opacity 0.4s ease;
     z-index: -1;
   }
 
   .neon-button:hover::before {
     opacity: 1;
-    animation: neonGradientFlow 2s linear infinite;
+    animation: gentleGlimmer 3s ease-in-out infinite;
   }
 
   .neon-button:hover {
-    color: black;
-    text-shadow: none;
-    border-color: transparent;
-    box-shadow: 0 0 20px rgba(255, 20, 147, 0.5), 0 0 40px rgba(0, 255, 255, 0.3);
+    color: white;
+    border-color: rgba(255, 255, 255, 0.5);
+    box-shadow: 0 0 15px rgba(255, 20, 147, 0.4), 0 0 30px rgba(0, 255, 255, 0.2);
   }
 
-  @keyframes neonGradientFlow {
-    0% { background-position: 0% 50%; }
-    100% { background-position: 400% 50%; }
+  @keyframes gentleGlimmer {
+    0%, 100% { opacity: 0.6; }
+    50% { opacity: 1; }
   }
 `;
 
