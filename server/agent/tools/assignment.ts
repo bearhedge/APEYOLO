@@ -6,7 +6,7 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
-import { getBroker, getBrokerForUser } from '../../broker';
+import { getBrokerForUser } from '../../broker';
 import { logger } from '../logger';
 import { kimiClient } from '../models/kimi';
 
@@ -37,22 +37,20 @@ export interface AssignmentDecision {
  * Check for new stock assignments and handle them
  * Multi-tenant: Pass userId for user-specific broker access
  */
-export async function checkForAssignments(userId?: string): Promise<void> {
+export async function checkForAssignments(userId: string): Promise<void> {
   const sessionId = uuidv4();
 
   try {
-    // Multi-tenant: Use user-specific broker when userId provided
-    let broker;
-    if (userId) {
-      broker = await getBrokerForUser(userId);
-    } else {
-      // Fallback for backwards compatibility (will be deprecated)
-      broker = getBroker();
-      console.warn('[Assignment] checkForAssignments called without userId - using shared broker (DEPRECATED)');
+    // Multi-tenant: Require userId for user-specific broker
+    if (!userId) {
+      logger.log({ sessionId, type: 'ERROR', message: 'userId required for assignment check' });
+      return;
     }
 
+    const broker = await getBrokerForUser(userId);
+
     if (!broker.api || !broker.status.connected) {
-      logger.log({ sessionId, type: 'SLEEP', message: 'Broker not connected - skipping assignment check' });
+      logger.log({ sessionId, type: 'SLEEP', message: 'IBKR not configured - skipping assignment check' });
       return;
     }
 
@@ -156,22 +154,15 @@ async function gatherAssignmentContext(
   position: any,
   userId?: string
 ): Promise<AssignmentContext> {
-  // Multi-tenant: Use user-specific broker when userId provided
-  let broker;
-  if (userId) {
-    broker = await getBrokerForUser(userId);
-  } else {
-    // Fallback for backwards compatibility (will be deprecated)
-    broker = getBroker();
-    console.warn('[Assignment] gatherAssignmentContext called without userId - using shared broker (DEPRECATED)');
-  }
+  // Get broker if userId provided (optional - position data used as fallback)
+  const broker = userId ? await getBrokerForUser(userId) : null;
 
   // Get current market data
   let currentPrice = position.marketValue / shares || 0;
   let bidAskSpread: number | null = null;
 
   try {
-    if (broker.api) {
+    if (broker?.api) {
       const marketData = await broker.api.getMarketData(symbol);
       currentPrice = marketData.price || currentPrice;
       if (marketData.bid && marketData.ask) {
@@ -237,7 +228,7 @@ async function executeSellStock(
   sessionId: string,
   symbol: string,
   shares: number,
-  userId?: string
+  userId: string
 ): Promise<void> {
   logger.log({
     sessionId,
@@ -246,18 +237,15 @@ async function executeSellStock(
   });
 
   try {
-    // Multi-tenant: Use user-specific broker when userId provided
-    let broker;
-    if (userId) {
-      broker = await getBrokerForUser(userId);
-    } else {
-      // Fallback for backwards compatibility (will be deprecated)
-      broker = getBroker();
-      console.warn('[Assignment] executeSellStock called without userId - using shared broker (DEPRECATED)');
+    // Multi-tenant: Require userId for user-specific broker
+    if (!userId) {
+      throw new Error('userId required to execute sell');
     }
 
+    const broker = await getBrokerForUser(userId);
+
     if (!broker.api) {
-      throw new Error('Broker not connected');
+      throw new Error('IBKR not configured. Please configure your IBKR credentials in Settings.');
     }
 
     // Place market order with extended hours enabled
@@ -301,17 +289,15 @@ export function resetAssignmentTracking(): void {
  * Initialize tracking with current positions
  * Multi-tenant: Pass userId for user-specific broker access
  */
-export async function initializeAssignmentTracking(userId?: string): Promise<void> {
+export async function initializeAssignmentTracking(userId: string): Promise<void> {
   try {
-    // Multi-tenant: Use user-specific broker when userId provided
-    let broker;
-    if (userId) {
-      broker = await getBrokerForUser(userId);
-    } else {
-      // Fallback for backwards compatibility (will be deprecated)
-      broker = getBroker();
-      console.warn('[Assignment] initializeAssignmentTracking called without userId - using shared broker (DEPRECATED)');
+    // Multi-tenant: Require userId for user-specific broker
+    if (!userId) {
+      console.warn('[Assignment] initializeAssignmentTracking called without userId - skipping');
+      return;
     }
+
+    const broker = await getBrokerForUser(userId);
 
     if (!broker.api) return;
 

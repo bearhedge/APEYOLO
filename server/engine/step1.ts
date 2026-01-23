@@ -9,7 +9,7 @@
  */
 
 import { getVIXData } from '../services/marketDataService.js';
-import { getBroker } from '../broker/index';
+import { getBrokerForUser } from '../broker/index';
 import { pool } from '../db';
 import type { StepReasoning, StepMetric } from '../../shared/types/engineLog';
 
@@ -142,9 +142,10 @@ function analyzeTrend(): 'BULLISH' | 'BEARISH' | 'NEUTRAL' {
  * Main function: Analyze market regime and determine if we should trade
  * @param useRealData - Whether to use real market data (default: true)
  * @param symbol - Underlying symbol (default: 'SPY')
+ * @param userId - User ID for multi-tenant broker access (optional for backward compat)
  * @returns Market regime analysis with trade decision
  */
-export async function analyzeMarketRegime(useRealData: boolean = true, symbol: string = 'SPY'): Promise<MarketRegime> {
+export async function analyzeMarketRegime(useRealData: boolean = true, symbol: string = 'SPY', userId?: string): Promise<MarketRegime> {
   // Step 1: Check trading hours (but DON'T return early - continue for analysis)
   const withinTradingWindow = isWithinTradingHours();
   const { hour, minute } = getETTimeComponents();
@@ -179,17 +180,22 @@ export async function analyzeMarketRegime(useRealData: boolean = true, symbol: s
     console.log(`[Step1] Fetching ${symbol} price...`);
 
     // Try 1: IBKR market data snapshot (direct call, no cache)
-    try {
-      console.log(`[Step1] Trying IBKR market data for ${symbol}...`);
-      const broker = getBroker();
-      const marketData = await broker.api?.getMarketData(symbol);
-      if (marketData && marketData.price > 0) {
-        spyPrice = marketData.price;
-        spyChange = marketData.changePercent;
-        console.log(`[Step1] ${symbol} from IBKR: $${spyPrice.toFixed(2)}`);
+    // Requires userId for multi-tenant broker access
+    if (userId) {
+      try {
+        console.log(`[Step1] Trying IBKR market data for ${symbol}...`);
+        const broker = await getBrokerForUser(userId);
+        const marketData = await broker.api?.getMarketData(symbol);
+        if (marketData && marketData.price > 0) {
+          spyPrice = marketData.price;
+          spyChange = marketData.changePercent;
+          console.log(`[Step1] ${symbol} from IBKR: $${spyPrice.toFixed(2)}`);
+        }
+      } catch (error: any) {
+        console.warn(`[Step1] IBKR market data failed: ${error.message}`);
       }
-    } catch (error: any) {
-      console.warn(`[Step1] IBKR market data failed: ${error.message}`);
+    } else {
+      console.log(`[Step1] No userId provided - skipping IBKR market data, using database fallback`);
     }
 
     // Try 2: Database fallback (last known price for off-hours)

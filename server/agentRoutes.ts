@@ -2488,22 +2488,15 @@ router.get('/internal/broker/account', async (req: Request, res: Response) => {
   try {
     const userId = req.headers['x-user-id'] as string;
 
-    // Try user-specific broker first, fall back to env var credentials
-    let broker: any = { api: null };
-    if (userId) {
-      broker = await getBrokerForUser(userId);
+    // Multi-tenant: Require userId for user-specific broker
+    if (!userId) {
+      return res.status(400).json({ error: 'X-User-Id header required' });
     }
 
-    // Fallback to env var credentials (shared broker)
-    if (!broker.api) {
-      const envConfigured = !!(process.env.IBKR_CLIENT_ID && process.env.IBKR_PRIVATE_KEY);
-      if (envConfigured) {
-        broker = getBroker();
-      }
-    }
+    const broker = await getBrokerForUser(userId);
 
     if (!broker.api) {
-      return res.json({ error: 'Broker not connected' });
+      return res.json({ error: 'IBKR not configured. Please configure your IBKR credentials in Settings.' });
     }
 
     const account = await broker.api.getAccount();
@@ -2543,22 +2536,15 @@ router.get('/internal/broker/positions', async (req: Request, res: Response) => 
   try {
     const userId = req.headers['x-user-id'] as string;
 
-    // Try user-specific broker first, fall back to env var credentials
-    let broker: any = { api: null };
-    if (userId) {
-      broker = await getBrokerForUser(userId);
+    // Multi-tenant: Require userId for user-specific broker
+    if (!userId) {
+      return res.status(400).json({ error: 'X-User-Id header required' });
     }
 
-    // Fallback to env var credentials (shared broker)
-    if (!broker.api) {
-      const envConfigured = !!(process.env.IBKR_CLIENT_ID && process.env.IBKR_PRIVATE_KEY);
-      if (envConfigured) {
-        broker = getBroker();
-      }
-    }
+    const broker = await getBrokerForUser(userId);
 
     if (!broker.api) {
-      return res.json([]);
+      return res.json([]);  // Return empty array if no broker configured
     }
 
     const positions = await broker.api.getPositions();

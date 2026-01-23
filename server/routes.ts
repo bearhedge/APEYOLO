@@ -4,7 +4,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import WebSocket, { WebSocketServer } from "ws";
 import { storage } from "./storage";
-import { getBroker, getBrokerForUser, clearUserBrokerCache } from "./broker";
+import { getBrokerForUser, clearUserBrokerCache } from "./broker";
 import { getIbkrDiagnostics, ensureIbkrReady, placePaperStockOrder, placePaperOptionOrder, listPaperOpenOrders, getIbkrCookieString, getIbkrSessionToken, resolveSymbolConid } from "./broker/ibkr";
 import { IbkrWebSocketManager, initIbkrWebSocket, getIbkrWebSocketManager, destroyIbkrWebSocket, getIbkrWebSocketStatus, type MarketDataUpdate, wsManagerInstance } from "./broker/ibkrWebSocket";
 import { getOptionChainStreamer, initOptionChainStreamer } from "./broker/optionChainStreamer";
@@ -593,8 +593,6 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // WebSocket server for live data
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' });
-  // Select broker provider (mock or ibkr)
-  const broker = getBroker();
 
   // Store WebSocket clients for broadcasting
   const wsClients = new Set<WebSocket>();
@@ -616,15 +614,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
     // Send initial data
     ws.send(JSON.stringify({
       type: 'connected',
-      message: 'Connected to Orca Options live data feed'
+      message: 'Connected to APE YOLO live data feed'
     }));
 
-    // Send initial engine status
+    // Note: Broker status is user-specific. Use authenticated /api/ibkr/status endpoint instead.
     ws.send(JSON.stringify({
       type: 'engine_status',
       data: {
-        brokerConnected: broker.status.status === 'Connected',
-        brokerProvider: broker.status.provider,
+        brokerConnected: false,  // User should check via authenticated API
+        brokerProvider: 'pending',
         timestamp: new Date().toISOString()
       }
     }));

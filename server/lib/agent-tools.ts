@@ -5,7 +5,7 @@
  * Each tool integrates with existing system components (broker, engine, etc.)
  */
 
-import { getBroker, getBrokerForUser } from '../broker';
+import { getBrokerForUser } from '../broker';
 import { analyzeMarketRegime } from '../engine/step1';
 import { getMarketStatus } from '../services/marketCalendar';
 
@@ -103,12 +103,18 @@ const getMarketDataTool: Tool = {
   name: 'getMarketData',
   description: 'Fetch current market conditions including VIX level, SPY price, and market open/close status',
   parameters: {},
-  execute: async (): Promise<ToolResult> => {
+  execute: async (_args: Record<string, any>, context?: ToolExecutionContext): Promise<ToolResult> => {
     try {
-      // Get broker for market data
-      const { api } = getBroker();
+      // Multi-tenant: Require userId for user-specific broker
+      if (!context?.userId) {
+        return { success: false, error: 'userId required in context' };
+      }
+
+      const broker = await getBrokerForUser(context.userId);
+      const api = broker.api;
+
       if (!api) {
-        return { success: false, error: 'Broker not connected' };
+        return { success: false, error: 'IBKR not configured. Please configure your IBKR credentials in Settings.' };
       }
 
       // Fetch SPY and VIX data
@@ -164,22 +170,17 @@ const getPositionsTool: Tool = {
   parameters: {},
   execute: async (_args: Record<string, any>, context?: ToolExecutionContext): Promise<ToolResult> => {
     try {
-      // Multi-tenant: Use user-specific broker when userId provided
-      let api, status;
-      if (context?.userId) {
-        const broker = await getBrokerForUser(context.userId);
-        api = broker.api;
-        status = broker.status;
-      } else {
-        // Fallback for backwards compatibility (will be deprecated)
-        const broker = getBroker();
-        api = broker.api;
-        status = broker.status;
-        console.warn('[AgentTools] getPositions called without userId - using shared broker (DEPRECATED)');
+      // Multi-tenant: Require userId for user-specific broker
+      if (!context?.userId) {
+        return { success: false, error: 'userId required in context' };
       }
 
+      const broker = await getBrokerForUser(context.userId);
+      const api = broker.api;
+      const status = broker.status;
+
       if (!api) {
-        return { success: false, error: 'Broker not connected' };
+        return { success: false, error: 'IBKR not configured. Please configure your IBKR credentials in Settings.' };
       }
 
       const [positions, account] = await Promise.all([
@@ -280,25 +281,24 @@ const runEngineTool: Tool = {
       // Fallback: Non-streaming execution (backwards compatibility)
       const { TradingEngine } = await import('../engine');
 
-      // Multi-tenant: Use user-specific broker when userId provided
-      let api;
-      if (context?.userId) {
-        const broker = await getBrokerForUser(context.userId);
-        api = broker.api;
-      } else {
-        // Fallback for backwards compatibility (will be deprecated)
-        api = getBroker().api;
-        console.warn('[AgentTools] runEngine called without userId - using shared broker (DEPRECATED)');
+      // Multi-tenant: Require userId for user-specific broker
+      if (!context?.userId) {
+        return { success: false, error: 'userId required in context' };
+      }
+
+      const broker = await getBrokerForUser(context.userId);
+      const api = broker.api;
+
+      if (!api) {
+        return { success: false, error: 'IBKR not configured. Please configure your IBKR credentials in Settings.' };
       }
 
       let underlyingPrice = 600;
-      if (api) {
-        try {
-          const marketData = await api.getMarketData(symbol);
-          underlyingPrice = marketData.price;
-        } catch (e) {
-          console.warn('[AgentTools] Could not get real price, using fallback');
-        }
+      try {
+        const marketData = await api.getMarketData(symbol);
+        underlyingPrice = marketData.price;
+      } catch (e) {
+        console.warn('[AgentTools] Could not get real price, using fallback');
       }
 
       let accountInfo = {
@@ -308,18 +308,16 @@ const runEngineTool: Tool = {
         currentPositions: 0,
       };
 
-      if (api) {
-        try {
-          const account = await api.getAccount();
-          accountInfo = {
-            cashBalance: account.totalCash || 150000,
-            buyingPower: account.buyingPower || 500000,
-            netLiquidation: account.portfolioValue || 150000,
-            currentPositions: 0,
-          };
-        } catch (e) {
-          console.warn('[AgentTools] Could not get account info, using defaults');
-        }
+      try {
+        const account = await api.getAccount();
+        accountInfo = {
+          cashBalance: account.totalCash || 150000,
+          buyingPower: account.buyingPower || 500000,
+          netLiquidation: account.portfolioValue || 150000,
+          currentPositions: 0,
+        };
+      } catch (e) {
+        console.warn('[AgentTools] Could not get account info, using defaults');
       }
 
       const engine = new TradingEngine({
