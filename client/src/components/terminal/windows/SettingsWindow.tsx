@@ -54,6 +54,8 @@ export function SettingsWindow() {
       if (data?.configured && !data?.connected) return 3000;
       return 30000;
     },
+    refetchOnWindowFocus: true,
+    refetchOnMount: true,
   });
 
   // Solana info query

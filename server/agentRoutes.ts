@@ -40,6 +40,7 @@ import {
   type StrikeModification,
   type ModificationImpact,
 } from './services/negotiationService';
+import { agentEvents, LOG_TYPES, type LogEvent } from './agent/logger';
 
 // ============================================
 // Query Planner - Manus-style task breakdown
@@ -2382,6 +2383,46 @@ router.post('/codeact/chat', requireAuth, async (req: Request, res: Response) =>
       error: error.message || 'CodeAct chat failed',
     });
   }
+});
+
+/**
+ * GET /api/agent/stream
+ *
+ * SSE endpoint for streaming agent logs to the terminal UI.
+ * Sends real-time log events as the agent runs.
+ */
+router.get('/stream', (req: Request, res: Response) => {
+  // Set up SSE headers
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // Disable nginx buffering
+  res.flushHeaders();
+
+  // Send initial connection event
+  res.write(`data: ${JSON.stringify({ type: 'connected', logTypes: LOG_TYPES })}\n\n`);
+
+  // Handler for log events
+  const onLog = (event: LogEvent) => {
+    res.write(`data: ${JSON.stringify(event)}\n\n`);
+  };
+
+  // Subscribe to agent events
+  agentEvents.on('log', onLog);
+
+  // Keep connection alive with heartbeat
+  const heartbeat = setInterval(() => {
+    res.write(': heartbeat\n\n');
+  }, 30000);
+
+  // Cleanup on disconnect
+  req.on('close', () => {
+    clearInterval(heartbeat);
+    agentEvents.off('log', onLog);
+    console.log('[AgentRoutes] SSE client disconnected');
+  });
+
+  console.log('[AgentRoutes] SSE client connected to /api/agent/stream');
 });
 
 /**

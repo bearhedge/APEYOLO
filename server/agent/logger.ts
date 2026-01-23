@@ -2,13 +2,28 @@ import { db } from '../db';
 import { agentLogs } from '@shared/schema';
 import { EventEmitter } from 'events';
 
-// Log entry types
-export type LogType = 'WAKE' | 'DATA' | 'THINK' | 'TOOL' | 'OBSERVE' | 'ESCALATE' | 'DECIDE' | 'ACTION' | 'SLEEP' | 'ERROR';
+// Ape-themed log types with display configuration
+export const LOG_TYPES = {
+  BANANA_TIME:   { label: 'BANANA TIME',   color: 'green' },
+  APE_BRAIN:     { label: 'APE BRAIN',     color: 'cyan' },
+  GRABBING_DATA: { label: 'GRABBING DATA', color: 'yellow' },
+  FOUND_BANANA:  { label: 'FOUND BANANA',  color: 'white' },
+  SWING_TIME:    { label: 'SWING TIME',    color: 'magenta' },
+  NO_SWING:      { label: 'NO SWING',      color: 'gray' },
+  BAD_BANANA:    { label: 'BAD BANANA',    color: 'red' },
+  DANGER_BRANCH: { label: 'DANGER BRANCH', color: 'orange' },
+  BACK_TO_TREE:  { label: 'BACK TO TREE',  color: 'green' },
+} as const;
 
-export interface LogEntry {
-  sessionId: string;
-  type: LogType;
-  message: string;
+export type LogType = keyof typeof LOG_TYPES;
+
+// SSE event types for streaming
+export interface LogEvent {
+  type: 'start' | 'append';
+  logType?: LogType;
+  text: string;
+  timestamp?: string;
+  sessionId?: string;
 }
 
 // EventEmitter for real-time streaming to UI
@@ -18,35 +33,87 @@ export const agentEvents = new EventEmitter();
 agentEvents.setMaxListeners(50);
 
 export class AgentLogger {
-  async log(entry: LogEntry): Promise<void> {
-    const timestamp = new Date();
-    const formatted = `${this.formatTime(timestamp)} | ${entry.type.padEnd(8)} | ${entry.message}`;
+  private currentSessionId: string | null = null;
 
-    // Console log
-    console.log(`[Agent] ${formatted}`);
+  setSessionId(sessionId: string): void {
+    this.currentSessionId = sessionId;
+  }
+
+  /**
+   * Start a new log block with timestamp and tag
+   */
+  start(logType: LogType, text: string): void {
+    const timestamp = this.formatTime(new Date());
+    const config = LOG_TYPES[logType];
+
+    // Console log with formatted output
+    console.log(`[Agent] ${timestamp} [${config.label}] ${text}`);
 
     // Store in DB if available
-    if (db) {
-      try {
-        await db.insert(agentLogs).values({
-          sessionId: entry.sessionId,
-          timestamp,
-          type: entry.type,
-          message: entry.message,
-        });
-      } catch (error: any) {
-        console.error(`[Agent] Failed to store log: ${error.message}`);
-      }
-    }
+    this.storeLog(logType, text);
 
     // Emit for real-time UI
-    agentEvents.emit('log', {
-      timestamp: timestamp.toISOString(),
-      sessionId: entry.sessionId,
-      type: entry.type,
-      message: entry.message,
-      formatted,
-    });
+    const event: LogEvent = {
+      type: 'start',
+      logType,
+      text,
+      timestamp,
+      sessionId: this.currentSessionId || undefined,
+    };
+    agentEvents.emit('log', event);
+  }
+
+  /**
+   * Append text to current log block (no new timestamp or tag)
+   */
+  append(text: string): void {
+    // Console log continuation
+    process.stdout.write(text);
+
+    // Emit for real-time UI
+    const event: LogEvent = {
+      type: 'append',
+      text,
+    };
+    agentEvents.emit('log', event);
+  }
+
+  /**
+   * Legacy log method for backwards compatibility
+   */
+  async log(entry: { sessionId: string; type: string; message: string }): Promise<void> {
+    // Map old types to new types
+    const typeMap: Record<string, LogType> = {
+      'WAKE': 'BANANA_TIME',
+      'THINK': 'APE_BRAIN',
+      'TOOL': 'GRABBING_DATA',
+      'DATA': 'FOUND_BANANA',
+      'OBSERVE': 'FOUND_BANANA',
+      'DECIDE': 'SWING_TIME',
+      'ACTION': 'SWING_TIME',
+      'SLEEP': 'BACK_TO_TREE',
+      'ERROR': 'BAD_BANANA',
+      'ESCALATE': 'DANGER_BRANCH',
+    };
+
+    const newType = typeMap[entry.type] || 'FOUND_BANANA';
+    this.currentSessionId = entry.sessionId;
+    this.start(newType, entry.message);
+  }
+
+  private async storeLog(logType: LogType, message: string): Promise<void> {
+    if (!db || !this.currentSessionId) return;
+
+    try {
+      await db.insert(agentLogs).values({
+        sessionId: this.currentSessionId,
+        timestamp: new Date(),
+        type: logType,
+        message,
+      });
+    } catch (error: any) {
+      console.error(`[Agent] Failed to store log: ${error.message}`);
+    }
   }
 
   private formatTime(d: Date): string {

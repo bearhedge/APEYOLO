@@ -6,7 +6,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { deepseekClient } from '../models/deepseek';
 import { memoryService } from '../memory/service';
 import { executePython, extractPythonCode, extractProposal } from '../sandbox/executor';
-import { logger, LogType } from '../logger';
+import { logger } from '../logger';
 
 type Mode = 'market_hours' | 'off_hours';
 
@@ -42,6 +42,41 @@ print(f"SPY: {spy}, VIX: {vix}")
 
 After seeing results, VERIFY they make sense before continuing.
 
+=== ANALYSIS REQUIREMENTS ===
+When analyzing market conditions, provide DETAILED, INTELLIGENT analysis:
+
+1. PRICES: Show current prices WITH context
+   - SPY: $XXX.XX (+/-X.X% from yesterday's close of $XXX.XX)
+   - VIX: XX.XX (interpret: low <15 / normal 15-20 / elevated 20-25 / high >25)
+
+2. MARKET REGIME: Classify the current environment
+   - CALM: VIX <20, price range-bound
+   - TRENDING: Clear directional move with momentum
+   - VOLATILE: VIX >25 or large intraday swings
+   - CHOPPY: No clear direction, frequent reversals
+
+3. PRICE CONTEXT: Where is SPY in recent range?
+   - Yesterday's high/low range
+   - Current position (e.g., "75th percentile of yesterday's range")
+   - Key round numbers nearby ($685, $690, etc.)
+
+4. SUPPORT/RESISTANCE:
+   - Recent pivot points
+   - Yesterday's VWAP area
+   - Round numbers that may act as magnets
+
+5. OPTIONS INSIGHT: If relevant
+   - Notable 0DTE premium levels
+   - Unusual strike activity
+   - Theta decay status (accelerating after 2pm ET)
+
+6. INTERPRETATION: Don't just state facts - explain what they MEAN for trading:
+   - "VIX at 14.5 suggests calm conditions favorable for premium selling"
+   - "Price near session highs with weakening momentum suggests possible pullback"
+
+Be specific with numbers. Show your reasoning.
+=== END ANALYSIS REQUIREMENTS ===
+
 IMPORTANT: You CANNOT execute trades directly. If you want to propose a trade, output a PROPOSAL in this format:
 <proposal>
 {
@@ -74,6 +109,9 @@ export class CodeActOrchestrator {
     this.sessionId = config.sessionId ?? uuidv4();
     this.mode = config.mode;
 
+    // Set session ID on logger
+    logger.setSessionId(this.sessionId);
+
     // Initialize conversation with system prompt
     const modeContext = this.mode === 'market_hours' ? MARKET_HOURS_CONTEXT : OFF_HOURS_CONTEXT;
     this.messages.push({
@@ -86,7 +124,7 @@ export class CodeActOrchestrator {
    * Run the CodeAct loop: Reason -> Code -> Observe -> Repeat
    */
   async run(trigger: { type: 'scheduled' | 'user'; message: string }): Promise<void> {
-    this.log('WAKE', `Session started (${this.mode})`);
+    logger.start('BANANA_TIME', `Session started (${this.mode})`);
 
     // Add trigger message
     this.messages.push({ role: 'user', content: trigger.message });
@@ -95,11 +133,12 @@ export class CodeActOrchestrator {
     // Agent loop - max 10 iterations to prevent runaway
     for (let i = 0; i < 10; i++) {
       // Get DeepSeek response
-      this.log('THINK', 'Reasoning...');
-      const response = await this.callDeepSeek();
+      logger.start('APE_BRAIN', '');
+
+      const response = await this.callDeepSeekStreaming();
 
       if (!response) {
-        this.log('ERROR', 'DeepSeek call failed');
+        logger.start('BAD_BANANA', 'DeepSeek call failed');
         break;
       }
 
@@ -109,15 +148,15 @@ export class CodeActOrchestrator {
       // Check for Python code to execute
       const code = extractPythonCode(response);
       if (code) {
-        this.log('TOOL', 'Executing Python code...');
+        logger.start('GRABBING_DATA', 'Executing code...\n' + code);
 
         const result = await executePython(code);
         await memoryService.logEvent(this.sessionId, 'code_execution', code, result);
 
         if (result.success) {
-          this.log('DATA', result.stdout || '(no output)');
+          logger.start('FOUND_BANANA', result.stdout || '(no output)');
         } else {
-          this.log('ERROR', result.error || result.stderr);
+          logger.start('BAD_BANANA', result.error || result.stderr);
         }
 
         // Feed result back to DeepSeek
@@ -131,7 +170,11 @@ export class CodeActOrchestrator {
       // Check for trade proposal
       const proposal = extractProposal(response);
       if (proposal) {
-        this.log('DECIDE', `Proposing: ${proposal.action}`);
+        if (this.mode === 'market_hours') {
+          logger.start('SWING_TIME', `Proposing: ${proposal.action}`);
+        } else {
+          logger.start('NO_SWING', 'Off hours - just observing, no trade proposal');
+        }
         await memoryService.logEvent(this.sessionId, 'proposal', JSON.stringify(proposal));
         // Proposal will be picked up by UI via SSE
         // Agent waits for human approval (handled by separate endpoint)
@@ -139,25 +182,42 @@ export class CodeActOrchestrator {
       }
 
       // Check if agent is done (no code, no proposal)
-      this.log('OBSERVE', response.substring(0, 200));
+      if (this.mode === 'off_hours') {
+        logger.start('NO_SWING', 'Off hours - just observing');
+      }
       break;
     }
 
-    this.log('SLEEP', 'Session complete');
+    logger.start('BACK_TO_TREE', 'Session complete');
   }
 
-  private async callDeepSeek(): Promise<string | null> {
+  /**
+   * Call DeepSeek with streaming and emit tokens via logger.append
+   */
+  private async callDeepSeekStreaming(): Promise<string | null> {
     try {
-      const response = await deepseekClient.chat(this.messages);
-      return response;
+      let fullResponse = '';
+
+      // Check if deepseekClient supports streaming
+      if (typeof deepseekClient.chatStream === 'function') {
+        for await (const chunk of deepseekClient.chatStream(this.messages)) {
+          fullResponse += chunk;
+          logger.append(chunk);
+        }
+      } else {
+        // Fallback to non-streaming
+        const response = await deepseekClient.chat(this.messages);
+        if (response) {
+          fullResponse = response;
+          logger.append(response);
+        }
+      }
+
+      return fullResponse || null;
     } catch (error: any) {
       console.error('[CodeAct] DeepSeek error:', error.message);
       return null;
     }
-  }
-
-  private log(type: LogType, message: string): void {
-    logger.log({ sessionId: this.sessionId, type, message });
   }
 
   getSessionId(): string {

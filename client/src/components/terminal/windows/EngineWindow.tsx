@@ -10,6 +10,8 @@
 
 import { useState, useEffect, useMemo } from 'react';
 import { useEngineAnalysis } from '@/hooks/useEngineAnalysis';
+import { useMarketSnapshot } from '@/hooks/useMarketSnapshot';
+import { useEngine } from '@/hooks/useEngine';
 import { useQuery, useMutation } from '@tanstack/react-query';
 
 type Strategy = 'strangle' | 'put-only' | 'call-only';
@@ -49,32 +51,35 @@ export function EngineWindow() {
     riskTier,
   });
 
-  // Broker status
-  const { data: broker } = useQuery({
-    queryKey: ['broker-status'],
+  // Broker status - use EXACT same useQuery as SettingsWindow for shared cache
+  const { data: ibkrStatus } = useQuery<{
+    configured: boolean;
+    connected: boolean;
+    accountId?: string;
+    nav?: number;
+    environment?: string;
+  }>({
+    queryKey: ['/api/ibkr/status'],
     queryFn: async () => {
-      const res = await fetch('/api/broker/diag', { credentials: 'include' });
-      if (!res.ok) return { connected: false };
-      const data = await res.json();
-      return {
-        connected: data.connected || data.status === 'connected',
-        accountId: data.accountId,
-        nav: data.nav,
-      };
-    },
-    refetchInterval: 10000,
-  });
-
-  // Market snapshot
-  const { data: market } = useQuery({
-    queryKey: ['market-snapshot'],
-    queryFn: async () => {
-      const res = await fetch('/api/market/snapshot', { credentials: 'include' });
-      if (!res.ok) return null;
+      const res = await fetch('/api/ibkr/status', { credentials: 'include' });
+      if (!res.ok) return { configured: false, connected: false };
       return res.json();
     },
-    refetchInterval: 5000,
+    refetchInterval: (query) => {
+      const data = query.state.data;
+      if (!data?.configured) return false;
+      if (data?.configured && !data?.connected) return 3000;
+      return 30000;
+    },
+    refetchOnWindowFocus: true,
+    refetchOnMount: true,
   });
+
+  // Engine status - for tradingWindowOpen check
+  const { status: engineStatus } = useEngine();
+
+  // Market snapshot - use SSE streaming hook like Engine.tsx
+  const { snapshot: marketSnapshot, connectionStatus: marketConnectionStatus } = useMarketSnapshot();
 
   // Execute trade mutation
   const executeMutation = useMutation({
@@ -112,11 +117,25 @@ export function EngineWindow() {
   }, [analysis, isAnalyzing, wizardStep]);
 
   // Derived values
-  const spyPrice = market?.spyPrice ?? analysis?.q1MarketRegime?.inputs?.spyPrice ?? 0;
-  const vix = market?.vix ?? analysis?.q1MarketRegime?.inputs?.vixValue ?? 0;
-  const spyChangePct = market?.spyChangePct ?? 0;
-  const isConnected = broker?.connected ?? false;
-  const marketOpen = market?.marketState === 'REGULAR' || market?.marketState === 'OVERNIGHT';
+  // Use SSE streaming data from useMarketSnapshot hook
+  const spyPrice = marketSnapshot?.spyPrice ?? analysis?.q1MarketRegime?.inputs?.spyPrice ?? 0;
+  const vix = marketSnapshot?.vix ?? analysis?.q1MarketRegime?.inputs?.vixValue ?? 0;
+  const spyChangePct = marketSnapshot?.spyChangePct ?? 0;
+  const isConnected = ibkrStatus?.connected ?? false;
+  // Match Engine.tsx logic: check marketState OR tradingWindowOpen from engine status
+  const marketState = marketSnapshot?.marketState ?? 'CLOSED';
+  const marketOpen = marketState === 'REGULAR' || marketState === 'OVERNIGHT' || engineStatus?.tradingWindowOpen;
+
+  // Additional market data from SSE stream (matching Trade page)
+  const spyBid = marketSnapshot?.spyBid ?? null;
+  const spyAsk = marketSnapshot?.spyAsk ?? null;
+  const bidAskSpread = spyBid && spyAsk ? spyAsk - spyBid : null;
+  const vwap = marketSnapshot?.vwap ?? null;
+  const ivRank = marketSnapshot?.ivRank ?? null;
+  const dayHigh = marketSnapshot?.dayHigh ?? spyPrice;
+  const dayLow = marketSnapshot?.dayLow ?? spyPrice;
+  const vixChangePct = marketSnapshot?.vixChangePct ?? 0;
+  const timestamp = marketSnapshot?.timestamp ?? null;
 
   // Strike candidates
   const putCandidates: StrikeCandidate[] = useMemo(() => {
@@ -211,17 +230,17 @@ export function EngineWindow() {
   };
 
   return (
-    <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12 }}>
+    <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14 }}>
       {/* Header */}
       <div style={{ marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid #333' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span style={{ color: '#87ceeb' }}>&gt; ENGINE v2.0 - STEP {wizardStep}/5</span>
-          <span style={{ color: isConnected ? '#4ade80' : '#ef4444', fontSize: 10 }}>
+          <span style={{ color: isConnected ? '#4ade80' : '#ef4444', fontSize: 12 }}>
             {isConnected ? 'CONNECTED' : 'DISCONNECTED'}
           </span>
         </div>
         {isAnalyzing && (
-          <div style={{ color: '#f59e0b', fontSize: 11, marginTop: 4 }}>
+          <div style={{ color: '#f59e0b', fontSize: 13, marginTop: 4 }}>
             Analyzing step {engineStep}...
           </div>
         )}
@@ -229,12 +248,12 @@ export function EngineWindow() {
 
       {/* Error display */}
       {analysisError && (
-        <div style={{ color: '#ef4444', marginBottom: 12, fontSize: 11 }}>
+        <div style={{ color: '#ef4444', marginBottom: 12, fontSize: 13 }}>
           &gt; ERROR: {analysisError}
         </div>
       )}
       {executeMutation.isError && (
-        <div style={{ color: '#ef4444', marginBottom: 12, fontSize: 11 }}>
+        <div style={{ color: '#ef4444', marginBottom: 12, fontSize: 13 }}>
           &gt; ERROR: {executeMutation.error?.message}
         </div>
       )}
@@ -244,7 +263,16 @@ export function EngineWindow() {
         <Step1Market
           spyPrice={spyPrice}
           spyChangePct={spyChangePct}
+          spyBid={spyBid}
+          spyAsk={spyAsk}
+          bidAskSpread={bidAskSpread}
           vix={vix}
+          vixChangePct={vixChangePct}
+          vwap={vwap}
+          ivRank={ivRank}
+          dayHigh={dayHigh}
+          dayLow={dayLow}
+          timestamp={timestamp}
           marketOpen={marketOpen}
           strategy={strategy}
           onStrategyChange={setStrategy}
@@ -282,7 +310,7 @@ export function EngineWindow() {
           contracts={contracts}
           premiumPerContract={premiumPerContract}
           totalPremium={totalPremium}
-          nav={broker?.nav ?? 0}
+          nav={ibkrStatus?.nav ?? 0}
         />
       )}
 
@@ -316,7 +344,7 @@ export function EngineWindow() {
               background: 'none',
               border: '1px solid #333',
               color: '#888',
-              fontSize: 11,
+              fontSize: 13,
               cursor: 'pointer',
               fontFamily: 'inherit',
             }}
@@ -333,7 +361,7 @@ export function EngineWindow() {
                 background: canGoNext() ? '#3b82f6' : 'transparent',
                 border: `1px solid ${canGoNext() ? '#3b82f6' : '#333'}`,
                 color: canGoNext() ? '#fff' : '#666',
-                fontSize: 11,
+                fontSize: 13,
                 cursor: canGoNext() ? 'pointer' : 'not-allowed',
                 fontFamily: 'inherit',
               }}
@@ -346,7 +374,7 @@ export function EngineWindow() {
 
       {/* Success message */}
       {executeMutation.isSuccess && (
-        <div style={{ color: '#4ade80', marginTop: 12, fontSize: 11 }}>
+        <div style={{ color: '#4ade80', marginTop: 12, fontSize: 13 }}>
           &gt; Trade executed successfully!
         </div>
       )}
@@ -358,7 +386,16 @@ export function EngineWindow() {
 function Step1Market({
   spyPrice,
   spyChangePct,
+  spyBid,
+  spyAsk,
+  bidAskSpread,
   vix,
+  vixChangePct,
+  vwap,
+  ivRank,
+  dayHigh,
+  dayLow,
+  timestamp,
   marketOpen,
   strategy,
   onStrategyChange,
@@ -368,7 +405,16 @@ function Step1Market({
 }: {
   spyPrice: number;
   spyChangePct: number;
+  spyBid: number | null;
+  spyAsk: number | null;
+  bidAskSpread: number | null;
   vix: number;
+  vixChangePct: number;
+  vwap: number | null;
+  ivRank: number | null;
+  dayHigh: number;
+  dayLow: number;
+  timestamp: string | null;
   marketOpen: boolean;
   strategy: Strategy;
   onStrategyChange: (s: Strategy) => void;
@@ -382,7 +428,7 @@ function Step1Market({
 
       {/* Strategy selector */}
       <div style={{ marginBottom: 12 }}>
-        <label style={{ color: '#888', fontSize: 10, display: 'block', marginBottom: 4 }}>Strategy</label>
+        <label style={{ color: '#888', fontSize: 12, display: 'block', marginBottom: 4 }}>Strategy</label>
         <div style={{ display: 'flex', gap: 4 }}>
           {(['strangle', 'put-only', 'call-only'] as Strategy[]).map(s => (
             <button
@@ -394,7 +440,7 @@ function Step1Market({
                 background: strategy === s ? '#333' : 'transparent',
                 border: `1px solid ${strategy === s ? '#555' : '#333'}`,
                 color: strategy === s ? '#fff' : '#666',
-                fontSize: 10,
+                fontSize: 12,
                 cursor: 'pointer',
                 fontFamily: 'inherit',
               }}
@@ -412,9 +458,30 @@ function Step1Market({
           value={`$${spyPrice.toFixed(2)} (${spyChangePct >= 0 ? '+' : ''}${spyChangePct.toFixed(2)}%)`}
           valueColor={spyChangePct >= 0 ? '#4ade80' : '#ef4444'}
         />
-        <Row label="VIX" value={vix.toFixed(1)} valueColor={vix > 20 ? '#f59e0b' : '#888'} />
+        {(spyBid || spyAsk) && (
+          <Row
+            label="Bid/Ask"
+            value={`$${spyBid?.toFixed(2) ?? '—'} / $${spyAsk?.toFixed(2) ?? '—'}${bidAskSpread ? ` ($${bidAskSpread.toFixed(2)})` : ''}`}
+            valueColor="#888"
+          />
+        )}
+        <Row
+          label="VIX"
+          value={`${vix.toFixed(2)}${vixChangePct !== 0 ? ` (${vixChangePct >= 0 ? '+' : ''}${vixChangePct.toFixed(1)}%)` : ''}`}
+          valueColor={vix > 20 ? '#f59e0b' : '#888'}
+        />
+        {vwap && <Row label="VWAP" value={`$${vwap.toFixed(2)}`} valueColor="#87ceeb" />}
+        {ivRank !== null && <Row label="IV Rank" value={`${ivRank.toFixed(0)}%`} valueColor="#87ceeb" />}
+        {dayLow !== dayHigh && (
+          <Row label="Day Range" value={`$${dayLow.toFixed(2)} - $${dayHigh.toFixed(2)}`} valueColor="#888" />
+        )}
         <Row label="Market" value={marketOpen ? 'OPEN' : 'CLOSED'} valueColor={marketOpen ? '#4ade80' : '#ef4444'} />
       </div>
+      {timestamp && (
+        <p style={{ color: '#666', fontSize: 11, textAlign: 'center', marginBottom: 8 }}>
+          Updated: {new Date(timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'America/New_York' })} ET
+        </p>
+      )}
 
       {/* Analyze button */}
       <button
@@ -426,7 +493,7 @@ function Step1Market({
           background: isAnalyzing ? '#333' : '#3b82f6',
           border: 'none',
           color: '#fff',
-          fontSize: 11,
+          fontSize: 13,
           cursor: isAnalyzing || !isConnected ? 'not-allowed' : 'pointer',
           fontFamily: 'inherit',
           fontWeight: 500,
@@ -470,7 +537,7 @@ function Step2Direction({
 
       {/* Override */}
       <div style={{ marginBottom: 8 }}>
-        <label style={{ color: '#888', fontSize: 10, display: 'block', marginBottom: 4 }}>Override Direction</label>
+        <label style={{ color: '#888', fontSize: 12, display: 'block', marginBottom: 4 }}>Override Direction</label>
         <div style={{ display: 'flex', gap: 4 }}>
           {(['put-only', 'call-only', 'strangle'] as Strategy[]).map(s => (
             <button
@@ -482,7 +549,7 @@ function Step2Direction({
                 background: strategy === s ? '#333' : 'transparent',
                 border: `1px solid ${strategy === s ? '#555' : '#333'}`,
                 color: strategy === s ? '#fff' : '#666',
-                fontSize: 10,
+                fontSize: 12,
                 cursor: 'pointer',
                 fontFamily: 'inherit',
               }}
@@ -519,12 +586,12 @@ function Step3Strikes({
   return (
     <div>
       <p style={{ color: '#666', marginBottom: 8 }}>&gt; SELECT STRIKES</p>
-      <p style={{ color: '#888', fontSize: 10, marginBottom: 12 }}>SPY ${spyPrice.toFixed(2)}</p>
+      <p style={{ color: '#888', fontSize: 12, marginBottom: 12 }}>SPY ${spyPrice.toFixed(2)}</p>
 
       {/* Puts */}
       {putCandidates.length > 0 && (
         <div style={{ marginBottom: 12 }}>
-          <p style={{ color: '#ef4444', fontSize: 10, marginBottom: 4 }}>PUTS</p>
+          <p style={{ color: '#ef4444', fontSize: 12, marginBottom: 4 }}>PUTS</p>
           <div style={{ maxHeight: 100, overflow: 'auto' }}>
             {putCandidates.slice(0, 6).map(s => (
               <StrikeRow
@@ -544,7 +611,7 @@ function Step3Strikes({
       {/* Calls */}
       {callCandidates.length > 0 && (
         <div style={{ marginBottom: 12 }}>
-          <p style={{ color: '#4ade80', fontSize: 10, marginBottom: 4 }}>CALLS</p>
+          <p style={{ color: '#4ade80', fontSize: 12, marginBottom: 4 }}>CALLS</p>
           <div style={{ maxHeight: 100, overflow: 'auto' }}>
             {callCandidates.slice(0, 6).map(s => (
               <StrikeRow
@@ -595,7 +662,7 @@ function StrikeRow({
         border: `1px solid ${selected ? '#3b82f6' : '#222'}`,
         marginBottom: 2,
         cursor: 'pointer',
-        fontSize: 11,
+        fontSize: 13,
       }}
     >
       <span style={{ color: recommended ? '#f59e0b' : '#fff' }}>
@@ -631,7 +698,7 @@ function Step4Size({
 
       {/* Risk tier selector */}
       <div style={{ marginBottom: 12 }}>
-        <label style={{ color: '#888', fontSize: 10, display: 'block', marginBottom: 4 }}>Risk Tier</label>
+        <label style={{ color: '#888', fontSize: 12, display: 'block', marginBottom: 4 }}>Risk Tier</label>
         <div style={{ display: 'flex', gap: 4 }}>
           {(['conservative', 'balanced', 'aggressive'] as RiskTier[]).map(tier => {
             const c = tier === 'conservative' ? 1 : tier === 'balanced' ? 2 : 3;
@@ -646,7 +713,7 @@ function Step4Size({
                   background: riskTier === tier ? '#333' : 'transparent',
                   border: `1px solid ${riskTier === tier ? '#555' : '#333'}`,
                   color: riskTier === tier ? '#fff' : '#666',
-                  fontSize: 10,
+                  fontSize: 12,
                   cursor: 'pointer',
                   fontFamily: 'inherit',
                   textAlign: 'center',
@@ -706,7 +773,7 @@ function Step5Execute({
 
       {/* Order preview */}
       <div style={{ background: '#111', border: '1px solid #222', padding: 12, marginBottom: 12 }}>
-        <p style={{ color: '#87ceeb', marginBottom: 8, fontSize: 11 }}>ORDER PREVIEW</p>
+        <p style={{ color: '#87ceeb', marginBottom: 8, fontSize: 13 }}>ORDER PREVIEW</p>
         {selectedPut && (
           <Row label={`SELL SPY ${selectedPut.strike}P`} value={`$${selectedPut.bid.toFixed(2)}`} valueColor="#ef4444" />
         )}
@@ -721,7 +788,7 @@ function Step5Execute({
 
       {/* Stop loss selector */}
       <div style={{ marginBottom: 12 }}>
-        <label style={{ color: '#888', fontSize: 10, display: 'block', marginBottom: 4 }}>Stop Loss</label>
+        <label style={{ color: '#888', fontSize: 12, display: 'block', marginBottom: 4 }}>Stop Loss</label>
         <div style={{ display: 'flex', gap: 4 }}>
           {([2, 3, 4] as StopMultiplier[]).map(m => (
             <button
@@ -733,7 +800,7 @@ function Step5Execute({
                 background: stopMultiplier === m ? '#333' : 'transparent',
                 border: `1px solid ${stopMultiplier === m ? '#555' : '#333'}`,
                 color: stopMultiplier === m ? '#fff' : '#666',
-                fontSize: 10,
+                fontSize: 12,
                 cursor: 'pointer',
                 fontFamily: 'inherit',
               }}
@@ -742,7 +809,7 @@ function Step5Execute({
             </button>
           ))}
         </div>
-        <div style={{ color: '#888', fontSize: 10, marginTop: 4 }}>
+        <div style={{ color: '#888', fontSize: 12, marginTop: 4 }}>
           Stop: ${stopLossAmount.toFixed(0)} | Max Loss: ${maxLoss.toFixed(0)}
         </div>
       </div>
@@ -751,7 +818,7 @@ function Step5Execute({
       {showConfirm ? (
         <div style={{ background: '#1a1a1a', border: '1px solid #ef4444', padding: 12 }}>
           <p style={{ color: '#ef4444', marginBottom: 8, fontWeight: 500 }}>&gt; CONFIRM LIVE TRADE</p>
-          <p style={{ color: '#888', fontSize: 11, marginBottom: 12 }}>
+          <p style={{ color: '#888', fontSize: 13, marginBottom: 12 }}>
             This will place a real order. Max loss: ${maxLoss.toFixed(0)}
           </p>
           <div style={{ display: 'flex', gap: 8 }}>
@@ -764,7 +831,7 @@ function Step5Execute({
                 background: '#ef4444',
                 border: 'none',
                 color: '#fff',
-                fontSize: 11,
+                fontSize: 13,
                 cursor: isExecuting ? 'wait' : 'pointer',
                 fontFamily: 'inherit',
                 fontWeight: 500,
@@ -781,7 +848,7 @@ function Step5Execute({
                 background: 'none',
                 border: '1px solid #333',
                 color: '#888',
-                fontSize: 11,
+                fontSize: 13,
                 cursor: 'pointer',
                 fontFamily: 'inherit',
               }}
@@ -799,7 +866,7 @@ function Step5Execute({
             background: '#4ade80',
             border: 'none',
             color: '#000',
-            fontSize: 11,
+            fontSize: 13,
             cursor: 'pointer',
             fontFamily: 'inherit',
             fontWeight: 500,
@@ -823,7 +890,7 @@ function Row({
   valueColor?: string;
 }) {
   return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontSize: 11 }}>
+    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontSize: 13 }}>
       <span style={{ color: '#888' }}>{label}</span>
       <span style={{ color: valueColor || '#fff' }}>{value}</span>
     </div>

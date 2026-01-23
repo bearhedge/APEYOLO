@@ -84,14 +84,111 @@ export class DeepSeekClient {
   }
 
   /**
+   * Streaming chat method - yields tokens as they arrive for real-time UI updates.
+   * Used by CodeAct orchestrator for real-time terminal display.
+   */
+  async *chatStream(messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>): AsyncGenerator<string> {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 900000);
+
+    console.log('[DeepSeek] 🧠 Starting streaming chat with', messages.length, 'messages');
+
+    try {
+      const response = await fetch(`${this.baseUrl}/api/chat`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'ngrok-skip-browser-warning': 'true',
+        },
+        body: JSON.stringify({
+          model: 'deepseek-r1:70b',
+          messages,
+          stream: true,
+        }),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        clearTimeout(timeoutId);
+        const error = await response.text();
+        throw new Error(`DeepSeek chat failed: ${response.status} - ${error}`);
+      }
+
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+
+      if (!reader) {
+        clearTimeout(timeoutId);
+        throw new Error('No response body');
+      }
+
+      let thinking = '';
+      let content = '';
+      let thinkingEmitted = false;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+
+        for (const line of chunk.split('\n')) {
+          if (!line.trim()) continue;
+
+          try {
+            const data = JSON.parse(line);
+            const thinkPart = data.message?.thinking || '';
+            const contentPart = data.message?.content || '';
+
+            // Yield thinking tokens as they arrive
+            if (thinkPart) {
+              thinking += thinkPart;
+              // Prefix thinking with <think> on first chunk
+              if (!thinkingEmitted) {
+                yield '<think>\n';
+                thinkingEmitted = true;
+              }
+              yield thinkPart;
+            }
+
+            // Yield content tokens as they arrive
+            if (contentPart) {
+              // Close think tag when switching from thinking to content
+              if (thinkingEmitted && !content) {
+                yield '\n</think>\n\n';
+              }
+              content += contentPart;
+              yield contentPart;
+            }
+          } catch {
+            // Skip malformed JSON lines
+          }
+        }
+      }
+
+      // If we had thinking but no content, close the think tag
+      if (thinkingEmitted && !content) {
+        yield '\n</think>\n';
+      }
+
+      clearTimeout(timeoutId);
+      console.log(`[DeepSeek] ✅ Stream complete! Thinking: ${thinking.length} chars, Content: ${content.length} chars`);
+    } catch (error: any) {
+      clearTimeout(timeoutId);
+      console.error('[DeepSeek] ❌ Stream error:', error.message);
+      throw error;
+    }
+  }
+
+  /**
    * Multi-turn chat method for CodeAct orchestrator.
    * Streams the response so you can see thinking in real-time.
    */
   async chat(messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>): Promise<string> {
     try {
-      // 3 minute timeout - 70B models need time to think
+      // 15 minute timeout - 70B models need time to think through complex problems
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 180000);
+      const timeoutId = setTimeout(() => controller.abort(), 900000);
 
       console.log('[DeepSeek] 🧠 Starting chat with', messages.length, 'messages (streaming)');
 

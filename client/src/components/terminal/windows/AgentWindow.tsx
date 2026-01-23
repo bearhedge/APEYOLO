@@ -1,15 +1,196 @@
 /**
  * AgentWindow - AI Trading Assistant
  *
- * Provides quick operations (Analyze, Propose, Positions),
- * activity feed with streaming updates, and chat input.
+ * Two views:
+ * 1. Chat: Quick operations (Analyze, Propose, Positions), activity feed, chat input
+ * 2. Log: Real-time CodeAct agent terminal log via SSE
  */
 
 import { useState, useRef, useEffect } from 'react';
 import { useAgentOperator } from '@/hooks/useAgentOperator';
+import { useAgentStream, LOG_TYPES, type LogLine, type LogType } from '@/hooks/useAgentStream';
 import { useQuery } from '@tanstack/react-query';
 
+type ViewMode = 'chat' | 'log';
+
 export function AgentWindow() {
+  const [viewMode, setViewMode] = useState<ViewMode>('log');
+
+  return (
+    <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, height: '100%', display: 'flex', flexDirection: 'column' }}>
+      {/* View Tabs */}
+      <div style={{ display: 'flex', gap: 0, marginBottom: 8 }}>
+        <TabButton
+          label="LOG"
+          active={viewMode === 'log'}
+          onClick={() => setViewMode('log')}
+        />
+        <TabButton
+          label="CHAT"
+          active={viewMode === 'chat'}
+          onClick={() => setViewMode('chat')}
+        />
+      </div>
+
+      {viewMode === 'log' ? <AgentLogView /> : <AgentChatView />}
+    </div>
+  );
+}
+
+function TabButton({ label, active, onClick }: { label: string; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        padding: '6px 16px',
+        background: active ? '#1a1a1a' : 'transparent',
+        border: 'none',
+        borderBottom: active ? '2px solid #4ade80' : '2px solid transparent',
+        color: active ? '#4ade80' : '#666',
+        fontSize: 10,
+        cursor: 'pointer',
+        fontFamily: 'inherit',
+        fontWeight: active ? 600 : 400,
+      }}
+    >
+      {label}
+    </button>
+  );
+}
+
+/**
+ * AgentLogView - Real-time CodeAct agent terminal log via SSE
+ */
+function AgentLogView() {
+  const { lines, isConnected, error, clearLines } = useAgentStream();
+  const terminalRef = useRef<HTMLDivElement>(null);
+  const [copied, setCopied] = useState(false);
+
+  // Copy logs to clipboard
+  const copyLogs = () => {
+    const text = lines.map(line => {
+      const config = LOG_TYPES[line.logType] || { label: line.logType };
+      return `${line.timestamp} [${config.label}] ${line.text}`;
+    }).join('\n');
+    navigator.clipboard.writeText(text);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
+
+  // Auto-scroll to bottom
+  useEffect(() => {
+    if (terminalRef.current) {
+      terminalRef.current.scrollTop = terminalRef.current.scrollHeight;
+    }
+  }, [lines]);
+
+  return (
+    <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+      {/* Status bar */}
+      <div style={{
+        display: 'flex',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 8,
+        paddingBottom: 8,
+        borderBottom: '1px solid #222',
+      }}>
+        <span style={{ color: isConnected ? '#4ade80' : '#ef4444', fontSize: 10 }}>
+          {isConnected ? 'CONNECTED' : error || 'DISCONNECTED'}
+        </span>
+        <div style={{ display: 'flex', gap: 4 }}>
+          <button
+            onClick={copyLogs}
+            style={{
+              padding: '2px 8px',
+              background: 'none',
+              border: '1px solid #333',
+              color: copied ? '#4ade80' : '#666',
+              fontSize: 9,
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            {copied ? 'COPIED!' : 'COPY'}
+          </button>
+          <button
+            onClick={clearLines}
+            style={{
+              padding: '2px 8px',
+              background: 'none',
+              border: '1px solid #333',
+              color: '#666',
+              fontSize: 9,
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            CLEAR
+          </button>
+        </div>
+      </div>
+
+      {/* Terminal output */}
+      <div
+        ref={terminalRef}
+        style={{
+          flex: 1,
+          minHeight: 0,
+          overflow: 'auto',
+          background: '#0d1117',
+          padding: 12,
+          fontFamily: "'JetBrains Mono', 'Fira Code', 'IBM Plex Mono', monospace",
+          fontSize: 13,
+          lineHeight: 1.5,
+        }}
+      >
+        {lines.length === 0 ? (
+          <div style={{ color: '#444' }}>
+            Waiting for agent activity...
+          </div>
+        ) : (
+          lines.map(line => <LogLineDisplay key={line.id} line={line} />)
+        )}
+      </div>
+    </div>
+  );
+}
+
+function LogLineDisplay({ line }: { line: LogLine }) {
+  const config = LOG_TYPES[line.logType] || { label: line.logType, color: '#888' };
+
+  // Format multi-line content with proper indentation
+  const contentLines = line.text.split('\n');
+  // Calculate indent based on actual header width: timestamp (8) + space + [TAG] + 5 spaces
+  const headerWidth = line.timestamp.length + 1 + config.label.length + 2 + 5;
+
+  return (
+    <div style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word', marginBottom: 2 }}>
+      {/* First line with timestamp and tag */}
+      <span style={{ color: '#6b7280' }}>{line.timestamp}</span>
+      {' '}
+      <span style={{ color: config.color, fontWeight: 600 }}>
+        [{config.label}]
+      </span>
+      {'     '}
+      <span style={{ color: config.color }}>
+        {contentLines[0]}
+      </span>
+
+      {/* Continuation lines - indent to align with content */}
+      {contentLines.slice(1).map((text, i) => (
+        <div key={i} style={{ paddingLeft: `${headerWidth}ch` }}>
+          <span style={{ color: config.color }}>{text}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * AgentChatView - Interactive chat with quick operations
+ */
+function AgentChatView() {
   const [chatInput, setChatInput] = useState('');
   const activityEndRef = useRef<HTMLDivElement>(null);
 
@@ -52,7 +233,7 @@ export function AgentWindow() {
   };
 
   return (
-    <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12, height: '100%', display: 'flex', flexDirection: 'column' }}>
+    <>
       {/* Header with status */}
       <div style={{ marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid #333' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -179,7 +360,7 @@ export function AgentWindow() {
           {isProcessing ? '...' : 'Send'}
         </button>
       </form>
-    </div>
+    </>
   );
 }
 
