@@ -121,6 +121,21 @@ function AgentLogView() {
         </span>
         <div style={{ display: 'flex', gap: 4 }}>
           <button
+            onClick={wakeAgent}
+            disabled={waking}
+            style={{
+              padding: '2px 8px',
+              background: waking ? 'rgba(74, 222, 128, 0.2)' : 'none',
+              border: `1px solid ${waking ? '#4ade80' : '#333'}`,
+              color: waking ? '#4ade80' : '#4ade80',
+              fontSize: 9,
+              cursor: waking ? 'not-allowed' : 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            {waking ? 'WAKING...' : 'WAKE'}
+          </button>
+          <button
             onClick={copyLogs}
             style={{
               padding: '2px 8px',
