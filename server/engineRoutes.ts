@@ -7,7 +7,7 @@
 
 import { Router } from "express";
 import { TradingEngine, EngineError } from "./engine/index";
-import { getBroker, getBrokerWithStatus, getBrokerForUser } from "./broker/index";
+import { getBrokerForUser } from "./broker/index";
 import { ensureIbkrReady, placePaperOptionOrder, placeOptionOrderWithStop, getIbkrDiagnostics } from "./broker/ibkr";
 import { storage } from "./storage";
 import { engineScheduler, SchedulerConfig } from "./services/engineScheduler";
@@ -444,21 +444,15 @@ router.get('/analyze/stream', requireAuth, async (req, res) => {
     // Emit start event
     send({ type: 'start', timestamp: Date.now() });
 
-    // Multi-tenant: Get broker for the authenticated user
-    let broker = await getBrokerForUser(req.user!.id);
-
-    // Fallback to shared broker if per-user broker not available
-    if (!broker.api) {
-      console.log('[Engine/stream] No per-user broker, falling back to shared broker');
-      broker = getBroker();
-    }
+    // Multi-tenant: Get broker for the authenticated user (no fallback to shared broker)
+    const broker = await getBrokerForUser(req.user!.id);
 
     // Check if we have a valid broker API
     if (!broker.api) {
       send({
         type: 'error',
         timestamp: Date.now(),
-        error: 'No IBKR connection available. Please check broker configuration.',
+        error: 'No IBKR credentials configured. Please configure your IBKR credentials in Settings.',
       });
       res.end();
       return;
@@ -609,21 +603,14 @@ router.get('/analyze', requireAuth, async (req, res) => {
     const riskProfile = riskProfileMap[riskTier as string] || 'BALANCED';
     const stopMult = parseInt(stopMultiplier as string, 10) || 3;
 
-    // Multi-tenant: Get broker for the authenticated user
-    // Falls back to shared broker if no per-user credentials exist
-    let broker = await getBrokerForUser(req.user!.id);
-
-    // Fallback to shared broker if per-user broker not available
-    if (!broker.api) {
-      console.log('[Engine/analyze] No per-user broker, falling back to shared broker');
-      broker = getBroker();
-    }
+    // Multi-tenant: Get broker for the authenticated user (no fallback to shared broker)
+    const broker = await getBrokerForUser(req.user!.id);
 
     // Check if we have a valid broker API
     if (!broker.api) {
       return res.status(503).json({
         error: 'Broker not connected',
-        reason: 'No IBKR connection available. Please check broker configuration.',
+        reason: 'No IBKR credentials configured. Please configure your IBKR credentials in Settings.',
         failedStep: null
       });
     }
@@ -775,13 +762,10 @@ router.get('/step1', requireAuth, async (req, res) => {
     const symbol = ((req.query.symbol as string) || 'SPY').toUpperCase() as TradingSymbol;
 
     // Get broker for market data
-    let broker = await getBrokerForUser(req.user!.id);
+    // Multi-tenant: Get broker for the authenticated user (no fallback to shared broker)
+    const broker = await getBrokerForUser(req.user!.id);
     if (!broker.api) {
-      broker = getBroker();
-    }
-
-    if (!broker.api) {
-      return res.status(503).json({ error: 'Broker not connected' });
+      return res.status(503).json({ error: 'No IBKR credentials configured. Please configure in Settings.' });
     }
 
     // Ensure IBKR ready

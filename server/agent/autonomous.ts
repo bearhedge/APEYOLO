@@ -3,7 +3,7 @@ import { logger, LogType } from './logger';
 import { memory } from './memory';
 import { deepseekClient } from './models/deepseek';
 import { kimiClient } from './models/kimi';
-import { getBroker, getBrokerForUser } from '../broker';
+import { getBrokerForUser } from '../broker';
 import { AgentContext, Decision } from './types';
 
 // Guardrails - hard limits
@@ -87,15 +87,13 @@ export class AutonomousAgent {
 
   private async loadContext(): Promise<AgentContext | null> {
     try {
-      // Multi-tenant: Use user-specific broker when userId provided
-      let broker;
-      if (this.userId) {
-        broker = await getBrokerForUser(this.userId);
-      } else {
-        // Fallback for backwards compatibility (will be deprecated)
-        broker = getBroker();
-        console.warn('[Agent/Autonomous] loadContext called without userId - using shared broker (DEPRECATED)');
+      // Multi-tenant: Require userId for user-specific broker
+      if (!this.userId) {
+        console.error('[Agent/Autonomous] loadContext called without userId');
+        return null;
       }
+
+      const broker = await getBrokerForUser(this.userId);
 
       if (!broker.api || !broker.status.connected) {
         return null;
@@ -227,18 +225,15 @@ export class AutonomousAgent {
     this.log(sessionId, 'TOOL', `execute_trade | ${decision.params.direction} ${decision.params.strike} x${contracts}`);
 
     try {
-      // Multi-tenant: Use user-specific broker when userId provided
-      let broker;
-      if (this.userId) {
-        broker = await getBrokerForUser(this.userId);
-      } else {
-        // Fallback for backwards compatibility (will be deprecated)
-        broker = getBroker();
-        console.warn('[Agent/Autonomous] executeTrade called without userId - using shared broker (DEPRECATED)');
+      // Multi-tenant: Require userId for user-specific broker
+      if (!this.userId) {
+        throw new Error('userId required - agent must be started for a specific user');
       }
 
+      const broker = await getBrokerForUser(this.userId);
+
       if (!broker.api) {
-        throw new Error('Broker not available');
+        throw new Error('IBKR not configured. Please configure your IBKR credentials in Settings.');
       }
 
       // Get option chain to find the actual option

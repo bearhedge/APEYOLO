@@ -7,7 +7,8 @@
 
 import { Request, Response, Router } from 'express';
 import { NakedOptionStrategy } from './strategies/nakedOptions';
-import { getBroker } from './broker';
+import { getBrokerForUser } from './broker';
+import { requireAuth } from './auth';
 import { getIbkrDiagnostics, ensureIbkrReady } from './broker/ibkr';
 
 const router = Router();
@@ -142,15 +143,16 @@ router.post('/test-deprecated', async (req: Request, res: Response) => {
 
 /**
  * Initialize naked option strategy
+ * Multi-tenant: Uses user-specific broker
  */
-router.post('/strategy/init', async (req: Request, res: Response) => {
+router.post('/strategy/init', requireAuth, async (req: Request, res: Response) => {
   try {
-    const brokerBundle = getBroker();
+    const brokerBundle = await getBrokerForUser(req.user!.id);
 
-    if (!brokerBundle.status.connected) {
+    if (!brokerBundle.api || !brokerBundle.status.connected) {
       return res.status(400).json({
         success: false,
-        error: 'IBKR not connected. Please connect first.'
+        error: 'IBKR not connected. Please configure your IBKR credentials.'
       });
     }
 

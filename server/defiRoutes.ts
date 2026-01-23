@@ -456,37 +456,8 @@ router.get('/current', async (_req: Request, res: Response) => {
       }) + ' ET' : null;
     }
 
-    // If trade is open, try to get unrealized P&L from IBKR
-    if (trade.status === 'open') {
-      try {
-        const { getBroker } = await import('./broker/index.js');
-        const broker = getBroker();
-
-        if (broker.api && broker.status.connected) {
-          const positions = await broker.api.getPositions();
-          let totalUnrealizedPnL = 0;
-          let foundPositions = 0;
-
-          for (const pos of positions) {
-            const contract = pos.contract;
-            if (contract.symbol === trade.symbol && contract.secType === 'OPT') {
-              const strike = contract.strike;
-              if (strike === trade.putStrike || strike === trade.callStrike) {
-                totalUnrealizedPnL += pos.unrealizedPnL || 0;
-                foundPositions++;
-              }
-            }
-          }
-
-          if (foundPositions > 0) {
-            response.trade.unrealizedPnlUSD = totalUnrealizedPnL;
-            response.trade.unrealizedPnlHKD = totalUnrealizedPnL * USD_TO_HKD;
-          }
-        }
-      } catch (brokerError: any) {
-        console.log('[DefiRoutes] Could not get unrealized P&L:', brokerError.message);
-      }
-    }
+    // Note: Unrealized P&L from IBKR removed - this endpoint has no auth context
+    // to get user-specific broker. Use authenticated endpoints for live P&L data.
 
     res.json({ success: true, ...response });
   } catch (error: any) {

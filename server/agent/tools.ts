@@ -250,22 +250,19 @@ async function executeGetOptionChain(
   context: AgentContext
 ): Promise<ToolResult> {
   try {
-    const { getBroker, getBrokerForUser } = await import('../broker');
-
-    // Multi-tenant: Use user-specific broker when userId provided
-    let api;
-    if (context.userId) {
-      const broker = await getBrokerForUser(context.userId);
-      api = broker.api;
-    } else {
-      // Fallback for backwards compatibility (will be deprecated)
-      api = getBroker().api;
-      console.warn('[Agent/Tools] executeGetOptionChain called without userId - using shared broker (DEPRECATED)');
+    // Multi-tenant: Require userId for user-specific broker
+    if (!context.userId) {
+      return { success: false, error: 'userId required in context' };
     }
 
-    if (!api) {
-      return { success: false, error: 'Broker not connected' };
+    const { getBrokerForUser } = await import('../broker');
+    const broker = await getBrokerForUser(context.userId);
+
+    if (!broker.api) {
+      return { success: false, error: 'IBKR not configured. Please configure your IBKR credentials in Settings.' };
     }
+
+    const api = broker.api;
 
     const chain = await api.getOptionChain('SPY');
     const direction = (args.direction as string) || 'BOTH';
@@ -347,22 +344,19 @@ async function executeTradeWithGuardrails(
   contracts = Math.min(contracts, context.maxContracts);
 
   try {
-    const { getBroker, getBrokerForUser } = await import('../broker');
-
-    // Multi-tenant: Use user-specific broker when userId provided
-    let api;
-    if (context.userId) {
-      const broker = await getBrokerForUser(context.userId);
-      api = broker.api;
-    } else {
-      // Fallback for backwards compatibility (will be deprecated)
-      api = getBroker().api;
-      console.warn('[Agent/Tools] executeTradeWithGuardrails called without userId - using shared broker (DEPRECATED)');
+    // Multi-tenant: Require userId for user-specific broker
+    if (!context.userId) {
+      return { success: false, error: 'userId required in context' };
     }
 
-    if (!api) {
-      return { success: false, error: 'Broker not connected' };
+    const { getBrokerForUser } = await import('../broker');
+    const broker = await getBrokerForUser(context.userId);
+
+    if (!broker.api) {
+      return { success: false, error: 'IBKR not configured. Please configure your IBKR credentials in Settings.' };
     }
+
+    const api = broker.api;
 
     // Get option chain to find the option
     const chain = await api.getOptionChain('SPY');

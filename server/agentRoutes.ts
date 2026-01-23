@@ -2483,27 +2483,30 @@ router.get('/internal/broker/market-data/:symbol', async (req: Request, res: Res
 
 // GET /api/agent/internal/broker/account
 // Accepts X-User-Id header from sandbox to get user-specific broker
+// Falls back to env var credentials if no userId or no user broker configured
 router.get('/internal/broker/account', async (req: Request, res: Response) => {
   try {
     const userId = req.headers['x-user-id'] as string;
 
-    let api;
+    // Try user-specific broker first, fall back to env var credentials
+    let broker: any = { api: null };
     if (userId) {
-      // Multi-tenant: Use user-specific broker
-      const broker = await getBrokerForUser(userId);
-      api = broker.api;
-    } else {
-      // Fallback for backwards compatibility (will be deprecated)
-      const { getBroker } = await import('./broker/index');
-      api = getBroker().api;
-      console.warn('[Agent/Internal] No X-User-Id header - using shared broker (DEPRECATED)');
+      broker = await getBrokerForUser(userId);
     }
 
-    if (!api) {
+    // Fallback to env var credentials (shared broker)
+    if (!broker.api) {
+      const envConfigured = !!(process.env.IBKR_CLIENT_ID && process.env.IBKR_PRIVATE_KEY);
+      if (envConfigured) {
+        broker = getBroker();
+      }
+    }
+
+    if (!broker.api) {
       return res.json({ error: 'Broker not connected' });
     }
 
-    const account = await api.getAccount();
+    const account = await broker.api.getAccount();
 
     // Return all useful account fields
     res.json({
@@ -2535,44 +2538,51 @@ function parseOCCSymbol(symbol: string): { underlying: string; expiry: string; t
 
 // GET /api/agent/internal/broker/positions
 // Accepts X-User-Id header from sandbox to get user-specific broker
+// Falls back to env var credentials if no userId or no user broker configured
 router.get('/internal/broker/positions', async (req: Request, res: Response) => {
   try {
     const userId = req.headers['x-user-id'] as string;
 
-    let api;
+    // Try user-specific broker first, fall back to env var credentials
+    let broker: any = { api: null };
     if (userId) {
-      // Multi-tenant: Use user-specific broker
-      const broker = await getBrokerForUser(userId);
-      api = broker.api;
-    } else {
-      // Fallback for backwards compatibility (will be deprecated)
-      const { getBroker } = await import('./broker/index');
-      api = getBroker().api;
-      console.warn('[Agent/Internal] No X-User-Id header - using shared broker (DEPRECATED)');
+      broker = await getBrokerForUser(userId);
     }
 
-    if (!api) {
+    // Fallback to env var credentials (shared broker)
+    if (!broker.api) {
+      const envConfigured = !!(process.env.IBKR_CLIENT_ID && process.env.IBKR_PRIVATE_KEY);
+      if (envConfigured) {
+        broker = getBroker();
+      }
+    }
+
+    if (!broker.api) {
       return res.json([]);
     }
 
-    const positions = await api.getPositions();
+    const positions = await broker.api.getPositions();
 
-    // Parse OCC symbols and return useful data for the agent
+    // Return positions with correct field names from broker
+    // Broker returns: symbol, assetType, side, qty, avg, mark, upl, delta, etc.
     const parsed = positions.map((p: any) => {
       const symbol = p.symbol || '';
       const occInfo = parseOCCSymbol(symbol);
 
       return {
-        symbol: occInfo?.underlying || p.symbol || '',
-        type: occInfo?.type || (p.strategy?.includes('put') ? 'PUT' : 'CALL'),
-        strike: occInfo?.strike || Number(p.sellStrike) || 0,
-        expiry: occInfo?.expiry || (p.expiration ? new Date(p.expiration).toISOString().slice(0, 10) : ''),
-        contracts: Math.abs(p.quantity || 0),
-        side: (p.quantity || 0) < 0 ? 'SOLD' : 'BOUGHT',
-        avgCost: Number(p.openCredit) || 0,
-        marketValue: Number(p.currentValue) || 0,
-        unrealizedPnL: (Number(p.openCredit) || 0) - (Number(p.currentValue) || 0),
+        symbol: occInfo?.underlying || symbol,
+        type: occInfo?.type || (p.assetType === 'option' ? 'OPTION' : 'STOCK'),
+        strike: occInfo?.strike || 0,
+        expiry: occInfo?.expiry || '',
+        qty: Math.abs(p.qty || 0),
+        side: p.side || 'UNKNOWN',
+        avg: Number(p.avg) || 0,
+        mark: Number(p.mark) || 0,
+        upl: Number(p.upl) || 0,
         delta: Number(p.delta) || 0,
+        assetType: p.assetType || 'option',
+        // Also include unrealizedPnL as alias for backwards compat
+        unrealizedPnL: Number(p.upl) || 0,
       };
     });
 

@@ -734,21 +734,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Account info (via provider) - SECURED: requires auth + user's own IBKR credentials
   app.get('/api/account', requireAuth, async (req, res) => {
     try {
-      // Get broker for this specific user
-      let userBroker = await getBrokerForUser(req.user!.id);
+      // Get broker for this specific user (no fallback to shared credentials)
+      const userBroker = await getBrokerForUser(req.user!.id);
 
-      // If user has no IBKR credentials, fall back to env var configuration
+      // If user has no IBKR credentials, return error (no fallback to env credentials)
       if (!userBroker.api || userBroker.status.provider === 'none') {
-        const envConfigured = !!(process.env.IBKR_CLIENT_ID && process.env.IBKR_PRIVATE_KEY);
-        if (envConfigured) {
-          console.log(`[API] /api/account: User ${req.user!.id} using env var credentials (fallback)`);
-          userBroker = getBroker();
-        } else {
-          return res.status(403).json({
-            error: 'No IBKR credentials configured',
-            message: 'Please configure your IBKR credentials in Settings'
-          });
-        }
+        return res.status(403).json({
+          error: 'No IBKR credentials configured',
+          message: 'Please configure your IBKR credentials in Settings'
+        });
       }
 
       if (userBroker.status.provider === 'ibkr') {
@@ -806,21 +800,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Positions (via provider) - SECURED: requires auth + user's own IBKR credentials
   app.get('/api/positions', requireAuth, async (req, res) => {
     try {
-      // Get broker for this specific user
-      let userBroker = await getBrokerForUser(req.user!.id);
+      // Get broker for this specific user (no fallback to shared credentials)
+      const userBroker = await getBrokerForUser(req.user!.id);
 
-      // If user has no IBKR credentials, fall back to env var configuration
+      // If user has no IBKR credentials, return error (no fallback to env credentials)
       if (!userBroker.api || userBroker.status.provider === 'none') {
-        const envConfigured = !!(process.env.IBKR_CLIENT_ID && process.env.IBKR_PRIVATE_KEY);
-        if (envConfigured) {
-          console.log(`[API] /api/positions: User ${req.user!.id} using env var credentials (fallback)`);
-          userBroker = getBroker();
-        } else {
-          return res.status(403).json({
-            error: 'No IBKR credentials configured',
-            message: 'Please configure your IBKR credentials in Settings'
-          });
-        }
+        return res.status(403).json({
+          error: 'No IBKR credentials configured',
+          message: 'Please configure your IBKR credentials in Settings'
+        });
       }
 
       if (userBroker.status.provider === 'ibkr') {

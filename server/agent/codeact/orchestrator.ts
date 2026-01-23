@@ -178,11 +178,13 @@ print(f"Net Delta: {account.get('netDelta', 0):.2f}")
 print(f"\\n=== POSITIONS ({len(positions)}) ===")
 for p in positions:
     side = p.get('side', 'UNKNOWN')
-    ptype = p.get('type', '?')
-    strike = p.get('strike', 0)
-    pnl = p.get('unrealizedPnL', 0)
+    asset_type = p.get('assetType', '?')
+    symbol = p.get('symbol', '?')
+    qty = p.get('qty', 0)
+    pnl = p.get('upl', 0)
     delta = p.get('delta', 0)
-    print(f"{side} {ptype} {strike}: P&L \${pnl:,.2f}, Delta {delta:.2f}")`;
+    mark = p.get('mark', 0)
+    print(f"{side} {qty}x {symbol} ({asset_type}): P&L \${pnl:,.2f}, Delta {delta:.2f}, Mark \${mark:.2f}")`;
 
     // Helper to check if data is valid (non-zero SPY price)
     const isValidData = (result: { success: boolean; stdout?: string }) => {

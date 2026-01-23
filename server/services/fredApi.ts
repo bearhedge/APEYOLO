@@ -70,6 +70,38 @@ export const FRED_RELEASES = {
     description: 'Wholesale inflation data',
     defaultTime: '08:30',
   },
+  JOBLESS_CLAIMS: {
+    id: 11,
+    name: 'Initial Jobless Claims',
+    eventType: 'jobless_claims',
+    impactLevel: 'medium' as const,
+    description: 'Weekly unemployment insurance claims',
+    defaultTime: '08:30',
+  },
+  RETAIL_SALES: {
+    id: 63,
+    name: 'Retail Sales',
+    eventType: 'retail_sales',
+    impactLevel: 'high' as const,
+    description: 'Monthly consumer spending at retail stores',
+    defaultTime: '08:30',
+  },
+  ISM_MANUFACTURING: {
+    id: 42,
+    name: 'ISM Manufacturing PMI',
+    eventType: 'ism_manufacturing',
+    impactLevel: 'medium' as const,
+    description: 'Manufacturing sector health indicator',
+    defaultTime: '10:00',
+  },
+  ISM_SERVICES: {
+    id: 43,
+    name: 'ISM Services PMI',
+    eventType: 'ism_services',
+    impactLevel: 'medium' as const,
+    description: 'Services sector health indicator',
+    defaultTime: '10:00',
+  },
 } as const;
 
 export type ReleaseType = keyof typeof FRED_RELEASES;

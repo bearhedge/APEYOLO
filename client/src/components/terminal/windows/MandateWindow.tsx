@@ -310,7 +310,6 @@ export function MandateWindow() {
     <div style={{ fontFamily: "'IBM Plex Mono', monospace" }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
         <p style={{ color: '#4ade80', margin: 0 }}>
-          <Shield style={{ width: 14, height: 14, display: 'inline', marginRight: 6 }} />
           TRADING MANDATE
         </p>
         {!mandate.solanaSignature && (
@@ -333,16 +332,10 @@ export function MandateWindow() {
           <TableRow label="Strategy" value={mandate.strategyType || 'Credit Spreads'} />
           <TableRow label="Delta Range" value={`${(mandate.minDelta ?? 0.10).toFixed(2)} – ${(mandate.maxDelta ?? 0.35).toFixed(2)}`} />
           <TableRow label="Daily Max Loss" value={`${((mandate.maxDailyLossPercent ?? 0.02) * 100).toFixed(0)}%`} />
-          <TableRow
-            label="Entry Window"
-            value={mandate.tradingWindowStart ? `After ${mandate.tradingWindowStart} ET (12:00am HKT)` : 'After 11:00am ET (12:00am HKT)'}
-          />
-          <TableRow
-            label="Exit By"
-            value={mandate.exitDeadline ? `${mandate.exitDeadline} ET (3:59am HKT)` : '3:59pm ET (3:59am HKT)'}
-          />
-          <TableRow label="Stop Loss" value="MANDATORY" highlight />
-          <TableRow label="Overnight" value="NOT ALLOWED" warn />
+          <TableRow label="Entry Window" value="After 11:00am ET (12:00am HKT)" />
+          <TableRow label="Exit By" value="3:59pm ET (4:59am HKT)" />
+          <TableRow label="Stop Loss" value="Yes" highlight />
+          <TableRow label="Overnight" value="No" warn />
         </tbody>
       </table>
 
@@ -462,7 +455,7 @@ function TableRow({
     <tr>
       <td style={{
         padding: '8px 12px',
-        borderBottom: '1px solid rgba(74, 222, 128, 0.3)',
+        borderBottom: '1px solid #4ade80',
         color: '#888',
         width: '40%',
       }}>
@@ -470,7 +463,7 @@ function TableRow({
       </td>
       <td style={{
         padding: '8px 12px',
-        borderBottom: '1px solid rgba(74, 222, 128, 0.3)',
+        borderBottom: '1px solid #4ade80',
         color: warn ? '#ef4444' : highlight ? '#4ade80' : '#fff',
         fontWeight: highlight || warn ? 600 : 400,
       }}>
