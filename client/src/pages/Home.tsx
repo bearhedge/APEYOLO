@@ -476,6 +476,43 @@ const animationStyles = `
       box-shadow: 0 0 8px #ff1493, inset 0 0 8px rgba(255, 20, 147, 0.1);
     }
   }
+
+  .neon-button {
+    animation: neonBorderCycle 4s linear infinite;
+    position: relative;
+    overflow: hidden;
+  }
+
+  .neon-button::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: linear-gradient(90deg, #ff1493, #00ffff, #39ff14, #ff00ff, #00d4ff, #ff073a, #ff1493);
+    background-size: 400% 100%;
+    opacity: 0;
+    transition: opacity 0.3s ease;
+    z-index: -1;
+  }
+
+  .neon-button:hover::before {
+    opacity: 1;
+    animation: neonGradientFlow 2s linear infinite;
+  }
+
+  .neon-button:hover {
+    color: black;
+    text-shadow: none;
+    border-color: transparent;
+    box-shadow: 0 0 20px rgba(255, 20, 147, 0.5), 0 0 40px rgba(0, 255, 255, 0.3);
+  }
+
+  @keyframes neonGradientFlow {
+    0% { background-position: 0% 50%; }
+    100% { background-position: 400% 50%; }
+  }
 `;
 
 export function Home() {
@@ -487,7 +524,7 @@ export function Home() {
       <div className="absolute inset-0 flex items-center justify-center px-6 z-[100]">
         <div className="text-center">
           <img
-            src="/ape-logo.png"
+            src="/ape-yolo.png"
             alt="APE YOLO Logo"
             className="w-[450px] h-[450px] mx-auto mb-2 object-contain"
           />
@@ -504,13 +541,10 @@ export function Home() {
 
           <Button
             onClick={() => { window.location.href = '/api/auth/google'; }}
-            className="text-xl px-10 py-7 h-auto bg-black text-white border-2 rounded-lg font-bold tracking-wide hover:bg-gray-900 transition-all"
-            style={{
-              animation: 'neonBorderCycle 4s linear infinite',
-            }}
+            className="neon-button text-xl px-10 py-7 h-auto bg-black text-white border-2 rounded-lg font-bold tracking-wide transition-all duration-300"
             data-testid="button-get-started"
           >
-            GET STARTED
+            LET'S GO
             <ArrowRight className="w-6 h-6 ml-2" />
           </Button>
         </div>
