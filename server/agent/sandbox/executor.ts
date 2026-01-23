@@ -150,7 +150,7 @@ export interface ExecutionResult {
  */
 export async function executePython(code: string, timeoutMs: number = 30000): Promise<ExecutionResult> {
   return new Promise((resolve) => {
-    const bridgePath = path.join(__dirname, 'bridge.py');
+    const bridgePath = ensureBridgeFile();
     const proc = spawn('python3', [bridgePath]);
 
     let stdout = '';
