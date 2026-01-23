@@ -85,18 +85,17 @@ export class DeepSeekClient {
 
   /**
    * Multi-turn chat method for CodeAct orchestrator.
-   * Maintains conversation history and returns the assistant's response.
+   * Streams the response so you can see thinking in real-time.
    */
   async chat(messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>): Promise<string> {
     try {
-      // Use OpenAI-compatible endpoint (more reliable than /api/chat for deepseek-r1)
-      // 90 second timeout for LLM responses
+      // 3 minute timeout - 70B models need time to think
       const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 90000);
+      const timeoutId = setTimeout(() => controller.abort(), 180000);
 
-      console.log('[DeepSeek] Calling chat with', messages.length, 'messages');
+      console.log('[DeepSeek] 🧠 Starting chat with', messages.length, 'messages (streaming)');
 
-      const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
+      const response = await fetch(`${this.baseUrl}/api/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -105,24 +104,98 @@ export class DeepSeekClient {
         body: JSON.stringify({
           model: 'deepseek-r1:70b',
           messages,
-          max_tokens: 4000,
+          stream: true,
         }),
         signal: controller.signal,
       });
 
-      clearTimeout(timeoutId);
-
       if (!response.ok) {
+        clearTimeout(timeoutId);
         const error = await response.text();
         throw new Error(`DeepSeek chat failed: ${response.status} - ${error}`);
       }
 
-      const data = await response.json();
-      const content = data.choices?.[0]?.message?.content ?? '';
-      console.log('[DeepSeek] Chat response length:', content.length);
-      return content;
+      // Stream the response and log thinking in real-time
+      let thinking = '';
+      let content = '';
+      let lastLogTime = Date.now();
+      let tokenCount = 0;
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+
+      if (!reader) {
+        clearTimeout(timeoutId);
+        throw new Error('No response body');
+      }
+
+      console.log('[DeepSeek] 💭 Thinking...');
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+
+        // Parse each line (Ollama streams newline-delimited JSON)
+        for (const line of chunk.split('\n')) {
+          if (!line.trim()) continue;
+
+          try {
+            const data = JSON.parse(line);
+            // DeepSeek R1 streams thinking separately from content
+            const thinkPart = data.message?.thinking || '';
+            const contentPart = data.message?.content || '';
+
+            thinking += thinkPart;
+            content += contentPart;
+            tokenCount++;
+
+            // Log thinking progress every 2 seconds
+            const now = Date.now();
+            if (now - lastLogTime > 2000) {
+              if (thinking && !content) {
+                // Still in thinking phase - show recent thinking
+                const recent = thinking.slice(-300).replace(/\n/g, ' ');
+                console.log(`[DeepSeek] 💭 ${recent}`);
+              } else if (content) {
+                // In content phase - show recent content
+                const recent = content.slice(-200).replace(/\n/g, ' ');
+                console.log(`[DeepSeek] 📝 ${recent}`);
+              }
+              lastLogTime = now;
+            }
+          } catch {
+            // Skip malformed JSON lines
+          }
+        }
+      }
+
+      clearTimeout(timeoutId);
+
+      // Log summary
+      console.log(`[DeepSeek] ✅ Done! Thinking: ${thinking.length} chars, Content: ${content.length} chars`);
+
+      // Log the full thinking
+      if (thinking) {
+        console.log('[DeepSeek] 🧠 Full thinking:');
+        // Split into chunks for logging
+        const lines = thinking.split('\n');
+        for (const line of lines.slice(0, 20)) {
+          if (line.trim()) console.log(`[DeepSeek]    ${line}`);
+        }
+        if (lines.length > 20) {
+          console.log(`[DeepSeek]    ... (${lines.length - 20} more lines)`);
+        }
+      }
+
+      // Return content wrapped with think tags for orchestrator parsing
+      const fullResponse = thinking
+        ? `<think>\n${thinking}\n</think>\n\n${content}`
+        : content;
+
+      return fullResponse;
     } catch (error: any) {
-      console.error('[DeepSeek] Chat error:', error.message);
+      console.error('[DeepSeek] ❌ Chat error:', error.message);
       throw error;
     }
   }

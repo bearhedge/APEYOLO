@@ -92,12 +92,16 @@ function TradeRow({ trade }: { trade: Trade }) {
   const pnlColor = pnl >= 0 ? '#4ade80' : '#ef4444';
   const pnlSign = pnl >= 0 ? '+' : '';
 
-  const date = new Date(trade.closedAt || trade.createdAt);
-  const dateStr = date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  // Guard against undefined dates
+  const dateValue = trade.closedAt || trade.createdAt;
+  const dateStr = dateValue
+    ? new Date(dateValue).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+    : 'N/A';
 
-  const strikes = trade.leg2Strike
-    ? `${trade.leg1Strike}/${trade.leg2Strike}`
-    : `${trade.leg1Strike}`;
+  // Guard against undefined strikes
+  const strikes = trade.leg1Strike
+    ? (trade.leg2Strike ? `${trade.leg1Strike}/${trade.leg2Strike}` : `${trade.leg1Strike}`)
+    : '';
 
   return (
     <div
