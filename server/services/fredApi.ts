@@ -22,17 +22,24 @@ const FRED_BASE_URL = 'https://api.stlouisfed.org/fred';
 // Release IDs for major economic indicators
 // Full list: https://fred.stlouisfed.org/releases
 export const FRED_RELEASES = {
+  // ============================================
+  // CRITICAL IMPACT - Market-moving events
+  // ============================================
   FOMC: {
     id: 101,
-    name: 'Federal Reserve Press Release',
+    name: 'FOMC Rate Decision',
     eventType: 'fomc',
     impactLevel: 'critical' as const,
     description: 'Federal Open Market Committee monetary policy decisions',
     defaultTime: '14:00', // 2 PM ET
   },
+
+  // ============================================
+  // HIGH IMPACT - Major economic indicators
+  // ============================================
   CPI: {
     id: 10,
-    name: 'Consumer Price Index',
+    name: 'Consumer Price Index (CPI)',
     eventType: 'cpi',
     impactLevel: 'high' as const,
     description: 'Monthly inflation data measuring consumer prices',
@@ -40,42 +47,18 @@ export const FRED_RELEASES = {
   },
   EMPLOYMENT: {
     id: 50,
-    name: 'Employment Situation',
+    name: 'Nonfarm Payrolls (NFP)',
     eventType: 'employment',
     impactLevel: 'high' as const,
-    description: 'Nonfarm payrolls and unemployment rate (NFP)',
+    description: 'Monthly employment situation - jobs added and unemployment rate',
     defaultTime: '08:30',
   },
   GDP: {
     id: 53,
-    name: 'Gross Domestic Product',
+    name: 'GDP Growth Rate',
     eventType: 'gdp',
     impactLevel: 'high' as const,
-    description: 'Quarterly economic output measurement',
-    defaultTime: '08:30',
-  },
-  PCE: {
-    id: 46,
-    name: 'Personal Consumption Expenditures',
-    eventType: 'pce',
-    impactLevel: 'medium' as const,
-    description: "Fed's preferred inflation measure",
-    defaultTime: '08:30',
-  },
-  PPI: {
-    id: 47,
-    name: 'Producer Price Index',
-    eventType: 'ppi',
-    impactLevel: 'medium' as const,
-    description: 'Wholesale inflation data',
-    defaultTime: '08:30',
-  },
-  JOBLESS_CLAIMS: {
-    id: 11,
-    name: 'Initial Jobless Claims',
-    eventType: 'jobless_claims',
-    impactLevel: 'medium' as const,
-    description: 'Weekly unemployment insurance claims',
+    description: 'Quarterly gross domestic product - economic output measurement',
     defaultTime: '08:30',
   },
   RETAIL_SALES: {
@@ -86,12 +69,48 @@ export const FRED_RELEASES = {
     description: 'Monthly consumer spending at retail stores',
     defaultTime: '08:30',
   },
+  DURABLE_GOODS: {
+    id: 86,
+    name: 'Durable Goods Orders',
+    eventType: 'durable_goods',
+    impactLevel: 'high' as const,
+    description: 'New orders for manufactured durable goods',
+    defaultTime: '08:30',
+  },
+
+  // ============================================
+  // MEDIUM IMPACT - Important indicators
+  // ============================================
+  PCE: {
+    id: 46,
+    name: 'Core PCE Price Index',
+    eventType: 'pce',
+    impactLevel: 'medium' as const,
+    description: "Fed's preferred inflation measure - Personal Consumption Expenditures",
+    defaultTime: '08:30',
+  },
+  PPI: {
+    id: 47,
+    name: 'Producer Price Index (PPI)',
+    eventType: 'ppi',
+    impactLevel: 'medium' as const,
+    description: 'Wholesale inflation data - prices received by producers',
+    defaultTime: '08:30',
+  },
+  JOBLESS_CLAIMS: {
+    id: 11,
+    name: 'Initial Jobless Claims',
+    eventType: 'jobless_claims',
+    impactLevel: 'medium' as const,
+    description: 'Weekly new unemployment insurance claims filed',
+    defaultTime: '08:30',
+  },
   ISM_MANUFACTURING: {
     id: 42,
     name: 'ISM Manufacturing PMI',
     eventType: 'ism_manufacturing',
     impactLevel: 'medium' as const,
-    description: 'Manufacturing sector health indicator',
+    description: 'Manufacturing sector purchasing managers index - above 50 = expansion',
     defaultTime: '10:00',
   },
   ISM_SERVICES: {
@@ -99,8 +118,108 @@ export const FRED_RELEASES = {
     name: 'ISM Services PMI',
     eventType: 'ism_services',
     impactLevel: 'medium' as const,
-    description: 'Services sector health indicator',
+    description: 'Services sector purchasing managers index - above 50 = expansion',
     defaultTime: '10:00',
+  },
+  INDUSTRIAL_PRODUCTION: {
+    id: 13,
+    name: 'Industrial Production',
+    eventType: 'industrial_production',
+    impactLevel: 'medium' as const,
+    description: 'Output of factories, mines, and utilities',
+    defaultTime: '09:15',
+  },
+  CONSUMER_CONFIDENCE: {
+    id: 20,
+    name: 'Consumer Confidence Index',
+    eventType: 'consumer_confidence',
+    impactLevel: 'medium' as const,
+    description: 'Conference Board measure of consumer optimism',
+    defaultTime: '10:00',
+  },
+  MICHIGAN_SENTIMENT: {
+    id: 481,
+    name: 'Michigan Consumer Sentiment',
+    eventType: 'michigan_sentiment',
+    impactLevel: 'medium' as const,
+    description: 'University of Michigan consumer sentiment survey',
+    defaultTime: '10:00',
+  },
+  JOLTS: {
+    id: 192,
+    name: 'JOLTS Job Openings',
+    eventType: 'jolts',
+    impactLevel: 'medium' as const,
+    description: 'Job Openings and Labor Turnover Survey - labor market demand',
+    defaultTime: '10:00',
+  },
+  TRADE_BALANCE: {
+    id: 61,
+    name: 'Trade Balance',
+    eventType: 'trade_balance',
+    impactLevel: 'medium' as const,
+    description: 'Difference between exports and imports of goods and services',
+    defaultTime: '08:30',
+  },
+  BEIGE_BOOK: {
+    id: 23,
+    name: 'Fed Beige Book',
+    eventType: 'beige_book',
+    impactLevel: 'medium' as const,
+    description: 'Federal Reserve summary of economic conditions by district',
+    defaultTime: '14:00',
+  },
+
+  // ============================================
+  // LOW IMPACT - Housing & other indicators
+  // ============================================
+  HOUSING_STARTS: {
+    id: 79,
+    name: 'Housing Starts',
+    eventType: 'housing_starts',
+    impactLevel: 'low' as const,
+    description: 'New residential construction started',
+    defaultTime: '08:30',
+  },
+  NEW_HOME_SALES: {
+    id: 51,
+    name: 'New Home Sales',
+    eventType: 'new_home_sales',
+    impactLevel: 'low' as const,
+    description: 'Sales of newly constructed homes',
+    defaultTime: '10:00',
+  },
+  EXISTING_HOME_SALES: {
+    id: 49,
+    name: 'Existing Home Sales',
+    eventType: 'existing_home_sales',
+    impactLevel: 'low' as const,
+    description: 'Sales of previously owned homes',
+    defaultTime: '10:00',
+  },
+  BUILDING_PERMITS: {
+    id: 79,
+    name: 'Building Permits',
+    eventType: 'building_permits',
+    impactLevel: 'low' as const,
+    description: 'Permits issued for new residential construction',
+    defaultTime: '08:30',
+  },
+  BUSINESS_INVENTORIES: {
+    id: 69,
+    name: 'Business Inventories',
+    eventType: 'business_inventories',
+    impactLevel: 'low' as const,
+    description: 'Total value of goods held by manufacturers, wholesalers, and retailers',
+    defaultTime: '10:00',
+  },
+  IMPORT_EXPORT_PRICES: {
+    id: 55,
+    name: 'Import/Export Prices',
+    eventType: 'import_export_prices',
+    impactLevel: 'low' as const,
+    description: 'Price changes for imported and exported goods',
+    defaultTime: '08:30',
   },
 } as const;
 
