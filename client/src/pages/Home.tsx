@@ -13,8 +13,11 @@ export function Home() {
         <h1 className="text-6xl md:text-7xl font-bold mb-4 tracking-wide" data-testid="text-hero-title">
           APE YOLO
         </h1>
-        <p className="text-2xl md:text-3xl text-white mb-8 tracking-wide" data-testid="text-hero-tagline">
+        <p className="text-2xl md:text-3xl text-white mb-2 tracking-wide" data-testid="text-hero-tagline">
           THE SAFEST WAY TO YOLO
+        </p>
+        <p className="text-lg text-silver/70 mb-8">
+          Automated 0DTE SPY/SPX options trading
         </p>
         <Button
           onClick={() => { window.location.href = '/api/auth/google'; }}
