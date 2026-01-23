@@ -10,7 +10,7 @@
  * Philosophy: Code orchestrates, LLM reasons at specific decision points.
  */
 
-import { getBroker } from '../broker';
+import { getBroker, getBrokerForUser } from '../broker';
 import { analyzeMarketRegime } from '../engine/step1';
 import { loadKnowledge, recordTick, getRecentTicks } from './knowledge';
 import { think, streamThink, validateProposal, quickCheck } from './models';
@@ -53,10 +53,21 @@ export interface TickResult {
 
 /**
  * Get current market context from broker
+ * Multi-tenant: Pass userId for user-specific broker access
  */
-export async function getMarketContext(): Promise<MarketContext | null> {
+export async function getMarketContext(userId?: string): Promise<MarketContext | null> {
   try {
-    const { api } = getBroker();
+    // Multi-tenant: Use user-specific broker when userId provided
+    let api;
+    if (userId) {
+      const broker = await getBrokerForUser(userId);
+      api = broker.api;
+    } else {
+      // Fallback for backwards compatibility (will be deprecated)
+      api = getBroker().api;
+      console.warn('[CommandCenter] getMarketContext called without userId - using shared broker (DEPRECATED)');
+    }
+
     if (!api) {
       console.log('[CommandCenter] Broker not connected');
       return null;
@@ -451,14 +462,24 @@ export async function getTickHistory(limit: number = 50): Promise<AgentTick[]> {
 
 /**
  * Get command center status
+ * Multi-tenant: Pass userId for user-specific broker status
  */
-export async function getStatus(): Promise<{
+export async function getStatus(userId?: string): Promise<{
   online: boolean;
   brokerConnected: boolean;
   lastTick?: AgentTick;
   recentDecisions: Record<string, number>;
 }> {
-  const { status } = getBroker();
+  // Multi-tenant: Use user-specific broker when userId provided
+  let status;
+  if (userId) {
+    const broker = await getBrokerForUser(userId);
+    status = broker.status;
+  } else {
+    // Fallback for backwards compatibility (will be deprecated)
+    status = getBroker().status;
+    console.warn('[CommandCenter] getStatus called without userId - using shared broker (DEPRECATED)');
+  }
   const recentTicks = await getRecentTicks(20);
 
   // Count recent decisions

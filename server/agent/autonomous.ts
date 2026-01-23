@@ -3,7 +3,7 @@ import { logger, LogType } from './logger';
 import { memory } from './memory';
 import { deepseekClient } from './models/deepseek';
 import { kimiClient } from './models/kimi';
-import { getBroker } from '../broker';
+import { getBroker, getBrokerForUser } from '../broker';
 import { AgentContext, Decision } from './types';
 
 // Guardrails - hard limits
@@ -19,14 +19,20 @@ const GUARDRAILS = {
 
 export class AutonomousAgent {
   private isRunning = false;
+  private userId?: string;  // Multi-tenant: User ID for user-specific broker access
 
-  async wakeUp(): Promise<void> {
+  /**
+   * Wake up the agent for a specific user
+   * Multi-tenant: Pass userId for user-specific broker access
+   */
+  async wakeUp(userId?: string): Promise<void> {
     if (this.isRunning) {
       console.log('[Agent] Already running, skipping wake-up');
       return;
     }
 
     this.isRunning = true;
+    this.userId = userId;  // Store userId for use in loadContext and executeTrade
     const sessionId = uuidv4();
 
     try {
@@ -81,7 +87,15 @@ export class AutonomousAgent {
 
   private async loadContext(): Promise<AgentContext | null> {
     try {
-      const broker = getBroker();
+      // Multi-tenant: Use user-specific broker when userId provided
+      let broker;
+      if (this.userId) {
+        broker = await getBrokerForUser(this.userId);
+      } else {
+        // Fallback for backwards compatibility (will be deprecated)
+        broker = getBroker();
+        console.warn('[Agent/Autonomous] loadContext called without userId - using shared broker (DEPRECATED)');
+      }
 
       if (!broker.api || !broker.status.connected) {
         return null;
@@ -213,7 +227,16 @@ export class AutonomousAgent {
     this.log(sessionId, 'TOOL', `execute_trade | ${decision.params.direction} ${decision.params.strike} x${contracts}`);
 
     try {
-      const broker = getBroker();
+      // Multi-tenant: Use user-specific broker when userId provided
+      let broker;
+      if (this.userId) {
+        broker = await getBrokerForUser(this.userId);
+      } else {
+        // Fallback for backwards compatibility (will be deprecated)
+        broker = getBroker();
+        console.warn('[Agent/Autonomous] executeTrade called without userId - using shared broker (DEPRECATED)');
+      }
+
       if (!broker.api) {
         throw new Error('Broker not available');
       }

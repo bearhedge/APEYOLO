@@ -1,5 +1,8 @@
 // Context that the agent sees each wake-up
 export interface AgentContext {
+  // Multi-tenant: User ID for user-specific broker access
+  userId?: string;
+
   // Current market state
   spyPrice: number;
   vixLevel: number;

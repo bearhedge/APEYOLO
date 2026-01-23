@@ -6,7 +6,7 @@
  */
 
 import { v4 as uuidv4 } from 'uuid';
-import { getBroker } from '../../broker';
+import { getBroker, getBrokerForUser } from '../../broker';
 import { logger } from '../logger';
 import { kimiClient } from '../models/kimi';
 
@@ -35,12 +35,22 @@ export interface AssignmentDecision {
 
 /**
  * Check for new stock assignments and handle them
+ * Multi-tenant: Pass userId for user-specific broker access
  */
-export async function checkForAssignments(): Promise<void> {
+export async function checkForAssignments(userId?: string): Promise<void> {
   const sessionId = uuidv4();
 
   try {
-    const broker = getBroker();
+    // Multi-tenant: Use user-specific broker when userId provided
+    let broker;
+    if (userId) {
+      broker = await getBrokerForUser(userId);
+    } else {
+      // Fallback for backwards compatibility (will be deprecated)
+      broker = getBroker();
+      console.warn('[Assignment] checkForAssignments called without userId - using shared broker (DEPRECATED)');
+    }
+
     if (!broker.api || !broker.status.connected) {
       logger.log({ sessionId, type: 'SLEEP', message: 'Broker not connected - skipping assignment check' });
       return;
@@ -138,13 +148,23 @@ async function handleAssignment(
 
 /**
  * Gather context for assignment decision
+ * Multi-tenant: Pass userId for user-specific broker access
  */
 async function gatherAssignmentContext(
   symbol: string,
   shares: number,
-  position: any
+  position: any,
+  userId?: string
 ): Promise<AssignmentContext> {
-  const broker = getBroker();
+  // Multi-tenant: Use user-specific broker when userId provided
+  let broker;
+  if (userId) {
+    broker = await getBrokerForUser(userId);
+  } else {
+    // Fallback for backwards compatibility (will be deprecated)
+    broker = getBroker();
+    console.warn('[Assignment] gatherAssignmentContext called without userId - using shared broker (DEPRECATED)');
+  }
 
   // Get current market data
   let currentPrice = position.marketValue / shares || 0;
@@ -211,11 +231,13 @@ async function gatherAssignmentContext(
 
 /**
  * Execute stock sale
+ * Multi-tenant: Pass userId for user-specific broker access
  */
 async function executeSellStock(
   sessionId: string,
   symbol: string,
-  shares: number
+  shares: number,
+  userId?: string
 ): Promise<void> {
   logger.log({
     sessionId,
@@ -224,7 +246,16 @@ async function executeSellStock(
   });
 
   try {
-    const broker = getBroker();
+    // Multi-tenant: Use user-specific broker when userId provided
+    let broker;
+    if (userId) {
+      broker = await getBrokerForUser(userId);
+    } else {
+      // Fallback for backwards compatibility (will be deprecated)
+      broker = getBroker();
+      console.warn('[Assignment] executeSellStock called without userId - using shared broker (DEPRECATED)');
+    }
+
     if (!broker.api) {
       throw new Error('Broker not connected');
     }
@@ -268,10 +299,20 @@ export function resetAssignmentTracking(): void {
 
 /**
  * Initialize tracking with current positions
+ * Multi-tenant: Pass userId for user-specific broker access
  */
-export async function initializeAssignmentTracking(): Promise<void> {
+export async function initializeAssignmentTracking(userId?: string): Promise<void> {
   try {
-    const broker = getBroker();
+    // Multi-tenant: Use user-specific broker when userId provided
+    let broker;
+    if (userId) {
+      broker = await getBrokerForUser(userId);
+    } else {
+      // Fallback for backwards compatibility (will be deprecated)
+      broker = getBroker();
+      console.warn('[Assignment] initializeAssignmentTracking called without userId - using shared broker (DEPRECATED)');
+    }
+
     if (!broker.api) return;
 
     const positions = await broker.api.getPositions();

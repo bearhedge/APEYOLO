@@ -2482,10 +2482,22 @@ router.get('/internal/broker/market-data/:symbol', async (req: Request, res: Res
 });
 
 // GET /api/agent/internal/broker/account
-router.get('/internal/broker/account', async (_req: Request, res: Response) => {
+// Accepts X-User-Id header from sandbox to get user-specific broker
+router.get('/internal/broker/account', async (req: Request, res: Response) => {
   try {
-    const { getBroker } = await import('./broker/index');
-    const { api } = getBroker();
+    const userId = req.headers['x-user-id'] as string;
+
+    let api;
+    if (userId) {
+      // Multi-tenant: Use user-specific broker
+      const broker = await getBrokerForUser(userId);
+      api = broker.api;
+    } else {
+      // Fallback for backwards compatibility (will be deprecated)
+      const { getBroker } = await import('./broker/index');
+      api = getBroker().api;
+      console.warn('[Agent/Internal] No X-User-Id header - using shared broker (DEPRECATED)');
+    }
 
     if (!api) {
       return res.json({ error: 'Broker not connected' });
@@ -2522,10 +2534,22 @@ function parseOCCSymbol(symbol: string): { underlying: string; expiry: string; t
 }
 
 // GET /api/agent/internal/broker/positions
-router.get('/internal/broker/positions', async (_req: Request, res: Response) => {
+// Accepts X-User-Id header from sandbox to get user-specific broker
+router.get('/internal/broker/positions', async (req: Request, res: Response) => {
   try {
-    const { getBroker } = await import('./broker/index');
-    const { api } = getBroker();
+    const userId = req.headers['x-user-id'] as string;
+
+    let api;
+    if (userId) {
+      // Multi-tenant: Use user-specific broker
+      const broker = await getBrokerForUser(userId);
+      api = broker.api;
+    } else {
+      // Fallback for backwards compatibility (will be deprecated)
+      const { getBroker } = await import('./broker/index');
+      api = getBroker().api;
+      console.warn('[Agent/Internal] No X-User-Id header - using shared broker (DEPRECATED)');
+    }
 
     if (!api) {
       return res.json([]);

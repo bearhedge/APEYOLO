@@ -243,20 +243,31 @@ export async function executeTool(
 
 /**
  * Get option chain with smart strike candidates
+ * Multi-tenant: Uses getBrokerForUser when context.userId is provided
  */
 async function executeGetOptionChain(
   args: Record<string, unknown>,
   context: AgentContext
 ): Promise<ToolResult> {
   try {
-    const { getBroker } = await import('../broker');
-    const broker = getBroker();
+    const { getBroker, getBrokerForUser } = await import('../broker');
 
-    if (!broker.api) {
+    // Multi-tenant: Use user-specific broker when userId provided
+    let api;
+    if (context.userId) {
+      const broker = await getBrokerForUser(context.userId);
+      api = broker.api;
+    } else {
+      // Fallback for backwards compatibility (will be deprecated)
+      api = getBroker().api;
+      console.warn('[Agent/Tools] executeGetOptionChain called without userId - using shared broker (DEPRECATED)');
+    }
+
+    if (!api) {
       return { success: false, error: 'Broker not connected' };
     }
 
-    const chain = await broker.api.getOptionChain('SPY');
+    const chain = await api.getOptionChain('SPY');
     const direction = (args.direction as string) || 'BOTH';
 
     // Filter by direction
@@ -336,15 +347,25 @@ async function executeTradeWithGuardrails(
   contracts = Math.min(contracts, context.maxContracts);
 
   try {
-    const { getBroker } = await import('../broker');
-    const broker = getBroker();
+    const { getBroker, getBrokerForUser } = await import('../broker');
 
-    if (!broker.api) {
+    // Multi-tenant: Use user-specific broker when userId provided
+    let api;
+    if (context.userId) {
+      const broker = await getBrokerForUser(context.userId);
+      api = broker.api;
+    } else {
+      // Fallback for backwards compatibility (will be deprecated)
+      api = getBroker().api;
+      console.warn('[Agent/Tools] executeTradeWithGuardrails called without userId - using shared broker (DEPRECATED)');
+    }
+
+    if (!api) {
       return { success: false, error: 'Broker not connected' };
     }
 
     // Get option chain to find the option
-    const chain = await broker.api.getOptionChain('SPY');
+    const chain = await api.getOptionChain('SPY');
     const targetType = direction.toLowerCase() as 'put' | 'call';
     const options = chain.options.filter((o: { type: string }) => o.type === targetType);
     const targetOption = options.find((o: { strike: number }) => o.strike === strike);

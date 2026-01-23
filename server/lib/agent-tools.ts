@@ -5,7 +5,7 @@
  * Each tool integrates with existing system components (broker, engine, etc.)
  */
 
-import { getBroker } from '../broker';
+import { getBroker, getBrokerForUser } from '../broker';
 import { analyzeMarketRegime } from '../engine/step1';
 import { getMarketStatus } from '../services/marketCalendar';
 
@@ -36,6 +36,7 @@ export interface ToolProgressEvent {
 
 export interface ToolExecutionContext {
   onProgress?: (event: ToolProgressEvent) => void;
+  userId?: string;  // Multi-tenant: User ID for user-specific broker access
 }
 
 export interface Tool {
@@ -155,14 +156,28 @@ const getMarketDataTool: Tool = {
 
 /**
  * Get current portfolio positions from IBKR
+ * Multi-tenant: Uses getBrokerForUser when userId is provided in context
  */
 const getPositionsTool: Tool = {
   name: 'getPositions',
   description: 'Get current portfolio positions including options and stocks with P/L data',
   parameters: {},
-  execute: async (): Promise<ToolResult> => {
+  execute: async (_args: Record<string, any>, context?: ToolExecutionContext): Promise<ToolResult> => {
     try {
-      const { api, status } = getBroker();
+      // Multi-tenant: Use user-specific broker when userId provided
+      let api, status;
+      if (context?.userId) {
+        const broker = await getBrokerForUser(context.userId);
+        api = broker.api;
+        status = broker.status;
+      } else {
+        // Fallback for backwards compatibility (will be deprecated)
+        const broker = getBroker();
+        api = broker.api;
+        status = broker.status;
+        console.warn('[AgentTools] getPositions called without userId - using shared broker (DEPRECATED)');
+      }
+
       if (!api) {
         return { success: false, error: 'Broker not connected' };
       }
@@ -225,6 +240,7 @@ const getPositionsTool: Tool = {
 
 /**
  * Run the 5-step trading engine to find optimal strikes
+ * Multi-tenant: Uses getBrokerForUser when userId is provided in context
  */
 const runEngineTool: Tool = {
   name: 'runEngine',
@@ -263,7 +279,17 @@ const runEngineTool: Tool = {
 
       // Fallback: Non-streaming execution (backwards compatibility)
       const { TradingEngine } = await import('../engine');
-      const { api } = getBroker();
+
+      // Multi-tenant: Use user-specific broker when userId provided
+      let api;
+      if (context?.userId) {
+        const broker = await getBrokerForUser(context.userId);
+        api = broker.api;
+      } else {
+        // Fallback for backwards compatibility (will be deprecated)
+        api = getBroker().api;
+        console.warn('[AgentTools] runEngine called without userId - using shared broker (DEPRECATED)');
+      }
 
       let underlyingPrice = 600;
       if (api) {
