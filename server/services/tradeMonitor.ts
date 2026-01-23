@@ -125,7 +125,8 @@ function calculateRealizedPnl(
 // ============================================
 
 /**
- * Check and update status of all open trades
+ * Check and update status of all open trades for ALL users with active IBKR credentials
+ * Multi-tenant: Runs the monitor for each user's account separately
  */
 export async function monitorOpenTrades(): Promise<JobResult> {
   console.log('[TradeMonitor] Starting trade monitoring...');
@@ -134,225 +135,255 @@ export async function monitorOpenTrades(): Promise<JobResult> {
     return { success: false, error: 'Database not available' };
   }
 
-  try {
-    // 1. Get all open and closing trades from database
-    // 'closing' status is set by 0DTE manager when it auto-closes a position
-    const openTrades = await db
-      .select()
-      .from(paperTrades)
-      .where(inArray(paperTrades.status, ['open', 'closing']));
-
-    if (openTrades.length === 0) {
-      console.log('[TradeMonitor] No open/closing trades to monitor');
-      return { success: true, data: { processed: 0, closed: 0 } };
-    }
-
-    console.log(`[TradeMonitor] Found ${openTrades.length} open/closing trades`);
-
-    // 2. Get current positions and recent trades from IBKR
-    const broker = getBroker();
-    let ibkrPositions: IbkrPosition[] = [];
-    let ibkrTrades: Trade[] = [];
-
-    if (broker.status.provider === 'ibkr') {
-      try {
-        await ensureIbkrReady();
-
-        // Get current open positions
-        const positions = await broker.api.getPositions();
-        ibkrPositions = positions.map((p: any) => ({
-          conid: p.id,
-          symbol: p.symbol,
-          position: p.qty * (p.side === 'SELL' ? -1 : 1),
-          mktPrice: p.mark,
-          unrealizedPnl: p.upl,
-        }));
-        console.log(`[TradeMonitor] IBKR positions: ${ibkrPositions.length}`);
-
-        // Get recent trade executions (for P&L calculation)
-        ibkrTrades = await broker.api.getTrades();
-        console.log(`[TradeMonitor] IBKR trade executions: ${ibkrTrades.length}`);
-      } catch (err) {
-        console.warn('[TradeMonitor] Could not fetch IBKR data:', err);
-      }
-    }
-
-    // 3. Check each open trade
-    let closedCount = 0;
-    const now = new Date();
-
-    for (const trade of openTrades) {
-      const tradeInfo = `${trade.symbol} ${trade.strategy} (${trade.id.slice(0, 8)})`;
-      console.log(`[TradeMonitor] Checking: ${tradeInfo}`);
-
-      // Check if expired
-      const expiration = new Date(trade.expiration);
-      const isExpired = now > expiration;
-
-      if (isExpired) {
-        console.log(`[TradeMonitor] Trade EXPIRED: ${tradeInfo}`);
-
-        // Calculate realized P&L for expired options
-        // If options expired worthless (most common for OTM), full premium is kept
-        const entryPremium = parseFloat(trade.entryPremiumTotal as any) || 0;
-
-        // Commission calculation for expired options
-        // Entry commission was paid when opening, no exit commission (no closing transaction)
-        // Use stored entry commission if available, otherwise estimate from contract count
-        const entryCommission = trade.entryCommission ?? (trade.contracts * IBKR_COMMISSION_PER_CONTRACT);
-        const exitCommission = 0; // No closing transaction for expired options
-        const totalCommissions = entryCommission + exitCommission;
-        const grossPnl = entryPremium;
-        const netPnl = grossPnl - totalCommissions;
-
-        await db
-          .update(paperTrades)
-          .set({
-            status: 'expired',
-            exitPrice: '0.00',
-            exitReason: 'Expired worthless',
-            realizedPnl: entryPremium.toString(), // Full premium kept (gross)
-            exitCommission,
-            totalCommissions,
-            grossPnl,
-            netPnl,
-            closedAt: new Date(),
-          })
-          .where(eq(paperTrades.id, trade.id));
-
-        // Link outcome to engine_run for RLHF (use net P&L for true performance tracking)
-        await linkTradeOutcome(trade.id, netPnl, normalizeExitReason('Expired worthless'));
-
-        closedCount++;
-        continue;
-      }
-
-      // Check if position still exists in IBKR
-      // Match by strike prices in the symbol (e.g., "ARM   251212P00135000" contains "135")
-      const leg1Strike = trade.leg1Strike ? parseFloat(trade.leg1Strike as any) : null;
-      const leg2Strike = trade.leg2Strike ? parseFloat(trade.leg2Strike as any) : null;
-
-      // If status is 'closing' (set by 0DTE manager), the position was already closed
-      // We just need to calculate and record the P&L
-      const isClosingStatus = trade.status === 'closing';
-      if (isClosingStatus) {
-        console.log(`[TradeMonitor] Trade has 'closing' status, calculating P&L: ${tradeInfo}`);
-      }
-
-      const hasOpenPosition = !isClosingStatus && ibkrPositions.some((pos) => {
-        const posSymbol = pos.symbol || '';
-        const underlying = trade.symbol;
-
-        // Check if this position belongs to this trade
-        if (!posSymbol.startsWith(underlying)) return false;
-
-        // Check if strike matches either leg
-        if (leg1Strike) {
-          const strikeStr = leg1Strike.toFixed(0).padStart(5, '0') + '000';
-          if (posSymbol.includes(strikeStr)) return true;
-        }
-        if (leg2Strike) {
-          const strikeStr = leg2Strike.toFixed(0).padStart(5, '0') + '000';
-          if (posSymbol.includes(strikeStr)) return true;
-        }
-
-        return false;
-      });
-
-      if (!hasOpenPosition && (ibkrPositions.length > 0 || isClosingStatus)) {
-        console.log(`[TradeMonitor] Trade CLOSED ${isClosingStatus ? '(0DTE manager)' : '(position not found)'}: ${tradeInfo}`);
-
-        // Position is closed - calculate realized P&L from actual IBKR executions
-        const entryPremium = parseFloat(trade.entryPremiumTotal as any) || 0;
-        const contracts = trade.contracts || 1;
-
-        // Find matching trade executions from IBKR
-        const matchingExecs = findMatchingExecutions(trade, ibkrTrades, leg1Strike, leg2Strike);
-        console.log(`[TradeMonitor] Found ${matchingExecs.length} matching executions for ${tradeInfo}`);
-
-        // Calculate actual P&L from executions
-        const { exitPrice, realizedPnl } = calculateRealizedPnl(entryPremium, matchingExecs, contracts);
-
-        // Calculate commission from closing executions
-        // Each execution has its commission stored in entryCommission (IBKR field naming)
-        const exitCommission = matchingExecs.reduce((sum, exec) => {
-          return sum + (exec.entryCommission || 0);
-        }, 0);
-
-        // Get entry commission from the trade record, or estimate from contract count
-        const entryCommission = trade.entryCommission ?? (trade.contracts * IBKR_COMMISSION_PER_CONTRACT);
-        const totalCommissions = entryCommission + exitCommission;
-
-        // Calculate gross and net P&L
-        const grossPnl = realizedPnl; // P&L before commissions
-        const netPnl = grossPnl - totalCommissions;
-
-        // Preserve exitReason if already set (e.g., by 0DTE manager)
-        const exitReason = trade.exitReason || (matchingExecs.length > 0
-          ? 'Closed via IBKR'
-          : 'Position closed (no fill data)');
-
-        console.log(`[TradeMonitor] ${tradeInfo}: entry=$${entryPremium.toFixed(2)}, exit=$${exitPrice.toFixed(4)}, grossP&L=$${grossPnl.toFixed(2)}, commission=$${totalCommissions.toFixed(2)}, netP&L=$${netPnl.toFixed(2)}`);
-
-        const now = new Date();
-
-        await db
-          .update(paperTrades)
-          .set({
-            status: 'closed',
-            exitPrice: exitPrice.toString(),
-            exitReason,
-            realizedPnl: realizedPnl.toString(), // Keep for backward compatibility (gross P&L)
-            exitCommission,
-            totalCommissions,
-            grossPnl,
-            netPnl,
-            closedAt: now,
-          })
-          .where(eq(paperTrades.id, trade.id));
-
-        // Link outcome to engine_run for RLHF (use net P&L for true performance tracking)
-        await linkTradeOutcome(trade.id, netPnl, normalizeExitReason(exitReason));
-
-        // Update stop order(s) with fill time for holding time calculation
-        const orderIds = trade.ibkrOrderIds as string[] | null;
-        if (orderIds?.length) {
-          try {
-            // Update all stop orders (typically index 1+ in the array)
-            // Entry orders are at index 0, stops are at 1, 2, etc.
-            const stopOrderIds = orderIds.slice(1);
-            if (stopOrderIds.length > 0) {
-              await db
-                .update(orders)
-                .set({ status: 'filled', filledAt: now })
-                .where(inArray(orders.ibkrOrderId, stopOrderIds));
-              console.log(`[TradeMonitor] Updated ${stopOrderIds.length} stop order(s) with fill time`);
-            }
-          } catch (orderErr) {
-            console.warn(`[TradeMonitor] Could not update order records:`, orderErr);
-          }
-        }
-
-        closedCount++;
-      }
-    }
-
-    console.log(`[TradeMonitor] Completed: ${closedCount}/${openTrades.length} trades closed`);
-
-    return {
-      success: true,
-      data: {
-        processed: openTrades.length,
-        closed: closedCount,
-      },
-    };
-  } catch (error: any) {
-    console.error('[TradeMonitor] Error:', error);
-    return {
-      success: false,
-      error: error.message || 'Unknown error',
-    };
+  // Multi-tenant: Get all users with active IBKR credentials
+  const userIds = await getUsersWithActiveCredentials();
+  if (userIds.length === 0) {
+    console.log('[TradeMonitor] No users with active IBKR credentials');
+    return { success: true, data: { processed: 0, closed: 0 } };
   }
+
+  console.log(`[TradeMonitor] Running for ${userIds.length} user(s) with active credentials`);
+
+  let totalProcessed = 0;
+  let totalClosed = 0;
+  const errors: string[] = [];
+
+  // Process each user
+  for (const userId of userIds) {
+    console.log(`[TradeMonitor] Processing user ${userId}...`);
+    try {
+      const result = await monitorOpenTradesForUser(userId);
+      totalProcessed += result.processed;
+      totalClosed += result.closed;
+    } catch (error: any) {
+      console.error(`[TradeMonitor] Error for user ${userId}:`, error?.message);
+      errors.push(`User ${userId}: ${error?.message}`);
+    }
+  }
+
+  console.log(`[TradeMonitor] Completed: ${totalClosed}/${totalProcessed} trades closed`);
+
+  return {
+    success: errors.length === 0,
+    error: errors.length > 0 ? errors.join('; ') : undefined,
+    data: {
+      processed: totalProcessed,
+      closed: totalClosed,
+    },
+  };
+}
+
+/**
+ * Check and update status of open trades for a specific user
+ */
+async function monitorOpenTradesForUser(userId: string): Promise<{ processed: number; closed: number }> {
+  // 1. Get this user's open and closing trades from database
+  const openTrades = await db!
+    .select()
+    .from(paperTrades)
+    .where(
+      and(
+        eq(paperTrades.userId, userId),
+        inArray(paperTrades.status, ['open', 'closing'])
+      )
+    );
+
+  if (openTrades.length === 0) {
+    console.log(`[TradeMonitor] User ${userId}: No open/closing trades to monitor`);
+    return { processed: 0, closed: 0 };
+  }
+
+  console.log(`[TradeMonitor] User ${userId}: Found ${openTrades.length} open/closing trades`);
+
+  // 2. Get current positions and recent trades from this user's IBKR account
+  const broker = await getBrokerForUser(userId);
+  let ibkrPositions: IbkrPosition[] = [];
+  let ibkrTrades: Trade[] = [];
+
+  if (broker.status.provider === 'ibkr' && broker.api) {
+    try {
+      await ensureIbkrReady();
+
+      // Get current open positions
+      const positions = await broker.api.getPositions();
+      ibkrPositions = positions.map((p: any) => ({
+        conid: p.id,
+        symbol: p.symbol,
+        position: p.qty * (p.side === 'SELL' ? -1 : 1),
+        mktPrice: p.mark,
+        unrealizedPnl: p.upl,
+      }));
+      console.log(`[TradeMonitor] User ${userId}: IBKR positions: ${ibkrPositions.length}`);
+
+      // Get recent trade executions (for P&L calculation)
+      ibkrTrades = await broker.api.getTrades();
+      console.log(`[TradeMonitor] User ${userId}: IBKR trade executions: ${ibkrTrades.length}`);
+    } catch (err) {
+      console.warn(`[TradeMonitor] User ${userId}: Could not fetch IBKR data:`, err);
+    }
+  }
+
+  // 3. Check each open trade
+  let closedCount = 0;
+  const now = new Date();
+
+  for (const trade of openTrades) {
+    const tradeInfo = `${trade.symbol} ${trade.strategy} (${trade.id.slice(0, 8)})`;
+    console.log(`[TradeMonitor] Checking: ${tradeInfo}`);
+
+    // Check if expired
+    const expiration = new Date(trade.expiration);
+    const isExpired = now > expiration;
+
+    if (isExpired) {
+      console.log(`[TradeMonitor] Trade EXPIRED: ${tradeInfo}`);
+
+      // Calculate realized P&L for expired options
+      // If options expired worthless (most common for OTM), full premium is kept
+      const entryPremium = parseFloat(trade.entryPremiumTotal as any) || 0;
+
+      // Commission calculation for expired options
+      // Entry commission was paid when opening, no exit commission (no closing transaction)
+      // Use stored entry commission if available, otherwise estimate from contract count
+      const entryCommission = trade.entryCommission ?? (trade.contracts * IBKR_COMMISSION_PER_CONTRACT);
+      const exitCommission = 0; // No closing transaction for expired options
+      const totalCommissions = entryCommission + exitCommission;
+      const grossPnl = entryPremium;
+      const netPnl = grossPnl - totalCommissions;
+
+      await db!
+        .update(paperTrades)
+        .set({
+          status: 'expired',
+          exitPrice: '0.00',
+          exitReason: 'Expired worthless',
+          realizedPnl: entryPremium.toString(), // Full premium kept (gross)
+          exitCommission,
+          totalCommissions,
+          grossPnl,
+          netPnl,
+          closedAt: new Date(),
+        })
+        .where(eq(paperTrades.id, trade.id));
+
+      // Link outcome to engine_run for RLHF (use net P&L for true performance tracking)
+      await linkTradeOutcome(trade.id, netPnl, normalizeExitReason('Expired worthless'));
+
+      closedCount++;
+      continue;
+    }
+
+    // Check if position still exists in IBKR
+    // Match by strike prices in the symbol (e.g., "ARM   251212P00135000" contains "135")
+    const leg1Strike = trade.leg1Strike ? parseFloat(trade.leg1Strike as any) : null;
+    const leg2Strike = trade.leg2Strike ? parseFloat(trade.leg2Strike as any) : null;
+
+    // If status is 'closing' (set by 0DTE manager), the position was already closed
+    // We just need to calculate and record the P&L
+    const isClosingStatus = trade.status === 'closing';
+    if (isClosingStatus) {
+      console.log(`[TradeMonitor] Trade has 'closing' status, calculating P&L: ${tradeInfo}`);
+    }
+
+    const hasOpenPosition = !isClosingStatus && ibkrPositions.some((pos) => {
+      const posSymbol = pos.symbol || '';
+      const underlying = trade.symbol;
+
+      // Check if this position belongs to this trade
+      if (!posSymbol.startsWith(underlying)) return false;
+
+      // Check if strike matches either leg
+      if (leg1Strike) {
+        const strikeStr = leg1Strike.toFixed(0).padStart(5, '0') + '000';
+        if (posSymbol.includes(strikeStr)) return true;
+      }
+      if (leg2Strike) {
+        const strikeStr = leg2Strike.toFixed(0).padStart(5, '0') + '000';
+        if (posSymbol.includes(strikeStr)) return true;
+      }
+
+      return false;
+    });
+
+    if (!hasOpenPosition && (ibkrPositions.length > 0 || isClosingStatus)) {
+      console.log(`[TradeMonitor] Trade CLOSED ${isClosingStatus ? '(0DTE manager)' : '(position not found)'}: ${tradeInfo}`);
+
+      // Position is closed - calculate realized P&L from actual IBKR executions
+      const entryPremium = parseFloat(trade.entryPremiumTotal as any) || 0;
+      const contracts = trade.contracts || 1;
+
+      // Find matching trade executions from IBKR
+      const matchingExecs = findMatchingExecutions(trade, ibkrTrades, leg1Strike, leg2Strike);
+      console.log(`[TradeMonitor] Found ${matchingExecs.length} matching executions for ${tradeInfo}`);
+
+      // Calculate actual P&L from executions
+      const { exitPrice, realizedPnl } = calculateRealizedPnl(entryPremium, matchingExecs, contracts);
+
+      // Calculate commission from closing executions
+      // Each execution has its commission stored in entryCommission (IBKR field naming)
+      const exitCommission = matchingExecs.reduce((sum, exec) => {
+        return sum + (exec.entryCommission || 0);
+      }, 0);
+
+      // Get entry commission from the trade record, or estimate from contract count
+      const entryCommission = trade.entryCommission ?? (trade.contracts * IBKR_COMMISSION_PER_CONTRACT);
+      const totalCommissions = entryCommission + exitCommission;
+
+      // Calculate gross and net P&L
+      const grossPnl = realizedPnl; // P&L before commissions
+      const netPnl = grossPnl - totalCommissions;
+
+      // Preserve exitReason if already set (e.g., by 0DTE manager)
+      const exitReason = trade.exitReason || (matchingExecs.length > 0
+        ? 'Closed via IBKR'
+        : 'Position closed (no fill data)');
+
+      console.log(`[TradeMonitor] ${tradeInfo}: entry=$${entryPremium.toFixed(2)}, exit=$${exitPrice.toFixed(4)}, grossP&L=$${grossPnl.toFixed(2)}, commission=$${totalCommissions.toFixed(2)}, netP&L=$${netPnl.toFixed(2)}`);
+
+      const now = new Date();
+
+      await db!
+        .update(paperTrades)
+        .set({
+          status: 'closed',
+          exitPrice: exitPrice.toString(),
+          exitReason,
+          realizedPnl: realizedPnl.toString(), // Keep for backward compatibility (gross P&L)
+          exitCommission,
+          totalCommissions,
+          grossPnl,
+          netPnl,
+          closedAt: now,
+        })
+        .where(eq(paperTrades.id, trade.id));
+
+      // Link outcome to engine_run for RLHF (use net P&L for true performance tracking)
+      await linkTradeOutcome(trade.id, netPnl, normalizeExitReason(exitReason));
+
+      // Update stop order(s) with fill time for holding time calculation
+      const orderIds = trade.ibkrOrderIds as string[] | null;
+      if (orderIds?.length) {
+        try {
+          // Update all stop orders (typically index 1+ in the array)
+          // Entry orders are at index 0, stops are at 1, 2, etc.
+          const stopOrderIds = orderIds.slice(1);
+          if (stopOrderIds.length > 0) {
+            await db!
+              .update(orders)
+              .set({ status: 'filled', filledAt: now })
+              .where(inArray(orders.ibkrOrderId, stopOrderIds));
+            console.log(`[TradeMonitor] Updated ${stopOrderIds.length} stop order(s) with fill time`);
+          }
+        } catch (orderErr) {
+          console.warn(`[TradeMonitor] Could not update order records:`, orderErr);
+        }
+      }
+
+      closedCount++;
+    }
+  }
+
+  return { processed: openTrades.length, closed: closedCount };
 }
 
 // ============================================

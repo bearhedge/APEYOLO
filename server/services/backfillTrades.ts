@@ -13,7 +13,7 @@
 import { db } from '../db';
 import { paperTrades, type Trade } from '@shared/schema';
 import { eq, and, or, isNull } from 'drizzle-orm';
-import { getBroker } from '../broker';
+import { getBrokerForUser, getUsersWithActiveCredentials } from '../broker';
 import { ensureIbkrReady } from '../broker/ibkr';
 import { linkTradeOutcome, normalizeExitReason } from './rlhfService';
 
@@ -96,6 +96,7 @@ function calculateRealizedPnl(
 
 /**
  * Backfill closed trades with actual IBKR execution data.
+ * Multi-tenant: Runs for ALL users with active IBKR credentials.
  *
  * Finds all closed trades that might have incorrect P&L:
  * - exitPrice is null
@@ -118,119 +119,158 @@ export async function backfillClosedTrades(): Promise<BackfillResult> {
     return result;
   }
 
-  try {
-    // 1. Get all closed trades that might need correction
-    const closedTrades = await db
-      .select()
-      .from(paperTrades)
-      .where(
-        and(
-          eq(paperTrades.status, 'closed'),
-          or(
-            isNull(paperTrades.exitPrice),
-            // Also check trades where exitReason suggests no fill data was used
-            eq(paperTrades.exitReason, 'Position closed'),
-            eq(paperTrades.exitReason, 'Position closed (no fill data)')
-          )
-        )
-      );
-
-    console.log(`[BackfillTrades] Found ${closedTrades.length} trades to check`);
-    result.processed = closedTrades.length;
-
-    if (closedTrades.length === 0) {
-      console.log('[BackfillTrades] No trades need backfill');
-      return result;
-    }
-
-    // 2. Get trade executions from IBKR
-    const broker = getBroker();
-    let ibkrTrades: Trade[] = [];
-
-    if (broker.status.provider === 'ibkr') {
-      try {
-        await ensureIbkrReady();
-        ibkrTrades = await broker.api!.getTrades();
-        console.log(`[BackfillTrades] Fetched ${ibkrTrades.length} IBKR executions`);
-      } catch (err) {
-        console.warn('[BackfillTrades] Could not fetch IBKR trades:', err);
-        result.errors.push(`IBKR fetch error: ${err}`);
-      }
-    } else {
-      console.log('[BackfillTrades] IBKR not connected, skipping');
-      result.errors.push('IBKR broker not connected');
-      return result;
-    }
-
-    // 3. Try to match each trade with IBKR executions
-    for (const trade of closedTrades) {
-      const tradeInfo = `${trade.symbol} ${trade.strategy} (${trade.id.slice(0, 8)})`;
-
-      try {
-        const leg1Strike = trade.leg1Strike ? parseFloat(trade.leg1Strike as any) : null;
-        const leg2Strike = trade.leg2Strike ? parseFloat(trade.leg2Strike as any) : null;
-        const entryPremium = parseFloat(trade.entryPremiumTotal as any) || 0;
-
-        // Find matching executions
-        const matchingExecs = findMatchingExecutions(trade, ibkrTrades, leg1Strike, leg2Strike);
-
-        if (matchingExecs.length === 0) {
-          console.log(`[BackfillTrades] No IBKR matches for ${tradeInfo} (may be too old)`);
-          result.skipped++;
-          continue;
-        }
-
-        // Calculate actual P&L
-        const { exitPrice, realizedPnl } = calculateRealizedPnl(entryPremium, matchingExecs);
-
-        // Check if update is needed
-        const currentPnl = parseFloat(trade.realizedPnl as any) || 0;
-        const currentExit = parseFloat(trade.exitPrice as any) || 0;
-
-        if (Math.abs(realizedPnl - currentPnl) < 0.01 && Math.abs(exitPrice - currentExit) < 0.0001) {
-          console.log(`[BackfillTrades] ${tradeInfo} already correct, skipping`);
-          result.skipped++;
-          continue;
-        }
-
-        // Update the trade
-        console.log(`[BackfillTrades] Updating ${tradeInfo}: P&L $${currentPnl.toFixed(2)} -> $${realizedPnl.toFixed(2)}`);
-
-        await db
-          .update(paperTrades)
-          .set({
-            exitPrice: exitPrice.toString(),
-            exitReason: 'Backfilled from IBKR',
-            realizedPnl: realizedPnl.toString(),
-          })
-          .where(eq(paperTrades.id, trade.id));
-
-        // Link outcome to engine_run for RLHF
-        await linkTradeOutcome(trade.id, realizedPnl, normalizeExitReason('Backfilled from IBKR'));
-
-        result.updated++;
-      } catch (err: any) {
-        console.error(`[BackfillTrades] Error processing ${tradeInfo}:`, err);
-        result.errors.push(`${tradeInfo}: ${err.message}`);
-      }
-    }
-
-    console.log(`[BackfillTrades] Complete: ${result.updated} updated, ${result.skipped} skipped, ${result.errors.length} errors`);
-    return result;
-  } catch (error: any) {
-    console.error('[BackfillTrades] Fatal error:', error);
-    result.success = false;
-    result.errors.push(error.message || 'Unknown error');
+  // Multi-tenant: Get all users with active IBKR credentials
+  const userIds = await getUsersWithActiveCredentials();
+  if (userIds.length === 0) {
+    console.log('[BackfillTrades] No users with active IBKR credentials');
     return result;
   }
+
+  console.log(`[BackfillTrades] Running for ${userIds.length} user(s) with active credentials`);
+
+  // Process each user
+  for (const userId of userIds) {
+    console.log(`[BackfillTrades] Processing user ${userId}...`);
+    try {
+      const userResult = await backfillClosedTradesForUser(userId);
+      result.processed += userResult.processed;
+      result.updated += userResult.updated;
+      result.skipped += userResult.skipped;
+      result.errors.push(...userResult.errors);
+    } catch (error: any) {
+      console.error(`[BackfillTrades] Error for user ${userId}:`, error?.message);
+      result.errors.push(`User ${userId}: ${error?.message}`);
+    }
+  }
+
+  console.log(`[BackfillTrades] Complete: ${result.updated} updated, ${result.skipped} skipped, ${result.errors.length} errors`);
+  return result;
+}
+
+/**
+ * Backfill closed trades for a specific user
+ */
+async function backfillClosedTradesForUser(userId: string): Promise<BackfillResult> {
+  const result: BackfillResult = {
+    success: true,
+    processed: 0,
+    updated: 0,
+    skipped: 0,
+    errors: [],
+  };
+
+  // 1. Get this user's closed trades that might need correction
+  const closedTrades = await db!
+    .select()
+    .from(paperTrades)
+    .where(
+      and(
+        eq(paperTrades.userId, userId),
+        eq(paperTrades.status, 'closed'),
+        or(
+          isNull(paperTrades.exitPrice),
+          // Also check trades where exitReason suggests no fill data was used
+          eq(paperTrades.exitReason, 'Position closed'),
+          eq(paperTrades.exitReason, 'Position closed (no fill data)')
+        )
+      )
+    );
+
+  console.log(`[BackfillTrades] User ${userId}: Found ${closedTrades.length} trades to check`);
+  result.processed = closedTrades.length;
+
+  if (closedTrades.length === 0) {
+    console.log(`[BackfillTrades] User ${userId}: No trades need backfill`);
+    return result;
+  }
+
+  // 2. Get trade executions from this user's IBKR account
+  const broker = await getBrokerForUser(userId);
+  let ibkrTrades: Trade[] = [];
+
+  if (broker.status.provider === 'ibkr' && broker.api) {
+    try {
+      await ensureIbkrReady();
+      ibkrTrades = await broker.api.getTrades();
+      console.log(`[BackfillTrades] User ${userId}: Fetched ${ibkrTrades.length} IBKR executions`);
+    } catch (err) {
+      console.warn(`[BackfillTrades] User ${userId}: Could not fetch IBKR trades:`, err);
+      result.errors.push(`IBKR fetch error: ${err}`);
+      return result;
+    }
+  } else {
+    console.log(`[BackfillTrades] User ${userId}: IBKR not connected, skipping`);
+    result.errors.push('IBKR broker not connected');
+    return result;
+  }
+
+  // 3. Try to match each trade with IBKR executions
+  for (const trade of closedTrades) {
+    const tradeInfo = `${trade.symbol} ${trade.strategy} (${trade.id.slice(0, 8)})`;
+
+    try {
+      const leg1Strike = trade.leg1Strike ? parseFloat(trade.leg1Strike as any) : null;
+      const leg2Strike = trade.leg2Strike ? parseFloat(trade.leg2Strike as any) : null;
+      const entryPremium = parseFloat(trade.entryPremiumTotal as any) || 0;
+
+      // Find matching executions
+      const matchingExecs = findMatchingExecutions(trade, ibkrTrades, leg1Strike, leg2Strike);
+
+      if (matchingExecs.length === 0) {
+        console.log(`[BackfillTrades] No IBKR matches for ${tradeInfo} (may be too old)`);
+        result.skipped++;
+        continue;
+      }
+
+      // Calculate actual P&L
+      const { exitPrice, realizedPnl } = calculateRealizedPnl(entryPremium, matchingExecs);
+
+      // Check if update is needed
+      const currentPnl = parseFloat(trade.realizedPnl as any) || 0;
+      const currentExit = parseFloat(trade.exitPrice as any) || 0;
+
+      if (Math.abs(realizedPnl - currentPnl) < 0.01 && Math.abs(exitPrice - currentExit) < 0.0001) {
+        console.log(`[BackfillTrades] ${tradeInfo} already correct, skipping`);
+        result.skipped++;
+        continue;
+      }
+
+      // Update the trade
+      console.log(`[BackfillTrades] Updating ${tradeInfo}: P&L $${currentPnl.toFixed(2)} -> $${realizedPnl.toFixed(2)}`);
+
+      await db!
+        .update(paperTrades)
+        .set({
+          exitPrice: exitPrice.toString(),
+          exitReason: 'Backfilled from IBKR',
+          realizedPnl: realizedPnl.toString(),
+        })
+        .where(eq(paperTrades.id, trade.id));
+
+      // Link outcome to engine_run for RLHF
+      await linkTradeOutcome(trade.id, realizedPnl, normalizeExitReason('Backfilled from IBKR'));
+
+      result.updated++;
+    } catch (err: any) {
+      console.error(`[BackfillTrades] Error processing ${tradeInfo}:`, err);
+      result.errors.push(`${tradeInfo}: ${err.message}`);
+    }
+  }
+
+  return result;
 }
 
 /**
  * Backfill a single trade by ID (for manual corrections)
+ * Multi-tenant: Requires userId to use user-specific broker
  */
-export async function backfillSingleTrade(tradeId: string): Promise<{ success: boolean; message: string }> {
+export async function backfillSingleTrade(tradeId: string, userId: string): Promise<{ success: boolean; message: string }> {
   if (!db) {
     return { success: false, message: 'Database not available' };
+  }
+
+  if (!userId) {
+    return { success: false, message: 'userId is required' };
   }
 
   try {
@@ -243,13 +283,18 @@ export async function backfillSingleTrade(tradeId: string): Promise<{ success: b
       return { success: false, message: 'Trade not found' };
     }
 
-    const broker = getBroker();
-    if (broker.status.provider !== 'ibkr') {
+    // Verify the trade belongs to this user
+    if (trade.userId !== userId) {
+      return { success: false, message: 'Trade does not belong to this user' };
+    }
+
+    const broker = await getBrokerForUser(userId);
+    if (broker.status.provider !== 'ibkr' || !broker.api) {
       return { success: false, message: 'IBKR not connected' };
     }
 
     await ensureIbkrReady();
-    const ibkrTrades = await broker.api!.getTrades();
+    const ibkrTrades = await broker.api.getTrades();
 
     const leg1Strike = trade.leg1Strike ? parseFloat(trade.leg1Strike as any) : null;
     const leg2Strike = trade.leg2Strike ? parseFloat(trade.leg2Strike as any) : null;
