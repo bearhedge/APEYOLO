@@ -270,7 +270,7 @@ export function StatsWindow() {
                     label="Win Rate"
                     value={`${attestationPreview.winRate.toFixed(1)}%`}
                   />
-                  <Row label="Trades" value={attestationPreview.totalTrades.toString()} />
+                  <Row label="Trades" value={(attestationPreview.totalTrades ?? 0).toString()} />
                   <Row
                     label="P&L"
                     value={`${attestationPreview.totalPnl >= 0 ? '+' : ''}$${attestationPreview.totalPnl.toFixed(0)}`}
