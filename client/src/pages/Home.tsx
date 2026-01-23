@@ -277,7 +277,7 @@ function WildTagline() {
   };
 
   return (
-    <div key={key} className="text-2xl mb-10 font-bold tracking-wide uppercase" style={{ minHeight: '2em', perspective: '1000px', fontFamily: 'inherit' }}>
+    <div key={key} className="text-3xl md:text-4xl mb-10 font-bold tracking-wide uppercase" style={{ minHeight: '2em', perspective: '1000px', fontFamily: 'inherit' }}>
       {TAGLINE.split('').map((char, index) => (
         <span key={index} style={getLetterStyle(index, char)}>
           {char}
