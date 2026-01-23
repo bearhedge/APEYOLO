@@ -118,6 +118,25 @@ if __name__ == "__main__":
     print(json.dumps(result))
 `;
 
+// Module-level state for bridge file path
+let cachedBridgePath: string | null = null;
+
+/**
+ * Ensure the Python bridge file exists in temp directory.
+ * Creates it on first call, returns cached path on subsequent calls.
+ */
+function ensureBridgeFile(): string {
+  if (cachedBridgePath && fs.existsSync(cachedBridgePath)) {
+    return cachedBridgePath;
+  }
+
+  const tmpDir = os.tmpdir();
+  cachedBridgePath = path.join(tmpDir, 'codeact_bridge.py');
+  fs.writeFileSync(cachedBridgePath, BRIDGE_CODE, { mode: 0o755 });
+  console.log(`[executor] Bridge file written to: ${cachedBridgePath}`);
+  return cachedBridgePath;
+}
+
 export interface ExecutionResult {
   success: boolean;
   stdout: string;
