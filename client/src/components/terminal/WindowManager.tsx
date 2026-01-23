@@ -12,6 +12,7 @@ import { TradesWindow } from './windows/TradesWindow';
 import { StatsWindow } from './windows/StatsWindow';
 import { EngineWindow } from './windows/EngineWindow';
 import { SettingsWindow } from './windows/SettingsWindow';
+import { AgentWindow } from './windows/AgentWindow';
 
 interface WindowManagerProps {
   windowManager: ReturnType<typeof useWindowManager>;
@@ -24,6 +25,7 @@ const WINDOW_CONTENT: Record<WindowId, React.ComponentType> = {
   stats: StatsWindow,
   engine: EngineWindow,
   settings: SettingsWindow,
+  agent: AgentWindow,
 };
 
 export function WindowManager({ windowManager }: WindowManagerProps) {

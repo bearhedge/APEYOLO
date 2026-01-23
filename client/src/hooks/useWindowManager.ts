@@ -6,7 +6,7 @@
 
 import { useState, useCallback, useEffect } from 'react';
 
-export type WindowId = 'mandate' | 'positions' | 'trades' | 'stats' | 'engine' | 'settings';
+export type WindowId = 'mandate' | 'positions' | 'trades' | 'stats' | 'engine' | 'settings' | 'agent';
 
 export interface WindowState {
   isOpen: boolean;
@@ -29,6 +29,7 @@ export const WINDOW_CONFIGS: WindowConfig[] = [
   { id: 'stats', title: 'stats.sh', defaultPosition: { x: 200, y: 120 }, defaultSize: { width: 400, height: 350 } },
   { id: 'engine', title: 'engine.exe', defaultPosition: { x: 300, y: 100 }, defaultSize: { width: 500, height: 500 } },
   { id: 'settings', title: 'settings.cfg', defaultPosition: { x: 400, y: 150 }, defaultSize: { width: 450, height: 400 } },
+  { id: 'agent', title: 'agent.exe', defaultPosition: { x: 500, y: 100 }, defaultSize: { width: 400, height: 500 } },
 ];
 
 const STORAGE_KEY = 'apeyolo-terminal-windows';

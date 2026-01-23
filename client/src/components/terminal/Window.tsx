@@ -74,22 +74,40 @@ export function Window({
     };
   }, [isDragging, dragStart, startPos, onPositionChange]);
 
-  // Track resize via ResizeObserver
+  // Track resize via ResizeObserver with debounce to prevent infinite loop
   useEffect(() => {
     const el = windowRef.current;
     if (!el) return;
 
+    let timeoutId: NodeJS.Timeout | null = null;
+    let lastWidth = size.width;
+    let lastHeight = size.height;
+
     const observer = new ResizeObserver(entries => {
       for (const entry of entries) {
-        const { width, height } = entry.contentRect;
-        // Add padding/border back
-        onSizeChange({ width: width + 2, height: height + 2 });
+        const newWidth = Math.round(entry.contentRect.width + 2);
+        const newHeight = Math.round(entry.contentRect.height + 2);
+
+        // Only update if changed by more than 5px to prevent loop
+        if (Math.abs(newWidth - lastWidth) > 5 || Math.abs(newHeight - lastHeight) > 5) {
+          lastWidth = newWidth;
+          lastHeight = newHeight;
+
+          // Debounce the update
+          if (timeoutId) clearTimeout(timeoutId);
+          timeoutId = setTimeout(() => {
+            onSizeChange({ width: newWidth, height: newHeight });
+          }, 100);
+        }
       }
     });
 
     observer.observe(el);
-    return () => observer.disconnect();
-  }, [onSizeChange]);
+    return () => {
+      observer.disconnect();
+      if (timeoutId) clearTimeout(timeoutId);
+    };
+  }, [onSizeChange, size.width, size.height]);
 
   if (!isOpen) return null;
 
