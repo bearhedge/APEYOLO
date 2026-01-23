@@ -164,10 +164,25 @@ export class CodeActOrchestrator {
 vix = broker.get_price("VIX")
 account = broker.get_account()
 positions = broker.get_positions()
+
 print(f"SPY: \${spy:.2f}")
 print(f"VIX: {vix:.2f}")
-print(f"Account: {account}")
-print(f"Positions: {positions}")`;
+
+print(f"\\n=== ACCOUNT ===")
+print(f"NAV: \${account.get('nav', 0):,.2f}")
+print(f"Buying Power: \${account.get('buyingPower', 0):,.2f}")
+print(f"Cash: \${account.get('cash', 0):,.2f}")
+print(f"Day P&L: \${account.get('dayPnL', 0):,.2f}")
+print(f"Net Delta: {account.get('netDelta', 0):.2f}")
+
+print(f"\\n=== POSITIONS ({len(positions)}) ===")
+for p in positions:
+    side = p.get('side', 'UNKNOWN')
+    ptype = p.get('type', '?')
+    strike = p.get('strike', 0)
+    pnl = p.get('unrealizedPnL', 0)
+    delta = p.get('delta', 0)
+    print(f"{side} {ptype} {strike}: P&L \${pnl:,.2f}, Delta {delta:.2f}")`;
 
     // Helper to check if data is valid (non-zero SPY price)
     const isValidData = (result: { success: boolean; stdout?: string }) => {

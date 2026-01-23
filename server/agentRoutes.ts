@@ -2484,32 +2484,77 @@ router.get('/internal/broker/market-data/:symbol', async (req: Request, res: Res
 // GET /api/agent/internal/broker/account
 router.get('/internal/broker/account', async (_req: Request, res: Response) => {
   try {
-    const { executeToolCall } = await import('./lib/agent-tools');
-    const result = await executeToolCall({ tool: 'getPositions', args: {} });
+    const { getBroker } = await import('./broker/index');
+    const { api } = getBroker();
 
-    if (result.success && result.data?.account) {
-      return res.json(result.data.account);
+    if (!api) {
+      return res.json({ error: 'Broker not connected' });
     }
 
-    res.json({ error: 'Account data not available' });
+    const account = await api.getAccount();
+
+    // Return all useful account fields
+    res.json({
+      accountNumber: account.accountNumber,
+      nav: account.portfolioValue || account.netLiquidation || 0,
+      buyingPower: account.buyingPower || 0,
+      cash: account.totalCash || account.settledCash || 0,
+      dayPnL: account.dayPnL || 0,
+      netDelta: account.netDelta || 0,
+      marginUsed: account.marginUsed || 0,
+    });
   } catch (error: any) {
     res.json({ error: error.message });
   }
 });
 
+// Helper to parse OCC option symbols like "SPY   260123P00688000"
+function parseOCCSymbol(symbol: string): { underlying: string; expiry: string; type: string; strike: number } | null {
+  // OCC format: SYMBOL (padded to 6 chars) + YYMMDD + P/C + Strike*1000 (8 digits)
+  const match = symbol.match(/^(\w+)\s*(\d{6})([PC])(\d{8})$/);
+  if (!match) return null;
+  return {
+    underlying: match[1].trim(),
+    expiry: `20${match[2].slice(0, 2)}-${match[2].slice(2, 4)}-${match[2].slice(4, 6)}`,
+    type: match[3] === 'P' ? 'PUT' : 'CALL',
+    strike: parseInt(match[4]) / 1000,
+  };
+}
+
 // GET /api/agent/internal/broker/positions
 router.get('/internal/broker/positions', async (_req: Request, res: Response) => {
   try {
-    const { executeToolCall } = await import('./lib/agent-tools');
-    const result = await executeToolCall({ tool: 'getPositions', args: {} });
+    const { getBroker } = await import('./broker/index');
+    const { api } = getBroker();
 
-    if (result.success && result.data?.positions) {
-      return res.json(result.data.positions);
+    if (!api) {
+      return res.json([]);
     }
 
-    res.json([]);
+    const positions = await api.getPositions();
+
+    // Parse OCC symbols and return useful data for the agent
+    const parsed = positions.map((p: any) => {
+      const symbol = p.symbol || '';
+      const occInfo = parseOCCSymbol(symbol);
+
+      return {
+        symbol: occInfo?.underlying || p.symbol || '',
+        type: occInfo?.type || (p.strategy?.includes('put') ? 'PUT' : 'CALL'),
+        strike: occInfo?.strike || Number(p.sellStrike) || 0,
+        expiry: occInfo?.expiry || (p.expiration ? new Date(p.expiration).toISOString().slice(0, 10) : ''),
+        contracts: Math.abs(p.quantity || 0),
+        side: (p.quantity || 0) < 0 ? 'SOLD' : 'BOUGHT',
+        avgCost: Number(p.openCredit) || 0,
+        marketValue: Number(p.currentValue) || 0,
+        unrealizedPnL: (Number(p.openCredit) || 0) - (Number(p.currentValue) || 0),
+        delta: Number(p.delta) || 0,
+      };
+    });
+
+    res.json(parsed);
   } catch (error: any) {
-    res.json({ error: error.message });
+    res.json([]);
   }
 });
 
