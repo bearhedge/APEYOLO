@@ -203,6 +203,12 @@ for p in positions:
     logger.start('GRABBING_DATA', 'Pre-fetching market data (waiting for IBKR...)');
 
     while (attempt < MAX_RETRIES) {
+      // Check abort before each retry attempt
+      if (this.aborted) {
+        logger.append('\n[STOPPED]');
+        return;
+      }
+
       attempt++;
       prefetchResult = await executePython(prefetchCode);
 
@@ -214,7 +220,16 @@ for p in positions:
       if (attempt < MAX_RETRIES) {
         const delayMs = INITIAL_DELAY_MS * Math.pow(2, attempt - 1);  // 2s, 4s, 8s, 16s, 32s
         logger.append(`\n[Attempt ${attempt}/${MAX_RETRIES}] Got 0.0, IBKR warming up... retrying in ${delayMs / 1000}s`);
-        await new Promise(resolve => setTimeout(resolve, delayMs));
+
+        // Check abort during delay - break delay into 500ms chunks
+        const chunks = Math.ceil(delayMs / 500);
+        for (let i = 0; i < chunks; i++) {
+          if (this.aborted) {
+            logger.append('\n[STOPPED]');
+            return;
+          }
+          await new Promise(resolve => setTimeout(resolve, Math.min(500, delayMs - i * 500)));
+        }
       }
     }
 
@@ -326,6 +341,11 @@ Error details: ${prefetchResult.error || prefetchResult.stderr || 'Prices return
       // Check if deepseekClient supports streaming
       if (typeof deepseekClient.chatStream === 'function') {
         for await (const chunk of deepseekClient.chatStream(this.messages)) {
+          // Check abort during streaming for responsive stop
+          if (this.aborted) {
+            logger.append('\n[STOPPED]');
+            return null;
+          }
           fullResponse += chunk;
           logger.append(chunk);
         }

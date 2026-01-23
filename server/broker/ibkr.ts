@@ -1446,7 +1446,8 @@ class IbkrClient {
           };
         });
       return positions;
-    } catch {
+    } catch (error: any) {
+      console.error('[IBKR][getPositions] FAILED:', error?.message || error);
       return [];
     }
   }

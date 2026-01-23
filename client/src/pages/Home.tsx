@@ -445,6 +445,37 @@ const animationStyles = `
     0%, 100% { transform: translateY(0); }
     50% { transform: translateY(-8px); }
   }
+
+  @keyframes neonBorderCycle {
+    0% {
+      border-color: #ff1493;
+      box-shadow: 0 0 8px #ff1493, inset 0 0 8px rgba(255, 20, 147, 0.1);
+    }
+    16% {
+      border-color: #00ffff;
+      box-shadow: 0 0 8px #00ffff, inset 0 0 8px rgba(0, 255, 255, 0.1);
+    }
+    33% {
+      border-color: #39ff14;
+      box-shadow: 0 0 8px #39ff14, inset 0 0 8px rgba(57, 255, 20, 0.1);
+    }
+    50% {
+      border-color: #ff00ff;
+      box-shadow: 0 0 8px #ff00ff, inset 0 0 8px rgba(255, 0, 255, 0.1);
+    }
+    66% {
+      border-color: #00d4ff;
+      box-shadow: 0 0 8px #00d4ff, inset 0 0 8px rgba(0, 212, 255, 0.1);
+    }
+    83% {
+      border-color: #ff073a;
+      box-shadow: 0 0 8px #ff073a, inset 0 0 8px rgba(255, 7, 58, 0.1);
+    }
+    100% {
+      border-color: #ff1493;
+      box-shadow: 0 0 8px #ff1493, inset 0 0 8px rgba(255, 20, 147, 0.1);
+    }
+  }
 `;
 
 export function Home() {
@@ -473,10 +504,13 @@ export function Home() {
 
           <Button
             onClick={() => { window.location.href = '/api/auth/google'; }}
-            className="btn-primary text-xl px-10 py-7 h-auto"
+            className="text-xl px-10 py-7 h-auto bg-black text-white border-2 rounded-lg font-bold tracking-wide hover:bg-gray-900 transition-all"
+            style={{
+              animation: 'neonBorderCycle 4s linear infinite',
+            }}
             data-testid="button-get-started"
           >
-            Get Started
+            GET STARTED
             <ArrowRight className="w-6 h-6 ml-2" />
           </Button>
         </div>
