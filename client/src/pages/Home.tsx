@@ -86,11 +86,13 @@ function WildTagline() {
     const base: React.CSSProperties = {
       display: 'inline-block',
       color: baseColor,
-      // Stronger neon glow - HK sign aesthetic
-      textShadow: `0 0 5px ${baseColor}, 0 0 10px ${baseColor}, 0 0 20px ${baseColor}, 0 0 40px ${baseColor}, 0 0 80px ${baseColor}`,
+      // Subtler neon glow - cleaner aesthetic
+      textShadow: `0 0 4px ${baseColor}, 0 0 12px ${baseColor}`,
       whiteSpace: char === ' ' ? 'pre' : 'normal',
       minWidth: char === ' ' ? '0.3em' : 'auto',
       transition: 'color 0.15s ease, text-shadow 0.15s ease',
+      fontStyle: 'normal',
+      textTransform: 'uppercase',
     };
 
     switch (currentAnimation.name) {
@@ -275,7 +277,7 @@ function WildTagline() {
   };
 
   return (
-    <div key={key} className="text-3xl mb-10 font-bold" style={{ minHeight: '2em', perspective: '1000px' }}>
+    <div key={key} className="text-2xl mb-10 font-bold tracking-wide uppercase" style={{ minHeight: '2em', perspective: '1000px', fontFamily: 'inherit' }}>
       {TAGLINE.split('').map((char, index) => (
         <span key={index} style={getLetterStyle(index, char)}>
           {char}
@@ -456,7 +458,7 @@ export function Home() {
           <img
             src="/ape-logo.png"
             alt="APE YOLO Logo"
-            className="w-[360px] h-[360px] mx-auto mb-2 object-contain"
+            className="w-[450px] h-[450px] mx-auto mb-2 object-contain"
           />
           <h1 className="text-7xl md:text-8xl font-bold mb-5 tracking-wide" data-testid="text-hero-title">
             APE YOLO

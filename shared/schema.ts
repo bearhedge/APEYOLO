@@ -384,6 +384,9 @@ export const paperTrades = pgTable("paper_trades", {
   // Assignment tracking (when ITM option is exercised)
   assignmentDetails: jsonb("assignment_details"),  // { sharesAssigned, assignmentPrice, liquidationOrderId, liquidationPrice, liquidationTime, netAssignmentPnl }
 
+  // Solana on-chain recording
+  solanaSignature: text("solana_signature"),  // Transaction signature after on-chain recording
+
   createdAt: timestamp("created_at").notNull().defaultNow(),
   closedAt: timestamp("closed_at"),
 });

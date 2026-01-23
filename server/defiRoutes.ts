@@ -759,6 +759,8 @@ router.get('/trades', async (req: Request, res: Response) => {
         // Stop loss data
         stopLossPrice: t.stopLossPrice ? parseFloat(t.stopLossPrice as any) : null,
         stopLossMultiplier: t.stopLossMultiplier ? parseFloat(t.stopLossMultiplier as any) : null,
+        // Solana on-chain recording
+        solanaSignature: t.solanaSignature || null,
       };
     });
 
@@ -1291,6 +1293,139 @@ router.post('/backfill-trade/:id', requireAuth, async (req: Request, res: Respon
     res.status(500).json({
       success: false,
       error: error.message || 'Failed to backfill trade',
+    });
+  }
+});
+
+// ============================================
+// Solana Trade Recording Endpoints
+// ============================================
+
+import { recordTradeOnSolana, recordTradesOnSolana, getWalletBalance } from './services/solanaTradeRecorder';
+
+/**
+ * POST /api/defi/record-trade/:id
+ *
+ * Record a single closed trade on Solana blockchain.
+ * Returns the transaction signature if successful.
+ */
+router.post('/record-trade/:id', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const tradeId = req.params.id;
+
+    if (!tradeId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Trade ID is required',
+      });
+    }
+
+    const result = await recordTradeOnSolana(tradeId);
+
+    if (result.success) {
+      res.json({
+        success: true,
+        signature: result.signature,
+        tradeHash: result.tradeHash,
+        explorerUrl: `https://explorer.solana.com/tx/${result.signature}?cluster=${process.env.SOLANA_CLUSTER || 'devnet'}`,
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: result.error,
+        signature: result.signature, // May exist if already recorded
+      });
+    }
+  } catch (error: any) {
+    console.error('[DefiRoutes] Error recording trade on Solana:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to record trade on Solana',
+    });
+  }
+});
+
+/**
+ * POST /api/defi/record-trades
+ *
+ * Record multiple closed trades on Solana blockchain.
+ * Accepts array of trade IDs.
+ */
+router.post('/record-trades', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { tradeIds } = req.body as { tradeIds: string[] };
+
+    if (!tradeIds || !Array.isArray(tradeIds) || tradeIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'tradeIds array is required',
+      });
+    }
+
+    if (tradeIds.length > 10) {
+      return res.status(400).json({
+        success: false,
+        error: 'Maximum 10 trades can be recorded at once',
+      });
+    }
+
+    const results = await recordTradesOnSolana(tradeIds);
+
+    const response: any = {
+      success: true,
+      results: {},
+      successCount: 0,
+      failureCount: 0,
+    };
+
+    for (const [id, result] of results) {
+      response.results[id] = result;
+      if (result.success) {
+        response.successCount++;
+      } else {
+        response.failureCount++;
+      }
+    }
+
+    res.json(response);
+  } catch (error: any) {
+    console.error('[DefiRoutes] Error recording trades on Solana:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to record trades on Solana',
+    });
+  }
+});
+
+/**
+ * GET /api/defi/solana-wallet
+ *
+ * Get Solana wallet information (balance, address).
+ */
+router.get('/solana-wallet', requireAuth, async (_req: Request, res: Response) => {
+  try {
+    const walletInfo = await getWalletBalance();
+
+    if (!walletInfo) {
+      return res.json({
+        success: true,
+        configured: false,
+        message: 'Solana wallet not configured',
+      });
+    }
+
+    res.json({
+      success: true,
+      configured: true,
+      address: walletInfo.address,
+      balance: walletInfo.balance,
+      cluster: process.env.SOLANA_CLUSTER || 'devnet',
+    });
+  } catch (error: any) {
+    console.error('[DefiRoutes] Error getting Solana wallet info:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to get wallet info',
     });
   }
 });
