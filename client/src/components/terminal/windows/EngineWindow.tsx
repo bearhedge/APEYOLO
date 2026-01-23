@@ -88,7 +88,7 @@ export function EngineWindow() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify(proposal),
+        body: JSON.stringify({ tradeProposal: proposal }),
       });
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
@@ -195,7 +195,9 @@ export function EngineWindow() {
       });
     }
     return {
+      proposalId: `terminal-${Date.now()}`,
       symbol: 'SPY',
+      expirationDate: new Date().toISOString().split('T')[0],
       expiration: new Date().toISOString().split('T')[0],
       strategy: analysis?.tradeProposal?.strategy ?? 'STRANGLE',
       legs,
@@ -205,6 +207,7 @@ export function EngineWindow() {
       stopLossPrice: premiumPerContract * stopMultiplier,
       stopLossAmount,
       maxLoss,
+      stopMultiplier,
     };
   };
 

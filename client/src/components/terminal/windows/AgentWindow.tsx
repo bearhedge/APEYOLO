@@ -65,6 +65,7 @@ function AgentLogView() {
   const { lines, isConnected, error, clearLines } = useAgentStream();
   const terminalRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
+  const [waking, setWaking] = useState(false);
 
   // Copy logs to clipboard
   const copyLogs = () => {
@@ -75,6 +76,26 @@ function AgentLogView() {
     navigator.clipboard.writeText(text);
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
+  };
+
+  // Manually wake the CodeAct agent
+  const wakeAgent = async () => {
+    if (waking) return;
+    setWaking(true);
+    try {
+      const res = await fetch('/api/agent/codeact/wake', {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        console.error('[AgentWindow] Wake failed:', await res.text());
+      }
+    } catch (err) {
+      console.error('[AgentWindow] Wake error:', err);
+    } finally {
+      // Keep button disabled for a bit to prevent spam
+      setTimeout(() => setWaking(false), 3000);
+    }
   };
 
   // Auto-scroll to bottom
