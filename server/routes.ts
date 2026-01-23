@@ -806,21 +806,27 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Positions (via provider) - SECURED: requires auth + user's own IBKR credentials
   app.get('/api/positions', requireAuth, async (req, res) => {
     try {
-      // Get broker for this specific user (no fallback to shared broker)
-      const userBroker = await getBrokerForUser(req.user!.id);
+      // Get broker for this specific user
+      let userBroker = await getBrokerForUser(req.user!.id);
 
-      // Security: if user has no IBKR credentials, return 403
-      if (!userBroker.api) {
-        return res.status(403).json({
-          error: 'No IBKR credentials configured',
-          message: 'Please configure your IBKR credentials in Settings'
-        });
+      // If user has no IBKR credentials, fall back to env var configuration
+      if (!userBroker.api || userBroker.status.provider === 'none') {
+        const envConfigured = !!(process.env.IBKR_CLIENT_ID && process.env.IBKR_PRIVATE_KEY);
+        if (envConfigured) {
+          console.log(`[API] /api/positions: User ${req.user!.id} using env var credentials (fallback)`);
+          userBroker = getBroker();
+        } else {
+          return res.status(403).json({
+            error: 'No IBKR credentials configured',
+            message: 'Please configure your IBKR credentials in Settings'
+          });
+        }
       }
 
       if (userBroker.status.provider === 'ibkr') {
         await ensureIbkrReady();
       }
-      const positions = await userBroker.api.getPositions();
+      const positions = await userBroker.api!.getPositions();
       res.json(positions);
     } catch (error: any) {
       console.error('[API] /api/positions: FAILED -', error?.message || error);
