@@ -51,7 +51,16 @@ function loadFromStorage(): Record<WindowId, WindowState> | null {
   try {
     const stored = localStorage.getItem(STORAGE_KEY);
     if (stored) {
-      return JSON.parse(stored);
+      const parsed = JSON.parse(stored);
+      // Merge with defaults to handle new windows added after storage was saved
+      const defaults = getDefaultStates();
+      const merged: Record<string, WindowState> = { ...defaults };
+      for (const id of Object.keys(defaults)) {
+        if (parsed[id]) {
+          merged[id] = parsed[id];
+        }
+      }
+      return merged as Record<WindowId, WindowState>;
     }
   } catch {
     // Ignore parse errors
