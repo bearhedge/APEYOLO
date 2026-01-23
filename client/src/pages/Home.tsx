@@ -18,9 +18,25 @@ export function Home() {
           <p className="text-3xl md:text-4xl text-white mb-3 tracking-wide" data-testid="text-hero-tagline">
             THE SAFEST WAY TO YOLO
           </p>
-          <p className="text-xl mb-10 bg-gradient-to-r from-green-400 via-cyan-400 via-blue-500 to-green-400 bg-clip-text text-transparent">
+          <p
+            className="text-xl mb-10 font-medium"
+            style={{
+              background: 'linear-gradient(90deg, #4ade80, #22d3ee, #3b82f6, #a855f7, #ec4899, #f97316, #eab308, #4ade80)',
+              backgroundSize: '200% 100%',
+              WebkitBackgroundClip: 'text',
+              backgroundClip: 'text',
+              color: 'transparent',
+              animation: 'colorShift 4s linear infinite',
+            }}
+          >
             Automated 0DTE SPY/SPX options trading
           </p>
+          <style>{`
+            @keyframes colorShift {
+              0% { background-position: 0% 50%; }
+              100% { background-position: 200% 50%; }
+            }
+          `}</style>
           <Button
             onClick={() => { window.location.href = '/api/auth/google'; }}
             className="btn-primary text-xl px-10 py-7 h-auto"
