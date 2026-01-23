@@ -19,7 +19,7 @@
 import { db } from '../../db';
 import { paperTrades, jobs } from '@shared/schema';
 import { eq, and, sql } from 'drizzle-orm';
-import { getBroker } from '../../broker';
+import { getBrokerForUser, getUsersWithActiveCredentials } from '../../broker';
 import { ensureIbkrReady, placeCloseOrderByConid } from '../../broker/ibkr';
 import { registerJobHandler, type JobResult } from '../jobExecutor';
 import { getETDateString, getETTimeString, getExitDeadline, isEarlyCloseDay, formatTimeForDisplay } from '../marketCalendar';
@@ -132,7 +132,8 @@ function getUnderlying(symbol: string): string {
 // ============================================
 
 /**
- * Execute the 0DTE position manager
+ * Execute the 0DTE position manager for ALL users with active IBKR credentials
+ * Multi-tenant: Runs the manager for each user's account separately
  */
 export async function execute0dtePositionManager(): Promise<JobResult> {
   const now = new Date();
@@ -179,80 +180,123 @@ export async function execute0dtePositionManager(): Promise<JobResult> {
     return { success: false, error: 'Database not available', data: results };
   }
 
+  // Multi-tenant: Get all users with active IBKR credentials
+  const userIds = await getUsersWithActiveCredentials();
+  if (userIds.length === 0) {
+    results.summary = 'No users with active IBKR credentials';
+    console.log('[0DTE-Manager] No users with active IBKR credentials');
+    return { success: true, data: results };
+  }
+
+  console.log(`[0DTE-Manager] Running for ${userIds.length} user(s) with active credentials`);
+
+  // Process each user
+  let anySuccess = false;
+  for (const userId of userIds) {
+    console.log(`[0DTE-Manager] Processing user ${userId}...`);
+    try {
+      const userResult = await execute0dtePositionManagerForUser(userId, results);
+      if (userResult) anySuccess = true;
+    } catch (error: any) {
+      console.error(`[0DTE-Manager] Error for user ${userId}:`, error?.message);
+      results.errors.push(`User ${userId}: ${error?.message}`);
+    }
+  }
+
+  // Generate final summary
+  const successCount = results.closeResults.filter(r => r.success).length;
+  const failCount = results.closeResults.filter(r => !r.success).length;
+
+  if (failCount > 0) {
+    results.summary = `PARTIAL: Closed ${successCount}/${results.positionsAtRisk.length} risky positions. ${failCount} FAILED`;
+    return { success: false, error: results.summary, data: results };
+  } else if (successCount > 0) {
+    results.summary = `SUCCESS: Closed ${successCount} risky position(s) with delta > ${DELTA_THRESHOLD}`;
+    return { success: true, data: results };
+  } else {
+    results.summary = `Checked ${results.positionsChecked} positions, none required closing`;
+    return { success: true, data: results };
+  }
+}
+
+/**
+ * Execute the 0DTE position manager for a specific user
+ * Returns true if processing was successful (even if no positions found)
+ */
+async function execute0dtePositionManagerForUser(userId: string, results: JobResults): Promise<boolean> {
   try {
     // Step 1: Get today's date in ET
     const todayET = getETDateString(new Date());
-    console.log(`[0DTE-Manager] Checking for 0DTE positions expiring ${todayET}`);
+    console.log(`[0DTE-Manager] User ${userId}: Checking for 0DTE positions expiring ${todayET}`);
 
-    // Step 2: Get all open trades expiring today (0DTE)
-    const openTrades = await db
+    // Step 2: Get this user's open trades expiring today (0DTE)
+    const openTrades = await db!
       .select()
       .from(paperTrades)
       .where(
         and(
           eq(paperTrades.status, 'open'),
+          eq(paperTrades.userId, userId),
           sql`DATE(${paperTrades.expiration}) = ${todayET}`
         )
       );
 
     if (openTrades.length === 0) {
-      console.log('[0DTE-Manager] No 0DTE positions found');
-      results.summary = 'No 0DTE positions to manage';
-      return { success: true, data: results };
+      console.log(`[0DTE-Manager] User ${userId}: No 0DTE positions found`);
+      return true;
     }
 
-    console.log(`[0DTE-Manager] Found ${openTrades.length} open 0DTE trades`);
+    console.log(`[0DTE-Manager] User ${userId}: Found ${openTrades.length} open 0DTE trades`);
 
-    // Step 3: Get current positions from IBKR
-    const broker = getBroker();
+    // Step 3: Get current positions from this user's IBKR account
+    const broker = await getBrokerForUser(userId);
     let ibkrPositions: Position[] = [];
     let spotPrices: Map<string, number> = new Map();
 
-    if (broker.status.provider === 'ibkr') {
-      let retryCount = 0;
-      while (retryCount < MAX_RETRY_ATTEMPTS) {
-        try {
-          console.log(`[0DTE-Manager] Fetching IBKR positions (attempt ${retryCount + 1}/${MAX_RETRY_ATTEMPTS})...`);
-          await ensureIbkrReady();
-          ibkrPositions = await broker.api.getPositions();
-          console.log(`[0DTE-Manager] Got ${ibkrPositions.length} IBKR positions`);
+    if (broker.status.provider !== 'ibkr' || !broker.api) {
+      console.log(`[0DTE-Manager] User ${userId}: IBKR broker not available`);
+      results.errors.push(`User ${userId}: IBKR broker not available`);
+      return false;
+    }
 
-          // Get spot prices for underlyings
-          const underlyings = [...new Set(openTrades.map(t => t.symbol))];
-          for (const underlying of underlyings) {
-            try {
-              const marketData = await broker.api.getMarketData(underlying);
-              if (marketData?.price) {
-                spotPrices.set(underlying, marketData.price);
-                console.log(`[0DTE-Manager] ${underlying} spot price: $${marketData.price}`);
-              }
-            } catch (err) {
-              console.warn(`[0DTE-Manager] Could not get spot price for ${underlying}:`, err);
+    let retryCount = 0;
+    while (retryCount < MAX_RETRY_ATTEMPTS) {
+      try {
+        console.log(`[0DTE-Manager] User ${userId}: Fetching IBKR positions (attempt ${retryCount + 1}/${MAX_RETRY_ATTEMPTS})...`);
+        await ensureIbkrReady();
+        ibkrPositions = await broker.api.getPositions();
+        console.log(`[0DTE-Manager] User ${userId}: Got ${ibkrPositions.length} IBKR positions`);
+
+        // Get spot prices for underlyings
+        const underlyings = [...new Set(openTrades.map(t => t.symbol))];
+        for (const underlying of underlyings) {
+          try {
+            const marketData = await broker.api.getMarketData(underlying);
+            if (marketData?.price) {
+              spotPrices.set(underlying, marketData.price);
+              console.log(`[0DTE-Manager] ${underlying} spot price: $${marketData.price}`);
             }
-          }
-          break;
-        } catch (err: any) {
-          retryCount++;
-          const errMsg = `IBKR connection attempt ${retryCount} failed: ${err?.message || err}`;
-          console.error(`[0DTE-Manager] ${errMsg}`);
-          results.errors.push(errMsg);
-
-          if (retryCount < MAX_RETRY_ATTEMPTS) {
-            console.log(`[0DTE-Manager] Retrying in ${RETRY_DELAY_MS}ms...`);
-            await sleep(RETRY_DELAY_MS);
+          } catch (err) {
+            console.warn(`[0DTE-Manager] Could not get spot price for ${underlying}:`, err);
           }
         }
-      }
+        break;
+      } catch (err: any) {
+        retryCount++;
+        const errMsg = `IBKR connection attempt ${retryCount} failed: ${err?.message || err}`;
+        console.error(`[0DTE-Manager] User ${userId}: ${errMsg}`);
+        results.errors.push(`User ${userId}: ${errMsg}`);
 
-      if (ibkrPositions.length === 0) {
-        results.errors.push('Could not fetch IBKR positions after all retries');
-        results.summary = 'FAILED: IBKR connection unavailable';
-        return { success: false, error: 'IBKR unavailable', data: results };
+        if (retryCount < MAX_RETRY_ATTEMPTS) {
+          console.log(`[0DTE-Manager] Retrying in ${RETRY_DELAY_MS}ms...`);
+          await sleep(RETRY_DELAY_MS);
+        }
       }
-    } else {
-      results.errors.push('IBKR broker not configured');
-      results.summary = 'FAILED: IBKR broker not available';
-      return { success: false, error: 'IBKR not configured', data: results };
+    }
+
+    if (ibkrPositions.length === 0 && retryCount >= MAX_RETRY_ATTEMPTS) {
+      results.errors.push(`User ${userId}: Could not fetch IBKR positions after all retries`);
+      return false;
     }
 
     // Step 4: Match trades to positions and evaluate delta
@@ -260,7 +304,7 @@ export async function execute0dtePositionManager(): Promise<JobResult> {
 
     for (const trade of openTrades) {
       const tradeInfo = `${trade.symbol} ${trade.strategy} (${trade.id.slice(0, 8)})`;
-      console.log(`[0DTE-Manager] Evaluating: ${tradeInfo}`);
+      console.log(`[0DTE-Manager] User ${userId}: Evaluating: ${tradeInfo}`);
 
       // Find matching IBKR positions for this trade
       const leg1Strike = trade.leg1Strike ? parseFloat(trade.leg1Strike as any) : null;
@@ -340,6 +384,7 @@ export async function execute0dtePositionManager(): Promise<JobResult> {
             reason,
           };
           riskyPositions.push(risky);
+          results.positionsAtRisk.push(risky);
           console.log(`[0DTE-Manager] RISKY POSITION: ${posSymbol} - ${reason}`);
         } else {
           console.log(`[0DTE-Manager] Position safe: ${posSymbol} delta=${delta.toFixed(2)}, strike $${strikeDistance.toFixed(2)} from spot`);
@@ -347,16 +392,13 @@ export async function execute0dtePositionManager(): Promise<JobResult> {
       }
     }
 
-    results.positionsAtRisk = riskyPositions;
-
     // Step 5: Close risky positions
     if (riskyPositions.length === 0) {
-      console.log('[0DTE-Manager] No risky positions to close');
-      results.summary = `Checked ${results.positionsChecked} positions, all safe (delta <= ${DELTA_THRESHOLD})`;
-      return { success: true, data: results };
+      console.log(`[0DTE-Manager] User ${userId}: No risky positions to close`);
+      return true;
     }
 
-    console.log(`[0DTE-Manager] Found ${riskyPositions.length} risky positions to close`);
+    console.log(`[0DTE-Manager] User ${userId}: Found ${riskyPositions.length} risky positions to close`);
 
     for (const risky of riskyPositions) {
       console.log(`[0DTE-Manager] Closing ${risky.symbol}...`);
@@ -390,7 +432,7 @@ export async function execute0dtePositionManager(): Promise<JobResult> {
             // Update paper_trades to mark as closing (not closed yet)
             // TradeMonitor will calculate actual P&L from IBKR executions and set final status
             const exitReasonText = `Auto-closed by 0DTE manager: ${risky.reason}`;
-            await db
+            await db!
               .update(paperTrades)
               .set({
                 exitReason: exitReasonText,
@@ -424,26 +466,12 @@ export async function execute0dtePositionManager(): Promise<JobResult> {
       }
     }
 
-    // Step 6: Generate summary
-    const successCount = results.closeResults.filter(r => r.success).length;
-    const failCount = results.closeResults.filter(r => !r.success).length;
-
-    if (failCount > 0) {
-      results.summary = `PARTIAL: Closed ${successCount}/${riskyPositions.length} risky positions. ${failCount} FAILED - MANUAL INTERVENTION REQUIRED`;
-      return { success: false, error: results.summary, data: results };
-    } else if (successCount > 0) {
-      results.summary = `SUCCESS: Closed ${successCount} risky position(s) with delta > ${DELTA_THRESHOLD}`;
-      return { success: true, data: results };
-    } else {
-      results.summary = `Checked ${results.positionsChecked} positions, none required closing`;
-      return { success: true, data: results };
-    }
+    return true;
   } catch (error: any) {
     const errMsg = error?.message || 'Unknown error';
-    console.error('[0DTE-Manager] Fatal error:', error);
-    results.errors.push(`Fatal: ${errMsg}`);
-    results.summary = `FAILED: ${errMsg}`;
-    return { success: false, error: errMsg, data: results };
+    console.error(`[0DTE-Manager] User ${userId}: Fatal error:`, error);
+    results.errors.push(`User ${userId}: Fatal: ${errMsg}`);
+    return false;
   }
 }
 

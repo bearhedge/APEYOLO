@@ -284,3 +284,25 @@ export function clearAllBrokerCaches(): void {
   console.log('[Broker] Cleared all broker caches');
 }
 
+/**
+ * Get all user IDs with active IBKR credentials.
+ * Used by background jobs to run operations for each user's account.
+ */
+export async function getUsersWithActiveCredentials(): Promise<string[]> {
+  if (!db) {
+    console.warn('[Broker] Database not available');
+    return [];
+  }
+
+  try {
+    const activeUsers = await db.select({ userId: ibkrCredentials.userId })
+      .from(ibkrCredentials)
+      .where(eq(ibkrCredentials.status, 'active'));
+
+    return activeUsers.map(u => u.userId);
+  } catch (error) {
+    console.error('[Broker] Failed to get users with active credentials:', error);
+    return [];
+  }
+}
+

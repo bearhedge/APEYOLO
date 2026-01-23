@@ -16,7 +16,7 @@
 import { db } from '../../db';
 import { paperTrades, jobs, jobRuns, auditLogs } from '@shared/schema';
 import { eq, and, sql, gte } from 'drizzle-orm';
-import { getBroker } from '../../broker';
+import { getBrokerForUser, getUsersWithActiveCredentials } from '../../broker';
 import { ensureIbkrReady, placeCloseOrderByConid } from '../../broker/ibkr';
 import { registerJobHandler, type JobResult } from '../jobExecutor';
 import { getETDateString, getETTimeString, isMarketOpen, isEarlyCloseDay, getMarketStatus } from '../marketCalendar';
@@ -206,48 +206,61 @@ export async function executePositionMonitor(): Promise<JobResult> {
   }
 
   try {
-    // Get all open trades
-    const openTrades = await db
-      .select()
-      .from(paperTrades)
-      .where(eq(paperTrades.status, 'open'));
-
-    if (openTrades.length === 0) {
+    // Multi-tenant: Get all users with active IBKR credentials
+    const userIds = await getUsersWithActiveCredentials();
+    if (userIds.length === 0) {
       session.checksCompleted++;
       session.lastCheckTime = results.timeET;
-      results.summary = 'No open positions to monitor';
-      console.log('[PositionMonitor] No open positions');
-      // Return success but don't create a detailed job run
+      results.summary = 'No users with active IBKR credentials';
+      console.log('[PositionMonitor] No users with active IBKR credentials');
       return { success: true, data: results };
     }
 
-    console.log(`[PositionMonitor] Monitoring ${openTrades.length} open positions`);
+    let totalTrades = 0;
 
-    // Get broker data
-    const broker = getBroker();
-    if (broker.status.provider !== 'ibkr' || !broker.api) {
-      session.errors.push('IBKR not connected');
-      return { success: false, error: 'IBKR not connected', data: results };
-    }
+    // Process each user's positions
+    for (const userId of userIds) {
+      // Get this user's open trades
+      const openTrades = await db
+        .select()
+        .from(paperTrades)
+        .where(and(
+          eq(paperTrades.status, 'open'),
+          eq(paperTrades.userId, userId)
+        ));
 
-    await ensureIbkrReady();
-
-    // Get current positions and market data
-    const ibkrPositions = await broker.api.getPositions();
-    const spotPrices: Map<string, number> = new Map();
-
-    // Fetch spot prices for all underlyings
-    const underlyings = [...new Set(openTrades.map(t => t.symbol))];
-    for (const underlying of underlyings) {
-      try {
-        const marketData = await broker.api.getMarketData(underlying);
-        if (marketData?.price) {
-          spotPrices.set(underlying, marketData.price);
-        }
-      } catch (err) {
-        console.warn(`[PositionMonitor] Could not get price for ${underlying}`);
+      if (openTrades.length === 0) {
+        continue; // No open trades for this user
       }
-    }
+
+      totalTrades += openTrades.length;
+      console.log(`[PositionMonitor] User ${userId}: Monitoring ${openTrades.length} open positions`);
+
+      // Get user-specific broker
+      const broker = await getBrokerForUser(userId);
+      if (broker.status.provider !== 'ibkr' || !broker.api) {
+        console.warn(`[PositionMonitor] User ${userId}: IBKR not connected, skipping`);
+        continue;
+      }
+
+      await ensureIbkrReady();
+
+      // Get current positions and market data for this user
+      const ibkrPositions = await broker.api.getPositions();
+      const spotPrices: Map<string, number> = new Map();
+
+      // Fetch spot prices for all underlyings
+      const underlyings = [...new Set(openTrades.map(t => t.symbol))];
+      for (const underlying of underlyings) {
+        try {
+          const marketData = await broker.api.getMarketData(underlying);
+          if (marketData?.price) {
+            spotPrices.set(underlying, marketData.price);
+          }
+        } catch (err) {
+          console.warn(`[PositionMonitor] Could not get price for ${underlying}`);
+        }
+      }
 
     // Monitor each open trade
     for (const trade of openTrades) {
@@ -441,6 +454,15 @@ export async function executePositionMonitor(): Promise<JobResult> {
         console.error(`[PositionMonitor] ${errorMsg}`);
         session.errors.push(errorMsg);
       }
+    }
+    } // End of user loop
+
+    if (totalTrades === 0) {
+      session.checksCompleted++;
+      session.lastCheckTime = results.timeET;
+      results.summary = 'No open positions to monitor';
+      console.log('[PositionMonitor] No open positions');
+      return { success: true, data: results };
     }
 
     // Update session stats

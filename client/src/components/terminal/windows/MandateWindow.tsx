@@ -40,15 +40,15 @@ interface MandateFormData {
 
 const DEFAULT_FORM: MandateFormData = {
   allowedSymbols: 'SPY, SPX',
-  strategyType: '0DTE Credit Spreads',
+  strategyType: 'Credit Spreads',
   minDelta: '0.10',
   maxDelta: '0.35',
   maxDailyLossPercent: '2',
   noOvernightPositions: true,
   requireStopLoss: true,
-  maxStopLossMultiplier: '',
-  tradingWindowStart: '11:00',
-  exitDeadline: '15:59',
+  maxStopLossMultiplier: '3',
+  tradingWindowStart: '11:00',  // 11am ET = 12am HKT
+  exitDeadline: '15:59',        // 3:59pm ET = 3:59am HKT
 };
 
 export function MandateWindow() {
@@ -305,13 +305,13 @@ export function MandateWindow() {
     );
   }
 
-  // Display mode
+  // Display mode - Green table format
   return (
     <div style={{ fontFamily: "'IBM Plex Mono', monospace" }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
         <p style={{ color: '#4ade80', margin: 0 }}>
           <Shield style={{ width: 14, height: 14, display: 'inline', marginRight: 6 }} />
-          MANDATE ACTIVE
+          TRADING MANDATE
         </p>
         {!mandate.solanaSignature && (
           <button onClick={startEditing} style={editButtonStyle}>
@@ -320,33 +320,31 @@ export function MandateWindow() {
         )}
       </div>
 
-      {/* Rules */}
-      <div style={{ marginBottom: 16 }}>
-        <Row label="Symbols" value={mandate.allowedSymbols.join(', ')} />
-        <Row label="Strategy" value={mandate.strategyType} />
-        <Row label="Delta" value={`${(mandate.minDelta ?? 0).toFixed(2)} – ${(mandate.maxDelta ?? 0).toFixed(2)}`} />
-        <Row label="Max Loss" value={`${((mandate.maxDailyLossPercent ?? 0) * 100).toFixed(0)}%/day`} />
-        <Row
-          label="Overnight"
-          value={mandate.noOvernightPositions ? 'NOT ALLOWED' : 'Allowed'}
-          valueColor={mandate.noOvernightPositions ? '#ef4444' : undefined}
-        />
-        <Row
-          label="Stop Loss"
-          value={
-            mandate.requireStopLoss
-              ? mandate.maxStopLossMultiplier
-                ? `REQUIRED (max ${mandate.maxStopLossMultiplier}x)`
-                : 'REQUIRED'
-              : 'Optional'
-          }
-          valueColor={mandate.requireStopLoss ? '#4ade80' : undefined}
-        />
-        {mandate.tradingWindowStart && (
-          <Row label="Entry" value={`After ${mandate.tradingWindowStart} ET`} />
-        )}
-        {mandate.exitDeadline && <Row label="Exit" value={`By ${mandate.exitDeadline} ET`} />}
-      </div>
+      {/* Green bordered table */}
+      <table style={{
+        width: '100%',
+        borderCollapse: 'collapse',
+        border: '1px solid #4ade80',
+        fontSize: 12,
+        marginBottom: 16,
+      }}>
+        <tbody>
+          <TableRow label="Symbols" value={mandate.allowedSymbols.join(', ')} />
+          <TableRow label="Strategy" value={mandate.strategyType || 'Credit Spreads'} />
+          <TableRow label="Delta Range" value={`${(mandate.minDelta ?? 0.10).toFixed(2)} – ${(mandate.maxDelta ?? 0.35).toFixed(2)}`} />
+          <TableRow label="Daily Max Loss" value={`${((mandate.maxDailyLossPercent ?? 0.02) * 100).toFixed(0)}%`} />
+          <TableRow
+            label="Entry Window"
+            value={mandate.tradingWindowStart ? `After ${mandate.tradingWindowStart} ET (12:00am HKT)` : 'After 11:00am ET (12:00am HKT)'}
+          />
+          <TableRow
+            label="Exit By"
+            value={mandate.exitDeadline ? `${mandate.exitDeadline} ET (3:59am HKT)` : '3:59pm ET (3:59am HKT)'}
+          />
+          <TableRow label="Stop Loss" value="MANDATORY" highlight />
+          <TableRow label="Overnight" value="NOT ALLOWED" warn />
+        </tbody>
+      </table>
 
       {/* Blockchain Status */}
       <div style={{ borderTop: '1px solid #333', paddingTop: 12 }}>
@@ -446,6 +444,39 @@ function Row({
       <span style={{ color: '#888' }}>{label}</span>
       <span style={{ color: valueColor || '#fff' }}>{value}</span>
     </div>
+  );
+}
+
+function TableRow({
+  label,
+  value,
+  highlight,
+  warn,
+}: {
+  label: string;
+  value: string;
+  highlight?: boolean;
+  warn?: boolean;
+}) {
+  return (
+    <tr>
+      <td style={{
+        padding: '8px 12px',
+        borderBottom: '1px solid rgba(74, 222, 128, 0.3)',
+        color: '#888',
+        width: '40%',
+      }}>
+        {label}
+      </td>
+      <td style={{
+        padding: '8px 12px',
+        borderBottom: '1px solid rgba(74, 222, 128, 0.3)',
+        color: warn ? '#ef4444' : highlight ? '#4ade80' : '#fff',
+        fontWeight: highlight || warn ? 600 : 400,
+      }}>
+        {value}
+      </td>
+    </tr>
   );
 }
 

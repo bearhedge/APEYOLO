@@ -15,7 +15,7 @@
 import { db } from '../../db';
 import { paperTrades, jobs, auditLogs } from '@shared/schema';
 import { eq, and, sql, gte } from 'drizzle-orm';
-import { getBroker } from '../../broker';
+import { getBrokerForUser, getUsersWithActiveCredentials } from '../../broker';
 import { ensureIbkrReady, placeOptionOrderWithStop } from '../../broker/ibkr';
 import { registerJobHandler, type JobResult } from '../jobExecutor';
 import { getETDateString, getETTimeString, isMarketOpen, getMarketStatus } from '../marketCalendar';
@@ -85,9 +85,9 @@ async function logAudit(eventType: string, details: string, status: string = 'in
 }
 
 /**
- * Check if we already placed a trade today
+ * Check if a specific user already placed a trade today
  */
-async function hasTradeToday(): Promise<boolean> {
+async function hasTradeToday(userId: string): Promise<boolean> {
   if (!db) return false;
 
   const today = getETDateString();
@@ -99,7 +99,8 @@ async function hasTradeToday(): Promise<boolean> {
     .where(
       and(
         gte(paperTrades.createdAt, startOfDay),
-        eq(paperTrades.symbol, DEFAULT_SYMBOL)
+        eq(paperTrades.symbol, DEFAULT_SYMBOL),
+        eq(paperTrades.userId, userId)
       )
     )
     .limit(1);
@@ -124,9 +125,69 @@ function getTodayExpiration(): string {
 // ============================================
 
 /**
- * Execute the trade engine job
+ * Execute the trade engine job for ALL users with active IBKR credentials
+ * Multi-tenant: Runs the engine for each user's account separately
  */
 export async function executeTradeEngine(): Promise<JobResult> {
+  const timeET = getETTimeString(new Date());
+  console.log(`[TradeEngine] Starting multi-tenant trade engine at ${timeET} ET`);
+
+  // Check if market is open (same for all users)
+  if (!isMarketOpen()) {
+    const marketStatus = getMarketStatus();
+    console.log(`[TradeEngine] ${marketStatus.reason}, skipping`);
+    return {
+      success: true,
+      skipped: true,
+      reason: marketStatus.reason,
+      data: { message: `Market closed: ${marketStatus.reason}` },
+    };
+  }
+
+  if (!db) {
+    return { success: false, error: 'Database not available', data: {} };
+  }
+
+  // Get all users with active IBKR credentials
+  const userIds = await getUsersWithActiveCredentials();
+  if (userIds.length === 0) {
+    console.log('[TradeEngine] No users with active IBKR credentials');
+    return {
+      success: true,
+      skipped: true,
+      reason: 'No users with active IBKR credentials',
+      data: { usersProcessed: 0 },
+    };
+  }
+
+  console.log(`[TradeEngine] Running for ${userIds.length} user(s) with active credentials`);
+
+  // Run for each user
+  const results: Record<string, any> = {};
+  let anySuccess = false;
+
+  for (const userId of userIds) {
+    console.log(`[TradeEngine] Processing user: ${userId}`);
+    try {
+      const userResult = await executeTradeEngineForUser(userId);
+      results[userId] = userResult;
+      if (userResult.success) anySuccess = true;
+    } catch (error: any) {
+      console.error(`[TradeEngine] Error for user ${userId}:`, error?.message);
+      results[userId] = { success: false, error: error?.message };
+    }
+  }
+
+  return {
+    success: anySuccess,
+    data: { usersProcessed: userIds.length, results },
+  };
+}
+
+/**
+ * Execute the trade engine for a specific user
+ */
+async function executeTradeEngineForUser(userId: string): Promise<JobResult> {
   const result: TradeEngineResult = {
     timestamp: new Date().toISOString(),
     timeET: getETTimeString(new Date()),
@@ -141,30 +202,10 @@ export async function executeTradeEngine(): Promise<JobResult> {
     summary: '',
   };
 
-  console.log(`[TradeEngine] Starting trade engine at ${result.timeET} ET`);
-
-  // Check if market is open
-  if (!isMarketOpen()) {
-    const marketStatus = getMarketStatus();
-    console.log(`[TradeEngine] ${marketStatus.reason}, skipping`);
-    result.summary = `Market closed: ${marketStatus.reason}`;
-    return {
-      success: true,
-      skipped: true,
-      reason: marketStatus.reason,
-      data: result,
-    };
-  }
-
-  if (!db) {
-    result.summary = 'Database not available';
-    return { success: false, error: 'Database not available', data: result };
-  }
-
-  // Check idempotency - already traded today?
-  const alreadyTraded = await hasTradeToday();
+  // Check idempotency - has THIS USER already traded today?
+  const alreadyTraded = await hasTradeToday(userId);
   if (alreadyTraded) {
-    console.log('[TradeEngine] Already placed a trade today, skipping');
+    console.log(`[TradeEngine] User ${userId} already traded today, skipping`);
     result.summary = 'Already traded today';
     return {
       success: true,
@@ -175,11 +216,11 @@ export async function executeTradeEngine(): Promise<JobResult> {
   }
 
   try {
-    // Get broker and ensure IBKR is ready
-    const broker = getBroker();
+    // Get user-specific broker
+    const broker = await getBrokerForUser(userId);
     if (broker.status.provider !== 'ibkr' || !broker.api) {
       result.summary = 'IBKR not connected';
-      return { success: false, error: 'IBKR not connected', data: result };
+      return { success: false, error: 'IBKR not connected for user', data: result };
     }
 
     await ensureIbkrReady();
@@ -338,7 +379,7 @@ export async function executeTradeEngine(): Promise<JobResult> {
       const totalPremium = result.execution.orders.reduce((sum, o) => sum + o.premium * contracts * 100, 0);
 
       await db.insert(paperTrades).values({
-        userId: 'system', // System-generated trade
+        userId: userId, // User-specific trade
         symbol: DEFAULT_SYMBOL,
         strategy: decision.direction?.direction === 'STRANGLE' ? 'strangle' :
                   decision.direction?.direction === 'PUT' ? 'put_credit_spread' : 'call_credit_spread',

@@ -14,7 +14,7 @@
 import { db } from '../db';
 import { paperTrades, orders, type Trade } from '@shared/schema';
 import { eq, and, isNull, lt, inArray } from 'drizzle-orm';
-import { getBroker } from '../broker';
+import { getBrokerForUser, getUsersWithActiveCredentials } from '../broker';
 import { ensureIbkrReady } from '../broker/ibkr';
 import { registerJobHandler, type JobResult } from './jobExecutor';
 import { linkTradeOutcome, normalizeExitReason } from './rlhfService';

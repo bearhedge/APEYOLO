@@ -108,34 +108,38 @@
 
 /* Button Styles - Rectangular */
 .btn-primary {
-  @apply bg-white text-black px-4 py-2 font-medium transition-colors border border-white;
+  @apply bg-white text-black px-4 py-2 font-medium border border-white;
   border-radius: 0;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-size: 0.875rem;
+  transition: all 0.3s ease-out;
 }
 .btn-primary:hover { @apply bg-silver; }
 
 .btn-secondary {
-  @apply bg-transparent text-white px-4 py-2 font-medium transition-colors border border-white/30;
+  @apply bg-transparent text-white px-4 py-2 font-medium border border-white/30;
   border-radius: 0;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-size: 0.875rem;
+  transition: all 0.3s ease-out;
 }
 .btn-secondary:hover { @apply bg-white/10; }
 
 .btn-danger {
-  @apply inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-silver disabled:pointer-events-none disabled:opacity-50;
+  @apply inline-flex items-center justify-center rounded-lg px-4 py-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-silver disabled:pointer-events-none disabled:opacity-50;
   @apply bg-red-600 text-white shadow-sm hover:bg-red-700;
+  transition: all 0.3s ease-out;
 }
 
 .btn-destructive {
-  @apply bg-transparent text-red-500 px-4 py-2 font-medium transition-colors border border-red-500;
+  @apply bg-transparent text-red-500 px-4 py-2 font-medium border border-red-500;
   border-radius: 0;
   text-transform: uppercase;
   letter-spacing: 0.05em;
   font-size: 0.875rem;
+  transition: all 0.3s ease-out;
 }
 .btn-destructive:hover { @apply bg-red-500/10; }
 
@@ -156,14 +160,15 @@
   @apply px-4 py-3 border-t border-white/10 font-normal tabular-nums;
 }
 
-.table-monochrome tbody tr { @apply transition-colors; }
+.table-monochrome tbody tr { transition: all 0.3s ease-out; }
 .table-monochrome tbody tr:hover { @apply bg-dark-gray; }
 
 /* Input Styles - Rectangular & Terminal-like */
 .input-monochrome {
-  @apply bg-black text-white px-4 py-2 border border-white/30 focus:border-white focus:outline-none transition-colors;
+  @apply bg-black text-white px-4 py-2 border border-white/30 focus:border-white focus:outline-none;
   border-radius: 0;
   font-family: var(--font-mono);
+  transition: all 0.3s ease-out;
 }
 
 /* Status Dot */
@@ -219,7 +224,7 @@
 
 /* Smooth Transitions */
 .transition-smooth {
-  @apply transition-all duration-200 ease-in-out;
+  @apply transition-all duration-300 ease-out;
 }
 
 /* Tabular Numbers for Financial Data */
@@ -281,7 +286,7 @@
   background: none;
   border: none;
   font-family: inherit;
-  transition: color 0.2s;
+  transition: color 0.3s ease-out;
 }
 
 .terminal-window__close:hover {
@@ -351,7 +356,7 @@
   font-size: 12px;
   cursor: pointer;
   font-family: inherit;
-  transition: all 0.2s ease;
+  transition: all 0.3s ease-out;
 }
 
 .terminal-dock__item:hover {

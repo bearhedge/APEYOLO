@@ -19,7 +19,7 @@
 import { db } from '../../db';
 import { paperTrades, jobs } from '@shared/schema';
 import { eq, and, lt, isNull } from 'drizzle-orm';
-import { getBroker } from '../../broker';
+import { getBrokerForUser, getUsersWithActiveCredentials } from '../../broker';
 import { ensureIbkrReady, placePaperStockOrder } from '../../broker/ibkr';
 import { registerJobHandler, type JobResult } from '../jobExecutor';
 import { getETTimeString } from '../marketCalendar';
@@ -118,10 +118,11 @@ function sleep(ms: number): Promise<void> {
 
 /**
  * Get current quote for a symbol using broker interface
+ * Multi-tenant: Accepts userId for user-specific broker
  */
-async function getQuote(symbol: string): Promise<{ bid: number; ask: number; last: number } | null> {
+async function getQuote(symbol: string, userId: string): Promise<{ bid: number; ask: number; last: number } | null> {
   try {
-    const broker = getBroker();
+    const broker = await getBrokerForUser(userId);
     if (!broker.api) return null;
 
     // Try to get positions and use mark price
@@ -205,10 +206,11 @@ async function getLiquidationDecision(
 
 /**
  * Check if an order has been filled using broker interface
+ * Multi-tenant: Accepts userId for user-specific broker
  */
-async function checkOrderFilled(orderId: string): Promise<{ filled: boolean; fillPrice?: number; partialQty?: number }> {
+async function checkOrderFilled(orderId: string, userId: string): Promise<{ filled: boolean; fillPrice?: number; partialQty?: number }> {
   try {
-    const broker = getBroker();
+    const broker = await getBrokerForUser(userId);
     if (!broker.api) return { filled: false };
 
     // Try to get open orders - if our order isn't there, it's filled or cancelled
@@ -239,10 +241,11 @@ async function checkOrderFilled(orderId: string): Promise<{ filled: boolean; fil
 
 /**
  * Cancel an order using broker interface
+ * Multi-tenant: Accepts userId for user-specific broker
  */
-async function cancelOrderById(orderId: string): Promise<boolean> {
+async function cancelOrderById(orderId: string, userId: string): Promise<boolean> {
   try {
-    const broker = getBroker();
+    const broker = await getBrokerForUser(userId);
     if (!broker.api) return false;
 
     const result = await (broker.api as any).cancelOrder?.(orderId);
@@ -259,31 +262,32 @@ async function cancelOrderById(orderId: string): Promise<boolean> {
 
 /**
  * Detect assignments by correlating stock positions with expired ITM options
+ * Multi-tenant: Accepts userId for user-specific broker and trades
  */
-async function detectAssignments(): Promise<DetectedAssignment[]> {
-  console.log('[AssignmentMonitor] Detecting assignments...');
+async function detectAssignments(userId: string): Promise<DetectedAssignment[]> {
+  console.log(`[AssignmentMonitor] Detecting assignments for user ${userId}...`);
 
   const detected: DetectedAssignment[] = [];
 
   try {
-    // 1. Get current positions from IBKR
+    // 1. Get current positions from user-specific broker
     await ensureIbkrReady();
-    const broker = getBroker();
+    const broker = await getBrokerForUser(userId);
     if (!broker.api) {
-      console.error('[AssignmentMonitor] No broker available');
+      console.error(`[AssignmentMonitor] No broker available for user ${userId}`);
       return [];
     }
 
     const positions = await broker.api.getPositions() as unknown as IbkrPosition[];
     const stockPositions = positions.filter((p) => p.assetType === 'stock' && p.qty > 0);
 
-    console.log(`[AssignmentMonitor] Found ${stockPositions.length} stock positions`);
+    console.log(`[AssignmentMonitor] User ${userId}: Found ${stockPositions.length} stock positions`);
 
     if (stockPositions.length === 0) {
       return [];
     }
 
-    // 2. Get recently expired ITM options from paperTrades
+    // 2. Get user's recently expired ITM options from paperTrades
     if (!db) {
       console.error('[AssignmentMonitor] Database not available');
       return [];
@@ -376,10 +380,12 @@ async function detectAssignments(): Promise<DetectedAssignment[]> {
 
 /**
  * Attempt to liquidate assigned shares with monitoring loop
+ * Multi-tenant: Accepts userId for user-specific broker
  */
 async function liquidateAssignment(
   assignment: DetectedAssignment,
-  results: JobResults
+  results: JobResults,
+  userId: string
 ): Promise<void> {
   const { stockPosition, originatingTrade, assignmentPrice } = assignment;
   const symbol = stockPosition.symbol;
@@ -398,7 +404,7 @@ async function liquidateAssignment(
     attempt++;
 
     // Get current quote
-    const quote = await getQuote(symbol);
+    const quote = await getQuote(symbol, userId);
     if (!quote || quote.bid <= 0) {
       console.error(`[AssignmentMonitor] Cannot get valid quote for ${symbol}, waiting...`);
       await sleep(ORDER_CHECK_INTERVAL_MS);
@@ -412,7 +418,7 @@ async function liquidateAssignment(
     // Cancel previous order if exists
     if (orderId) {
       console.log(`[AssignmentMonitor] Cancelling previous order ${orderId}...`);
-      await cancelOrderById(orderId);
+      await cancelOrderById(orderId, userId);
       await sleep(2000);  // Wait for cancellation
     }
 
@@ -464,7 +470,7 @@ async function liquidateAssignment(
     while ((Date.now() - checkStartTime) < checkDuration) {
       await sleep(10000);  // Check every 10 seconds
 
-      const orderStatus = await checkOrderFilled(orderId);
+      const orderStatus = await checkOrderFilled(orderId, userId);
       if (orderStatus.filled) {
         filled = true;
         fillPrice = orderStatus.fillPrice || decision.limitPrice;
@@ -518,7 +524,7 @@ async function liquidateAssignment(
 
   try {
     // Get current spot price to save if not already set
-    const quote = await getQuote(symbol);
+    const quote = await getQuote(symbol, userId);
     const spotPriceAtClose = quote?.last;
 
     await db.update(paperTrades)
@@ -563,13 +569,11 @@ export async function executeAssignmentMonitor(): Promise<JobResult> {
   console.log(`[AssignmentMonitor] Starting at ${results.timeET} ET...`);
 
   try {
-    // 1. Detect assignments
-    const assignments = await detectAssignments();
-    results.assignmentsDetected = assignments;
-
-    if (assignments.length === 0) {
-      results.summary = 'No assignments detected';
-      console.log('[AssignmentMonitor] No assignments detected. Job complete.');
+    // Multi-tenant: Get all users with active IBKR credentials
+    const userIds = await getUsersWithActiveCredentials();
+    if (userIds.length === 0) {
+      results.summary = 'No users with active IBKR credentials';
+      console.log('[AssignmentMonitor] No users with active IBKR credentials. Job complete.');
       return {
         success: true,
         reason: results.summary,
@@ -577,11 +581,35 @@ export async function executeAssignmentMonitor(): Promise<JobResult> {
       };
     }
 
-    console.log(`[AssignmentMonitor] Detected ${assignments.length} assignment(s)`);
+    // Process each user
+    for (const userId of userIds) {
+      console.log(`[AssignmentMonitor] Processing user ${userId}...`);
 
-    // 2. Liquidate each assignment
-    for (const assignment of assignments) {
-      await liquidateAssignment(assignment, results);
+      // 1. Detect assignments for this user
+      const assignments = await detectAssignments(userId);
+
+      if (assignments.length === 0) {
+        console.log(`[AssignmentMonitor] User ${userId}: No assignments detected`);
+        continue;
+      }
+
+      results.assignmentsDetected.push(...assignments);
+      console.log(`[AssignmentMonitor] User ${userId}: Detected ${assignments.length} assignment(s)`);
+
+      // 2. Liquidate each assignment
+      for (const assignment of assignments) {
+        await liquidateAssignment(assignment, results, userId);
+      }
+    }
+
+    if (results.assignmentsDetected.length === 0) {
+      results.summary = 'No assignments detected for any user';
+      console.log('[AssignmentMonitor] No assignments detected. Job complete.');
+      return {
+        success: true,
+        reason: results.summary,
+        data: results,
+      };
     }
 
     // 3. Generate summary

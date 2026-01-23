@@ -15,7 +15,7 @@
  */
 
 import { TradingEngine } from '../engine/index';
-import { getBroker } from '../broker/index';
+import { getBrokerForUser, getUsersWithActiveCredentials } from '../broker/index';
 import { ensureIbkrReady, placePaperOptionOrder } from '../broker/ibkr';
 import { storage } from '../storage';
 import { getTradingWindow, isEarlyCloseDay, formatTimeForDisplay } from './marketCalendar';
@@ -58,6 +58,7 @@ class EngineScheduler {
   private intervalId: NodeJS.Timeout | null = null;
   private engine: TradingEngine | null = null;
   private tradesTodayDate: string = ''; // Track which day the count is for
+  private userId: string | null = null; // Multi-tenant: Track which user started the scheduler
 
   constructor() {
     this.config = { ...DEFAULT_CONFIG };
@@ -83,13 +84,19 @@ class EngineScheduler {
   }
 
   /**
-   * Start the scheduler
+   * Start the scheduler for a specific user
+   * Multi-tenant: Must provide userId to use user-specific broker
    */
-  start(): { success: boolean; message: string } {
+  start(userId: string): { success: boolean; message: string } {
     if (this.status.isRunning) {
       return { success: false, message: 'Scheduler is already running' };
     }
 
+    if (!userId) {
+      return { success: false, message: 'userId is required to start scheduler' };
+    }
+
+    this.userId = userId;
     this.config.enabled = true;
     this.status.isRunning = true;
     this.status.lastError = null;
@@ -104,8 +111,8 @@ class EngineScheduler {
     // Calculate next run time
     this.scheduleNextRun();
 
-    console.log('[EngineScheduler] Started');
-    this.logAudit('SCHEDULER_STARTED', 'Engine scheduler started');
+    console.log(`[EngineScheduler] Started for user ${userId}`);
+    this.logAudit('SCHEDULER_STARTED', `Engine scheduler started for user ${userId}`);
 
     return { success: true, message: 'Scheduler started successfully' };
   }
@@ -251,9 +258,15 @@ class EngineScheduler {
         this.engine = new TradingEngine();
       }
 
-      // Ensure IBKR is ready
-      const broker = getBroker();
-      if (broker.status.provider === 'ibkr') {
+      // Ensure IBKR is ready (multi-tenant: use user-specific broker)
+      if (!this.userId) {
+        console.error('[EngineScheduler] No userId set - scheduler started incorrectly');
+        this.scheduleNextRun();
+        return;
+      }
+
+      const broker = await getBrokerForUser(this.userId);
+      if (broker.status.provider === 'ibkr' && broker.api) {
         await ensureIbkrReady();
       }
 
@@ -297,9 +310,15 @@ class EngineScheduler {
 
   /**
    * Execute a trade based on the decision
+   * Multi-tenant: Uses user-specific broker
    */
   private async executeTrade(decision: any): Promise<void> {
-    const broker = getBroker();
+    if (!this.userId) {
+      console.error('[EngineScheduler] Cannot execute trade without userId');
+      return;
+    }
+
+    const broker = await getBrokerForUser(this.userId);
     const expiration = new Date().toISOString().slice(0, 10).replace(/-/g, '');
 
     console.log('[EngineScheduler] Executing trade...');
@@ -415,17 +434,23 @@ class EngineScheduler {
 
   /**
    * Manually trigger a single analysis run (for testing)
+   * Multi-tenant: Accepts optional userId to use user-specific broker
    */
-  async runOnce(): Promise<any> {
+  async runOnce(userId?: string): Promise<any> {
     console.log('[EngineScheduler] Running single analysis...');
+
+    const effectiveUserId = userId || this.userId;
+    if (!effectiveUserId) {
+      throw new Error('userId is required - either start() the scheduler with a userId or pass one to runOnce()');
+    }
 
     try {
       if (!this.engine) {
         this.engine = new TradingEngine();
       }
 
-      const broker = getBroker();
-      if (broker.status.provider === 'ibkr') {
+      const broker = await getBrokerForUser(effectiveUserId);
+      if (broker.status.provider === 'ibkr' && broker.api) {
         await ensureIbkrReady();
       }
 
