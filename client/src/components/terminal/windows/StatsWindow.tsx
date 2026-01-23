@@ -1,37 +1,16 @@
 /**
- * StatsWindow - Performance Metrics & Attestation
+ * StatsWindow - Advanced Performance Metrics & On-Chain Attestation
  *
- * Shows performance metrics with period selection:
- * - Top metrics: Total Return %, Total P&L $, Trade Count
- * - Core stats: Win Rate, Avg Win, Avg Loss, Profit Factor, Expectancy
- * - Risk-adjusted (30+ trades): Sharpe Ratio, Max Drawdown, Recovery Factor
- * - Period selector: MTD, YTD, Since Benchmark, All Time
- * - Attestation generation for on-chain proof
+ * Shows advanced trading analytics:
+ * - Profit Factor, Expectancy
+ * - Risk-adjusted metrics (30+ trades): Sharpe Ratio, Max Drawdown
+ * - On-chain attestation for verified track record
+ *
+ * Note: Basic stats (P&L, Win Rate) are shown in TradesWindow.
  */
 
 import { useState } from 'react';
 import { useQuery, useMutation } from '@tanstack/react-query';
-
-// Benchmark date: Jan 24, 2026 - public track record starts from this date
-const BENCHMARK_DATE = '2026-01-24';
-
-// API response types
-interface PeriodMetrics {
-  returnPercent: number;
-  pnlUsd: number;
-  pnlHkd: number;
-  tradeCount: number;
-  winRate: number;  // 0-1 scale
-}
-
-interface PerformanceAPIResponse {
-  success: boolean;
-  data: {
-    mtd: PeriodMetrics;
-    ytd: PeriodMetrics;
-    all: PeriodMetrics;
-  };
-}
 
 interface Trade {
   id: string;
@@ -59,7 +38,23 @@ interface AttestationPreview {
   hash?: string;
 }
 
-// Computed metrics from trade data
+interface PeriodMetrics {
+  returnPercent: number;
+  pnlUsd: number;
+  pnlHkd: number;
+  tradeCount: number;
+  winRate: number;
+}
+
+interface PerformanceAPIResponse {
+  success: boolean;
+  data: {
+    mtd: PeriodMetrics;
+    ytd: PeriodMetrics;
+    all: PeriodMetrics;
+  };
+}
+
 interface ComputedMetrics {
   totalReturn: number;
   totalPnl: number;
@@ -77,6 +72,9 @@ interface ComputedMetrics {
 }
 
 type Period = 'mtd' | 'ytd' | 'since_benchmark' | 'all';
+
+// Benchmark date: Jan 24, 2026 - public track record starts from this date
+const BENCHMARK_DATE = '2026-01-24';
 
 const PERIOD_LABELS: Record<Period, string> = {
   mtd: 'MTD',

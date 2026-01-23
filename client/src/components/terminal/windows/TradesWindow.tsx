@@ -58,27 +58,42 @@ export function TradesWindow() {
   // Calculate totals from closed trades only
   const closedTrades = trades.filter(t => t.status !== 'open');
   const totalPnl = closedTrades.reduce((sum, t) => sum + (t.realizedPnlUSD || 0), 0);
-  const wins = closedTrades.filter(t => t.outcome === 'win').length;
+  const winningTrades = closedTrades.filter(t => t.outcome === 'win');
+  const losingTrades = closedTrades.filter(t => t.outcome === 'loss');
+  const wins = winningTrades.length;
+  const losses = losingTrades.length;
   const winRate = closedTrades.length > 0 ? (wins / closedTrades.length) * 100 : 0;
+
+  // Calculate averages
+  const totalWinAmount = winningTrades.reduce((sum, t) => sum + (t.realizedPnlUSD || 0), 0);
+  const totalLossAmount = Math.abs(losingTrades.reduce((sum, t) => sum + (t.realizedPnlUSD || 0), 0));
+  const avgWin = wins > 0 ? totalWinAmount / wins : 0;
+  const avgLoss = losses > 0 ? totalLossAmount / losses : 0;
 
   return (
     <div style={{ fontFamily: "'IBM Plex Mono', monospace" }}>
       {/* Summary */}
       <div style={{ marginBottom: 16, paddingBottom: 12, borderBottom: '1px solid #333' }}>
-        <div style={{ display: 'flex', gap: 24, fontSize: 12 }}>
+        {/* Row 1: Main metrics */}
+        <div style={{ display: 'flex', gap: 20, fontSize: 12, marginBottom: 6 }}>
           <span>
-            Total P&L:{' '}
+            P&L:{' '}
             <span style={{ color: totalPnl >= 0 ? '#4ade80' : '#ef4444' }}>
               {totalPnl >= 0 ? '+' : ''}${totalPnl.toFixed(0)}
             </span>
           </span>
           <span>
-            Win Rate: <span style={{ color: '#fff' }}>{winRate.toFixed(0)}%</span>
-          </span>
-          <span>
-            Trades: <span style={{ color: '#fff' }}>{closedTrades.length}</span>
+            Win: <span style={{ color: winRate >= 50 ? '#4ade80' : '#f59e0b' }}>{winRate.toFixed(0)}%</span>
+            <span style={{ color: '#666', marginLeft: 4, fontSize: 10 }}>({wins}/{closedTrades.length})</span>
           </span>
         </div>
+        {/* Row 2: Avg Win/Loss */}
+        {closedTrades.length > 0 && (
+          <div style={{ display: 'flex', gap: 20, fontSize: 10, color: '#888' }}>
+            <span>Avg Win: <span style={{ color: '#4ade80' }}>+${avgWin.toFixed(0)}</span></span>
+            <span>Avg Loss: <span style={{ color: '#ef4444' }}>-${avgLoss.toFixed(0)}</span></span>
+          </div>
+        )}
       </div>
 
       {/* Trade List */}
