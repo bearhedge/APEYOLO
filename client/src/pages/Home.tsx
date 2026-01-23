@@ -16,7 +16,7 @@ export function Home() {
         <p className="text-2xl md:text-3xl text-white mb-2 tracking-wide" data-testid="text-hero-tagline">
           THE SAFEST WAY TO YOLO
         </p>
-        <p className="text-lg text-silver/70 mb-8">
+        <p className="text-lg mb-8 bg-gradient-to-r from-pink-500 via-purple-500 via-blue-500 via-cyan-400 via-green-400 via-yellow-400 to-orange-500 bg-clip-text text-transparent">
           Automated 0DTE SPY/SPX options trading
         </p>
         <Button
