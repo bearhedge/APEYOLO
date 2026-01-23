@@ -13,13 +13,13 @@ export function Home() {
           <img
             src="/ape-logo.png"
             alt="APE YOLO Logo"
-            className="w-48 h-48 mx-auto mb-6 object-contain"
+            className="w-72 h-72 mx-auto mb-2 object-contain"
           />
           <h1 className="text-6xl md:text-7xl font-bold mb-4 tracking-wide" data-testid="text-hero-title">
-            APEYOLO
+            APE YOLO
           </h1>
           <p className="text-2xl md:text-3xl text-white mb-8 tracking-wide" data-testid="text-hero-tagline">
-            THE SAFEST WAY TO YOLO.
+            THE SAFEST WAY TO YOLO
           </p>
           <p className="text-lg text-silver/80 mb-12 max-w-2xl mx-auto" data-testid="text-hero-description">
             Automated options trading powered by AI. Professional-grade risk management. 
@@ -39,7 +39,7 @@ export function Home() {
       {/* Features Grid */}
       <div className="px-6 py-16 bg-charcoal/50">
         <div className="max-w-6xl mx-auto">
-          <h2 className="text-3xl font-bold text-center mb-12">Why APEYOLO?</h2>
+          <h2 className="text-3xl font-bold text-center mb-12">Why APE YOLO?</h2>
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
             <div className="bg-charcoal rounded-2xl p-6 border border-white/10" data-testid="card-feature-ai">
               <Bot className="w-10 h-10 mb-4" />
@@ -125,7 +125,7 @@ export function Home() {
         <div className="max-w-2xl mx-auto text-center">
           <h2 className="text-3xl font-bold mb-4">Ready to Start Trading Smarter?</h2>
           <p className="text-silver mb-8">
-            Join professional traders using APEYOLO for systematic, automated options trading
+            Join professional traders using APE YOLO for systematic, automated options trading
           </p>
           <Button
             onClick={() => { window.location.href = '/api/auth/google'; }}
