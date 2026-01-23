@@ -11,15 +11,15 @@ interface Trade {
   id: string;
   symbol: string;
   strategy: string;
-  leg1Strike: number;
-  leg2Strike?: number;
+  putStrike?: number;    // API field name
+  callStrike?: number;   // API field name
   contracts: number;
-  entryPremiumTotal: number;
-  realizedPnl: number;
+  entryPremium?: number; // API field name (in HKD)
+  realizedPnlUSD: number; // API field name
   status: string;
   exitReason?: string;
-  createdAt: string;
-  closedAt?: string;
+  date: string;          // API field name
+  exitTime?: string;     // API field name
   solanaSignature?: string;
 }
 
@@ -30,7 +30,7 @@ export function TradesWindow() {
       const res = await fetch('/api/defi/trades?limit=20', { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch trades');
       const data = await res.json();
-      return data.trades || [];
+      return Array.isArray(data) ? data : (data.trades || []);
     },
     refetchInterval: 30000, // Refresh every 30 seconds
   });
@@ -53,8 +53,8 @@ export function TradesWindow() {
   }
 
   // Calculate totals
-  const totalPnl = trades.reduce((sum, t) => sum + (t.realizedPnl || 0), 0);
-  const wins = trades.filter(t => (t.realizedPnl || 0) > 0).length;
+  const totalPnl = trades.reduce((sum, t) => sum + (t.realizedPnlUSD || 0), 0);
+  const wins = trades.filter(t => (t.realizedPnlUSD || 0) > 0).length;
   const winRate = trades.length > 0 ? (wins / trades.length) * 100 : 0;
 
   return (
@@ -88,19 +88,19 @@ export function TradesWindow() {
 }
 
 function TradeRow({ trade }: { trade: Trade }) {
-  const pnl = trade.realizedPnl || 0;
+  const pnl = trade.realizedPnlUSD || 0;
   const pnlColor = pnl >= 0 ? '#4ade80' : '#ef4444';
   const pnlSign = pnl >= 0 ? '+' : '';
 
   // Guard against undefined dates
-  const dateValue = trade.closedAt || trade.createdAt;
+  const dateValue = trade.exitTime || trade.date;
   const dateStr = dateValue
     ? new Date(dateValue).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
     : 'N/A';
 
-  // Guard against undefined strikes
-  const strikes = trade.leg1Strike
-    ? (trade.leg2Strike ? `${trade.leg1Strike}/${trade.leg2Strike}` : `${trade.leg1Strike}`)
+  // Guard against undefined strikes (use putStrike/callStrike from API)
+  const strikes = trade.putStrike
+    ? (trade.callStrike ? `${trade.putStrike}/${trade.callStrike}` : `${trade.putStrike}`)
     : '';
 
   return (

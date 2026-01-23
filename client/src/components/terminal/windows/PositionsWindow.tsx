@@ -35,9 +35,24 @@ export function PositionsWindow() {
       const res = await fetch('/api/positions', { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch positions');
       const data = await res.json();
-      return data.positions || [];
+      return Array.isArray(data) ? data : [];
     },
     refetchInterval: 5000,
+  });
+
+  // Account summary query
+  const { data: account } = useQuery<{
+    nav?: number;
+    buyingPower?: number;
+    availableFunds?: number;
+  }>({
+    queryKey: ['/api/account'],
+    queryFn: async () => {
+      const res = await fetch('/api/account', { credentials: 'include' });
+      if (!res.ok) return null;
+      return res.json();
+    },
+    refetchInterval: 30000,
   });
 
   // Close single position mutation
@@ -97,6 +112,17 @@ export function PositionsWindow() {
 
   return (
     <div style={{ fontFamily: "'IBM Plex Mono', monospace" }}>
+      {/* Account Summary */}
+      {account && (
+        <div style={{ marginBottom: 12, paddingBottom: 12, borderBottom: '1px solid #333' }}>
+          <div style={{ display: 'flex', gap: 16, fontSize: 11 }}>
+            <span>NAV: <span style={{ color: '#4ade80' }}>${account.nav?.toLocaleString()}</span></span>
+            <span>BP: <span style={{ color: '#fff' }}>${account.buyingPower?.toLocaleString()}</span></span>
+            <span>Cash: <span style={{ color: '#fff' }}>${account.availableFunds?.toLocaleString()}</span></span>
+          </div>
+        </div>
+      )}
+
       {/* Header with Close All */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
         <p style={{ color: '#4ade80', margin: 0 }}>

@@ -54,7 +54,18 @@ export function StatsWindow() {
       const res = await fetch('/api/defi/performance', { credentials: 'include' });
       if (!res.ok) throw new Error('Failed to fetch performance');
       const data = await res.json();
-      return data.performance || data;
+      // API returns { success: true, data: { mtd: {...}, ytd: {...}, all: {...} } }
+      const period = data.data?.all || data.data?.mtd || {};
+      return {
+        totalReturn: period.returnPercent || 0,
+        winRate: (period.winRate || 0) * 100, // API returns 0-1, UI expects 0-100
+        totalTrades: period.tradeCount || 0,
+        totalPnl: period.pnlUsd || 0,
+        winCount: Math.round((period.winRate || 0) * (period.tradeCount || 0)),
+        lossCount: (period.tradeCount || 0) - Math.round((period.winRate || 0) * (period.tradeCount || 0)),
+        avgWin: 0, // Not provided by this endpoint
+        avgLoss: 0, // Not provided by this endpoint
+      };
     },
     refetchInterval: 60000,
   });
