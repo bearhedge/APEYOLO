@@ -5,7 +5,6 @@
  */
 
 import { useEffect } from 'react';
-import { TerminalHeader } from '@/components/terminal/TerminalHeader';
 import { WindowManager } from '@/components/terminal/WindowManager';
 import { Dock } from '@/components/terminal/Dock';
 import { useWindowManager, type WindowId } from '@/hooks/useWindowManager';
@@ -38,13 +37,9 @@ export function Terminal() {
         overflow: 'hidden',
       }}
     >
-      {/* Header */}
-      <TerminalHeader />
-
       {/* Main Area */}
       <main
         style={{
-          paddingTop: 40, // Header height
           minHeight: '100vh',
           position: 'relative',
         }}
