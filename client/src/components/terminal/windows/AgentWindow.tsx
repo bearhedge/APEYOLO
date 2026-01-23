@@ -66,6 +66,7 @@ function AgentLogView() {
   const terminalRef = useRef<HTMLDivElement>(null);
   const [copied, setCopied] = useState(false);
   const [waking, setWaking] = useState(false);
+  const [stopping, setStopping] = useState(false);
 
   // Copy logs to clipboard
   const copyLogs = () => {
@@ -95,6 +96,25 @@ function AgentLogView() {
     } finally {
       // Keep button disabled for a bit to prevent spam
       setTimeout(() => setWaking(false), 3000);
+    }
+  };
+
+  // Stop the running CodeAct agent
+  const stopAgent = async () => {
+    if (stopping) return;
+    setStopping(true);
+    try {
+      const res = await fetch('/api/agent/codeact/stop', {
+        method: 'POST',
+        credentials: 'include',
+      });
+      if (!res.ok) {
+        console.error('[AgentWindow] Stop failed:', await res.text());
+      }
+    } catch (err) {
+      console.error('[AgentWindow] Stop error:', err);
+    } finally {
+      setTimeout(() => setStopping(false), 1000);
     }
   };
 
@@ -134,6 +154,21 @@ function AgentLogView() {
             }}
           >
             {waking ? 'WAKING...' : 'WAKE'}
+          </button>
+          <button
+            onClick={stopAgent}
+            disabled={stopping}
+            style={{
+              padding: '2px 8px',
+              background: stopping ? 'rgba(239, 68, 68, 0.2)' : 'none',
+              border: `1px solid ${stopping ? '#ef4444' : '#333'}`,
+              color: '#ef4444',
+              fontSize: 9,
+              cursor: stopping ? 'not-allowed' : 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            {stopping ? 'STOPPING...' : 'STOP'}
           </button>
           <button
             onClick={copyLogs}

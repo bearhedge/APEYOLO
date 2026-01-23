@@ -113,10 +113,18 @@ You may: Observe market data only.
 You may NOT: Propose or execute any trades.
 Focus on: Logging observations for tomorrow's analysis.`;
 
+// Track the currently running orchestrator for abort functionality
+let activeOrchestrator: CodeActOrchestrator | null = null;
+
+export function getActiveOrchestrator(): CodeActOrchestrator | null {
+  return activeOrchestrator;
+}
+
 export class CodeActOrchestrator {
   private sessionId: string;
   private mode: Mode;
   private messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [];
+  private aborted: boolean = false;
 
   constructor(config: OrchestratorConfig) {
     this.sessionId = config.sessionId ?? uuidv4();
@@ -137,6 +145,10 @@ export class CodeActOrchestrator {
    * Run the CodeAct loop: Reason -> Code -> Observe -> Repeat
    */
   async run(trigger: { type: 'scheduled' | 'user'; message: string }): Promise<void> {
+    // Track this as the active orchestrator
+    activeOrchestrator = this;
+    this.aborted = false;
+
     logger.start('BANANA_TIME', `Session started (${this.mode})`);
 
     // Add trigger message
@@ -222,6 +234,11 @@ Error details: ${prefetchResult.error || prefetchResult.stderr || 'Prices return
 
     // Agent loop - max 10 iterations to prevent runaway
     for (let i = 0; i < 10; i++) {
+      // Check if aborted
+      if (this.aborted) {
+        break;
+      }
+
       // Get DeepSeek response
       logger.start('APE_BRAIN', '');
 
@@ -278,7 +295,10 @@ Error details: ${prefetchResult.error || prefetchResult.stderr || 'Prices return
       break;
     }
 
-    logger.start('BACK_TO_TREE', 'Session complete');
+    logger.start('BACK_TO_TREE', this.aborted ? 'Session stopped' : 'Session complete');
+
+    // Clear active orchestrator
+    activeOrchestrator = null;
   }
 
   /**
@@ -312,6 +332,18 @@ Error details: ${prefetchResult.error || prefetchResult.stderr || 'Prices return
 
   getSessionId(): string {
     return this.sessionId;
+  }
+
+  /**
+   * Abort the current run
+   */
+  abort(): void {
+    this.aborted = true;
+    logger.start('NO_SWING', 'Agent stopped by user');
+  }
+
+  isAborted(): boolean {
+    return this.aborted;
   }
 }
 

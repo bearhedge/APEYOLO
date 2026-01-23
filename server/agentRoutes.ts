@@ -2345,6 +2345,32 @@ router.post('/codeact/wake', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/agent/codeact/stop
+ *
+ * Stop the currently running CodeAct agent.
+ */
+router.post('/codeact/stop', async (_req: Request, res: Response) => {
+  try {
+    const { getActiveOrchestrator } = await import('./agent/codeact/orchestrator');
+
+    const orchestrator = getActiveOrchestrator();
+    if (orchestrator) {
+      orchestrator.abort();
+      console.log('[CodeAct] Agent stopped by user');
+      res.json({ success: true, message: 'Agent stopped' });
+    } else {
+      res.json({ success: true, message: 'No agent running' });
+    }
+  } catch (error: any) {
+    console.error('[CodeAct] Stop error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'CodeAct stop failed',
+    });
+  }
+});
+
+/**
  * POST /api/agent/codeact/chat
  *
  * User-initiated chat with the CodeAct agent.
