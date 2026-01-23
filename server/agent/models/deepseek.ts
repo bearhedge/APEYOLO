@@ -89,15 +89,28 @@ export class DeepSeekClient {
    */
   async chat(messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>): Promise<string> {
     try {
-      const response = await fetch(`${this.baseUrl}/api/chat`, {
+      // Use OpenAI-compatible endpoint (more reliable than /api/chat for deepseek-r1)
+      // 90 second timeout for LLM responses
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 90000);
+
+      console.log('[DeepSeek] Calling chat with', messages.length, 'messages');
+
+      const response = await fetch(`${this.baseUrl}/v1/chat/completions`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'ngrok-skip-browser-warning': 'true',
+        },
         body: JSON.stringify({
           model: 'deepseek-r1:70b',
           messages,
-          stream: false,
+          max_tokens: 4000,
         }),
+        signal: controller.signal,
       });
+
+      clearTimeout(timeoutId);
 
       if (!response.ok) {
         const error = await response.text();
@@ -105,7 +118,9 @@ export class DeepSeekClient {
       }
 
       const data = await response.json();
-      return data.message?.content ?? '';
+      const content = data.choices?.[0]?.message?.content ?? '';
+      console.log('[DeepSeek] Chat response length:', content.length);
+      return content;
     } catch (error: any) {
       console.error('[DeepSeek] Chat error:', error.message);
       throw error;

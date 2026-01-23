@@ -109,7 +109,7 @@ export function StatsWindow() {
     return <p style={{ color: '#ef4444' }}>&gt; ERROR: Failed to load stats</p>;
   }
 
-  if (!stats || stats.totalTrades === 0) {
+  if (!stats || !stats.totalTrades) {
     return (
       <div>
         <p>&gt; NO PERFORMANCE DATA</p>
@@ -146,7 +146,7 @@ export function StatsWindow() {
           value={`${(stats.totalPnl ?? 0) >= 0 ? '+' : ''}$${(stats.totalPnl ?? 0).toFixed(0)}`}
           color={(stats.totalPnl ?? 0) >= 0 ? '#4ade80' : '#ef4444'}
         />
-        <MetricCard label="Trades" value={stats.totalTrades.toString()} color="#fff" />
+        <MetricCard label="Trades" value={(stats.totalTrades ?? 0).toString()} color="#fff" />
       </div>
 
       {/* Detailed Stats */}

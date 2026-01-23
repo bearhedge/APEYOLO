@@ -133,6 +133,11 @@ export function Settings({
   });
   const [connectionModeLoading, setConnectionModeLoading] = useState(false);
 
+  // API Key state for TWS Relay
+  const [apiKey, setApiKey] = useState<{id: string; key: string; createdAt: string; lastUsedAt?: string} | null>(null);
+  const [newlyGeneratedKey, setNewlyGeneratedKey] = useState<string | null>(null);
+  const [showApiKey, setShowApiKey] = useState(false);
+
   // Fetch current connection mode from server on mount
   useEffect(() => {
     const fetchConnectionMode = async () => {
@@ -631,6 +636,82 @@ export function Settings({
       setCredTestResult(null);
     },
   });
+
+  // ==================== API KEYS FOR TWS RELAY ====================
+
+  // Fetch API keys
+  const { data: apiKeyData } = useQuery({
+    queryKey: ['/api/settings/api-keys'],
+    queryFn: async () => {
+      const response = await fetch('/api/settings/api-keys', { credentials: 'include' });
+      return response.json();
+    },
+    enabled: connectionMethod === 'relay',
+  });
+
+  // Update apiKey state when data changes
+  useEffect(() => {
+    if (apiKeyData?.keys && apiKeyData.keys.length > 0) {
+      const key = apiKeyData.keys[0];
+      setApiKey({
+        id: key.id,
+        key: key.keyPrefix + '...' + key.keySuffix,
+        createdAt: key.createdAt,
+        lastUsedAt: key.lastUsedAt,
+      });
+    } else {
+      setApiKey(null);
+    }
+  }, [apiKeyData]);
+
+  // Generate API key mutation
+  const generateApiKeyMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch('/api/settings/api-keys', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ name: 'Relay Key' }),
+      });
+      return response.json();
+    },
+    onSuccess: (data) => {
+      if (data.key) {
+        setNewlyGeneratedKey(data.key);
+        setApiKey({
+          id: data.id,
+          key: data.key,
+          createdAt: data.createdAt,
+        });
+      }
+      queryClient.invalidateQueries({ queryKey: ['/api/settings/api-keys'] });
+    },
+  });
+
+  // Delete API key mutation
+  const deleteApiKeyMutation = useMutation({
+    mutationFn: async (id: string) => {
+      const response = await fetch(`/api/settings/api-keys/${id}`, {
+        method: 'DELETE',
+        credentials: 'include',
+      });
+      return response.json();
+    },
+    onSuccess: () => {
+      setNewlyGeneratedKey(null);
+      setApiKey(null);
+      queryClient.invalidateQueries({ queryKey: ['/api/settings/api-keys'] });
+    },
+  });
+
+  const copyApiKey = () => {
+    if (newlyGeneratedKey) {
+      navigator.clipboard.writeText(newlyGeneratedKey);
+    } else if (apiKey) {
+      // Can't copy masked key - show message instead
+      navigator.clipboard.writeText(apiKey.key);
+    }
+  };
 
   const handleSaveCredentials = () => {
     if (!credClientId || !credClientKeyId || !credPrivateKey || !credUsername) {
@@ -1201,6 +1282,101 @@ export function Settings({
             {connectionMethod === 'relay' && (
               <div className="p-6 border-t border-white/10">
                 <h4 className="text-sm font-medium text-silver uppercase tracking-wider mb-4">TWS/Gateway Relay</h4>
+
+                {/* API Key Section */}
+                <div className="space-y-4 mb-6">
+                  <h5 className="text-sm font-medium text-white">API Key</h5>
+
+                  {apiKey ? (
+                    <div className="space-y-3">
+                      {/* Show masked key */}
+                      <div className="flex items-center gap-2">
+                        <code className="bg-black/50 px-3 py-2 rounded text-sm font-mono flex-1">
+                          {showApiKey && newlyGeneratedKey ? newlyGeneratedKey : apiKey.key}
+                        </code>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setShowApiKey(!showApiKey)}
+                          disabled={!newlyGeneratedKey}
+                          title={newlyGeneratedKey ? (showApiKey ? 'Hide key' : 'Show key') : 'Full key only visible after generation'}
+                        >
+                          {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={copyApiKey}
+                          title="Copy to clipboard"
+                        >
+                          <Copy className="w-4 h-4" />
+                        </Button>
+                      </div>
+
+                      {/* Key info */}
+                      <p className="text-xs text-silver">
+                        Created: {new Date(apiKey.createdAt).toLocaleDateString()}
+                        {apiKey.lastUsedAt && ` \u2022 Last used: ${new Date(apiKey.lastUsedAt).toLocaleDateString()}`}
+                      </p>
+
+                      {/* Actions */}
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            if (apiKey && window.confirm('This will invalidate your current API key. Continue?')) {
+                              deleteApiKeyMutation.mutate(apiKey.id, {
+                                onSuccess: () => {
+                                  generateApiKeyMutation.mutate();
+                                }
+                              });
+                            }
+                          }}
+                          disabled={generateApiKeyMutation.isPending || deleteApiKeyMutation.isPending}
+                        >
+                          <RefreshCw className={`w-4 h-4 mr-2 ${generateApiKeyMutation.isPending ? 'animate-spin' : ''}`} />
+                          Regenerate
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          onClick={() => {
+                            if (apiKey && window.confirm('Are you sure you want to delete this API key?')) {
+                              deleteApiKeyMutation.mutate(apiKey.id);
+                            }
+                          }}
+                          disabled={deleteApiKeyMutation.isPending}
+                        >
+                          <Trash2 className="w-4 h-4 mr-2" />
+                          Delete
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <Button
+                      onClick={() => generateApiKeyMutation.mutate()}
+                      disabled={generateApiKeyMutation.isPending}
+                    >
+                      <Key className="w-4 h-4 mr-2" />
+                      {generateApiKeyMutation.isPending ? 'Generating...' : 'Generate API Key'}
+                    </Button>
+                  )}
+
+                  {/* Show full key once after generation */}
+                  {newlyGeneratedKey && (
+                    <div className="p-4 bg-green-500/10 border border-green-500/30 rounded">
+                      <p className="text-sm text-green-400 mb-2">
+                        Copy your API key now - it won't be shown again!
+                      </p>
+                      <code className="bg-black px-3 py-2 rounded text-sm font-mono block break-all">
+                        {newlyGeneratedKey}
+                      </code>
+                    </div>
+                  )}
+                </div>
+
+                {/* Connection Instructions */}
                 <div className="p-4 bg-dark-gray rounded-lg border border-white/10 mb-4">
                   <p className="text-sm text-silver mb-3">
                     Connect your local TWS or IB Gateway to APE-YOLO using the relay connector.
@@ -1210,7 +1386,9 @@ export function Settings({
                     <p className="text-electric">1. Start TWS or IB Gateway and log in</p>
                     <p className="text-electric">2. Enable API connections in TWS settings</p>
                     <p className="text-electric">3. Run the relay connector:</p>
-                    <p className="text-white mt-2 bg-black/50 p-2 rounded">npx apeyolo-connect --api-key YOUR_API_KEY</p>
+                    <p className="text-white mt-2 bg-black/50 p-2 rounded">
+                      npx apeyolo-connect --api-key {newlyGeneratedKey || apiKey?.key || 'YOUR_API_KEY'}
+                    </p>
                   </div>
                 </div>
                 <div className="flex items-center gap-2 text-yellow-400">

@@ -256,7 +256,7 @@ function ActivityItem({ activity }: { activity: ActivityData }) {
   return (
     <div style={{ marginBottom: 4, fontSize: 10 }}>
       <span style={{ color: '#666' }}>
-        {activity.timestamp.toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' })}
+        {new Date(activity.timestamp).toLocaleTimeString('en-US', { hour12: false, hour: '2-digit', minute: '2-digit' })}
       </span>
       {' '}
       {activity.tool && <span style={{ color: '#87ceeb' }}>[{activity.tool}]</span>}
@@ -313,7 +313,7 @@ function ProposalCard({ proposal, critique, onExecute, onDismiss, isProcessing }
         </div>
         {proposal.legs.map((leg, i) => (
           <div key={i} style={{ color: '#666', fontSize: 10 }}>
-            {leg.optionType} {leg.strike} @ ${leg.premium.toFixed(2)}
+            {leg.optionType} {leg.strike} @ ${(leg.premium ?? 0).toFixed(2)}
           </div>
         ))}
         {proposal.contracts && (
