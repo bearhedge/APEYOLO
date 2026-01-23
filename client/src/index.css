@@ -243,3 +243,166 @@
     text-wrap: balance;
   }
 }
+
+/* ==================== TERMINAL STYLES ==================== */
+
+/* Terminal Window */
+.terminal-window {
+  position: absolute;
+  background: #000;
+  border: 1px solid #333;
+  min-width: 200px;
+  min-height: 100px;
+  resize: both;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.terminal-window__header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 10px 14px;
+  border-bottom: 1px solid #333;
+  cursor: move;
+  user-select: none;
+}
+
+.terminal-window__title {
+  font-size: 13px;
+  color: #fff;
+}
+
+.terminal-window__close {
+  font-size: 12px;
+  color: #888;
+  cursor: pointer;
+  background: none;
+  border: none;
+  font-family: inherit;
+  transition: color 0.2s;
+}
+
+.terminal-window__close:hover {
+  color: #fff;
+}
+
+.terminal-window__content {
+  padding: 16px;
+  flex: 1;
+  overflow: auto;
+  font-size: 13px;
+  line-height: 1.8;
+  color: #888;
+}
+
+/* Resize handle */
+.terminal-window::after {
+  content: '';
+  position: absolute;
+  bottom: 0;
+  right: 0;
+  width: 12px;
+  height: 12px;
+  cursor: nwse-resize;
+  background: linear-gradient(135deg, transparent 50%, #444 50%);
+}
+
+/* Terminal Dock */
+.terminal-dock {
+  position: fixed;
+  bottom: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  z-index: 100;
+  font-size: 13px;
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+.terminal-dock__prompt {
+  color: #707070;
+  margin-right: 4px;
+}
+
+.terminal-dock__cursor {
+  display: inline-block;
+  width: 8px;
+  height: 16px;
+  background: #fff;
+  animation: terminal-blink 1s step-end infinite;
+  vertical-align: text-bottom;
+  margin-right: 12px;
+}
+
+@keyframes terminal-blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+.terminal-dock__item {
+  padding: 8px 14px;
+  background: transparent;
+  border: 1px solid #333;
+  color: #888;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: inherit;
+  transition: all 0.2s ease;
+}
+
+.terminal-dock__item:hover {
+  border-color: #555;
+  color: #fff;
+}
+
+.terminal-dock__item.active {
+  border-color: #fff;
+  color: #fff;
+}
+
+/* Terminal Header */
+.terminal-header {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 40px;
+  background: #707070;
+  display: flex;
+  align-items: center;
+  padding: 0 16px;
+  gap: 24px;
+  z-index: 200;
+  font-size: 13px;
+  font-family: 'IBM Plex Mono', monospace;
+}
+
+/* Terminal responsive */
+@media (max-width: 768px) {
+  .terminal-window {
+    position: fixed !important;
+    top: 50% !important;
+    left: 50% !important;
+    right: auto !important;
+    bottom: auto !important;
+    transform: translate(-50%, -50%) !important;
+    width: calc(100% - 32px);
+    max-width: none;
+  }
+
+  .terminal-dock {
+    flex-wrap: wrap;
+    justify-content: center;
+    max-width: calc(100% - 32px);
+    gap: 8px;
+  }
+
+  .terminal-dock__prompt,
+  .terminal-dock__cursor {
+    display: none;
+  }
+}

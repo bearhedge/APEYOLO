@@ -83,6 +83,35 @@ export class DeepSeekClient {
     }
   }
 
+  /**
+   * Multi-turn chat method for CodeAct orchestrator.
+   * Maintains conversation history and returns the assistant's response.
+   */
+  async chat(messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>): Promise<string> {
+    try {
+      const response = await fetch(`${this.baseUrl}/api/chat`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: 'deepseek-r1:70b',
+          messages,
+          stream: false,
+        }),
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        throw new Error(`DeepSeek chat failed: ${response.status} - ${error}`);
+      }
+
+      const data = await response.json();
+      return data.message?.content ?? '';
+    } catch (error: any) {
+      console.error('[DeepSeek] Chat error:', error.message);
+      throw error;
+    }
+  }
+
   private parseTriageResponse(content: string): TriageResult {
     try {
       // Extract <think>...</think> reasoning from deepseek-r1

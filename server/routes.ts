@@ -18,6 +18,7 @@ import {
   insertCashFlowSchema,
   paperTrades,
   ibkrCredentials,
+  apiKeys,
   navSnapshots,
   type SpreadConfig
 } from "@shared/schema";
@@ -43,6 +44,7 @@ import publicRoutes from "./publicRoutes.js";
 import indicatorRoutes from "./indicatorRoutes.js";
 import replayRoutes from "./replayRoutes.js";
 import ddRoutes from "./ddRoutes.js";
+import { initRelayWebSocket, hasRelayConnection, getRelayStatus, sendTradeSignal } from "./routes/relayRoutes";
 import cors from "cors";
 import { getTodayOpeningSnapshot, getTodayClosingSnapshot, getPreviousClosingSnapshot, isMarketHours } from "./services/navSnapshot.js";
 // Yahoo Finance removed - using IBKR historical data instead
@@ -460,10 +462,134 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // ==================== API KEYS FOR TWS RELAY ====================
+
+  // GET /api/settings/api-keys - List user's API keys (masked)
+  app.get('/api/settings/api-keys', requireAuth, async (req, res) => {
+    try {
+      const userId = req.user!.id;
+      if (!db) {
+        return res.status(503).json({ error: 'Database not available' });
+      }
+
+      const keys = await db.select({
+        id: apiKeys.id,
+        name: apiKeys.name,
+        keyPrefix: sql<string>`LEFT(${apiKeys.key}, 8)`,
+        lastUsedAt: apiKeys.lastUsedAt,
+        createdAt: apiKeys.createdAt,
+      }).from(apiKeys)
+        .where(eq(apiKeys.userId, userId))
+        .orderBy(desc(apiKeys.createdAt));
+
+      return res.json({
+        keys: keys.map(k => ({
+          id: k.id,
+          name: k.name,
+          keyPreview: k.keyPrefix + '****',
+          lastUsedAt: k.lastUsedAt,
+          createdAt: k.createdAt,
+        }))
+      });
+    } catch (error) {
+      console.error('[Settings] List API keys error:', error);
+      res.status(500).json({ error: 'Failed to list API keys' });
+    }
+  });
+
+  // POST /api/settings/api-keys - Generate new API key (returns full key once)
+  app.post('/api/settings/api-keys', requireAuth, async (req, res) => {
+    try {
+      const userId = req.user!.id;
+      if (!db) {
+        return res.status(503).json({ error: 'Database not available' });
+      }
+
+      const { name } = req.body;
+
+      // Generate a secure random API key (48 bytes = 64 chars base64url)
+      const key = crypto.randomBytes(48).toString('base64url');
+
+      const [inserted] = await db.insert(apiKeys).values({
+        userId,
+        key,
+        name: name || 'TWS Relay Key',
+      }).returning({
+        id: apiKeys.id,
+        name: apiKeys.name,
+        createdAt: apiKeys.createdAt,
+      });
+
+      console.log(`[Settings] Created API key for user ${userId}`);
+
+      // Return the full key - this is the only time it's shown
+      return res.json({
+        success: true,
+        key, // Full key shown once
+        id: inserted.id,
+        name: inserted.name,
+        createdAt: inserted.createdAt,
+        message: 'API key created. Save this key - it will not be shown again.'
+      });
+    } catch (error) {
+      console.error('[Settings] Create API key error:', error);
+      res.status(500).json({ error: 'Failed to create API key' });
+    }
+  });
+
+  // DELETE /api/settings/api-keys/:id - Revoke an API key
+  app.delete('/api/settings/api-keys/:id', requireAuth, async (req, res) => {
+    try {
+      const userId = req.user!.id;
+      const keyId = req.params.id;
+      if (!db) {
+        return res.status(503).json({ error: 'Database not available' });
+      }
+
+      // Only delete if the key belongs to this user
+      const result = await db.delete(apiKeys)
+        .where(and(
+          eq(apiKeys.id, keyId),
+          eq(apiKeys.userId, userId)
+        ))
+        .returning({ id: apiKeys.id });
+
+      if (result.length === 0) {
+        return res.status(404).json({ error: 'API key not found' });
+      }
+
+      console.log(`[Settings] Deleted API key ${keyId} for user ${userId}`);
+      return res.json({
+        success: true,
+        message: 'API key revoked'
+      });
+    } catch (error) {
+      console.error('[Settings] Delete API key error:', error);
+      res.status(500).json({ error: 'Failed to delete API key' });
+    }
+  });
+
+  // GET /api/settings/relay-status - Check if relay is connected for this user
+  app.get('/api/settings/relay-status', requireAuth, async (req, res) => {
+    try {
+      const userId = req.user!.id;
+      const status = getRelayStatus(userId);
+      return res.json(status);
+    } catch (error) {
+      console.error('[Settings] Get relay status error:', error);
+      res.status(500).json({ error: 'Failed to get relay status' });
+    }
+  });
+
+  // ==================== END API KEYS ====================
+
   // Initialize jobs system (register handlers, seed default jobs)
   await initializeJobsSystem();
 
   const httpServer = createServer(app);
+
+  // Initialize TWS Relay Socket.IO server at /relay
+  initRelayWebSocket(httpServer);
 
   // WebSocket server for live data
   const wss = new WebSocketServer({ server: httpServer, path: '/ws' });

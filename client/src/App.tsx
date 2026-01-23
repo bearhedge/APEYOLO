@@ -17,6 +17,7 @@ import { Settings } from "@/pages/Settings";
 import { Trade } from "@/pages/Trade";
 import { Review } from "@/pages/Review";
 import { Admin } from "@/pages/Admin";
+import { Terminal } from "@/pages/Terminal";
 import { WalletProvider, useWalletContext } from "@/components/WalletProvider";
 import { getAccount, getDiag } from "@/lib/api";
 import { useWallet } from "@solana/wallet-adapter-react";
@@ -190,6 +191,7 @@ function App() {
             {/* New consolidated routes */}
             <Route path="/trade" component={Trade} />
             <Route path="/admin" component={Admin} />
+            <Route path="/terminal" component={Terminal} />
 
             {/* Redirects for old routes to new Admin page */}
             <Route path="/review">

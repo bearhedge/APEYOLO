@@ -2302,4 +2302,165 @@ router.delete('/conversations/:id', requireAuth, async (req: Request, res: Respo
   }
 });
 
+// ============================================
+// CodeAct Agent Endpoints (Python Sandbox)
+// ============================================
+
+/**
+ * POST /api/agent/codeact/wake
+ *
+ * Scheduled wake-up for the CodeAct agent.
+ * Called by cron to trigger market observation and analysis.
+ */
+router.post('/codeact/wake', async (req: Request, res: Response) => {
+  try {
+    const { createCodeActOrchestrator, getCurrentMode } = await import('./agent/codeact/orchestrator');
+
+    const mode = getCurrentMode();
+    const now = new Date();
+    const timeStr = now.toLocaleTimeString('en-US', { timeZone: 'America/New_York' });
+
+    console.log(`[CodeAct] Wake triggered at ${timeStr} ET, mode: ${mode}`);
+
+    const orchestrator = createCodeActOrchestrator();
+    await orchestrator.run({
+      type: 'scheduled',
+      message: `Scheduled wake-up. Current time: ${timeStr} ET. Mode: ${mode}.`
+    });
+
+    res.json({
+      success: true,
+      sessionId: orchestrator.getSessionId(),
+      mode,
+      time: timeStr,
+    });
+  } catch (error: any) {
+    console.error('[CodeAct] Wake error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'CodeAct wake failed',
+    });
+  }
+});
+
+/**
+ * POST /api/agent/codeact/chat
+ *
+ * User-initiated chat with the CodeAct agent.
+ * Allows interactive conversation with the agent.
+ */
+router.post('/codeact/chat', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { message } = req.body as { message: string };
+
+    if (!message) {
+      return res.status(400).json({
+        success: false,
+        error: 'message is required',
+      });
+    }
+
+    const { createCodeActOrchestrator, getCurrentMode } = await import('./agent/codeact/orchestrator');
+
+    const mode = getCurrentMode();
+    const orchestrator = createCodeActOrchestrator();
+
+    await orchestrator.run({
+      type: 'user',
+      message,
+    });
+
+    res.json({
+      success: true,
+      sessionId: orchestrator.getSessionId(),
+      mode,
+    });
+  } catch (error: any) {
+    console.error('[CodeAct] Chat error:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'CodeAct chat failed',
+    });
+  }
+});
+
+/**
+ * Internal broker routes for Python sandbox
+ * These endpoints are called by the Python bridge script running in the sandbox.
+ */
+
+// GET /api/agent/internal/broker/market-data/:symbol
+router.get('/internal/broker/market-data/:symbol', async (req: Request, res: Response) => {
+  try {
+    const { symbol } = req.params;
+    const { executeToolCall } = await import('./lib/agent-tools');
+
+    // Use existing getMarketData tool
+    const result = await executeToolCall({ tool: 'getMarketData', args: {} });
+
+    if (result.success && result.data) {
+      const { spy, vix } = result.data;
+      if (symbol.toUpperCase() === 'SPY') {
+        return res.json({ price: spy?.price || 0, symbol: 'SPY' });
+      }
+      if (symbol.toUpperCase() === 'VIX') {
+        return res.json({ price: vix?.level || 0, symbol: 'VIX' });
+      }
+    }
+
+    res.json({ price: 0, symbol, error: 'Symbol not found' });
+  } catch (error: any) {
+    res.json({ price: 0, error: error.message });
+  }
+});
+
+// GET /api/agent/internal/broker/account
+router.get('/internal/broker/account', async (_req: Request, res: Response) => {
+  try {
+    const { executeToolCall } = await import('./lib/agent-tools');
+    const result = await executeToolCall({ tool: 'getPositions', args: {} });
+
+    if (result.success && result.data?.account) {
+      return res.json(result.data.account);
+    }
+
+    res.json({ error: 'Account data not available' });
+  } catch (error: any) {
+    res.json({ error: error.message });
+  }
+});
+
+// GET /api/agent/internal/broker/positions
+router.get('/internal/broker/positions', async (_req: Request, res: Response) => {
+  try {
+    const { executeToolCall } = await import('./lib/agent-tools');
+    const result = await executeToolCall({ tool: 'getPositions', args: {} });
+
+    if (result.success && result.data?.positions) {
+      return res.json(result.data.positions);
+    }
+
+    res.json([]);
+  } catch (error: any) {
+    res.json({ error: error.message });
+  }
+});
+
+// GET /api/agent/internal/broker/options/:symbol
+router.get('/internal/broker/options/:symbol', async (req: Request, res: Response) => {
+  try {
+    const { symbol } = req.params;
+    const { executeToolCall } = await import('./lib/agent-tools');
+    const result = await executeToolCall({ tool: 'runEngine', args: { symbol } });
+
+    if (result.success && result.data) {
+      return res.json(result.data);
+    }
+
+    res.json({ error: 'Option chain not available' });
+  } catch (error: any) {
+    res.json({ error: error.message });
+  }
+});
+
 export default router;

@@ -10,6 +10,11 @@ export function Home() {
       {/* Hero Section */}
       <div className="flex-1 flex items-center justify-center px-6 py-20">
         <div className="max-w-4xl mx-auto text-center">
+          <img
+            src="/ape-logo.png"
+            alt="APE YOLO Logo"
+            className="w-48 h-48 mx-auto mb-6 object-contain"
+          />
           <h1 className="text-6xl md:text-7xl font-bold mb-4 tracking-wide" data-testid="text-hero-title">
             APEYOLO
           </h1>

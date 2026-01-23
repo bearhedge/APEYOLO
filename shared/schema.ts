@@ -1,5 +1,5 @@
 import { relations, sql } from "drizzle-orm";
-import { pgTable, text, varchar, decimal, integer, timestamp, boolean, jsonb, bigint, index, doublePrecision, uniqueIndex } from "drizzle-orm/pg-core";
+import { pgTable, text, varchar, decimal, integer, timestamp, boolean, jsonb, bigint, index, doublePrecision, uniqueIndex, serial } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
@@ -1180,6 +1180,45 @@ export const insertTrainDecisionSchema = createInsertSchema(trainDecisions).omit
 });
 export type TrainDecision = typeof trainDecisions.$inferSelect;
 export type InsertTrainDecision = z.infer<typeof insertTrainDecisionSchema>;
+
+// ==================== API KEYS ====================
+
+// API keys for TWS Relay connections
+export const apiKeys = pgTable('api_keys', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar('user_id').references(() => users.id, { onDelete: 'cascade' }).notNull(),
+  key: text('key').notNull().unique(),
+  name: text('name'),
+  createdAt: timestamp('created_at').notNull().defaultNow(),
+  lastUsedAt: timestamp('last_used_at'),
+}, (table) => [
+  index("api_keys_user_idx").on(table.userId),
+]);
+
+// ==================== CODEACT AGENT MEMORY ====================
+
+// Agent memory - file-like storage in database
+export const agentMemory = pgTable('agent_memory', {
+  id: serial('id').primaryKey(),
+  key: text('key').notNull().unique(),  // e.g., 'trading_rules', 'session_log'
+  content: text('content').notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
+
+// Agent CodeAct event stream - chronological log of everything
+export const agentCodeActEvents = pgTable('agent_codeact_events', {
+  id: serial('id').primaryKey(),
+  sessionId: text('session_id').notNull(),
+  timestamp: timestamp('timestamp').defaultNow().notNull(),
+  type: text('type').notNull(),  // 'observation', 'reasoning', 'code_execution', 'proposal', 'approval', 'trade'
+  content: text('content').notNull(),
+  metadata: jsonb('metadata'),  // Additional structured data
+}, (table) => [
+  index("agent_codeact_events_session_idx").on(table.sessionId),
+  index("agent_codeact_events_timestamp_idx").on(table.timestamp),
+]);
+
+// ==================== END CODEACT AGENT MEMORY ====================
 
 // ==================== END TRAINING MODE ====================
 
