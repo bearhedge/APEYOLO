@@ -18,11 +18,11 @@
     text-rendering: optimizeLegidity;
   }
   
-  /* Headings also use monospace for consistency */
+  /* Headings use Space Grotesk for impact */
   h1, h2, h3, h4, h5, h6 {
-    font-family: var(--font-mono);
-    font-weight: 600;
-    letter-spacing: 0.02em;
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+    font-weight: 700;
+    letter-spacing: -0.02em;
     text-transform: uppercase;
   }
   

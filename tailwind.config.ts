@@ -68,8 +68,8 @@ const config: Config = {
       },
       fontFamily: {
         mono: ['"IBM Plex Mono"', "Consolas", "Monaco", "monospace"],
-        sans: ['"IBM Plex Mono"', "Consolas", "Monaco", "monospace"],
-        display: ['"IBM Plex Mono"', "Consolas", "Monaco", "monospace"],
+        sans: ['"Space Grotesk"', "system-ui", "sans-serif"],
+        display: ['"Space Grotesk"', "system-ui", "sans-serif"],
       },
     },
   },
