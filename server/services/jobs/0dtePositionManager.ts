@@ -20,7 +20,7 @@ import { db } from '../../db';
 import { paperTrades, jobs } from '@shared/schema';
 import { eq, and, sql } from 'drizzle-orm';
 import { getBrokerForUser, getUsersWithActiveCredentials } from '../../broker';
-import { ensureIbkrReady, placeCloseOrderByConid } from '../../broker/ibkr';
+import { ensureIbkrReady, ensureClientReady, placeCloseOrderByConid } from '../../broker/ibkr';
 import { registerJobHandler, type JobResult } from '../jobExecutor';
 import { getETDateString, getETTimeString, getExitDeadline, isEarlyCloseDay, formatTimeForDisplay } from '../marketCalendar';
 import { linkTradeOutcome, normalizeExitReason } from '../rlhfService';
@@ -263,7 +263,7 @@ async function execute0dtePositionManagerForUser(userId: string, results: JobRes
     while (retryCount < MAX_RETRY_ATTEMPTS) {
       try {
         console.log(`[0DTE-Manager] User ${userId}: Fetching IBKR positions (attempt ${retryCount + 1}/${MAX_RETRY_ATTEMPTS})...`);
-        await ensureIbkrReady();
+        await ensureClientReady(broker.api);
         ibkrPositions = await broker.api.getPositions();
         console.log(`[0DTE-Manager] User ${userId}: Got ${ibkrPositions.length} IBKR positions`);
 

@@ -5,7 +5,7 @@ import { createServer, type Server } from "http";
 import WebSocket, { WebSocketServer } from "ws";
 import { storage } from "./storage";
 import { getBrokerForUser, clearUserBrokerCache } from "./broker";
-import { getIbkrDiagnostics, ensureIbkrReady, placePaperStockOrder, placePaperOptionOrder, listPaperOpenOrders, getIbkrCookieString, getIbkrSessionToken, resolveSymbolConid } from "./broker/ibkr";
+import { getIbkrDiagnostics, getDiagnosticsFromClient, ensureIbkrReady, ensureClientReady, placePaperStockOrder, placePaperOptionOrder, listPaperOpenOrders, getIbkrCookieString, getIbkrSessionToken, resolveSymbolConid } from "./broker/ibkr";
 import { IbkrWebSocketManager, initIbkrWebSocket, getIbkrWebSocketManager, destroyIbkrWebSocket, getIbkrWebSocketStatus, type MarketDataUpdate, wsManagerInstance } from "./broker/ibkrWebSocket";
 import { getOptionChainStreamer, initOptionChainStreamer } from "./broker/optionChainStreamer";
 import { TradingEngine } from "./engine/index.ts";
@@ -745,7 +745,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
       if (userBroker.status.provider === 'ibkr') {
         console.log('[API] /api/account: Ensuring IBKR ready...');
-        await ensureIbkrReady();
+        await ensureClientReady(userBroker.api);
         console.log('[API] /api/account: IBKR ready, fetching account...');
       }
       const account = await userBroker.api!.getAccount();
@@ -810,7 +810,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       if (userBroker.status.provider === 'ibkr') {
-        await ensureIbkrReady();
+        await ensureClientReady(userBroker.api);
       }
       const positions = await userBroker.api!.getPositions();
       res.json(positions);
@@ -1339,10 +1339,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     if (userBroker.status.provider === 'ibkr' && userBroker.api) {
       // Try to establish/verify connection first (same as Engine status)
       try {
-        last = await ensureIbkrReady();
+        last = await ensureClientReady(userBroker.api);
       } catch (err) {
-        // Fall back to cached diagnostics
-        last = getIbkrDiagnostics();
+        // Fall back to cached diagnostics from user's provider
+        last = getDiagnosticsFromClient(userBroker.api);
       }
     }
 
@@ -1356,10 +1356,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (userBroker.status.provider !== 'ibkr' || !userBroker.api) {
         return res.status(400).json({ ok: false, error: 'No IBKR credentials configured' });
       }
-      const diag = await ensureIbkrReady();
+      const diag = await ensureClientReady(userBroker.api);
       return res.status(200).json({ ok: true, diag });
     } catch (err: any) {
-      const diag = getIbkrDiagnostics();
+      const userBroker = await getBrokerForUser(req.user!.id);
+      const diag = getDiagnosticsFromClient(userBroker.api);
       return res.status(502).json({ ok: false, error: err?.message || String(err), diag });
     }
   });
@@ -2573,8 +2574,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // User has credentials - get their connection status
-      const diag = getIbkrDiagnostics();
+      // User has credentials - get their connection status from the per-user client
+      const diag = getDiagnosticsFromClient(userBroker.api);
 
       // Check all 4 authentication steps
       const allStepsConnected =
@@ -2683,9 +2684,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
         });
       }
 
-      // Try to ensure IBKR is ready (uses global connection for now)
-      // TODO: In the future, each user should have their own connection
-      const diag = await ensureIbkrReady();
+      // Ensure the user's IBKR client is ready (multi-tenant: each user has their own connection)
+      const diag = await ensureClientReady(userBroker.api);
 
       const allConnected =
         diag.oauth.status === 200 &&

@@ -16,7 +16,7 @@ import { db } from '../../db';
 import { paperTrades, jobs, auditLogs } from '@shared/schema';
 import { eq, and, sql, gte } from 'drizzle-orm';
 import { getBrokerForUser, getUsersWithActiveCredentials } from '../../broker';
-import { ensureIbkrReady, placeOptionOrderWithStop } from '../../broker/ibkr';
+import { ensureIbkrReady, ensureClientReady, placeOptionOrderWithStop } from '../../broker/ibkr';
 import { registerJobHandler, type JobResult } from '../jobExecutor';
 import { getETDateString, getETTimeString, isMarketOpen, getMarketStatus } from '../marketCalendar';
 import { TradingEngine, type TradingDecision } from '../../engine/index';
@@ -223,7 +223,7 @@ async function executeTradeEngineForUser(userId: string): Promise<JobResult> {
       return { success: false, error: 'IBKR not connected for user', data: result };
     }
 
-    await ensureIbkrReady();
+    await ensureClientReady(broker.api);
 
     // Get account info for position sizing
     const account = await broker.api.getAccount();

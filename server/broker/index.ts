@@ -1,6 +1,6 @@
 import { storage } from "../storage";
 import type { BrokerEnv, BrokerProvider, BrokerProviderName, BrokerStatus } from "./types";
-import { createIbkrProvider, createIbkrProviderWithCredentials, getIbkrDiagnostics, ibkrEvents } from "./ibkr";
+import { createIbkrProvider, createIbkrProviderWithCredentials, getIbkrDiagnostics, getDiagnosticsFromClient, ibkrEvents } from "./ibkr";
 import type { InsertTrade } from "@shared/schema";
 import { ibkrCredentials } from "@shared/schema";
 import { db } from "../db";
@@ -145,8 +145,8 @@ export async function getBrokerForUser(
   // Check cache first
   const cached = userBrokerCache.get(userId);
   if (cached && (Date.now() - cached.createdAt.getTime()) < CACHE_TTL_MS) {
-    // Use cached provider, but check connection status dynamically
-    const diagnostics = getIbkrDiagnostics();
+    // Use cached provider, check connection status from the per-user client (not global singleton)
+    const diagnostics = getDiagnosticsFromClient(cached.provider);
     const isConnected = diagnostics.oauth.status === 200 &&
                        diagnostics.sso.status === 200 &&
                        diagnostics.validate.status === 200 &&
@@ -234,8 +234,8 @@ export async function getBrokerForUser(
       environment: userCreds.environment
     });
 
-    // Check connection status
-    const diagnostics = getIbkrDiagnostics();
+    // Check connection status from the per-user client (not global singleton)
+    const diagnostics = getDiagnosticsFromClient(provider);
     const isConnected = diagnostics.oauth.status === 200 &&
                        diagnostics.sso.status === 200 &&
                        diagnostics.validate.status === 200 &&

@@ -3801,6 +3801,31 @@ export function getIbkrDiagnostics(): IbkrDiagnostics {
     : { oauth: { status: null, ts: "" }, sso: { status: null, ts: "" }, validate: { status: null, ts: "" }, init: { status: null, ts: "" } };
 }
 
+// Get diagnostics from any IbkrClient instance (for multi-tenant)
+export function getDiagnosticsFromClient(client: BrokerProvider | null): IbkrDiagnostics {
+  if (!client || typeof (client as any).getDiagnostics !== 'function') {
+    return {
+      oauth: { status: null, ts: "" },
+      sso: { status: null, ts: "" },
+      validate: { status: null, ts: "" },
+      init: { status: null, ts: "" }
+    };
+  }
+  return (client as any).getDiagnostics();
+}
+
+// Ensure any IbkrClient is ready (for multi-tenant)
+export async function ensureClientReady(client: BrokerProvider | null, forceRefresh = false): Promise<IbkrDiagnostics> {
+  if (!client) {
+    throw new Error('IBKR client not configured');
+  }
+  // ensureReady is exposed on multi-tenant providers, fallback to cast for singleton
+  if (typeof (client as any).ensureReady === 'function') {
+    await (client as any).ensureReady(true, forceRefresh);
+  }
+  return getDiagnosticsFromClient(client);
+}
+
 export function createIbkrProvider(config: IbkrConfig): BrokerProvider {
   const client = new IbkrClient(config);
   activeClient = client;
@@ -3833,7 +3858,11 @@ export function createIbkrProviderWithCredentials(config: {
     credential: string;
     allowedIp?: string;
   };
-}): BrokerProvider & { restoreTokenState?: (state: { accessToken?: string | null; accessTokenExpiryMs?: number; ssoToken?: string | null; ssoExpiryMs?: number }) => void } {
+}): BrokerProvider & {
+  restoreTokenState?: (state: { accessToken?: string | null; accessTokenExpiryMs?: number; ssoToken?: string | null; ssoExpiryMs?: number }) => void;
+  getDiagnostics?: () => IbkrDiagnostics;
+  ensureReady?: (verbose?: boolean, forceRefresh?: boolean) => Promise<void>;
+} {
   const client = new IbkrClient({
     env: config.env,
     accountId: config.accountId,
@@ -3851,6 +3880,9 @@ export function createIbkrProviderWithCredentials(config: {
     placeOrder: (trade: InsertTrade) => client.placeOrder(trade),
     getMarketData: (symbol: string) => client.getMarketData(symbol),
     restoreTokenState: (state) => client.restoreTokenState(state),
+    // Expose diagnostics for multi-tenant status checks
+    getDiagnostics: () => client.getDiagnostics(),
+    ensureReady: (verbose?: boolean, forceRefresh?: boolean) => (client as any).ensureReady(verbose, forceRefresh),
     // Expose HTTP client for direct API calls (snapshot, etc.)
     http: client.http,
   };

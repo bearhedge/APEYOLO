@@ -8,7 +8,7 @@
 import { Router } from "express";
 import { TradingEngine, EngineError } from "./engine/index";
 import { getBrokerForUser } from "./broker/index";
-import { ensureIbkrReady, placePaperOptionOrder, placeOptionOrderWithStop, getIbkrDiagnostics } from "./broker/ibkr";
+import { ensureIbkrReady, ensureClientReady, placePaperOptionOrder, placeOptionOrderWithStop, getIbkrDiagnostics } from "./broker/ibkr";
 import { storage } from "./storage";
 import { engineScheduler, SchedulerConfig } from "./services/engineScheduler";
 import { requireAuth } from "./auth";
@@ -284,8 +284,8 @@ router.post('/execute', requireAuth, async (req, res) => {
     const broker = await getBrokerForUser(req.user!.id);
 
     // Ensure IBKR is ready if using it
-    if (broker.status.provider === 'ibkr') {
-      await ensureIbkrReady();
+    if (broker.status.provider === 'ibkr' && broker.api) {
+      await ensureClientReady(broker.api);
     }
 
     // Check trading window - but don't block analysis, just note it
@@ -459,11 +459,11 @@ router.get('/analyze/stream', requireAuth, async (req, res) => {
     }
 
     // Ensure IBKR is ready if using it
-    if (broker.status.provider === 'ibkr') {
+    if (broker.status.provider === 'ibkr' && broker.api) {
       try {
-        await ensureIbkrReady();
+        await ensureClientReady(broker.api);
       } catch (err) {
-        console.log('[Engine/stream] IBKR ensureIbkrReady error:', err instanceof Error ? err.message : err);
+        console.log('[Engine/stream] IBKR ensureClientReady error:', err instanceof Error ? err.message : err);
       }
     }
 
@@ -616,11 +616,11 @@ router.get('/analyze', requireAuth, async (req, res) => {
     }
 
     // Ensure IBKR is ready if using it
-    if (broker.status.provider === 'ibkr') {
+    if (broker.status.provider === 'ibkr' && broker.api) {
       try {
-        await ensureIbkrReady();
+        await ensureClientReady(broker.api);
       } catch (err) {
-        console.log('[Engine/analyze] IBKR ensureIbkrReady error:', err instanceof Error ? err.message : err);
+        console.log('[Engine/analyze] IBKR ensureClientReady error:', err instanceof Error ? err.message : err);
       }
     }
 
@@ -769,11 +769,11 @@ router.get('/step1', requireAuth, async (req, res) => {
     }
 
     // Ensure IBKR ready
-    if (broker.status.provider === 'ibkr') {
+    if (broker.status.provider === 'ibkr' && broker.api) {
       try {
-        await ensureIbkrReady();
+        await ensureClientReady(broker.api);
       } catch (err) {
-        console.log('[Engine/step1] IBKR ensureIbkrReady warning:', err instanceof Error ? err.message : err);
+        console.log('[Engine/step1] IBKR ensureClientReady warning:', err instanceof Error ? err.message : err);
       }
     }
 
@@ -1007,9 +1007,9 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
     const ibkrOrderIds: string[] = [];
 
     // Place BRACKET orders with IBKR for LIVE trading
-    if (broker.status.provider === 'ibkr') {
+    if (broker.status.provider === 'ibkr' && broker.api) {
       try {
-        await ensureIbkrReady();
+        await ensureClientReady(broker.api);
 
         // Use expiration date from trade proposal (e.g., "2024-12-13" for Friday weekly)
         // Convert from YYYY-MM-DD to YYYYMMDD format for IBKR
@@ -1323,8 +1323,8 @@ router.post('/execute-trade', requireAuth, async (req, res) => {
     // ================================================
 
     // Ensure IBKR is ready
-    if (broker.status.provider === 'ibkr') {
-      await ensureIbkrReady();
+    if (broker.status.provider === 'ibkr' && broker.api) {
+      await ensureClientReady(broker.api);
     }
 
     const orders: Array<{
@@ -1636,9 +1636,11 @@ router.get('/test-strikes', requireAuth, async (req, res) => {
 
     console.log(`[Engine/test-strikes] ${symbol} exp=${expiration} range=±${range}`);
 
-    await ensureIbkrReady();
     // Multi-tenant: Get broker for the authenticated user
     const broker = await getBrokerForUser(req.user!.id);
+    if (broker.api) {
+      await ensureClientReady(broker.api);
+    }
 
     // Get underlying price
     const marketData = await broker.api.getMarketData(symbol);

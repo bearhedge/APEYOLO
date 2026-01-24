@@ -16,7 +16,7 @@
 
 import { TradingEngine } from '../engine/index';
 import { getBrokerForUser, getUsersWithActiveCredentials } from '../broker/index';
-import { ensureIbkrReady, placePaperOptionOrder } from '../broker/ibkr';
+import { ensureIbkrReady, ensureClientReady, placePaperOptionOrder } from '../broker/ibkr';
 import { storage } from '../storage';
 import { getTradingWindow, isEarlyCloseDay, formatTimeForDisplay } from './marketCalendar';
 
@@ -267,7 +267,7 @@ class EngineScheduler {
 
       const broker = await getBrokerForUser(this.userId);
       if (broker.status.provider === 'ibkr' && broker.api) {
-        await ensureIbkrReady();
+        await ensureClientReady(broker.api);
       }
 
       // Run 5-step analysis
@@ -451,7 +451,7 @@ class EngineScheduler {
 
       const broker = await getBrokerForUser(effectiveUserId);
       if (broker.status.provider === 'ibkr' && broker.api) {
-        await ensureIbkrReady();
+        await ensureClientReady(broker.api);
       }
 
       const decision = await this.engine.execute();

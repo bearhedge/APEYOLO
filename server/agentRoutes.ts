@@ -31,7 +31,7 @@ import {
   type ToolCall,
   type ToolResult,
 } from './lib/agent-tools';
-import { ensureIbkrReady, placeOptionOrderWithStop } from './broker/ibkr';
+import { ensureIbkrReady, ensureClientReady, placeOptionOrderWithStop } from './broker/ibkr';
 import { getBrokerForUser } from './broker/index';
 import {
   calculateModificationImpact,
@@ -1532,7 +1532,11 @@ router.post('/operate', requireAuth, async (req: Request, res: Response) => {
 
     // Check IBKR connection and send error via SSE if not connected
     try {
-      await ensureIbkrReady();
+      const userBroker = await getBrokerForUser(req.user!.id);
+      if (!userBroker.api) {
+        throw new Error('No IBKR credentials configured');
+      }
+      await ensureClientReady(userBroker.api);
       console.log('[AgentRoutes] IBKR connection verified for operate');
     } catch (ibkrError: any) {
       console.error('[AgentRoutes] IBKR connection failed:', ibkrError.message);
@@ -1822,11 +1826,11 @@ router.post('/operate', requireAuth, async (req: Request, res: Response) => {
             }
 
             const broker = await getBrokerForUser(userId);
-            if (broker.status.provider !== 'ibkr') {
+            if (broker.status.provider !== 'ibkr' || !broker.api) {
               throw new Error('IBKR broker not configured');
             }
 
-            await ensureIbkrReady();
+            await ensureClientReady(broker.api);
 
             // Calculate expiration date (0DTE = today's date in YYYYMMDD format)
             const now = new Date();

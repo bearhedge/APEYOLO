@@ -15,7 +15,7 @@ import { db } from '../db';
 import { paperTrades, orders, type Trade } from '@shared/schema';
 import { eq, and, isNull, lt, inArray } from 'drizzle-orm';
 import { getBrokerForUser, getUsersWithActiveCredentials } from '../broker';
-import { ensureIbkrReady } from '../broker/ibkr';
+import { ensureIbkrReady, ensureClientReady } from '../broker/ibkr';
 import { registerJobHandler, type JobResult } from './jobExecutor';
 import { linkTradeOutcome, normalizeExitReason } from './rlhfService';
 
@@ -202,7 +202,7 @@ async function monitorOpenTradesForUser(userId: string): Promise<{ processed: nu
 
   if (broker.status.provider === 'ibkr' && broker.api) {
     try {
-      await ensureIbkrReady();
+      await ensureClientReady(broker.api);
 
       // Get current open positions
       const positions = await broker.api.getPositions();

@@ -20,7 +20,7 @@ import { db } from '../../db';
 import { paperTrades, jobs } from '@shared/schema';
 import { eq, and, lt, isNull } from 'drizzle-orm';
 import { getBrokerForUser, getUsersWithActiveCredentials } from '../../broker';
-import { ensureIbkrReady, placePaperStockOrder } from '../../broker/ibkr';
+import { ensureIbkrReady, ensureClientReady, placePaperStockOrder } from '../../broker/ibkr';
 import { registerJobHandler, type JobResult } from '../jobExecutor';
 import { getETTimeString } from '../marketCalendar';
 
@@ -271,12 +271,12 @@ async function detectAssignments(userId: string): Promise<DetectedAssignment[]> 
 
   try {
     // 1. Get current positions from user-specific broker
-    await ensureIbkrReady();
     const broker = await getBrokerForUser(userId);
     if (!broker.api) {
       console.error(`[AssignmentMonitor] No broker available for user ${userId}`);
       return [];
     }
+    await ensureClientReady(broker.api);
 
     const positions = await broker.api.getPositions() as unknown as IbkrPosition[];
     const stockPositions = positions.filter((p) => p.assetType === 'stock' && p.qty > 0);

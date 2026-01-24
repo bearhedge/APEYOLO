@@ -14,7 +14,7 @@ import { db } from '../db';
 import { navSnapshots, jobs, ibkrCredentials } from '@shared/schema';
 import { eq, desc, and } from 'drizzle-orm';
 import { getBrokerForUser } from '../broker';
-import { ensureIbkrReady } from '../broker/ibkr';
+import { ensureIbkrReady, ensureClientReady } from '../broker/ibkr';
 import { registerJobHandler, type JobResult } from './jobExecutor';
 
 type SnapshotType = 'opening' | 'closing';
@@ -37,7 +37,7 @@ async function captureNavSnapshotForUser(snapshotType: SnapshotType, userId: str
       return { success: false, error: 'IBKR broker not available for user' };
     }
 
-    await ensureIbkrReady();
+    await ensureClientReady(broker.api);
     const account = await broker.api.getAccount();
     const nav = account?.portfolioValue || account?.netLiquidation || 0;
 

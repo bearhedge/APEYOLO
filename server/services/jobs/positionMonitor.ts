@@ -17,7 +17,7 @@ import { db } from '../../db';
 import { paperTrades, jobs, jobRuns, auditLogs } from '@shared/schema';
 import { eq, and, sql, gte } from 'drizzle-orm';
 import { getBrokerForUser, getUsersWithActiveCredentials } from '../../broker';
-import { ensureIbkrReady, placeCloseOrderByConid } from '../../broker/ibkr';
+import { ensureIbkrReady, ensureClientReady, placeCloseOrderByConid } from '../../broker/ibkr';
 import { registerJobHandler, type JobResult } from '../jobExecutor';
 import { getETDateString, getETTimeString, isMarketOpen, isEarlyCloseDay, getMarketStatus } from '../marketCalendar';
 import { monitorPosition, defineExitRules, type ExitRules, type MonitorResult } from '../../engine/step5';
@@ -243,7 +243,7 @@ export async function executePositionMonitor(): Promise<JobResult> {
         continue;
       }
 
-      await ensureIbkrReady();
+      await ensureClientReady(broker.api);
 
       // Get current positions and market data for this user
       const ibkrPositions = await broker.api.getPositions();

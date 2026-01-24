@@ -14,7 +14,7 @@ import { db } from '../db';
 import { paperTrades, type Trade } from '@shared/schema';
 import { eq, and, or, isNull } from 'drizzle-orm';
 import { getBrokerForUser, getUsersWithActiveCredentials } from '../broker';
-import { ensureIbkrReady } from '../broker/ibkr';
+import { ensureIbkrReady, ensureClientReady } from '../broker/ibkr';
 import { linkTradeOutcome, normalizeExitReason } from './rlhfService';
 
 // ============================================
@@ -190,7 +190,7 @@ async function backfillClosedTradesForUser(userId: string): Promise<BackfillResu
 
   if (broker.status.provider === 'ibkr' && broker.api) {
     try {
-      await ensureIbkrReady();
+      await ensureClientReady(broker.api);
       ibkrTrades = await broker.api.getTrades();
       console.log(`[BackfillTrades] User ${userId}: Fetched ${ibkrTrades.length} IBKR executions`);
     } catch (err) {
@@ -293,7 +293,7 @@ export async function backfillSingleTrade(tradeId: string, userId: string): Prom
       return { success: false, message: 'IBKR not connected' };
     }
 
-    await ensureIbkrReady();
+    await ensureClientReady(broker.api);
     const ibkrTrades = await broker.api.getTrades();
 
     const leg1Strike = trade.leg1Strike ? parseFloat(trade.leg1Strike as any) : null;
