@@ -5,7 +5,7 @@ import { createServer, type Server } from "http";
 import WebSocket, { WebSocketServer } from "ws";
 import { storage } from "./storage";
 import { getBrokerForUser, clearUserBrokerCache } from "./broker";
-import { getIbkrDiagnostics, getDiagnosticsFromClient, ensureIbkrReady, ensureClientReady, placePaperStockOrder, placePaperOptionOrder, listPaperOpenOrders, getIbkrCookieString, getIbkrSessionToken, resolveSymbolConid } from "./broker/ibkr";
+import { getIbkrDiagnostics, getDiagnosticsFromClient, ensureIbkrReady, ensureClientReady, placePaperStockOrder, placePaperOptionOrder, listPaperOpenOrders, getIbkrCookieString, getIbkrSessionToken, getCookieStringFromClient, getSessionTokenFromClient, resolveSymbolConid } from "./broker/ibkr";
 import { IbkrWebSocketManager, initIbkrWebSocket, getIbkrWebSocketManager, destroyIbkrWebSocket, getIbkrWebSocketStatus, type MarketDataUpdate, wsManagerInstance } from "./broker/ibkrWebSocket";
 import { getOptionChainStreamer, initOptionChainStreamer } from "./broker/optionChainStreamer";
 import { TradingEngine } from "./engine/index.ts";
@@ -1961,9 +1961,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         console.log('[WS-RECONNECT] Forcing WebSocket reconnect...');
         wsManager.disconnect();
 
-        // Get fresh cookies and session
-        const cookieString = await getIbkrCookieString();
-        const sessionToken = await getIbkrSessionToken();
+        // Get fresh cookies and session (multi-tenant)
+        const userBroker = await getBrokerForUser(req.user!.id);
+        const cookieString = await getCookieStringFromClient(userBroker?.api || null);
+        const sessionToken = await getSessionTokenFromClient(userBroker?.api || null);
 
         if (cookieString) {
           const newWs = initIbkrWebSocket(cookieString, sessionToken);
@@ -2006,10 +2007,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Get cached SPY data
       const spyCache = wsManager?.getCachedMarketData(SPY_CONID);
 
-      // Try to get current session token status
+      // Get user's broker for multi-tenant support
+      const userBroker = await getBrokerForUser(req.user!.id, db);
+
+      // Try to get current session token status (multi-tenant)
       let currentSessionTokenStatus = 'unknown';
       try {
-        const sessionToken = await getIbkrSessionToken();
+        const sessionToken = await getSessionTokenFromClient(userBroker?.api || null);
         currentSessionTokenStatus = sessionToken ? `present (${sessionToken.substring(0, 8)}...)` : 'NULL - THIS IS THE PROBLEM';
       } catch (e) {
         currentSessionTokenStatus = 'error fetching';
@@ -2020,9 +2024,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       let restApiBid = null;
       let restApiAsk = null;
       try {
-        const broker = await getBrokerForUser(req.user!.id, db);
-        if (broker?.api) {
-          const client = broker.api as any;
+        if (userBroker?.api) {
+          const client = userBroker.api as any;
           const snapshotRes = await client.http.get(`/v1/api/iserver/marketdata/snapshot?conids=${SPY_CONID}&fields=31,84,86`);
           if (snapshotRes.data && Array.isArray(snapshotRes.data) && snapshotRes.data[0]) {
             const snap = snapshotRes.data[0];
@@ -2703,9 +2706,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             console.log('[IBKR Test] Gateway established successfully');
           }
 
-          // Initialize WebSocket for real-time data streaming
-          const cookieString = await getIbkrCookieString();
-          const sessionToken = await getIbkrSessionToken();
+          // Initialize WebSocket for real-time data streaming (multi-tenant)
+          const cookieString = await getCookieStringFromClient(userBroker.api);
+          const sessionToken = await getSessionTokenFromClient(userBroker.api);
           if (cookieString) {
             console.log('[IBKR Test] Starting WebSocket for real-time data...');
             const wsManager = initIbkrWebSocket(cookieString, sessionToken);

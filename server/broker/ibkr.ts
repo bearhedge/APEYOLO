@@ -3862,6 +3862,8 @@ export function createIbkrProviderWithCredentials(config: {
   restoreTokenState?: (state: { accessToken?: string | null; accessTokenExpiryMs?: number; ssoToken?: string | null; ssoExpiryMs?: number }) => void;
   getDiagnostics?: () => IbkrDiagnostics;
   ensureReady?: (verbose?: boolean, forceRefresh?: boolean) => Promise<void>;
+  getCookieString?: () => Promise<string>;
+  getSessionToken?: () => Promise<string | null>;
 } {
   const client = new IbkrClient({
     env: config.env,
@@ -3885,6 +3887,9 @@ export function createIbkrProviderWithCredentials(config: {
     ensureReady: (verbose?: boolean, forceRefresh?: boolean) => (client as any).ensureReady(verbose, forceRefresh),
     // Expose HTTP client for direct API calls (snapshot, etc.)
     http: client.http,
+    // WebSocket credentials for multi-tenant support
+    getCookieString: () => client.getCookieString(),
+    getSessionToken: () => client.getSessionToken(),
   };
 }
 
@@ -3987,6 +3992,22 @@ export async function getIbkrCookieString(): Promise<string> {
 export async function getIbkrSessionToken(): Promise<string | null> {
   if (!activeClient) throw new Error('IBKR client not initialized');
   return activeClient.getSessionToken();
+}
+
+// Get cookie string from any IbkrClient instance (for multi-tenant)
+export async function getCookieStringFromClient(client: BrokerProvider | null): Promise<string> {
+  if (!client || typeof (client as any).getCookieString !== 'function') {
+    throw new Error('IBKR client not configured');
+  }
+  return (client as any).getCookieString();
+}
+
+// Get session token from any IbkrClient instance (for multi-tenant)
+export async function getSessionTokenFromClient(client: BrokerProvider | null): Promise<string | null> {
+  if (!client || typeof (client as any).getSessionToken !== 'function') {
+    throw new Error('IBKR client not configured');
+  }
+  return (client as any).getSessionToken();
 }
 
 // Resolve a symbol to its conid (useful for WebSocket subscriptions)
