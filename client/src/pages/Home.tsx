@@ -539,7 +539,7 @@ export function Home() {
 
           <Button
             onClick={() => { window.location.href = '/api/auth/google'; }}
-            className="neon-button text-xl px-10 py-7 h-auto bg-black text-white border-2 rounded-lg font-bold tracking-wide transition-all duration-300"
+            className="neon-button text-xl px-10 py-4 h-auto bg-black text-white border-2 rounded-lg font-bold tracking-wide transition-all duration-300"
             data-testid="button-get-started"
           >
             LET'S GO
