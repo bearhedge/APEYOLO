@@ -6,7 +6,7 @@ import WebSocket, { WebSocketServer } from "ws";
 import { storage } from "./storage";
 import { getBrokerForUser, clearUserBrokerCache } from "./broker";
 import { getIbkrDiagnostics, getDiagnosticsFromClient, ensureIbkrReady, ensureClientReady, placePaperStockOrder, placePaperOptionOrder, listPaperOpenOrders, getIbkrCookieString, getIbkrSessionToken, getCookieStringFromClient, getSessionTokenFromClient, resolveSymbolConid } from "./broker/ibkr";
-import { IbkrWebSocketManager, initIbkrWebSocket, getIbkrWebSocketManager, destroyIbkrWebSocket, getIbkrWebSocketStatus, type MarketDataUpdate, wsManagerInstance } from "./broker/ibkrWebSocket";
+import { IbkrWebSocketManager, initIbkrWebSocket, getIbkrWebSocketManager, destroyIbkrWebSocket, getIbkrWebSocketStatus, getIbkrWebSocketDetailedStatus, type MarketDataUpdate, wsManagerInstance } from "./broker/ibkrWebSocket";
 import { getOptionChainStreamer, initOptionChainStreamer } from "./broker/optionChainStreamer";
 import { TradingEngine } from "./engine/index.ts";
 import {
@@ -2548,11 +2548,16 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const effectiveValidateStatus = wsAuthenticated ? 200 : diag.validate.status;
           const effectiveInitStatus = wsAuthenticated ? 200 : diag.init.status;
 
+          // Check for real data flow (non-zero SPY price)
+          const wsDetailedStatusForCheck = getIbkrWebSocketDetailedStatus();
+          const hasRealDataFlow = wsDetailedStatusForCheck?.hasRealData === true;
+
           const allStepsConnected =
             effectiveOAuthStatus === 200 &&
             effectiveSSOStatus === 200 &&
             effectiveValidateStatus === 200 &&
-            effectiveInitStatus === 200;
+            effectiveInitStatus === 200 &&
+            hasRealDataFlow; // NEW: require real data, not just auth
 
           // Get connection mode for relay detection
           const { getConnectionMode } = require('./services/marketDataAutoStart');
@@ -2591,21 +2596,60 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 success: effectiveInitStatus === 200
               },
               websocket: (() => {
-                // wsStatus already fetched above
-                if (!wsStatus) {
+                const wsDetailedStatus = getIbkrWebSocketDetailedStatus();
+                if (!wsDetailedStatus) {
                   return { status: 0, message: 'Not initialized', success: false, connected: false, authenticated: false, subscriptions: 0 };
                 }
-                return {
-                  // If authenticated, show success even if temporarily disconnected
-                  status: wsStatus.authenticated ? 200 : (wsStatus.connected ? 100 : 0),
-                  message: wsStatus.authenticated
-                    ? `Streaming (${wsStatus.subscriptions} subs)`
-                    : wsStatus.connected ? 'Connected (authenticating...)' : 'Disconnected',
-                  success: wsStatus.authenticated,
-                  connected: wsStatus.connected,
-                  authenticated: wsStatus.authenticated,
-                  subscriptions: wsStatus.subscriptions
-                };
+
+                // Check for subscription errors first
+                if (wsDetailedStatus.subscriptionError) {
+                  return {
+                    status: 0,
+                    message: `Error: ${wsDetailedStatus.subscriptionError}`,
+                    success: false,
+                    connected: wsDetailedStatus.connected,
+                    authenticated: wsDetailedStatus.authenticated,
+                    subscriptions: wsDetailedStatus.subscriptions,
+                  };
+                }
+
+                // Real success = authenticated AND has non-zero SPY data
+                if (wsDetailedStatus.authenticated && wsDetailedStatus.hasRealData) {
+                  return {
+                    status: 200,
+                    message: `Streaming SPY $${wsDetailedStatus.spyPrice?.toFixed(2)}`,
+                    success: true,
+                    connected: true,
+                    authenticated: true,
+                    subscriptions: wsDetailedStatus.subscriptions,
+                  };
+                }
+
+                // Authenticated but no data yet
+                if (wsDetailedStatus.authenticated && !wsDetailedStatus.hasRealData) {
+                  return {
+                    status: 1, // In progress
+                    message: 'Authenticated (waiting for data)',
+                    success: false,
+                    connected: true,
+                    authenticated: true,
+                    subscriptions: wsDetailedStatus.subscriptions,
+                  };
+                }
+
+                // Connected but not authenticated
+                if (wsDetailedStatus.connected) {
+                  return {
+                    status: 1,
+                    message: 'Connected (authenticating...)',
+                    success: false,
+                    connected: true,
+                    authenticated: false,
+                    subscriptions: 0,
+                  };
+                }
+
+                return { status: 0, message: 'Disconnected', success: false, connected: false, authenticated: false, subscriptions: 0 };
               })()
             }
           });
@@ -2638,12 +2682,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const effectiveValidateStatusUser = wsAuthenticatedForUser ? 200 : diag.validate.status;
       const effectiveInitStatusUser = wsAuthenticatedForUser ? 200 : diag.init.status;
 
-      // Check all 4 authentication steps
+      // Check for real data flow (non-zero SPY price)
+      const wsDetailedStatusForUserCheck = getIbkrWebSocketDetailedStatus();
+      const hasRealDataFlowForUser = wsDetailedStatusForUserCheck?.hasRealData === true;
+
+      // Check all 4 authentication steps + real data flow
       const allStepsConnected =
         effectiveOAuthStatusUser === 200 &&
         effectiveSSOStatusUser === 200 &&
         effectiveValidateStatusUser === 200 &&
-        effectiveInitStatusUser === 200;
+        effectiveInitStatusUser === 200 &&
+        hasRealDataFlowForUser; // NEW: require real data, not just auth
 
       // Get user's credential info from database (masked)
       let accountId = 'Configured';
@@ -2696,30 +2745,60 @@ export async function registerRoutes(app: Express): Promise<Server> {
           },
           // WebSocket status for real-time data streaming
           websocket: (() => {
-            // wsStatusForUser already fetched above
-            if (!wsStatusForUser) {
+            const wsDetailedStatusUser = getIbkrWebSocketDetailedStatus();
+            if (!wsDetailedStatusUser) {
+              return { status: 0, message: 'Not initialized', success: false, connected: false, authenticated: false, subscriptions: 0 };
+            }
+
+            // Check for subscription errors first
+            if (wsDetailedStatusUser.subscriptionError) {
               return {
                 status: 0,
-                message: 'Not initialized',
+                message: `Error: ${wsDetailedStatusUser.subscriptionError}`,
                 success: false,
-                connected: false,
-                authenticated: false,
-                subscriptions: 0
+                connected: wsDetailedStatusUser.connected,
+                authenticated: wsDetailedStatusUser.authenticated,
+                subscriptions: wsDetailedStatusUser.subscriptions,
               };
             }
-            return {
-              // If authenticated, show success even if temporarily disconnected
-              status: wsStatusForUser.authenticated ? 200 : (wsStatusForUser.connected ? 100 : 0),
-              message: wsStatusForUser.authenticated
-                ? `Streaming (${wsStatusForUser.subscriptions} subs)`
-                : wsStatusForUser.connected
-                  ? 'Connected (authenticating...)'
-                  : 'Disconnected',
-              success: wsStatusForUser.authenticated,
-              connected: wsStatusForUser.connected,
-              authenticated: wsStatusForUser.authenticated,
-              subscriptions: wsStatusForUser.subscriptions
-            };
+
+            // Real success = authenticated AND has non-zero SPY data
+            if (wsDetailedStatusUser.authenticated && wsDetailedStatusUser.hasRealData) {
+              return {
+                status: 200,
+                message: `Streaming SPY $${wsDetailedStatusUser.spyPrice?.toFixed(2)}`,
+                success: true,
+                connected: true,
+                authenticated: true,
+                subscriptions: wsDetailedStatusUser.subscriptions,
+              };
+            }
+
+            // Authenticated but no data yet
+            if (wsDetailedStatusUser.authenticated && !wsDetailedStatusUser.hasRealData) {
+              return {
+                status: 1, // In progress
+                message: 'Authenticated (waiting for data)',
+                success: false,
+                connected: true,
+                authenticated: true,
+                subscriptions: wsDetailedStatusUser.subscriptions,
+              };
+            }
+
+            // Connected but not authenticated
+            if (wsDetailedStatusUser.connected) {
+              return {
+                status: 1,
+                message: 'Connected (authenticating...)',
+                success: false,
+                connected: true,
+                authenticated: false,
+                subscriptions: 0,
+              };
+            }
+
+            return { status: 0, message: 'Disconnected', success: false, connected: false, authenticated: false, subscriptions: 0 };
           })()
         }
       });

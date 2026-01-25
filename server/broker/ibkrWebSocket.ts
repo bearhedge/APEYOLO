@@ -1021,3 +1021,42 @@ export function getIbkrWebSocketStatus(): { connected: boolean; authenticated: b
   }
   return wsManagerInstance.getStatus();
 }
+
+// Standard conids for diagnostic checks
+export const SPY_CONID = 756733;
+export const VIX_CONID = 13455763;
+
+/**
+ * Get detailed WebSocket status including real data flow verification
+ * Only returns hasRealData=true when actual non-zero SPY price data has been received
+ */
+export function getIbkrWebSocketDetailedStatus(): {
+  connected: boolean;
+  authenticated: boolean;
+  subscriptions: number;
+  hasRealData: boolean;
+  spyPrice: number | null;
+  vixPrice: number | null;
+  dataAge: number | null;
+  subscriptionError: string | null;
+} | null {
+  if (!wsManagerInstance) return null;
+
+  const spyData = wsManagerInstance.getCachedMarketData(SPY_CONID);
+  const vixData = wsManagerInstance.getCachedMarketData(VIX_CONID);
+  const status = wsManagerInstance.getDetailedStatus();
+
+  const spyPrice = spyData?.last && spyData.last > 0 ? spyData.last : null;
+  const vixPrice = vixData?.last && vixData.last > 0 ? vixData.last : null;
+
+  return {
+    connected: status.connected,
+    authenticated: status.authenticated,
+    subscriptions: status.subscriptions,
+    hasRealData: spyPrice !== null,
+    spyPrice,
+    vixPrice,
+    dataAge: status.lastDataReceived ? Date.now() - new Date(status.lastDataReceived).getTime() : null,
+    subscriptionError: status.subscriptionError || null,
+  };
+}
