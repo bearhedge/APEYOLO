@@ -1383,6 +1383,54 @@ export const insertDailySnapshotSchema = createInsertSchema(dailySnapshots).omit
 export type DailySnapshot = typeof dailySnapshots.$inferSelect;
 export type InsertDailySnapshot = z.infer<typeof insertDailySnapshotSchema>;
 
+// Reconciliation issues - Track discrepancies between internal and IBKR
+export const reconciliationIssues = pgTable('reconciliation_issues', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar('user_id').references(() => users.id, { onDelete: 'cascade' }),
+  snapshotId: varchar('snapshot_id').references(() => dailySnapshots.id, { onDelete: 'cascade' }),
+
+  // Issue details
+  issueType: varchar('issue_type', { length: 50 }).notNull(),
+  // Types: 'cash_mismatch', 'nav_mismatch', 'missing_internal_trade',
+  //        'missing_ibkr_trade', 'amount_mismatch', 'position_mismatch'
+
+  severity: varchar('severity', { length: 20 }).default('medium'),
+  // Severity: 'low' (<$10), 'medium' ($10-$100), 'high' (>$100)
+
+  internalValue: decimal('internal_value', { precision: 15, scale: 2 }),
+  ibkrValue: decimal('ibkr_value', { precision: 15, scale: 2 }),
+  variance: decimal('variance', { precision: 15, scale: 2 }),
+
+  // Resolution
+  status: varchar('status', { length: 20 }).default('open'),
+  // Status: 'open', 'investigating', 'resolved', 'accepted'
+
+  resolutionType: varchar('resolution_type', { length: 50 }),
+  // Types: 'timing_difference', 'rounding', 'data_correction',
+  //        'ibkr_error', 'internal_error', 'accepted_variance'
+
+  resolutionNotes: text('resolution_notes'),
+  resolvedAt: timestamp('resolved_at', { withTimezone: true }),
+
+  // References
+  relatedTradeId: varchar('related_trade_id').references(() => paperTrades.id, { onDelete: 'set null' }),
+  relatedLedgerEntryId: varchar('related_ledger_entry_id').references(() => ledgerEntries.id, { onDelete: 'set null' }),
+
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (table) => [
+  index('reconciliation_issues_user_idx').on(table.userId),
+  index('reconciliation_issues_snapshot_idx').on(table.snapshotId),
+  index('reconciliation_issues_status_idx').on(table.status),
+]);
+
+export const insertReconciliationIssueSchema = createInsertSchema(reconciliationIssues).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type ReconciliationIssue = typeof reconciliationIssues.$inferSelect;
+export type InsertReconciliationIssue = z.infer<typeof insertReconciliationIssueSchema>;
+
 // ==================== END ACCOUNTING & RECONCILIATION ====================
 
 // Account info type
