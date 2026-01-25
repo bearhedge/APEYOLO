@@ -411,3 +411,54 @@
     display: none;
   }
 }
+
+/* ==================== ENGINE HUD ANIMATIONS ==================== */
+
+/* Blinking cursor */
+@keyframes hud-blink {
+  0%, 50% { opacity: 1; }
+  51%, 100% { opacity: 0; }
+}
+
+/* Pulse for AUTO mode indicator */
+@keyframes hud-pulse {
+  0%, 100% { opacity: 1; box-shadow: 0 0 4px currentColor; }
+  50% { opacity: 0.6; box-shadow: 0 0 8px currentColor; }
+}
+
+/* Ready state breathing */
+@keyframes hud-breathe {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.8; transform: scale(1.02); }
+}
+
+/* Selection flash */
+@keyframes hud-flash {
+  0% { background: rgba(0, 255, 255, 0.3); }
+  100% { background: transparent; }
+}
+
+/* Progress shimmer */
+@keyframes hud-shimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(200%); }
+}
+
+/* Execute button glow */
+@keyframes hud-glow {
+  0%, 100% { box-shadow: 0 0 4px rgba(74, 222, 128, 0.4); }
+  50% { box-shadow: 0 0 12px rgba(74, 222, 128, 0.8); }
+}
+
+/* Error shake */
+@keyframes hud-shake {
+  0%, 100% { transform: translateX(0); }
+  20%, 60% { transform: translateX(-4px); }
+  40%, 80% { transform: translateX(4px); }
+}
+
+/* Screen flash on execute */
+@keyframes hud-screen-flash {
+  0% { background: rgba(74, 222, 128, 0.2); }
+  100% { background: transparent; }
+}

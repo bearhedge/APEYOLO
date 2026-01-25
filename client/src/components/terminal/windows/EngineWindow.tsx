@@ -1,40 +1,47 @@
 /**
- * EngineWindow - Full 5-step trading engine wizard in terminal style
+ * EngineWindow - Gaming HUD style trading interface
  *
- * Step 1: Market Assessment (analyze market conditions)
- * Step 2: Direction (recommended direction, override option)
- * Step 3: Strike Selection (select PUT/CALL strikes from table)
- * Step 4: Position Sizing (risk tier selection)
- * Step 5: Execute (stop loss, confirm, execute)
+ * Single-screen layout with:
+ * - Top bar: market data, connection, mode
+ * - Main area: streaming analysis log
+ * - Selection bar: strategy and strikes
+ * - Action bar: analyze/execute
+ *
+ * Keyboard-driven with MANUAL/AUTO modes
  */
 
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useEngineAnalysis } from '@/hooks/useEngineAnalysis';
 import { useMarketSnapshot } from '@/hooks/useMarketSnapshot';
-import { useEngine } from '@/hooks/useEngine';
 import { useQuery, useMutation } from '@tanstack/react-query';
+import {
+  TopBar,
+  MainArea,
+  SelectionBar,
+  ActionBar,
+  useKeyboardControls,
+  type LogLine,
+  type Strategy,
+} from './engine';
 
-type Strategy = 'strangle' | 'put-only' | 'call-only';
-type RiskTier = 'conservative' | 'balanced' | 'aggressive';
-type StopMultiplier = 2 | 3 | 4;
-
-interface StrikeCandidate {
-  strike: number;
-  bid: number;
-  ask: number;
-  delta: number;
-  isEngineRecommended?: boolean;
-}
+type Mode = 'MANUAL' | 'AUTO';
 
 export function EngineWindow() {
-  // Wizard state
-  const [wizardStep, setWizardStep] = useState(1);
-  const [strategy, setStrategy] = useState<Strategy>('strangle');
-  const [riskTier, setRiskTier] = useState<RiskTier>('balanced');
-  const [stopMultiplier, setStopMultiplier] = useState<StopMultiplier>(3);
-  const [selectedPutStrike, setSelectedPutStrike] = useState<number | null>(null);
-  const [selectedCallStrike, setSelectedCallStrike] = useState<number | null>(null);
-  const [showConfirm, setShowConfirm] = useState(false);
+  // Mode state
+  const [mode, setMode] = useState<Mode>('MANUAL');
+  const [autoCountdown, setAutoCountdown] = useState(300); // 5 minutes
+  const [showHelp, setShowHelp] = useState(false);
+
+  // Strategy and position state
+  const [strategy, setStrategy] = useState<Strategy>('iron-condor');
+  const [contracts, setContracts] = useState(2);
+  const [putStrike, setPutStrike] = useState<number | null>(null);
+  const [callStrike, setCallStrike] = useState<number | null>(null);
+  const [spreadWidth, setSpreadWidth] = useState(5);
+
+  // Log lines for streaming display
+  const [logLines, setLogLines] = useState<LogLine[]>([]);
+  const [hudState, setHudState] = useState<'idle' | 'analyzing' | 'ready'>('idle');
 
   // Engine analysis hook
   const {
@@ -44,20 +51,18 @@ export function EngineWindow() {
     completedSteps,
     analysis,
     error: analysisError,
-    stepResults,
   } = useEngineAnalysis({
     symbol: 'SPY',
-    strategy,
-    riskTier,
+    strategy: strategy === 'put-spread' ? 'put-only' : strategy === 'call-spread' ? 'call-only' : 'strangle',
+    riskTier: 'balanced',
   });
 
-  // Broker status - use EXACT same useQuery as SettingsWindow for shared cache
+  // Broker status
   const { data: ibkrStatus } = useQuery<{
     configured: boolean;
     connected: boolean;
     accountId?: string;
     nav?: number;
-    environment?: string;
   }>({
     queryKey: ['/api/ibkr/status'],
     queryFn: async () => {
@@ -65,21 +70,11 @@ export function EngineWindow() {
       if (!res.ok) return { configured: false, connected: false };
       return res.json();
     },
-    refetchInterval: (query) => {
-      const data = query.state.data;
-      if (!data?.configured) return false;
-      if (data?.configured && !data?.connected) return 3000;
-      return 30000;
-    },
-    refetchOnWindowFocus: true,
-    refetchOnMount: true,
+    refetchInterval: 30000,
   });
 
-  // Engine status - for tradingWindowOpen check
-  const { status: engineStatus } = useEngine();
-
-  // Market snapshot - use SSE streaming hook like Engine.tsx
-  const { snapshot: marketSnapshot, connectionStatus: marketConnectionStatus } = useMarketSnapshot();
+  // Market snapshot
+  const { snapshot: marketSnapshot } = useMarketSnapshot();
 
   // Execute trade mutation
   const executeMutation = useMutation({
@@ -97,805 +92,297 @@ export function EngineWindow() {
       return res.json();
     },
     onSuccess: () => {
-      setShowConfirm(false);
-      setWizardStep(1);
+      addLogLine('TRADE EXECUTED SUCCESSFULLY', 'success');
+      setHudState('idle');
+      setLogLines([]);
+    },
+    onError: (err) => {
+      addLogLine(`ERROR: ${err.message}`, 'info');
     },
   });
 
-  // Auto-advance wizard when analysis completes
-  useEffect(() => {
-    if (analysis && !isAnalyzing && wizardStep === 1) {
-      // Set default strikes from engine recommendation
-      if (analysis.q3Strikes?.selectedPut?.strike) {
-        setSelectedPutStrike(analysis.q3Strikes.selectedPut.strike);
-      }
-      if (analysis.q3Strikes?.selectedCall?.strike) {
-        setSelectedCallStrike(analysis.q3Strikes.selectedCall.strike);
-      }
-      setWizardStep(2);
-    }
-  }, [analysis, isAnalyzing, wizardStep]);
-
   // Derived values
-  // Use SSE streaming data from useMarketSnapshot hook
-  const spyPrice = marketSnapshot?.spyPrice ?? analysis?.q1MarketRegime?.inputs?.spyPrice ?? 0;
-  const vix = marketSnapshot?.vix ?? analysis?.q1MarketRegime?.inputs?.vixValue ?? 0;
+  const spyPrice = marketSnapshot?.spyPrice ?? 0;
   const spyChangePct = marketSnapshot?.spyChangePct ?? 0;
+  const vix = marketSnapshot?.vix ?? 0;
   const isConnected = ibkrStatus?.connected ?? false;
-  // Match Engine.tsx logic: check marketState OR tradingWindowOpen from engine status
-  const marketState = marketSnapshot?.marketState ?? 'CLOSED';
-  const marketOpen = marketState === 'REGULAR' || marketState === 'OVERNIGHT' || engineStatus?.tradingWindowOpen;
 
-  // Additional market data from SSE stream (matching Trade page)
-  const spyBid = marketSnapshot?.spyBid ?? null;
-  const spyAsk = marketSnapshot?.spyAsk ?? null;
-  const bidAskSpread = spyBid && spyAsk ? spyAsk - spyBid : null;
-  const vwap = marketSnapshot?.vwap ?? null;
-  const ivRank = marketSnapshot?.ivRank ?? null;
-  const dayHigh = marketSnapshot?.dayHigh ?? spyPrice;
-  const dayLow = marketSnapshot?.dayLow ?? spyPrice;
-  const vixChangePct = marketSnapshot?.vixChangePct ?? 0;
-  const timestamp = marketSnapshot?.timestamp ?? null;
+  // Calculate credit
+  const credit = useMemo(() => {
+    if (!analysis?.q3Strikes) return 0;
+    const putPremium = analysis.q3Strikes.selectedPut?.premium ?? 0;
+    const callPremium = analysis.q3Strikes.selectedCall?.premium ?? 0;
 
-  // Strike candidates
-  const putCandidates: StrikeCandidate[] = useMemo(() => {
-    if (!analysis?.q3Strikes?.smartCandidates?.puts) return [];
-    return analysis.q3Strikes.smartCandidates.puts.map((s: any) => ({
-      strike: s.strike,
-      bid: s.bid,
-      ask: s.ask,
-      delta: s.delta,
-      isEngineRecommended: s.isEngineRecommended,
-    }));
-  }, [analysis]);
+    if (strategy === 'put-spread') return putPremium * contracts;
+    if (strategy === 'call-spread') return callPremium * contracts;
+    return (putPremium + callPremium) * contracts;
+  }, [analysis, strategy, contracts]);
 
-  const callCandidates: StrikeCandidate[] = useMemo(() => {
-    if (!analysis?.q3Strikes?.smartCandidates?.calls) return [];
-    return analysis.q3Strikes.smartCandidates.calls.map((s: any) => ({
-      strike: s.strike,
-      bid: s.bid,
-      ask: s.ask,
-      delta: s.delta,
-      isEngineRecommended: s.isEngineRecommended,
-    }));
-  }, [analysis]);
+  // Add log line helper
+  const addLogLine = useCallback((text: string, type: LogLine['type']) => {
+    const now = new Date();
+    const timestamp = now.toLocaleTimeString('en-US', {
+      hour12: false,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+    });
+    setLogLines((prev) => [...prev, { timestamp, text, type }]);
+  }, []);
 
-  // Calculate contracts and premium
-  const contracts = riskTier === 'conservative' ? 1 : riskTier === 'balanced' ? 2 : 3;
-  const selectedPut = putCandidates.find(s => s.strike === selectedPutStrike);
-  const selectedCall = callCandidates.find(s => s.strike === selectedCallStrike);
-  const premiumPerContract = (selectedPut?.bid ?? 0) + (selectedCall?.bid ?? 0);
-  const totalPremium = premiumPerContract * contracts * 100;
-  const stopLossAmount = premiumPerContract * stopMultiplier * contracts * 100;
-  const maxLoss = stopLossAmount - totalPremium;
+  // Track which log entries we've added to prevent duplicates
+  const [loggedSteps, setLoggedSteps] = useState<Set<string>>(new Set());
 
-  // Build trade proposal
-  const buildProposal = () => {
-    const legs: any[] = [];
-    if (selectedPut && (strategy === 'strangle' || strategy === 'put-only')) {
-      legs.push({
-        optionType: 'PUT',
-        action: 'SELL',
-        strike: selectedPut.strike,
-        delta: selectedPut.delta,
-        premium: selectedPut.bid,
-        bid: selectedPut.bid,
-        ask: selectedPut.ask,
+  // Stream analysis steps to log
+  useEffect(() => {
+    if (isAnalyzing) {
+      setHudState('analyzing');
+    }
+
+    // Log each step completion (with deduplication)
+    if (completedSteps.has(1) && !loggedSteps.has('step1')) {
+      const vixVal = analysis?.q1MarketRegime?.inputs?.vixValue ?? vix;
+      const regime = analysis?.q1MarketRegime?.regimeLabel ?? 'NORMAL';
+      addLogLine(`VIX ${vixVal.toFixed(1)} - ${regime.toLowerCase()}, ${regime === 'ELEVATED' ? 'caution advised' : 'safe to trade'}`, 'success');
+      setLoggedSteps(prev => new Set([...prev, 'step1']));
+    }
+
+    if (completedSteps.has(2) && !loggedSteps.has('step2')) {
+      const direction = analysis?.q2Direction?.recommendedDirection ?? 'NEUTRAL';
+      const conf = analysis?.q2Direction?.confidencePct ?? 70;
+      addLogLine(`${direction} bias detected (${conf}% confidence)`, 'success');
+      setLoggedSteps(prev => new Set([...prev, 'step2']));
+    }
+
+    if (completedSteps.has(3) && !loggedSteps.has('step3')) {
+      const putStrikeVal = analysis?.q3Strikes?.selectedPut?.strike;
+      const callStrikeVal = analysis?.q3Strikes?.selectedCall?.strike;
+      const putDelta = Math.abs(analysis?.q3Strikes?.selectedPut?.delta ?? 0.12);
+      const callDelta = Math.abs(analysis?.q3Strikes?.selectedCall?.delta ?? 0.12);
+
+      if (putStrikeVal) {
+        setPutStrike(putStrikeVal);
+        addLogLine(`PUT SPREAD: ${putStrikeVal}/${putStrikeVal - spreadWidth} @ $${(analysis?.q3Strikes?.selectedPut?.premium ?? 0).toFixed(2)} credit (${(putDelta * 100).toFixed(0)}d)`, 'success');
+      }
+      if (callStrikeVal) {
+        setCallStrike(callStrikeVal);
+        addLogLine(`CALL SPREAD: ${callStrikeVal}/${callStrikeVal + spreadWidth} @ $${(analysis?.q3Strikes?.selectedCall?.premium ?? 0).toFixed(2)} credit (${(callDelta * 100).toFixed(0)}d)`, 'success');
+      }
+      if (putStrikeVal && callStrikeVal) {
+        const totalCredit = (analysis?.q3Strikes?.selectedPut?.premium ?? 0) + (analysis?.q3Strikes?.selectedCall?.premium ?? 0);
+        addLogLine(`IRON CONDOR: $${totalCredit.toFixed(2)} total credit`, 'result');
+      }
+      setLoggedSteps(prev => new Set([...prev, 'step3']));
+    }
+
+    if (completedSteps.has(4) && !loggedSteps.has('step4')) {
+      const contractCount = analysis?.q4Size?.recommendedContracts ?? contracts;
+      const nav = ibkrStatus?.nav ?? 100000;
+      const maxLoss = (analysis?.tradeProposal?.maxLoss ?? 0);
+      const maxProfit = credit * 100;
+      setContracts(contractCount);
+      addLogLine(`Account: $${nav.toLocaleString()} | Risk: 2% | Contracts: ${contractCount}`, 'info');
+      addLogLine(`Max loss: $${maxLoss.toFixed(0)} | Max profit: $${maxProfit.toFixed(0)}`, 'info');
+      setLoggedSteps(prev => new Set([...prev, 'step4']));
+    }
+
+    // When all steps complete
+    if (completedSteps.size >= 4 && !isAnalyzing && hudState === 'analyzing') {
+      setHudState('ready');
+    }
+  }, [completedSteps, isAnalyzing, analysis, hudState, vix, addLogLine, contracts, credit, ibkrStatus?.nav, spreadWidth, loggedSteps]);
+
+  // Start analysis header
+  const handleAnalyze = useCallback(() => {
+    setLogLines([]);
+    setLoggedSteps(new Set());
+    setHudState('analyzing');
+    addLogLine('SCANNING MARKET...', 'header');
+    analyze();
+  }, [analyze, addLogLine]);
+
+  // Reset
+  const handleReset = useCallback(() => {
+    setLogLines([]);
+    setLoggedSteps(new Set());
+    setHudState('idle');
+    setPutStrike(null);
+    setCallStrike(null);
+  }, []);
+
+  // Execute
+  const handleExecute = useCallback(() => {
+    if (hudState !== 'ready' || !analysis?.tradeProposal) return;
+    executeMutation.mutate(analysis.tradeProposal);
+  }, [hudState, analysis, executeMutation]);
+
+  // Mode toggle
+  const handleModeToggle = useCallback(() => {
+    setMode((m) => (m === 'MANUAL' ? 'AUTO' : 'MANUAL'));
+    setAutoCountdown(300);
+  }, []);
+
+  // Auto mode countdown
+  useEffect(() => {
+    if (mode !== 'AUTO') return;
+
+    const interval = setInterval(() => {
+      setAutoCountdown((c) => {
+        if (c <= 1) {
+          // Auto-analyze when countdown hits 0
+          if (hudState === 'idle' && isConnected) {
+            handleAnalyze();
+          }
+          return 300; // Reset to 5 minutes
+        }
+        return c - 1;
       });
-    }
-    if (selectedCall && (strategy === 'strangle' || strategy === 'call-only')) {
-      legs.push({
-        optionType: 'CALL',
-        action: 'SELL',
-        strike: selectedCall.strike,
-        delta: selectedCall.delta,
-        premium: selectedCall.bid,
-        bid: selectedCall.bid,
-        ask: selectedCall.ask,
-      });
-    }
-    return {
-      proposalId: `terminal-${Date.now()}`,
-      symbol: 'SPY',
-      expirationDate: new Date().toISOString().split('T')[0],
-      expiration: new Date().toISOString().split('T')[0],
-      strategy: analysis?.tradeProposal?.strategy ?? 'STRANGLE',
-      legs,
-      contracts,
-      entryPremiumTotal: totalPremium,
-      entryPremiumPerContract: premiumPerContract * 100,
-      stopLossPrice: premiumPerContract * stopMultiplier,
-      stopLossAmount,
-      maxLoss,
-      stopMultiplier,
-    };
-  };
+    }, 1000);
 
-  // Navigation handlers
-  const canGoNext = () => {
-    if (wizardStep === 1) return !isAnalyzing && analysis;
-    if (wizardStep === 2) return selectedPutStrike || selectedCallStrike;
-    if (wizardStep === 3) return true;
-    if (wizardStep === 4) return true;
-    return false;
-  };
+    return () => clearInterval(interval);
+  }, [mode, hudState, isConnected, handleAnalyze]);
 
-  const goNext = () => {
-    if (canGoNext() && wizardStep < 5) {
-      setWizardStep(wizardStep + 1);
-    }
-  };
+  // Calculate progress
+  const progress = useMemo(() => {
+    if (!isAnalyzing) return completedSteps.size >= 4 ? 100 : 0;
+    return (engineStep / 5) * 100;
+  }, [isAnalyzing, engineStep, completedSteps.size]);
 
-  const goBack = () => {
-    if (wizardStep > 1) {
-      setWizardStep(wizardStep - 1);
-    }
-  };
+  // Keyboard controls
+  useKeyboardControls({
+    enabled: true,
+    onStrategyChange: setStrategy,
+    onStrikeAdjust: (dir) => {
+      setSpreadWidth((w) => (dir === 'wider' ? Math.min(w + 1, 10) : Math.max(w - 1, 1)));
+    },
+    onContractAdjust: (dir) => {
+      setContracts((c) => (dir === 'up' ? Math.min(c + 1, 10) : Math.max(c - 1, 1)));
+    },
+    onModeToggle: handleModeToggle,
+    onEnter: hudState === 'ready' ? handleExecute : handleAnalyze,
+    onEscape: handleReset,
+    onAnalyze: handleAnalyze,
+    onRefresh: () => {
+      // Refresh is handled by SSE, just add log
+      addLogLine('REFRESHING MARKET DATA...', 'header');
+    },
+    onShowHelp: () => setShowHelp((h) => !h),
+    onPauseAuto: () => {
+      if (mode === 'AUTO') {
+        setMode('MANUAL');
+        addLogLine('AUTO MODE PAUSED', 'info');
+      }
+    },
+  });
 
   return (
-    <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 14 }}>
-      {/* Header */}
-      <div style={{ marginBottom: 12, paddingBottom: 8, borderBottom: '1px solid #333' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span style={{ color: '#87ceeb' }}>&gt; ENGINE v2.0 - STEP {wizardStep}/5</span>
-          <span style={{ color: isConnected ? '#4ade80' : '#ef4444', fontSize: 12 }}>
-            {isConnected ? 'CONNECTED' : 'DISCONNECTED'}
-          </span>
-        </div>
-        {isAnalyzing && (
-          <div style={{ color: '#f59e0b', fontSize: 13, marginTop: 4 }}>
-            Analyzing step {engineStep}...
-          </div>
-        )}
-      </div>
+    <div
+      style={{
+        display: 'flex',
+        flexDirection: 'column',
+        height: '100%',
+        background: '#0a0a0a',
+        color: '#00ff00',
+        fontFamily: "'IBM Plex Mono', 'JetBrains Mono', monospace",
+      }}
+    >
+      {/* Top bar */}
+      <TopBar
+        spyPrice={spyPrice}
+        spyChangePct={spyChangePct}
+        vix={vix}
+        isConnected={isConnected}
+        mode={mode}
+        autoCountdown={mode === 'AUTO' ? autoCountdown : undefined}
+        onModeToggle={handleModeToggle}
+      />
+
+      {/* Main area */}
+      <MainArea
+        lines={logLines}
+        isAnalyzing={isAnalyzing}
+        progress={progress}
+        isReady={hudState === 'ready'}
+      />
+
+      {/* Selection bar */}
+      <SelectionBar
+        strategy={strategy}
+        onStrategyChange={setStrategy}
+        putStrike={putStrike}
+        callStrike={callStrike}
+        putSpread={spreadWidth}
+        callSpread={spreadWidth}
+      />
+
+      {/* Action bar */}
+      <ActionBar
+        state={hudState}
+        credit={credit}
+        contracts={contracts}
+        onAnalyze={handleAnalyze}
+        onExecute={handleExecute}
+        onReset={handleReset}
+        isExecuting={executeMutation.isPending}
+      />
 
       {/* Error display */}
       {analysisError && (
-        <div style={{ color: '#ef4444', marginBottom: 12, fontSize: 13 }}>
-          &gt; ERROR: {analysisError}
+        <div
+          style={{
+            position: 'absolute',
+            bottom: 60,
+            left: 12,
+            right: 12,
+            padding: 8,
+            background: '#1a0a0a',
+            border: '1px solid #ef4444',
+            color: '#ef4444',
+            fontSize: 12,
+          }}
+        >
+          ERROR: {analysisError}
         </div>
       )}
-      {executeMutation.isError && (
-        <div style={{ color: '#ef4444', marginBottom: 12, fontSize: 13 }}>
-          &gt; ERROR: {executeMutation.error?.message}
-        </div>
-      )}
 
-      {/* Step Content */}
-      {wizardStep === 1 && (
-        <Step1Market
-          spyPrice={spyPrice}
-          spyChangePct={spyChangePct}
-          spyBid={spyBid}
-          spyAsk={spyAsk}
-          bidAskSpread={bidAskSpread}
-          vix={vix}
-          vixChangePct={vixChangePct}
-          vwap={vwap}
-          ivRank={ivRank}
-          dayHigh={dayHigh}
-          dayLow={dayLow}
-          timestamp={timestamp}
-          marketOpen={marketOpen}
-          strategy={strategy}
-          onStrategyChange={setStrategy}
-          onAnalyze={analyze}
-          isAnalyzing={isAnalyzing}
-          isConnected={isConnected}
-        />
-      )}
-
-      {wizardStep === 2 && (
-        <Step2Direction
-          analysis={analysis}
-          strategy={strategy}
-          onStrategyChange={setStrategy}
-        />
-      )}
-
-      {wizardStep === 3 && (
-        <Step3Strikes
-          spyPrice={spyPrice}
-          putCandidates={strategy === 'call-only' ? [] : putCandidates}
-          callCandidates={strategy === 'put-only' ? [] : callCandidates}
-          selectedPutStrike={selectedPutStrike}
-          selectedCallStrike={selectedCallStrike}
-          onPutSelect={setSelectedPutStrike}
-          onCallSelect={setSelectedCallStrike}
-          premiumPerContract={premiumPerContract}
-        />
-      )}
-
-      {wizardStep === 4 && (
-        <Step4Size
-          riskTier={riskTier}
-          onRiskTierChange={setRiskTier}
-          contracts={contracts}
-          premiumPerContract={premiumPerContract}
-          totalPremium={totalPremium}
-          nav={ibkrStatus?.nav ?? 0}
-        />
-      )}
-
-      {wizardStep === 5 && (
-        <Step5Execute
-          selectedPut={selectedPut}
-          selectedCall={selectedCall}
-          contracts={contracts}
-          totalPremium={totalPremium}
-          stopMultiplier={stopMultiplier}
-          onStopMultiplierChange={setStopMultiplier}
-          stopLossAmount={stopLossAmount}
-          maxLoss={maxLoss}
-          showConfirm={showConfirm}
-          onShowConfirm={() => setShowConfirm(true)}
-          onCancel={() => setShowConfirm(false)}
-          onExecute={() => executeMutation.mutate(buildProposal())}
-          isExecuting={executeMutation.isPending}
-        />
-      )}
-
-      {/* Navigation */}
-      {wizardStep > 1 && (
-        <div style={{ display: 'flex', gap: 8, marginTop: 16, paddingTop: 12, borderTop: '1px solid #333' }}>
-          <button
-            onClick={goBack}
-            disabled={executeMutation.isPending}
+      {/* Help overlay */}
+      {showHelp && (
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            background: 'rgba(0,0,0,0.9)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            zIndex: 100,
+          }}
+          onClick={() => setShowHelp(false)}
+        >
+          <div
             style={{
-              flex: 1,
-              padding: '8px 0',
-              background: 'none',
+              padding: 24,
+              background: '#111',
               border: '1px solid #333',
               color: '#888',
               fontSize: 13,
-              cursor: 'pointer',
-              fontFamily: 'inherit',
+              lineHeight: 1.8,
             }}
           >
-            BACK
-          </button>
-          {wizardStep < 5 && (
-            <button
-              onClick={goNext}
-              disabled={!canGoNext()}
-              style={{
-                flex: 1,
-                padding: '8px 0',
-                background: canGoNext() ? '#3b82f6' : 'transparent',
-                border: `1px solid ${canGoNext() ? '#3b82f6' : '#333'}`,
-                color: canGoNext() ? '#fff' : '#666',
-                fontSize: 13,
-                cursor: canGoNext() ? 'pointer' : 'not-allowed',
-                fontFamily: 'inherit',
-              }}
-            >
-              NEXT
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Success message */}
-      {executeMutation.isSuccess && (
-        <div style={{ color: '#4ade80', marginTop: 12, fontSize: 13 }}>
-          &gt; Trade executed successfully!
-        </div>
-      )}
-    </div>
-  );
-}
-
-// Step 1: Market Assessment
-function Step1Market({
-  spyPrice,
-  spyChangePct,
-  spyBid,
-  spyAsk,
-  bidAskSpread,
-  vix,
-  vixChangePct,
-  vwap,
-  ivRank,
-  dayHigh,
-  dayLow,
-  timestamp,
-  marketOpen,
-  strategy,
-  onStrategyChange,
-  onAnalyze,
-  isAnalyzing,
-  isConnected,
-}: {
-  spyPrice: number;
-  spyChangePct: number;
-  spyBid: number | null;
-  spyAsk: number | null;
-  bidAskSpread: number | null;
-  vix: number;
-  vixChangePct: number;
-  vwap: number | null;
-  ivRank: number | null;
-  dayHigh: number;
-  dayLow: number;
-  timestamp: string | null;
-  marketOpen: boolean;
-  strategy: Strategy;
-  onStrategyChange: (s: Strategy) => void;
-  onAnalyze: () => void;
-  isAnalyzing: boolean;
-  isConnected: boolean;
-}) {
-  return (
-    <div>
-      <p style={{ color: '#666', marginBottom: 12 }}>&gt; MARKET ASSESSMENT</p>
-
-      {/* Strategy selector */}
-      <div style={{ marginBottom: 12 }}>
-        <label style={{ color: '#888', fontSize: 12, display: 'block', marginBottom: 4 }}>Strategy</label>
-        <div style={{ display: 'flex', gap: 4 }}>
-          {(['strangle', 'put-only', 'call-only'] as Strategy[]).map(s => (
-            <button
-              key={s}
-              onClick={() => onStrategyChange(s)}
-              style={{
-                flex: 1,
-                padding: '6px 0',
-                background: strategy === s ? '#333' : 'transparent',
-                border: `1px solid ${strategy === s ? '#555' : '#333'}`,
-                color: strategy === s ? '#fff' : '#666',
-                fontSize: 12,
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-              }}
-            >
-              {s.toUpperCase().replace('-', ' ')}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Market data */}
-      <div style={{ background: '#111', border: '1px solid #222', padding: 12, marginBottom: 12 }}>
-        <Row
-          label="SPY"
-          value={`$${spyPrice.toFixed(2)} (${spyChangePct >= 0 ? '+' : ''}${spyChangePct.toFixed(2)}%)`}
-          valueColor={spyChangePct >= 0 ? '#4ade80' : '#ef4444'}
-        />
-        {(spyBid || spyAsk) && (
-          <Row
-            label="Bid/Ask"
-            value={`$${spyBid?.toFixed(2) ?? '—'} / $${spyAsk?.toFixed(2) ?? '—'}${bidAskSpread ? ` ($${bidAskSpread.toFixed(2)})` : ''}`}
-            valueColor="#888"
-          />
-        )}
-        <Row
-          label="VIX"
-          value={`${vix.toFixed(2)}${vixChangePct !== 0 ? ` (${vixChangePct >= 0 ? '+' : ''}${vixChangePct.toFixed(1)}%)` : ''}`}
-          valueColor={vix > 20 ? '#f59e0b' : '#888'}
-        />
-        {vwap && <Row label="VWAP" value={`$${vwap.toFixed(2)}`} valueColor="#87ceeb" />}
-        {ivRank !== null && <Row label="IV Rank" value={`${ivRank.toFixed(0)}%`} valueColor="#87ceeb" />}
-        {dayLow !== dayHigh && (
-          <Row label="Day Range" value={`$${dayLow.toFixed(2)} - $${dayHigh.toFixed(2)}`} valueColor="#888" />
-        )}
-        <Row label="Market" value={marketOpen ? 'OPEN' : 'CLOSED'} valueColor={marketOpen ? '#4ade80' : '#ef4444'} />
-      </div>
-      {timestamp && (
-        <p style={{ color: '#666', fontSize: 11, textAlign: 'center', marginBottom: 8 }}>
-          Updated: {new Date(timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', timeZone: 'America/New_York' })} ET
-        </p>
-      )}
-
-      {/* Analyze button */}
-      <button
-        onClick={onAnalyze}
-        disabled={isAnalyzing || !isConnected}
-        style={{
-          width: '100%',
-          padding: '10px 0',
-          background: isAnalyzing ? '#333' : '#3b82f6',
-          border: 'none',
-          color: '#fff',
-          fontSize: 13,
-          cursor: isAnalyzing || !isConnected ? 'not-allowed' : 'pointer',
-          fontFamily: 'inherit',
-          fontWeight: 500,
-        }}
-      >
-        {isAnalyzing ? 'ANALYZING...' : 'ANALYZE MARKET'}
-      </button>
-    </div>
-  );
-}
-
-// Step 2: Direction
-function Step2Direction({
-  analysis,
-  strategy,
-  onStrategyChange,
-}: {
-  analysis: any;
-  strategy: Strategy;
-  onStrategyChange: (s: Strategy) => void;
-}) {
-  const direction = analysis?.q2Direction?.recommendedDirection ?? 'STRANGLE';
-  const confidence = analysis?.q2Direction?.confidence ?? 0;
-  const trend = analysis?.q2Direction?.signals?.trend ?? 'NEUTRAL';
-
-  return (
-    <div>
-      <p style={{ color: '#666', marginBottom: 12 }}>&gt; DIRECTION</p>
-
-      {/* Recommendation */}
-      <div style={{ background: '#111', border: '1px solid #222', padding: 12, marginBottom: 12 }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
-          <span style={{ color: '#888' }}>Recommendation</span>
-          <span style={{ color: direction === 'PUT' ? '#ef4444' : direction === 'CALL' ? '#4ade80' : '#87ceeb', fontWeight: 500 }}>
-            {direction === 'PUT' ? 'BEARISH PUT' : direction === 'CALL' ? 'BULLISH CALL' : 'STRANGLE'}
-          </span>
-        </div>
-        <Row label="Confidence" value={`${(confidence * 100).toFixed(0)}%`} valueColor={confidence > 0.7 ? '#4ade80' : '#f59e0b'} />
-        <Row label="Trend" value={trend} />
-      </div>
-
-      {/* Override */}
-      <div style={{ marginBottom: 8 }}>
-        <label style={{ color: '#888', fontSize: 12, display: 'block', marginBottom: 4 }}>Override Direction</label>
-        <div style={{ display: 'flex', gap: 4 }}>
-          {(['put-only', 'call-only', 'strangle'] as Strategy[]).map(s => (
-            <button
-              key={s}
-              onClick={() => onStrategyChange(s)}
-              style={{
-                flex: 1,
-                padding: '6px 0',
-                background: strategy === s ? '#333' : 'transparent',
-                border: `1px solid ${strategy === s ? '#555' : '#333'}`,
-                color: strategy === s ? '#fff' : '#666',
-                fontSize: 12,
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-              }}
-            >
-              {s === 'put-only' ? 'PUT' : s === 'call-only' ? 'CALL' : 'STRANGLE'}
-            </button>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-// Step 3: Strike Selection
-function Step3Strikes({
-  spyPrice,
-  putCandidates,
-  callCandidates,
-  selectedPutStrike,
-  selectedCallStrike,
-  onPutSelect,
-  onCallSelect,
-  premiumPerContract,
-}: {
-  spyPrice: number;
-  putCandidates: StrikeCandidate[];
-  callCandidates: StrikeCandidate[];
-  selectedPutStrike: number | null;
-  selectedCallStrike: number | null;
-  onPutSelect: (strike: number | null) => void;
-  onCallSelect: (strike: number | null) => void;
-  premiumPerContract: number;
-}) {
-  return (
-    <div>
-      <p style={{ color: '#666', marginBottom: 8 }}>&gt; SELECT STRIKES</p>
-      <p style={{ color: '#888', fontSize: 12, marginBottom: 12 }}>SPY ${spyPrice.toFixed(2)}</p>
-
-      {/* Puts */}
-      {putCandidates.length > 0 && (
-        <div style={{ marginBottom: 12 }}>
-          <p style={{ color: '#ef4444', fontSize: 12, marginBottom: 4 }}>PUTS</p>
-          <div style={{ maxHeight: 100, overflow: 'auto' }}>
-            {putCandidates.slice(0, 6).map(s => (
-              <StrikeRow
-                key={s.strike}
-                strike={s.strike}
-                bid={s.bid}
-                delta={s.delta}
-                selected={selectedPutStrike === s.strike}
-                recommended={s.isEngineRecommended}
-                onClick={() => onPutSelect(selectedPutStrike === s.strike ? null : s.strike)}
-              />
-            ))}
+            <div style={{ color: '#00ffff', marginBottom: 16, fontSize: 14 }}>KEYBOARD SHORTCUTS</div>
+            <div>[1] [2] [3] - Select strategy</div>
+            <div>[{'\u2190'}] [{'\u2192'}] - Adjust spread width</div>
+            <div>[{'\u2191'}] [{'\u2193'}] - Adjust contracts</div>
+            <div>[Tab] - Toggle AUTO/MANUAL</div>
+            <div>[Enter] - Analyze / Execute</div>
+            <div>[Esc] - Reset</div>
+            <div>[A] - Analyze now</div>
+            <div>[Space] - Pause auto mode</div>
+            <div>[?] - Toggle this help</div>
+            <div style={{ marginTop: 16, color: '#555', fontSize: 11 }}>Press any key to close</div>
           </div>
         </div>
       )}
-
-      {/* Calls */}
-      {callCandidates.length > 0 && (
-        <div style={{ marginBottom: 12 }}>
-          <p style={{ color: '#4ade80', fontSize: 12, marginBottom: 4 }}>CALLS</p>
-          <div style={{ maxHeight: 100, overflow: 'auto' }}>
-            {callCandidates.slice(0, 6).map(s => (
-              <StrikeRow
-                key={s.strike}
-                strike={s.strike}
-                bid={s.bid}
-                delta={s.delta}
-                selected={selectedCallStrike === s.strike}
-                recommended={s.isEngineRecommended}
-                onClick={() => onCallSelect(selectedCallStrike === s.strike ? null : s.strike)}
-              />
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* Summary */}
-      <div style={{ background: '#111', border: '1px solid #222', padding: 8 }}>
-        <Row label="Total Premium" value={`$${(premiumPerContract * 100).toFixed(0)}/contract`} valueColor="#4ade80" />
-      </div>
-    </div>
-  );
-}
-
-function StrikeRow({
-  strike,
-  bid,
-  delta,
-  selected,
-  recommended,
-  onClick,
-}: {
-  strike: number;
-  bid: number;
-  delta: number;
-  selected: boolean;
-  recommended?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <div
-      onClick={onClick}
-      style={{
-        display: 'flex',
-        justifyContent: 'space-between',
-        padding: '4px 8px',
-        background: selected ? '#1e3a5f' : 'transparent',
-        border: `1px solid ${selected ? '#3b82f6' : '#222'}`,
-        marginBottom: 2,
-        cursor: 'pointer',
-        fontSize: 13,
-      }}
-    >
-      <span style={{ color: recommended ? '#f59e0b' : '#fff' }}>
-        {strike}{recommended ? '*' : ''}
-      </span>
-      <span style={{ color: '#888' }}>${bid.toFixed(2)}</span>
-      <span style={{ color: '#666' }}>{Math.abs(delta).toFixed(2)}d</span>
-    </div>
-  );
-}
-
-// Step 4: Position Size
-function Step4Size({
-  riskTier,
-  onRiskTierChange,
-  contracts,
-  premiumPerContract,
-  totalPremium,
-  nav,
-}: {
-  riskTier: RiskTier;
-  onRiskTierChange: (tier: RiskTier) => void;
-  contracts: number;
-  premiumPerContract: number;
-  totalPremium: number;
-  nav: number;
-}) {
-  const pctOfNav = nav > 0 ? ((totalPremium / nav) * 100).toFixed(2) : '0.00';
-
-  return (
-    <div>
-      <p style={{ color: '#666', marginBottom: 12 }}>&gt; POSITION SIZE</p>
-
-      {/* Risk tier selector */}
-      <div style={{ marginBottom: 12 }}>
-        <label style={{ color: '#888', fontSize: 12, display: 'block', marginBottom: 4 }}>Risk Tier</label>
-        <div style={{ display: 'flex', gap: 4 }}>
-          {(['conservative', 'balanced', 'aggressive'] as RiskTier[]).map(tier => {
-            const c = tier === 'conservative' ? 1 : tier === 'balanced' ? 2 : 3;
-            const p = premiumPerContract * c * 100;
-            return (
-              <button
-                key={tier}
-                onClick={() => onRiskTierChange(tier)}
-                style={{
-                  flex: 1,
-                  padding: '8px 4px',
-                  background: riskTier === tier ? '#333' : 'transparent',
-                  border: `1px solid ${riskTier === tier ? '#555' : '#333'}`,
-                  color: riskTier === tier ? '#fff' : '#666',
-                  fontSize: 12,
-                  cursor: 'pointer',
-                  fontFamily: 'inherit',
-                  textAlign: 'center',
-                }}
-              >
-                <div>{tier.slice(0, 4).toUpperCase()}</div>
-                <div style={{ color: '#888', fontSize: 9 }}>{c}x | ${p.toFixed(0)}</div>
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
-      {/* Summary */}
-      <div style={{ background: '#111', border: '1px solid #222', padding: 12 }}>
-        <Row label="Contracts" value={contracts.toString()} />
-        <Row label="Premium" value={`$${totalPremium.toFixed(0)}`} valueColor="#4ade80" />
-        {nav > 0 && <Row label="% of NAV" value={`${pctOfNav}%`} />}
-      </div>
-    </div>
-  );
-}
-
-// Step 5: Execute
-function Step5Execute({
-  selectedPut,
-  selectedCall,
-  contracts,
-  totalPremium,
-  stopMultiplier,
-  onStopMultiplierChange,
-  stopLossAmount,
-  maxLoss,
-  showConfirm,
-  onShowConfirm,
-  onCancel,
-  onExecute,
-  isExecuting,
-}: {
-  selectedPut: StrikeCandidate | undefined;
-  selectedCall: StrikeCandidate | undefined;
-  contracts: number;
-  totalPremium: number;
-  stopMultiplier: StopMultiplier;
-  onStopMultiplierChange: (m: StopMultiplier) => void;
-  stopLossAmount: number;
-  maxLoss: number;
-  showConfirm: boolean;
-  onShowConfirm: () => void;
-  onCancel: () => void;
-  onExecute: () => void;
-  isExecuting: boolean;
-}) {
-  return (
-    <div>
-      <p style={{ color: '#666', marginBottom: 12 }}>&gt; EXECUTE TRADE</p>
-
-      {/* Order preview */}
-      <div style={{ background: '#111', border: '1px solid #222', padding: 12, marginBottom: 12 }}>
-        <p style={{ color: '#87ceeb', marginBottom: 8, fontSize: 13 }}>ORDER PREVIEW</p>
-        {selectedPut && (
-          <Row label={`SELL SPY ${selectedPut.strike}P`} value={`$${selectedPut.bid.toFixed(2)}`} valueColor="#ef4444" />
-        )}
-        {selectedCall && (
-          <Row label={`SELL SPY ${selectedCall.strike}C`} value={`$${selectedCall.bid.toFixed(2)}`} valueColor="#4ade80" />
-        )}
-        <div style={{ borderTop: '1px solid #333', marginTop: 8, paddingTop: 8 }}>
-          <Row label="Contracts" value={contracts.toString()} />
-          <Row label="Entry Premium" value={`$${totalPremium.toFixed(0)}`} valueColor="#4ade80" />
-        </div>
-      </div>
-
-      {/* Stop loss selector */}
-      <div style={{ marginBottom: 12 }}>
-        <label style={{ color: '#888', fontSize: 12, display: 'block', marginBottom: 4 }}>Stop Loss</label>
-        <div style={{ display: 'flex', gap: 4 }}>
-          {([2, 3, 4] as StopMultiplier[]).map(m => (
-            <button
-              key={m}
-              onClick={() => onStopMultiplierChange(m)}
-              style={{
-                flex: 1,
-                padding: '6px 0',
-                background: stopMultiplier === m ? '#333' : 'transparent',
-                border: `1px solid ${stopMultiplier === m ? '#555' : '#333'}`,
-                color: stopMultiplier === m ? '#fff' : '#666',
-                fontSize: 12,
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-              }}
-            >
-              {m}x
-            </button>
-          ))}
-        </div>
-        <div style={{ color: '#888', fontSize: 12, marginTop: 4 }}>
-          Stop: ${stopLossAmount.toFixed(0)} | Max Loss: ${maxLoss.toFixed(0)}
-        </div>
-      </div>
-
-      {/* Confirmation */}
-      {showConfirm ? (
-        <div style={{ background: '#1a1a1a', border: '1px solid #ef4444', padding: 12 }}>
-          <p style={{ color: '#ef4444', marginBottom: 8, fontWeight: 500 }}>&gt; CONFIRM LIVE TRADE</p>
-          <p style={{ color: '#888', fontSize: 13, marginBottom: 12 }}>
-            This will place a real order. Max loss: ${maxLoss.toFixed(0)}
-          </p>
-          <div style={{ display: 'flex', gap: 8 }}>
-            <button
-              onClick={onExecute}
-              disabled={isExecuting}
-              style={{
-                flex: 1,
-                padding: '10px 0',
-                background: '#ef4444',
-                border: 'none',
-                color: '#fff',
-                fontSize: 13,
-                cursor: isExecuting ? 'wait' : 'pointer',
-                fontFamily: 'inherit',
-                fontWeight: 500,
-              }}
-            >
-              {isExecuting ? 'EXECUTING...' : 'EXECUTE'}
-            </button>
-            <button
-              onClick={onCancel}
-              disabled={isExecuting}
-              style={{
-                flex: 1,
-                padding: '10px 0',
-                background: 'none',
-                border: '1px solid #333',
-                color: '#888',
-                fontSize: 13,
-                cursor: 'pointer',
-                fontFamily: 'inherit',
-              }}
-            >
-              CANCEL
-            </button>
-          </div>
-        </div>
-      ) : (
-        <button
-          onClick={onShowConfirm}
-          style={{
-            width: '100%',
-            padding: '12px 0',
-            background: '#4ade80',
-            border: 'none',
-            color: '#000',
-            fontSize: 13,
-            cursor: 'pointer',
-            fontFamily: 'inherit',
-            fontWeight: 500,
-          }}
-        >
-          EXECUTE TRADE
-        </button>
-      )}
-    </div>
-  );
-}
-
-// Helper row component
-function Row({
-  label,
-  value,
-  valueColor,
-}: {
-  label: string;
-  value: string;
-  valueColor?: string;
-}) {
-  return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontSize: 13 }}>
-      <span style={{ color: '#888' }}>{label}</span>
-      <span style={{ color: valueColor || '#fff' }}>{value}</span>
     </div>
   );
 }
