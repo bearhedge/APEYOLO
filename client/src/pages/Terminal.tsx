@@ -37,39 +37,6 @@ export function Terminal() {
         overflow: 'hidden',
       }}
     >
-      {/* Docs Button - Top Right */}
-      <button
-        onClick={() => windowManager.toggleWindow('docs')}
-        style={{
-          position: 'fixed',
-          top: 16,
-          right: 16,
-          padding: '6px 12px',
-          background: windowManager.windows.docs.isOpen ? '#1a1a1a' : 'transparent',
-          border: '1px solid #333',
-          color: windowManager.windows.docs.isOpen ? '#87ceeb' : '#666',
-          fontSize: 11,
-          fontFamily: "'IBM Plex Mono', monospace",
-          cursor: 'pointer',
-          zIndex: 1000,
-          transition: 'all 0.15s ease',
-        }}
-        onMouseEnter={e => {
-          if (!windowManager.windows.docs.isOpen) {
-            e.currentTarget.style.borderColor = '#555';
-            e.currentTarget.style.color = '#888';
-          }
-        }}
-        onMouseLeave={e => {
-          if (!windowManager.windows.docs.isOpen) {
-            e.currentTarget.style.borderColor = '#333';
-            e.currentTarget.style.color = '#666';
-          }
-        }}
-      >
-        [?] docs
-      </button>
-
       {/* Main Area */}
       <main
         style={{
