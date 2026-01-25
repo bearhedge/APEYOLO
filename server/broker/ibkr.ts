@@ -670,7 +670,6 @@ class IbkrClient {
         body: form.toString(),
       });
 
-      this.last.oauth = { status: resp.status, ts: new Date().toISOString(), requestId: oauthReqId };
       if (!resp.ok) {
         let errorBody = "";
         try { errorBody = await resp.text(); } catch {}
@@ -691,6 +690,7 @@ class IbkrClient {
         if (jwtPayloadStr) console.error("[IBKR][OAuth][jwtPayload]", jwtPayloadStr);
         console.error("[IBKR][OAuth][result]", { error: "token_request_failed", status: resp.status, reqId: oauthReqId });
 
+        // DON'T update this.last.oauth on failure - keep showing previous success status
         await storage.createAuditLog({
           eventType: "IBKR_OAUTH_TOKEN",
           details: `FAILED http=${resp.status} req=${oauthReqId} body=${snippet}`,
@@ -699,6 +699,8 @@ class IbkrClient {
         throw new Error(`IBKR OAuth token request failed: ${resp.status}`);
       }
 
+      // Only update status on success - prevents UI from flashing red during refresh
+      this.last.oauth = { status: resp.status, ts: new Date().toISOString(), requestId: oauthReqId };
       const json = (await resp.json()) as OAuthToken;
       this.accessToken = json.access_token;
       this.accessTokenExpiryMs = this.now() + json.expires_in * 1000;
@@ -817,11 +819,13 @@ class IbkrClient {
     const traceVal = (res.headers as any)['traceid'] || (res.headers as any)['x-traceid'] || (res.headers as any)['x-request-id'] || (res.headers as any)['x-correlation-id'];
     console.log(`[IBKR][SSO] status=${res.status} traceId=${traceVal ?? ''} body=${snippet}`);
 
-    this.last.sso = { status: res.status, ts: new Date().toISOString(), requestId: traceVal };
     if (!(res.status >= 200 && res.status < 300)) {
+      // DON'T update this.last.sso on failure - keep showing previous success status
       await storage.createAuditLog({ eventType: 'IBKR_SSO_SESSION', details: `FAILED http=${res.status} req=${traceVal ?? ''}`, status: 'FAILED' });
       throw new Error(`IBKR SSO session failed: ${res.status}`);
     }
+    // Only update status on success - prevents UI from flashing red during refresh
+    this.last.sso = { status: res.status, ts: new Date().toISOString(), requestId: traceVal };
 
     const body: any = res.data ?? {};
     // Capture any token fields if present; otherwise rely on cookies in jar
@@ -901,13 +905,14 @@ class IbkrClient {
       attempt = 3;
     }
 
-    this.last.validate = { status: r.status, ts: new Date().toISOString(), requestId: traceVal };
-
     console.log(`[IBKR][VALIDATE] status=${r.status} traceId=${traceVal ?? ''} body=${snippet} attempt=${attempt}`);
 
     if (r.status >= 200 && r.status < 300) {
+      // Only update status on success - prevents UI from flashing red during refresh
+      this.last.validate = { status: r.status, ts: new Date().toISOString(), requestId: traceVal };
       await storage.createAuditLog({ eventType: "IBKR_SSO_VALIDATE", details: `OK http=${r.status} req=${traceVal ?? ''} attempt=${attempt}`, status: "SUCCESS" });
     } else {
+      // Log failure but DON'T update this.last.validate - keep showing previous success status
       await storage.createAuditLog({ eventType: "IBKR_SSO_VALIDATE", details: `FAILED http=${r.status} req=${traceVal ?? ''} body=${snippet} attempt=${attempt}`, status: "FAILED" });
     }
     return r.status;
@@ -995,11 +1000,14 @@ class IbkrClient {
       const bodyText = typeof r.data === 'string' ? r.data : JSON.stringify(r.data || {});
       const snippet = bodyText.slice(0, 200);
       const traceVal = (r.headers as any)['traceid'] || (r.headers as any)['x-traceid'] || (r.headers as any)['x-request-id'] || (r.headers as any)['x-correlation-id'];
-      this.last.init = { status: r.status, ts: new Date().toISOString(), requestId: traceVal };
       console.log(`[IBKR][INIT] status=${r.status} traceId=${traceVal ?? ''} body=${snippet}`);
       if (r.status >= 200 && r.status < 300) {
+        // Only update status on success - prevents UI from flashing red during refresh attempts
+        this.last.init = { status: r.status, ts: new Date().toISOString(), requestId: traceVal };
         await storage.createAuditLog({ eventType: "IBKR_INIT", details: `OK http=${r.status} req=${traceVal ?? ''}`, status: "SUCCESS" });
       } else {
+        // Log failure but DON'T update this.last.init - keep showing previous success status
+        // The retry logic will handle recovery, no need to flash red in UI
         await storage.createAuditLog({ eventType: "IBKR_INIT", details: `FAILED http=${r.status} req=${traceVal ?? ''} body=${snippet}`, status: "FAILED" });
       }
       return r;
