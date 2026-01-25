@@ -2,12 +2,12 @@
  * SelectionBar - Strategy and strike selection
  *
  * Features:
- * - [1] PUT SPREAD  [2] CALL SPREAD  [3] IRON CONDOR buttons
+ * - [1] PUT  [2] CALL  [3] STRANGLE buttons
  * - Current strikes display
  * - Keyboard shortcuts (1, 2, 3)
  */
 
-export type Strategy = 'put-spread' | 'call-spread' | 'iron-condor';
+export type Strategy = 'put-spread' | 'call-spread' | 'strangle';
 
 interface SelectionBarProps {
   strategy: Strategy;
@@ -27,22 +27,26 @@ export function SelectionBar({
   callSpread = 5,
 }: SelectionBarProps) {
   const strategies: { key: Strategy; label: string; shortcut: string }[] = [
-    { key: 'put-spread', label: 'PUT SPREAD', shortcut: '1' },
-    { key: 'call-spread', label: 'CALL SPREAD', shortcut: '2' },
-    { key: 'iron-condor', label: 'IRON CONDOR', shortcut: '3' },
+    { key: 'put-spread', label: 'PUT', shortcut: '1' },
+    { key: 'call-spread', label: 'CALL', shortcut: '2' },
+    { key: 'strangle', label: 'STRANGLE', shortcut: '3' },
   ];
 
   const formatStrike = () => {
     if (strategy === 'put-spread' && putStrike) {
-      return `${putStrike}/${putStrike - putSpread}`;
+      return `${putStrike}P`;
     }
     if (strategy === 'call-spread' && callStrike) {
-      return `${callStrike}/${callStrike + callSpread}`;
+      return `${callStrike}C`;
     }
-    if (strategy === 'iron-condor' && putStrike && callStrike) {
-      return `${putStrike}/${putStrike - putSpread} | ${callStrike}/${callStrike + callSpread}`;
+    if (strategy === 'strangle') {
+      if (putStrike && callStrike) {
+        return `${putStrike}P / ${callStrike}C`;
+      }
+      if (putStrike) return `${putStrike}P / ---C`;
+      if (callStrike) return `---P / ${callStrike}C`;
     }
-    return '---/---';
+    return '---';
   };
 
   return (
@@ -51,44 +55,48 @@ export function SelectionBar({
         display: 'flex',
         justifyContent: 'space-between',
         alignItems: 'center',
-        padding: '8px 12px',
-        borderTop: '1px solid #222',
-        borderBottom: '1px solid #222',
-        background: '#0d0d0d',
+        padding: '10px 12px',
+        borderTop: '1px solid #333',
+        borderBottom: '1px solid #333',
+        background: '#111',
         fontFamily: "'IBM Plex Mono', monospace",
         fontSize: 12,
       }}
     >
       {/* Strategy buttons */}
       <div style={{ display: 'flex', gap: 8 }}>
-        {strategies.map((s) => (
-          <button
-            key={s.key}
-            onClick={() => onStrategyChange(s.key)}
-            style={{
-              padding: '6px 12px',
-              background: strategy === s.key ? '#1a1a1a' : 'transparent',
-              border: `1px solid ${strategy === s.key ? '#00ffff' : '#333'}`,
-              borderRadius: 4,
-              color: strategy === s.key ? '#00ffff' : '#666',
-              fontSize: 11,
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-              transition: 'all 0.15s ease',
-            }}
-          >
-            <span style={{ color: strategy === s.key ? '#00ffff' : '#555', marginRight: 4 }}>
-              [{s.shortcut}]
-            </span>
-            {s.label}
-          </button>
-        ))}
+        {strategies.map((s) => {
+          const isActive = strategy === s.key;
+          return (
+            <button
+              key={s.key}
+              onClick={() => onStrategyChange(s.key)}
+              style={{
+                padding: '8px 14px',
+                background: isActive ? '#1a3a3a' : '#1a1a1a',
+                border: `1px solid ${isActive ? '#00ffff' : '#444'}`,
+                borderRadius: 4,
+                color: isActive ? '#00ffff' : '#aaa',
+                fontSize: 11,
+                fontWeight: isActive ? 600 : 400,
+                cursor: 'pointer',
+                fontFamily: 'inherit',
+                transition: 'all 0.15s ease',
+              }}
+            >
+              <span style={{ color: isActive ? '#00ffff' : '#666', marginRight: 6 }}>
+                [{s.shortcut}]
+              </span>
+              {s.label}
+            </button>
+          );
+        })}
       </div>
 
       {/* Current strikes */}
       <div style={{ color: '#888' }}>
-        <span style={{ color: '#555' }}>STRIKES: </span>
-        <span style={{ color: '#fff', fontWeight: 500 }}>{formatStrike()}</span>
+        <span style={{ color: '#666', marginRight: 8 }}>STRIKES:</span>
+        <span style={{ color: '#fff', fontWeight: 600, fontSize: 13 }}>{formatStrike()}</span>
       </div>
     </div>
   );

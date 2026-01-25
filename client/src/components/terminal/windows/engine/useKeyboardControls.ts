@@ -67,7 +67,7 @@ export function useKeyboardControls({
           break;
         case '3':
           e.preventDefault();
-          onStrategyChange('iron-condor');
+          onStrategyChange('strangle');
           break;
 
         // Strike adjustment

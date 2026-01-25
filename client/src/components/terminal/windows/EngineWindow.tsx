@@ -33,7 +33,7 @@ export function EngineWindow() {
   const [showHelp, setShowHelp] = useState(false);
 
   // Strategy and position state
-  const [strategy, setStrategy] = useState<Strategy>('iron-condor');
+  const [strategy, setStrategy] = useState<Strategy>('strangle');
   const [contracts, setContracts] = useState(2);
   const [putStrike, setPutStrike] = useState<number | null>(null);
   const [callStrike, setCallStrike] = useState<number | null>(null);
@@ -43,7 +43,8 @@ export function EngineWindow() {
   const [logLines, setLogLines] = useState<LogLine[]>([]);
   const [hudState, setHudState] = useState<'idle' | 'analyzing' | 'ready'>('idle');
 
-  // Engine analysis hook
+  // Engine analysis hook - map HUD strategy to engine strategy
+  const engineStrategy = strategy === 'put-spread' ? 'put-only' : strategy === 'call-spread' ? 'call-only' : 'strangle';
   const {
     analyze,
     isAnalyzing,
@@ -53,7 +54,7 @@ export function EngineWindow() {
     error: analysisError,
   } = useEngineAnalysis({
     symbol: 'SPY',
-    strategy: strategy === 'put-spread' ? 'put-only' : strategy === 'call-spread' ? 'call-only' : 'strangle',
+    strategy: engineStrategy,
     riskTier: 'balanced',
   });
 
@@ -97,7 +98,7 @@ export function EngineWindow() {
       setLogLines([]);
     },
     onError: (err) => {
-      addLogLine(`ERROR: ${err.message}`, 'info');
+      addLogLine(`Execution failed: ${err.message}`, 'error');
     },
   });
 
@@ -133,6 +134,15 @@ export function EngineWindow() {
   // Track which log entries we've added to prevent duplicates
   const [loggedSteps, setLoggedSteps] = useState<Set<string>>(new Set());
 
+  // Handle analysis errors - show in log and reset state
+  useEffect(() => {
+    if (analysisError && !loggedSteps.has('error')) {
+      addLogLine(analysisError, 'error');
+      setLoggedSteps(prev => new Set([...prev, 'error']));
+      setHudState('idle');
+    }
+  }, [analysisError, loggedSteps, addLogLine]);
+
   // Stream analysis steps to log
   useEffect(() => {
     if (isAnalyzing) {
@@ -141,7 +151,8 @@ export function EngineWindow() {
 
     // Log each step completion (with deduplication)
     if (completedSteps.has(1) && !loggedSteps.has('step1')) {
-      const vixVal = analysis?.q1MarketRegime?.inputs?.vixValue ?? vix;
+      // Prefer marketSnapshot vix (real-time) over analysis vix (may be stale/null)
+      const vixVal = vix > 0 ? vix : (analysis?.q1MarketRegime?.inputs?.vixValue ?? 0);
       const regime = analysis?.q1MarketRegime?.regimeLabel ?? 'NORMAL';
       addLogLine(`VIX ${vixVal.toFixed(1)} - ${regime.toLowerCase()}, ${regime === 'ELEVATED' ? 'caution advised' : 'safe to trade'}`, 'success');
       setLoggedSteps(prev => new Set([...prev, 'step1']));
@@ -170,7 +181,7 @@ export function EngineWindow() {
       }
       if (putStrikeVal && callStrikeVal) {
         const totalCredit = (analysis?.q3Strikes?.selectedPut?.premium ?? 0) + (analysis?.q3Strikes?.selectedCall?.premium ?? 0);
-        addLogLine(`IRON CONDOR: $${totalCredit.toFixed(2)} total credit`, 'result');
+        addLogLine(`STRANGLE: $${totalCredit.toFixed(2)} total credit`, 'result');
       }
       setLoggedSteps(prev => new Set([...prev, 'step3']));
     }
@@ -325,25 +336,6 @@ export function EngineWindow() {
         onReset={handleReset}
         isExecuting={executeMutation.isPending}
       />
-
-      {/* Error display */}
-      {analysisError && (
-        <div
-          style={{
-            position: 'absolute',
-            bottom: 60,
-            left: 12,
-            right: 12,
-            padding: 8,
-            background: '#1a0a0a',
-            border: '1px solid #ef4444',
-            color: '#ef4444',
-            fontSize: 12,
-          }}
-        >
-          ERROR: {analysisError}
-        </div>
-      )}
 
       {/* Help overlay */}
       {showHelp && (

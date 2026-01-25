@@ -15,7 +15,7 @@ import { useEffect, useRef } from 'react';
 export interface LogLine {
   timestamp: string;
   text: string;
-  type: 'header' | 'success' | 'info' | 'result' | 'ready';
+  type: 'header' | 'success' | 'info' | 'result' | 'ready' | 'error';
 }
 
 interface MainAreaProps {
@@ -45,6 +45,8 @@ export function MainArea({ lines, isAnalyzing, progress, isReady }: MainAreaProp
         return '#f59e0b'; // amber
       case 'ready':
         return '#00ff00'; // matrix green
+      case 'error':
+        return '#ef4444'; // red
       default:
         return '#888';
     }
@@ -58,6 +60,8 @@ export function MainArea({ lines, isAnalyzing, progress, isReady }: MainAreaProp
         return '\u2713'; // checkmark
       case 'result':
         return '\u2192'; // arrow
+      case 'error':
+        return '\u2717'; // X mark
       case 'ready':
         return '';
       default:
