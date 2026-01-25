@@ -71,11 +71,6 @@ export function ActionBar({
         <span style={{ color: credit > 0 ? '#4ade80' : '#666', fontWeight: 600 }}>
           ${credit.toFixed(2)}
         </span>
-        {contracts > 0 && (
-          <span style={{ color: '#555', marginLeft: 8 }}>
-            x{contracts}
-          </span>
-        )}
       </div>
 
       {/* Execute button */}
