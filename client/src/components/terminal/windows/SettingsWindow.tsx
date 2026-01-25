@@ -495,8 +495,8 @@ function DiagStep({
   message?: string;
   success?: boolean;
 }) {
-  // Status: 0 = not attempted, 1 = in progress, 2 = complete
-  const isComplete = status === 2 || success;
+  // Status: 0 = not attempted, 1 = in progress, 2 = complete, 200 = HTTP OK
+  const isComplete = status === 200 || status === 2 || success;
   const isInProgress = status === 1;
 
   const icon = isComplete ? '[OK]' : isInProgress ? '[..]' : '[X]';

@@ -57,10 +57,10 @@ export function setConnectionMode(mode: 'oauth' | 'relay'): void {
       console.log('[MarketDataAutoStart] Disconnecting OAuth WebSocket for relay mode...');
       wsManager.disconnect();
     }
-  } else if (mode === 'oauth') {
-    // Clear cached session to force fresh re-authentication
-    // This fixes 401 errors after switching back from TWS/Gateway mode
-    console.log('[MarketDataAutoStart] Clearing cached IBKR session for fresh auth...');
+  } else if (mode === 'oauth' && previousMode !== 'oauth') {
+    // Only clear when actually SWITCHING from relay to oauth, not when already in oauth mode
+    // This prevents unnecessary session clearing that resets auth diagnostics to 0
+    console.log('[MarketDataAutoStart] Clearing cached IBKR session for fresh auth (switching from relay)...');
     clearIbkrSession();
 
     // Immediately try to reconnect WebSocket when switching back to OAuth
@@ -114,8 +114,9 @@ export async function autoStartMarketDataStream(): Promise<void> {
 
 /**
  * Core function to start WebSocket streaming
+ * Exported for manual reconnection via API endpoint
  */
-async function startWebSocketStream(): Promise<void> {
+export async function startWebSocketStream(): Promise<void> {
   if (isStarting) {
     throw new Error('Already starting');
   }
