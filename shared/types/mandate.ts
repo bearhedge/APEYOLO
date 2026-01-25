@@ -122,3 +122,81 @@ export interface MandateDisplay {
     thisMonth: number;
   };
 }
+
+// ==================== MANDATE EVENTS ====================
+
+// Event types that can be tracked
+export type MandateEventType =
+  | 'MANDATE_CREATED'
+  | 'MANDATE_DEACTIVATED'
+  | 'VIOLATION_BLOCKED'
+  | 'COMMITMENT_RECORDED';
+
+// Event data structures for each event type
+export interface MandateCreatedEventData {
+  mandateId: string;
+  rules: MandateRules;
+  rulesHash: string;
+}
+
+export interface MandateDeactivatedEventData {
+  mandateId: string;
+  reason?: string;
+  replacedBy?: string;
+}
+
+export interface ViolationBlockedEventData {
+  violationType: ViolationType;
+  attemptedValue: string;
+  limitValue: string;
+  tradeContext?: Record<string, unknown>;
+}
+
+export interface CommitmentRecordedEventData {
+  targetId: string;
+  targetType: 'mandate' | 'violation';
+  solanaSignature: string;
+  solanaSlot: number;
+}
+
+export type MandateEventData =
+  | MandateCreatedEventData
+  | MandateDeactivatedEventData
+  | ViolationBlockedEventData
+  | CommitmentRecordedEventData;
+
+// Full event record
+export interface MandateEvent {
+  id: string;
+  userId: string;
+  mandateId?: string;
+  eventType: MandateEventType;
+  eventData: MandateEventData;
+  eventHash: string;
+  previousMandateId?: string;
+  relatedViolationId?: string;
+  actorId: string;
+  actorRole: string;
+  solanaSignature?: string;
+  solanaSlot?: number;
+  solanaCluster?: string;
+  createdAt: string;
+  recordedOnChainAt?: string;
+}
+
+// API response for event timeline
+export interface MandateEventTimeline {
+  events: MandateEvent[];
+  totalCount: number;
+  uncommittedCount: number;
+}
+
+// Event display formatting
+export interface MandateEventDisplay {
+  event: MandateEvent;
+  icon: string;
+  color: string;
+  title: string;
+  description: string;
+  explorerUrl?: string;
+}
