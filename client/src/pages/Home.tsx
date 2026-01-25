@@ -590,7 +590,7 @@ export function Home() {
             className="neon-button text-xl px-10 py-4 h-auto bg-black text-white border-2 rounded-lg font-bold tracking-wide transition-all duration-300"
             data-testid="button-get-started"
           >
-            LET'S GO
+            APE IN
             <ArrowRight className="w-6 h-6 ml-2" />
           </Button>
         </div>
