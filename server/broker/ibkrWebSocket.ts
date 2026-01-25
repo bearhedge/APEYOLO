@@ -308,11 +308,17 @@ export class IbkrWebSocketManager {
             console.log(`[IbkrWS] Sending session authentication: {"session":"${this.sessionToken.substring(0, 8)}..."}`);
             this.ws!.send(sessionMsg);
           } else {
-            console.warn('[IbkrWS] No session token available - WebSocket may not authenticate properly');
-            // Still resolve since connection is open, but auth may fail
+            // CRITICAL FIX: Abort connection if no session token
+            // Sending {"session": null} causes IBKR to return authenticated=false
+            // which triggers forceReconnectWithFreshCredentials() in an infinite loop
+            console.error('[IbkrWS] CRITICAL: No session token available for auth!');
+            console.error('[IbkrWS] This will cause immediate auth failure. Aborting connection.');
             clearTimeout(connectionTimeout);
-            this.resubscribeAll();
-            resolve();
+            this.ws!.close();
+            this.isConnected = false;
+            this.isConnecting = false;
+            reject(new Error('Cannot authenticate WebSocket without session token'));
+            return;
           }
         });
 

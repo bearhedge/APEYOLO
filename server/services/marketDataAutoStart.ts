@@ -177,18 +177,36 @@ async function startWebSocketStream(): Promise<void> {
     wsManager.setCredentialRefreshCallback(async () => {
       console.log('[MarketDataAutoStart] Refreshing credentials for WebSocket reconnection (forcing full refresh)...');
       try {
-        // Force refresh = true to clear cached tokens and get fresh ones from IBKR
+        // Step 1: Force refresh OAuth + SSO session
+        console.log('[MarketDataAutoStart] Step 1: Calling ensureIbkrReady(true)...');
         await ensureIbkrReady(true);
+
+        // Step 2: Get fresh cookie string
+        console.log('[MarketDataAutoStart] Step 2: Getting cookie string...');
         const newCookieString = await getIbkrCookieString();
+
+        // Step 3: Get fresh session token
+        console.log('[MarketDataAutoStart] Step 3: Getting session token...');
         const newSessionToken = await getIbkrSessionToken();
-        console.log(`[MarketDataAutoStart] Credentials refreshed: cookies=${!!newCookieString} (len=${newCookieString?.length || 0}), session=${!!newSessionToken}`);
+
+        // Step 4: Validate we actually got a token
+        if (!newSessionToken) {
+          console.error('[MarketDataAutoStart] WARNING: getIbkrSessionToken() returned null!');
+          throw new Error('Session token is null after refresh');
+        }
+
+        console.log(`[MarketDataAutoStart] Credentials refreshed successfully: cookies=${!!newCookieString} (len=${newCookieString?.length || 0}), session=${!!newSessionToken}`);
         return {
           cookieString: newCookieString || '',
           sessionToken: newSessionToken,
         };
       } catch (err: any) {
-        console.error('[MarketDataAutoStart] Failed to refresh credentials:', err.message);
-        return { cookieString: cookieString || '', sessionToken: null };
+        // CRITICAL FIX: THROW instead of returning null sessionToken
+        // Returning null causes infinite reconnect loop with {"session": null}
+        // Throwing lets WebSocket fall back to scheduleReconnect() with exponential backoff
+        console.error('[MarketDataAutoStart] Credential refresh FAILED:', err.message);
+        console.error('[MarketDataAutoStart] Stack:', err.stack);
+        throw new Error(`Credential refresh failed: ${err.message}`);
       }
     });
 
