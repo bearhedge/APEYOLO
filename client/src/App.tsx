@@ -6,16 +6,11 @@ import { Route, Redirect } from "wouter";
 import { Wallet } from "lucide-react";
 import { Home } from "@/pages/Home";
 import { Onboarding } from "@/pages/Onboarding";
-import { Engine } from "@/pages/Engine";
 import { Portfolio } from "@/pages/Portfolio";
 import { TrackRecord } from "@/pages/TrackRecord";
-import { DeFi } from "@/pages/DeFi";
 import { DD } from "@/pages/DD";
 import { Jobs } from "@/pages/Jobs";
 import { Settings } from "@/pages/Settings";
-import { Trade } from "@/pages/Trade";
-import { Review } from "@/pages/Review";
-import { Admin } from "@/pages/Admin";
 import { Terminal } from "@/pages/Terminal";
 import { WalletProvider, useWalletContext } from "@/components/WalletProvider";
 import { useWallet } from "@solana/wallet-adapter-react";
@@ -65,22 +60,24 @@ function App() {
             <Route path="/" component={Home} />
             <Route path="/onboarding" component={Onboarding} />
 
-            {/* New consolidated routes */}
-            <Route path="/trade" component={Trade} />
-            <Route path="/admin" component={Admin} />
+            {/* Main route */}
             <Route path="/terminal" component={Terminal} />
 
-            {/* Redirects for old routes to new Admin page */}
+            {/* Legacy redirects - all go to terminal */}
+            <Route path="/trade">
+              <Redirect to="/terminal" />
+            </Route>
+            <Route path="/admin">
+              <Redirect to="/terminal" />
+            </Route>
             <Route path="/review">
-              <Redirect to="/admin?tab=log" />
+              <Redirect to="/terminal" />
             </Route>
             <Route path="/defi">
-              <Redirect to="/admin?tab=log" />
+              <Redirect to="/terminal" />
             </Route>
-
-            {/* Old routes - redirect to new routes */}
             <Route path="/engine">
-              <Redirect to="/trade" />
+              <Redirect to="/terminal" />
             </Route>
             <Route path="/portfolio" component={Portfolio} />
             <Route path="/track-record" component={TrackRecord} />
@@ -90,15 +87,15 @@ function App() {
             {/* Other routes */}
             <Route path="/dd" component={DD} />
 
-            {/* Legacy redirects */}
+            {/* More legacy redirects */}
             <Route path="/dashboard">
-              <Redirect to="/trade" />
+              <Redirect to="/terminal" />
             </Route>
             <Route path="/sessions">
-              <Redirect to="/trade" />
+              <Redirect to="/terminal" />
             </Route>
             <Route path="/trades">
-              <Redirect to="/review?tab=portfolio" />
+              <Redirect to="/terminal" />
             </Route>
           </div>
         </TooltipProvider>

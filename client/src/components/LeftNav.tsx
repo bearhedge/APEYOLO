@@ -1,9 +1,8 @@
 import { Link, useLocation } from 'wouter';
-import { Zap, BarChart2, Settings } from 'lucide-react';
+import { Terminal, BarChart2 } from 'lucide-react';
 
 const navItems = [
-  { path: '/trade', label: 'Trade', icon: Zap },
-  { path: '/admin', label: 'Admin', icon: Settings },  // Combined DeFi + Review
+  { path: '/terminal', label: 'Terminal', icon: Terminal },
   { path: '/dd', label: 'DD', icon: BarChart2 },
 ];
 

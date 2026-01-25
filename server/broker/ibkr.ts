@@ -243,11 +243,14 @@ class IbkrClient {
     if (state.accessToken === null) {
       this.accessToken = null;
       this.accessTokenExpiryMs = 0;
+      this.last.oauth = { status: null, ts: new Date().toISOString() };
       console.log('[IBKR] Cleared access token');
     } else if (state.accessToken && state.accessTokenExpiryMs > now) {
       // Only restore if tokens haven't expired
       this.accessToken = state.accessToken;
       this.accessTokenExpiryMs = state.accessTokenExpiryMs;
+      // Mark OAuth as successful since we have a valid token
+      this.last.oauth = { status: 200, ts: new Date().toISOString() };
       console.log('[IBKR] Restored access token, expires in',
         Math.round((state.accessTokenExpiryMs - now) / 1000 / 60), 'minutes');
     }
@@ -257,12 +260,15 @@ class IbkrClient {
       this.ssoSessionId = null;
       this.ssoAccessTokenExpiryMs = 0;
       this.sessionReady = false;
+      this.last.sso = { status: null, ts: new Date().toISOString() };
       console.log('[IBKR] Cleared SSO session');
     } else if (state.ssoToken && ssoExpiry > now) {
       this.ssoAccessToken = state.ssoToken;
       this.ssoSessionId = state.ssoSessionId ?? null;
       this.ssoAccessTokenExpiryMs = ssoExpiry;
       this.sessionReady = true;
+      // Mark SSO as successful since we have a valid token
+      this.last.sso = { status: 200, ts: new Date().toISOString() };
       console.log('[IBKR] Restored SSO session, expires in',
         Math.round((ssoExpiry - now) / 1000 / 60), 'minutes');
     }
