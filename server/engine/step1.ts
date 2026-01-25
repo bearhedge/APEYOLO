@@ -162,16 +162,49 @@ export async function analyzeMarketRegime(useRealData: boolean = true, symbol: s
   let spySource = 'IBKR';  // Track data source for UI
 
   if (useRealData) {
-    // Fetch VIX data (with fallback to mock)
+    // Fetch VIX data using user's broker (multi-tenant) or global fallback
     console.log('[Step1] Fetching VIX data...');
     try {
-      const vixData = await getVIXData();
-      vixLevel = vixData.value;
-      vixChange = vixData.changePercent;
-      console.log(`[Step1] VIX: ${vixLevel?.toFixed(2)} (${vixChange && vixChange > 0 ? '+' : ''}${vixChange?.toFixed(2)}%)`);
+      if (userId) {
+        // Multi-tenant: Use user's broker for VIX
+        console.log(`[Step1] Trying IBKR market data for VIX...`);
+        const broker = await getBrokerForUser(userId);
+        const vixMarketData = await broker.api?.getMarketData('VIX');
+        if (vixMarketData && vixMarketData.price > 0) {
+          vixLevel = vixMarketData.price;
+          vixChange = vixMarketData.changePercent;
+          console.log(`[Step1] VIX from IBKR: ${vixLevel?.toFixed(2)} (${vixChange && vixChange > 0 ? '+' : ''}${vixChange?.toFixed(2)}%)`);
+        }
+      } else {
+        // Fallback to global broker (legacy path)
+        const vixData = await getVIXData();
+        vixLevel = vixData.value;
+        vixChange = vixData.changePercent;
+        console.log(`[Step1] VIX: ${vixLevel?.toFixed(2)} (${vixChange && vixChange > 0 ? '+' : ''}${vixChange?.toFixed(2)}%)`);
+      }
     } catch (error: any) {
       console.error(`[Step1] VIX fetch FAILED: ${error.message}`);
-      // VIX has fallback in marketDataService, so this is unlikely
+    }
+
+    // VIX database fallback (for off-hours or API failures)
+    if (!vixLevel || vixLevel === 0) {
+      try {
+        console.log(`[Step1] Trying database for last known VIX...`);
+        const result = await pool.query(`
+          SELECT close, timestamp
+          FROM market_data
+          WHERE symbol = 'VIX'
+          ORDER BY timestamp DESC
+          LIMIT 1
+        `);
+        if (result.rows.length > 0 && result.rows[0].close) {
+          vixLevel = parseFloat(result.rows[0].close);
+          vixChange = 0;
+          console.log(`[Step1] VIX from database: ${vixLevel.toFixed(2)} (as of ${result.rows[0].timestamp})`);
+        }
+      } catch (error: any) {
+        console.warn(`[Step1] VIX database fallback failed: ${error.message}`);
+      }
     }
 
     // Fetch underlying price with fallback:
