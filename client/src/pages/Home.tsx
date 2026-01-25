@@ -2,7 +2,7 @@ import { ArrowRight } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useState, useEffect } from 'react';
 
-const TAGLINE = "AUTOMATED 0DTE SPY/SPX OPTIONS TRADING";
+const TAGLINE = "NAKED 0DTE SPY/SPX OPTIONS SELLING";
 
 // Hong Kong neon palette - 90s Wanchai/TST aesthetic
 const NEON_PALETTES = [
@@ -45,11 +45,26 @@ const ANIMATIONS = [
   { name: 'rainbow', duration: 12000 },
 ];
 
+// Options Greeks & financial symbols - letters that can transform
+const GREEK_LETTERS: Record<string, string> = {
+  'D': 'Δ',  // Delta
+  'G': 'Γ',  // Gamma
+  'T': 'Θ',  // Theta
+  'V': 'ν',  // Vega (lowercase nu)
+  'R': 'ρ',  // Rho
+  'E': 'ε',  // Epsilon
+  'O': 'σ',  // Sigma (standard deviation)
+  'L': 'Λ',  // Lambda (options Greek - leverage ratio)
+  'S': 'Σ',  // Sigma uppercase (summation)
+  'P': 'Π',  // Pi (portfolio/product notation)
+};
+
 function WildTagline() {
   const [animationIndex, setAnimationIndex] = useState(0);
   const [paletteIndex, setPaletteIndex] = useState(0);
   const [colorOffset, setColorOffset] = useState(0);
   const [key, setKey] = useState(0); // Force re-render on animation change
+  const [greekFlickers, setGreekFlickers] = useState<Set<number>>(new Set());
 
   const currentAnimation = ANIMATIONS[animationIndex];
   const currentPalette = NEON_PALETTES[paletteIndex];
@@ -76,6 +91,34 @@ function WildTagline() {
 
     return () => clearInterval(colorTimer);
   }, [currentPalette.length]);
+
+  // Greek letter flicker effect - subtle random transformations
+  useEffect(() => {
+    const flickerInterval = setInterval(() => {
+      // Find all indices that CAN show Greek (have a mapping)
+      const eligibleIndices = TAGLINE.split('').reduce<number[]>((acc, char, idx) => {
+        if (GREEK_LETTERS[char.toUpperCase()]) acc.push(idx);
+        return acc;
+      }, []);
+
+      if (eligibleIndices.length === 0) return;
+
+      // Randomly pick 2-4 letters to flicker
+      const numToFlicker = 2 + Math.floor(Math.random() * 3);
+      const shuffled = [...eligibleIndices].sort(() => Math.random() - 0.5);
+      const toFlicker = new Set(shuffled.slice(0, numToFlicker));
+
+      setGreekFlickers(toFlicker);
+
+      // Reset after flash (200-400ms for visibility)
+      setTimeout(() => {
+        setGreekFlickers(new Set());
+      }, 200 + Math.random() * 200);
+
+    }, 1500 + Math.random() * 1000); // Every 1.5-2.5 seconds
+
+    return () => clearInterval(flickerInterval);
+  }, []);
 
   const getLetterStyle = (index: number, char: string): React.CSSProperties => {
     // Color shifts through letters like a wave
@@ -278,11 +321,16 @@ function WildTagline() {
 
   return (
     <div key={key} className="text-3xl md:text-4xl mb-10 font-bold tracking-wide uppercase" style={{ minHeight: '2em', perspective: '1000px', fontFamily: 'inherit' }}>
-      {TAGLINE.split('').map((char, index) => (
-        <span key={index} style={getLetterStyle(index, char)}>
-          {char}
-        </span>
-      ))}
+      {TAGLINE.split('').map((char, index) => {
+        const shouldShowGreek = greekFlickers.has(index) && GREEK_LETTERS[char.toUpperCase()];
+        const displayChar = shouldShowGreek ? GREEK_LETTERS[char.toUpperCase()] : char;
+
+        return (
+          <span key={index} style={getLetterStyle(index, char)}>
+            {displayChar}
+          </span>
+        );
+      })}
     </div>
   );
 }
