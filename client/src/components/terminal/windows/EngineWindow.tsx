@@ -270,8 +270,7 @@ export function EngineWindow() {
     onEscape: handleReset,
     onAnalyze: handleAnalyze,
     onRefresh: () => {
-      // Refresh is handled by SSE, just add log
-      addLogLine('REFRESHING MARKET DATA...', 'header');
+      // R key reserved for future agent commands
     },
     onShowHelp: () => setShowHelp((h) => !h),
     onPauseAuto: () => {
