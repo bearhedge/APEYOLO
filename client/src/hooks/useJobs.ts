@@ -48,9 +48,10 @@ export interface MarketStatus {
 export interface MarketEvent {
   date: string;
   event: string;
-  type: 'holiday' | 'early_close' | 'economic';
+  type: 'holiday' | 'early_close' | 'economic' | 'earnings';
   impactLevel?: 'low' | 'medium' | 'high' | 'critical';
   time?: string;
+  symbol?: string; // For earnings events
 }
 
 export interface MarketCalendar {
@@ -64,6 +65,8 @@ export interface MarketCalendar {
     holiday?: string;
     earlyClose?: boolean;
   }>;
+  fredConfigured?: boolean;
+  alphaVantageConfigured?: boolean;
 }
 
 export interface OptionChainSnapshot {
