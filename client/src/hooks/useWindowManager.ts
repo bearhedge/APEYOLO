@@ -6,7 +6,7 @@
 
 import { useState, useCallback, useEffect } from 'react';
 
-export type WindowId = 'mandate' | 'positions' | 'trades' | 'stats' | 'engine' | 'settings' | 'agent' | 'jobs' | 'calendar';
+export type WindowId = 'mandate' | 'positions' | 'trades' | 'stats' | 'engine' | 'settings' | 'agent' | 'jobs' | 'calendar' | 'accounting';
 
 export interface WindowState {
   isOpen: boolean;
@@ -32,6 +32,7 @@ export const WINDOW_CONFIGS: WindowConfig[] = [
   { id: 'agent', title: 'agent.exe', defaultPosition: { x: 500, y: 100 }, defaultSize: { width: 400, height: 500 } },
   { id: 'jobs', title: 'jobs.cron', defaultPosition: { x: 150, y: 80 }, defaultSize: { width: 900, height: 600 } },
   { id: 'calendar', title: 'calendar.ics', defaultPosition: { x: 250, y: 100 }, defaultSize: { width: 350, height: 400 } },
+  { id: 'accounting', title: 'ledger.csv', defaultPosition: { x: 120, y: 90 }, defaultSize: { width: 650, height: 500 } },
 ];
 
 const STORAGE_KEY = 'apeyolo-terminal-windows';

@@ -15,6 +15,7 @@ import { SettingsWindow } from './windows/SettingsWindow';
 import { AgentWindow } from './windows/AgentWindow';
 import { JobsWindow } from './windows/JobsWindow';
 import { CalendarWindow } from './windows/CalendarWindow';
+import { AccountingWindow } from './windows/AccountingWindow';
 
 interface WindowManagerProps {
   windowManager: ReturnType<typeof useWindowManager>;
@@ -30,6 +31,7 @@ const WINDOW_CONTENT: Record<WindowId, React.ComponentType> = {
   agent: AgentWindow,
   jobs: JobsWindow,
   calendar: CalendarWindow,
+  accounting: AccountingWindow,
 };
 
 export function WindowManager({ windowManager }: WindowManagerProps) {
