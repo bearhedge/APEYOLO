@@ -130,10 +130,17 @@ export class IbkrWebSocketManager {
   private lastDataReceived: Date | null = null;
   // Track subscription errors (e.g., "Missing iserver bridge")
   private subscriptionErrorMessage: string | null = null;
+  // Session token expiry tracking - proactive refresh before expiry
+  private sessionTokenExpiresAt: number = 0;
+  private sessionRefreshInterval: NodeJS.Timeout | null = null;
 
   constructor(cookieString: string, sessionToken?: string | null) {
     this.cookieString = cookieString;
     this.sessionToken = sessionToken || null;
+    // Default expiry: 9 minutes from now if token provided
+    if (sessionToken) {
+      this.sessionTokenExpiresAt = Date.now() + (540 * 1000);
+    }
   }
 
   /**
@@ -154,10 +161,90 @@ export class IbkrWebSocketManager {
   }
 
   /**
-   * Update session token
+   * Update session token with optional expiry tracking
+   * @param sessionToken - New session token
+   * @param expiresInSeconds - Token lifetime in seconds (default 540 = 9 minutes)
    */
-  updateSessionToken(sessionToken: string | null): void {
+  updateSessionToken(sessionToken: string | null, expiresInSeconds: number = 540): void {
     this.sessionToken = sessionToken;
+    if (sessionToken) {
+      this.sessionTokenExpiresAt = Date.now() + (expiresInSeconds * 1000);
+      console.log(`[IbkrWS] Session token updated, expires in ${expiresInSeconds}s`);
+    } else {
+      this.sessionTokenExpiresAt = 0;
+    }
+  }
+
+  /**
+   * Check if session token is still valid (with 30s safety margin)
+   */
+  isSessionTokenValid(): boolean {
+    return this.sessionToken !== null && this.sessionTokenExpiresAt > Date.now() + 30_000;
+  }
+
+  /**
+   * Get session token expiry timestamp
+   */
+  getSessionTokenExpiresAt(): number {
+    return this.sessionTokenExpiresAt;
+  }
+
+  /**
+   * Start proactive session token refresh (every 5 minutes)
+   */
+  startSessionRefresh(): void {
+    this.stopSessionRefresh();
+
+    this.sessionRefreshInterval = setInterval(async () => {
+      if (this.isConnected && this.isAuthenticated && this.credentialRefreshCallback) {
+        // Check if token will expire in next 2 minutes
+        if (this.sessionTokenExpiresAt > 0 && this.sessionTokenExpiresAt < Date.now() + 120_000) {
+          console.log('[IbkrWS] Session token expiring soon, refreshing...');
+          await this.refreshSessionToken();
+        }
+      }
+    }, 60_000); // Check every minute
+
+    console.log('[IbkrWS] Started session refresh interval');
+  }
+
+  /**
+   * Stop session refresh interval
+   */
+  stopSessionRefresh(): void {
+    if (this.sessionRefreshInterval) {
+      clearInterval(this.sessionRefreshInterval);
+      this.sessionRefreshInterval = null;
+    }
+  }
+
+  /**
+   * Refresh session token proactively before expiry
+   */
+  async refreshSessionToken(): Promise<void> {
+    if (!this.credentialRefreshCallback) {
+      console.warn('[IbkrWS] No credential refresh callback set, cannot refresh session');
+      return;
+    }
+
+    try {
+      console.log('[IbkrWS] Refreshing session token...');
+      const { sessionToken } = await this.credentialRefreshCallback();
+
+      if (sessionToken) {
+        this.updateSessionToken(sessionToken);
+
+        // Re-authenticate with new token if connected
+        if (this.ws && this.isConnected && this.ws.readyState === WebSocket.OPEN) {
+          this.ws.send(JSON.stringify({ session: sessionToken }));
+          console.log('[IbkrWS] Sent refreshed session token to WebSocket');
+        }
+      } else {
+        console.warn('[IbkrWS] Credential refresh returned no session token');
+      }
+    } catch (err) {
+      console.error('[IbkrWS] Failed to refresh session token:', err);
+    }
   }
 
   /**
@@ -273,6 +360,8 @@ export class IbkrWebSocketManager {
               // authenticated=true or no authenticated field (legacy) - we're good
               this.isAuthenticated = true;
               clearTimeout(connectionTimeout);
+              // Start proactive session refresh to prevent token expiry
+              this.startSessionRefresh();
               // Now that we've received sts, subscribe to market data
               console.log('[IbkrWS] sts received with auth success - subscribing to market data');
               this.resubscribeAll();
@@ -292,6 +381,7 @@ export class IbkrWebSocketManager {
               console.log('[IbkrWS] WebSocket authenticated successfully');
               this.isAuthenticated = true;
               clearTimeout(connectionTimeout);
+              this.startSessionRefresh();
               // Now that we're authenticated, resubscribe
               this.resubscribeAll();
               resolve();
@@ -303,6 +393,7 @@ export class IbkrWebSocketManager {
               console.log('[IbkrWS] Session confirmed');
               this.isAuthenticated = true;
               clearTimeout(connectionTimeout);
+              this.startSessionRefresh();
               this.resubscribeAll();
               resolve();
               return;
@@ -319,6 +410,7 @@ export class IbkrWebSocketManager {
             console.log('[IbkrWS] Received market data - connection authenticated');
             this.isAuthenticated = true;
             clearTimeout(connectionTimeout);
+            this.startSessionRefresh();
             resolve();
           }
         });
@@ -359,6 +451,7 @@ export class IbkrWebSocketManager {
   disconnect(): void {
     console.log('[IbkrWS] Disconnecting...');
     this.stopHeartbeat();
+    this.stopSessionRefresh();
 
     if (this.ws) {
       // Unsubscribe from all before closing
@@ -812,8 +905,9 @@ export class IbkrWebSocketManager {
   private async forceReconnectWithFreshCredentials(): Promise<void> {
     console.log('[IbkrWS] Force reconnecting with fresh credentials...');
 
-    // Stop heartbeat and close current connection
+    // Stop heartbeat/session refresh and close current connection
     this.stopHeartbeat();
+    this.stopSessionRefresh();
     if (this.ws) {
       this.ws.removeAllListeners();
       this.ws.terminate();

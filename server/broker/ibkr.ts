@@ -292,6 +292,16 @@ class IbkrClient {
         console.warn('[IBKR] Failed to restore cookie jar:', e);
       }
     }
+
+    // If we have valid OAuth + SSO tokens and session is ready, also mark validate/init
+    // This prevents partial green indicators when restoring from persisted state
+    if (this.accessToken && this.ssoAccessToken && this.sessionReady &&
+        this.last.oauth.status === 200 && this.last.sso.status === 200) {
+      const ts = new Date().toISOString();
+      this.last.validate = { status: 200, ts };
+      this.last.init = { status: 200, ts };
+      console.log('[IBKR] Restored validate/init status to match valid session');
+    }
   }
 
   /**
@@ -725,11 +735,11 @@ class IbkrClient {
   }
 
   private async createSSOSession(token: string): Promise<void> {
-    // Check if we have a valid SSO session that hasn't expired
+    // Check if we have a valid SSO session that hasn't expired (with 30s safety margin)
     const now = Date.now();
     const hasValidSession = this.ssoSessionId &&
                            this.ssoAccessToken &&
-                           this.ssoAccessTokenExpiryMs > now;
+                           this.ssoAccessTokenExpiryMs - 30_000 > now; // 30s safety margin
 
     if (hasValidSession) {
       console.log('[IBKR][SSO] Using existing valid session, expires in',
@@ -737,8 +747,8 @@ class IbkrClient {
       return;
     }
 
-    // Clear old session if expired
-    if (this.ssoAccessTokenExpiryMs && this.ssoAccessTokenExpiryMs <= now) {
+    // Clear old session if expired (or about to expire in 30s)
+    if (this.ssoAccessTokenExpiryMs && this.ssoAccessTokenExpiryMs - 30_000 <= now) {
       console.log('[IBKR][SSO] Previous session expired, creating new one');
       this.ssoSessionId = null;
       this.ssoAccessToken = null;
@@ -1061,7 +1071,9 @@ class IbkrClient {
         console.error(`[IBKR][keepalive] Tickle failed:`, err);
         this.sessionReady = false;
         this.accountSelected = false; // Must reset account selection when session resets
-        this.last.init.status = null;
+        // NOTE: Don't clear init.status here - it causes UI to flash disconnected
+        // The next ensureReady() will re-run the pipeline and set proper statuses
+        // this.last.init.status = null; // REMOVED - causes status flicker
       }
     }
   }
@@ -1100,7 +1112,7 @@ class IbkrClient {
       const now = Date.now();
       const tokenValid = this.accessToken && this.accessTokenExpiryMs - 5_000 > now;
       const ssoValid = this.ssoAccessToken &&
-                       this.ssoAccessTokenExpiryMs > now &&
+                       this.ssoAccessTokenExpiryMs - 30_000 > now && // 30s safety margin
                        this.lastInitTimeMs &&
                        (now - this.lastInitTimeMs < 540_000); // 9 minutes
       const sessionValid = this.sessionReady &&

@@ -1,5 +1,5 @@
 // @ts-nocheck - Solana SAS integration incomplete
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { RefreshCw, CheckCircle, XCircle, AlertCircle, Trash2, Key, Eye, EyeOff, Save, Building2, Wallet, Copy, Loader2, ExternalLink, Zap, Database } from 'lucide-react';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
@@ -381,7 +381,8 @@ export function Settings({
       // Adaptive polling based on connection state
       const data = query.state.data as { configured?: boolean; connected?: boolean } | undefined;
       if (!data?.configured) return false; // Don't poll if not configured
-      if (data?.configured && !data?.connected) return 3000; // 3s when connecting
+      // Increase poll interval when disconnected to prevent collision with auto-reconnect
+      if (data?.configured && !data?.connected) return 5000; // 5s when connecting (was 3s)
       return 30000; // 30s when stable
     },
     refetchOnWindowFocus: true,
@@ -430,16 +431,73 @@ export function Settings({
     onSuccess: () => refreshAllIbkrStatus(),
   });
 
-  // Aggressive auto-reconnect: continuously retry with backoff until connected
+  // Auto-reconnect state with timeout-based backoff (not interval)
   const [backoffMs, setBackoffMs] = useState<number>(3000);
   const [isAutoConnecting, setIsAutoConnecting] = useState<boolean>(false);
   const [retryCount, setRetryCount] = useState<number>(0);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Auto-reconnect effect with interval-based retry
+  // Cleanup timeout on unmount
   useEffect(() => {
+    return () => {
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+      }
+    };
+  }, []);
+
+  // Single async reconnect attempt - no nested mutations
+  const attemptReconnect = useCallback(async () => {
+    if (isAutoConnecting) return;
+
+    setIsAutoConnecting(true);
+    setRetryCount((c) => c + 1);
+
+    try {
+      // Try warm endpoint first (runs full readiness flow server-side)
+      const warmResponse = await fetch('/api/broker/warm', { credentials: 'include' });
+      const warmResult = await warmResponse.json();
+
+      if (warmResult?.ok) {
+        // Success - reset backoff
+        setBackoffMs(3000);
+        setRetryCount(0);
+        setIsAutoConnecting(false);
+        refreshAllIbkrStatus();
+        return;
+      }
+
+      // Warm failed, try OAuth reconnect
+      const reconnectResponse = await fetch('/api/broker/oauth', { method: 'POST', credentials: 'include' });
+      const reconnectResult = await reconnectResponse.json();
+
+      if (reconnectResult?.ok || reconnectResult?.success) {
+        // Success - reset backoff
+        setBackoffMs(3000);
+        setRetryCount(0);
+      } else {
+        // Failed - increase backoff for next attempt
+        setBackoffMs((ms) => Math.min(30000, ms * 1.5));
+      }
+    } catch (err) {
+      // Network error - increase backoff
+      setBackoffMs((ms) => Math.min(30000, ms * 1.5));
+    } finally {
+      setIsAutoConnecting(false);
+      refreshAllIbkrStatus();
+    }
+  }, [isAutoConnecting, refreshAllIbkrStatus]);
+
+  // Auto-reconnect effect with timeout-based retry (simpler dependencies)
+  useEffect(() => {
+    // Clear any existing timeout
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = null;
+    }
+
     // Skip if in relay mode (intentionally disconnected for TWS/Gateway)
     if (ibkrStatus?.connectionMode === 'relay') {
-      // Reset retry state when in relay mode
       if (retryCount > 0) {
         setBackoffMs(3000);
         setRetryCount(0);
@@ -451,7 +509,6 @@ export function Settings({
     // Skip if not configured or already connected
     if (!ibkrStatus?.configured || ibkrStatus?.connected) {
       if (ibkrStatus?.connected && retryCount > 0) {
-        // Reset on successful connection
         setBackoffMs(3000);
         setRetryCount(0);
         setIsAutoConnecting(false);
@@ -460,57 +517,22 @@ export function Settings({
     }
 
     // Skip if already attempting
-    if (isAutoConnecting || warmMutation.isPending || reconnectMutation.isPending) {
+    if (isAutoConnecting) {
       return;
     }
 
-    // Set up interval for auto-reconnect attempts
-    const attemptReconnect = () => {
-      setIsAutoConnecting(true);
-      setRetryCount((c) => c + 1);
+    // Schedule reconnect attempt with backoff delay
+    // First attempt is immediate, subsequent ones use backoff
+    const delay = retryCount === 0 ? 0 : backoffMs;
+    reconnectTimeoutRef.current = setTimeout(attemptReconnect, delay);
 
-      // Try warm first; if not ok, fall back to reconnect
-      warmMutation.mutate(undefined, {
-        onSuccess: (d: any) => {
-          if (!d?.ok) {
-            reconnectMutation.mutate(undefined, {
-              onSettled: () => {
-                // Increase backoff on failure, max 30s
-                setBackoffMs((ms) => Math.min(30000, ms * 1.5));
-                setIsAutoConnecting(false);
-                refreshAllIbkrStatus();
-              },
-            });
-          } else {
-            // Success - reset backoff
-            setBackoffMs(3000);
-            setRetryCount(0);
-            setIsAutoConnecting(false);
-            refreshAllIbkrStatus();
-          }
-        },
-        onError: () => {
-          reconnectMutation.mutate(undefined, {
-            onSettled: () => {
-              setBackoffMs((ms) => Math.min(30000, ms * 1.5));
-              setIsAutoConnecting(false);
-              refreshAllIbkrStatus();
-            },
-          });
-        },
-      });
+    return () => {
+      if (reconnectTimeoutRef.current) {
+        clearTimeout(reconnectTimeoutRef.current);
+        reconnectTimeoutRef.current = null;
+      }
     };
-
-    // Immediate attempt on first detection of disconnected state
-    if (retryCount === 0) {
-      attemptReconnect();
-      return;
-    }
-
-    // Set up interval for subsequent attempts
-    const intervalId = setInterval(attemptReconnect, backoffMs);
-    return () => clearInterval(intervalId);
-  }, [ibkrStatus?.configured, ibkrStatus?.connected, ibkrStatus?.connectionMode, isAutoConnecting, backoffMs, retryCount, warmMutation.isPending, reconnectMutation.isPending]);
+  }, [ibkrStatus?.configured, ibkrStatus?.connected, ibkrStatus?.connectionMode, isAutoConnecting, retryCount]);
 
   // Test order mutation
   const testOrderMutation = useMutation({
