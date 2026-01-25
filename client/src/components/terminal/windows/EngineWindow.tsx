@@ -12,7 +12,6 @@
 
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useEngineAnalysis } from '@/hooks/useEngineAnalysis';
-import { useMarketSnapshot } from '@/hooks/useMarketSnapshot';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import {
   TopBar,
@@ -74,8 +73,6 @@ export function EngineWindow() {
     refetchInterval: 30000,
   });
 
-  // Market snapshot
-  const { snapshot: marketSnapshot } = useMarketSnapshot();
 
   // Execute trade mutation
   const executeMutation = useMutation({
@@ -102,10 +99,10 @@ export function EngineWindow() {
     },
   });
 
-  // Derived values
-  const spyPrice = marketSnapshot?.spyPrice ?? 0;
-  const spyChangePct = marketSnapshot?.spyChangePct ?? 0;
-  const vix = marketSnapshot?.vix ?? 0;
+  // Derived values from analysis (no paid data sources)
+  const spyPrice = analysis?.q1MarketRegime?.inputs?.spyPrice ?? 0;
+  const spyChangePct = 0; // Not available without market data API
+  const vix = analysis?.q1MarketRegime?.inputs?.vixValue ?? 0;
   const isConnected = ibkrStatus?.connected ?? false;
 
   // Calculate credit
@@ -151,8 +148,7 @@ export function EngineWindow() {
 
     // Log each step completion (with deduplication)
     if (completedSteps.has(1) && !loggedSteps.has('step1')) {
-      // Prefer marketSnapshot vix (real-time) over analysis vix (may be stale/null)
-      const vixVal = vix > 0 ? vix : (analysis?.q1MarketRegime?.inputs?.vixValue ?? 0);
+      const vixVal = analysis?.q1MarketRegime?.inputs?.vixValue ?? 0;
       const regime = analysis?.q1MarketRegime?.regimeLabel ?? 'NORMAL';
       addLogLine(`VIX ${vixVal.toFixed(1)} - ${regime.toLowerCase()}, ${regime === 'ELEVATED' ? 'caution advised' : 'safe to trade'}`, 'success');
       setLoggedSteps(prev => new Set([...prev, 'step1']));
@@ -201,7 +197,7 @@ export function EngineWindow() {
     if (completedSteps.size >= 4 && !isAnalyzing && hudState === 'analyzing') {
       setHudState('ready');
     }
-  }, [completedSteps, isAnalyzing, analysis, hudState, vix, addLogLine, contracts, credit, ibkrStatus?.nav, spreadWidth, loggedSteps]);
+  }, [completedSteps, isAnalyzing, analysis, hudState, addLogLine, contracts, credit, ibkrStatus?.nav, spreadWidth, loggedSteps]);
 
   // Start analysis header
   const handleAnalyze = useCallback(() => {
