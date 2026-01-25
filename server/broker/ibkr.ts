@@ -179,10 +179,10 @@ class IbkrClient {
   private optionConidCache: Map<string, { conid: number; cachedAt: number }> = new Map();
   private readonly OPTION_CONID_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
   private last: IbkrDiagnostics = {
-    oauth: { status: null, ts: "" },
-    sso: { status: null, ts: "" },
-    validate: { status: null, ts: "" },
-    init: { status: null, ts: "" },
+    oauth: { status: 0, ts: "" },     // 0 = "Not attempted" (shows gray in UI)
+    sso: { status: 0, ts: "" },
+    validate: { status: 0, ts: "" },
+    init: { status: 0, ts: "" },
   };
 
   constructor(cfg: IbkrConfig) {
@@ -243,7 +243,7 @@ class IbkrClient {
     if (state.accessToken === null) {
       this.accessToken = null;
       this.accessTokenExpiryMs = 0;
-      this.last.oauth = { status: null, ts: new Date().toISOString() };
+      this.last.oauth = { status: 0, ts: new Date().toISOString() };  // 0 = "Not attempted" (reset to initial state)
       console.log('[IBKR] Cleared access token');
     } else if (state.accessToken && state.accessTokenExpiryMs > now) {
       // Only restore if tokens haven't expired
@@ -260,7 +260,7 @@ class IbkrClient {
       this.ssoSessionId = null;
       this.ssoAccessTokenExpiryMs = 0;
       this.sessionReady = false;
-      this.last.sso = { status: null, ts: new Date().toISOString() };
+      this.last.sso = { status: 0, ts: new Date().toISOString() };  // 0 = "Not attempted" (reset to initial state)
       console.log('[IBKR] Cleared SSO session');
     } else if (state.ssoToken && ssoExpiry > now) {
       this.ssoAccessToken = state.ssoToken;
@@ -309,10 +309,10 @@ class IbkrClient {
    */
   public resetDiagnostics(): void {
     this.last = {
-      oauth: { status: null, ts: "" },
-      sso: { status: null, ts: "" },
-      validate: { status: null, ts: "" },
-      init: { status: null, ts: "" },
+      oauth: { status: 0, ts: "" },    // 0 = "Not attempted" (shows gray, not red)
+      sso: { status: 0, ts: "" },
+      validate: { status: 0, ts: "" },
+      init: { status: 0, ts: "" },
     };
     this.sessionReady = false;
     this.accountSelected = false;
@@ -3824,17 +3824,17 @@ let activeClient: IbkrClient | null = null;
 export function getIbkrDiagnostics(): IbkrDiagnostics {
   return activeClient
     ? activeClient.getDiagnostics()
-    : { oauth: { status: null, ts: "" }, sso: { status: null, ts: "" }, validate: { status: null, ts: "" }, init: { status: null, ts: "" } };
+    : { oauth: { status: 0, ts: "" }, sso: { status: 0, ts: "" }, validate: { status: 0, ts: "" }, init: { status: 0, ts: "" } };  // 0 = "Not attempted"
 }
 
 // Get diagnostics from any IbkrClient instance (for multi-tenant)
 export function getDiagnosticsFromClient(client: BrokerProvider | null): IbkrDiagnostics {
   if (!client || typeof (client as any).getDiagnostics !== 'function') {
     return {
-      oauth: { status: null, ts: "" },
-      sso: { status: null, ts: "" },
-      validate: { status: null, ts: "" },
-      init: { status: null, ts: "" }
+      oauth: { status: 0, ts: "" },     // 0 = "Not attempted" (shows gray in UI)
+      sso: { status: 0, ts: "" },
+      validate: { status: 0, ts: "" },
+      init: { status: 0, ts: "" }
     };
   }
   return (client as any).getDiagnostics();
