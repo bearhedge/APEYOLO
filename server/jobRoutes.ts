@@ -26,14 +26,20 @@ import {
 } from './services/marketCalendar';
 // Option chain snapshots removed - using optionBarCapture instead
 import { getUpcomingEconomicEvents, isFREDConfigured } from './services/fredApi';
+import {
+  getUpcomingEarnings,
+  isAlphaVantageConfigured,
+} from './services/earningsCalendar';
+import { initializeEarningsCalendarRefreshJob } from './services/jobs/earningsCalendarRefresh';
 
 // Unified event type for the calendar API
 interface CalendarEvent {
   date: string;
   event: string;
-  type: 'holiday' | 'early_close' | 'economic';
+  type: 'holiday' | 'early_close' | 'economic' | 'earnings';
   impactLevel?: 'low' | 'medium' | 'high' | 'critical';
   time?: string;
+  symbol?: string; // For earnings events
 }
 
 const router = Router();
@@ -111,8 +117,22 @@ router.get('/calendar', async (req: Request, res: Response) => {
       console.warn('[JobRoutes] Could not fetch economic events:', err);
     }
 
+    // Get earnings events from database (if Alpha Vantage is configured)
+    let earningsEvents: CalendarEvent[] = [];
+    try {
+      const dbEarningsEvents = await getUpcomingEarnings(60);
+      earningsEvents = dbEarningsEvents.map((event) => ({
+        date: event.reportDate,
+        event: `${event.symbol} Earnings`,
+        type: 'earnings' as const,
+        symbol: event.symbol,
+      }));
+    } catch (err) {
+      console.warn('[JobRoutes] Could not fetch earnings events:', err);
+    }
+
     // Merge and sort all events by date
-    const upcomingEvents = [...unifiedMarketEvents, ...economicEvents].sort(
+    const upcomingEvents = [...unifiedMarketEvents, ...economicEvents, ...earningsEvents].sort(
       (a, b) => a.date.localeCompare(b.date)
     );
 
@@ -123,6 +143,7 @@ router.get('/calendar', async (req: Request, res: Response) => {
       upcomingEvents,
       calendar,
       fredConfigured: isFREDConfigured(),
+      alphaVantageConfigured: isAlphaVantageConfigured(),
     });
   } catch (error: any) {
     console.error('[JobRoutes] Error getting calendar:', error);
@@ -256,6 +277,7 @@ router.get('/position-monitor/status', async (_req: Request, res: Response) => {
  * - trade-monitor-eod (4:05 PM ET) - Mark all expired options with realized P&L
  * - trade-engine (11:00 AM ET) - Automated 5-step trading engine
  * - economic-calendar-refresh (monthly) - FRED data
+ * - earnings-calendar-refresh (weekly) - Alpha Vantage earnings data
  * - assignment-monitor (4:05 AM ET) - Detect assignments and auto-liquidate in pre-market
  */
 export async function initializeJobsSystem(): Promise<void> {
@@ -264,6 +286,9 @@ export async function initializeJobsSystem(): Promise<void> {
   // Economic calendar refresh (monthly FRED data)
   const { initializeEconomicCalendarRefreshJob } = await import('./services/jobs/economicCalendarRefresh');
   initializeEconomicCalendarRefreshJob();
+
+  // Earnings calendar refresh (weekly Alpha Vantage data)
+  initializeEarningsCalendarRefreshJob();
 
   // NAV snapshot (opening only - for Day P&L)
   const { initNavSnapshotJob, ensureNavSnapshotJob } = await import('./services/navSnapshot');
