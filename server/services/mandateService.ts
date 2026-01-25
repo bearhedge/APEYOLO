@@ -17,7 +17,11 @@ import type {
   EnforcementResult,
   CreateMandateRequest,
   MandateValidation,
+  MandateCreatedEventData,
+  MandateDeactivatedEventData,
+  ViolationBlockedEventData,
 } from '@shared/types/mandate';
+import { recordMandateEvent } from './mandateEventService';
 
 // ============================================
 // Mandate CRUD Operations
@@ -65,6 +69,30 @@ export async function createMandate(
 
   console.log(`[MandateService] Created mandate ${mandate.id} for user ${userId}`);
 
+  // Record MANDATE_CREATED event
+  const eventData: MandateCreatedEventData = {
+    mandateId: mandate.id,
+    rules: {
+      allowedSymbols: request.allowedSymbols,
+      strategyType: request.strategyType,
+      minDelta: request.minDelta,
+      maxDelta: request.maxDelta,
+      maxDailyLossPercent: request.maxDailyLossPercent,
+      noOvernightPositions: request.noOvernightPositions,
+      exitDeadline: request.exitDeadline,
+      tradingWindowStart: request.tradingWindowStart,
+      tradingWindowEnd: request.tradingWindowEnd,
+    },
+    rulesHash: `0x${rulesHash}`,
+  };
+
+  await recordMandateEvent({
+    userId,
+    eventType: 'MANDATE_CREATED',
+    eventData,
+    mandateId: mandate.id,
+  });
+
   return formatMandate(mandate);
 }
 
@@ -107,7 +135,7 @@ export async function getUserMandates(userId: string): Promise<Mandate[]> {
 /**
  * Deactivate a mandate (cannot delete - kept for audit trail)
  */
-export async function deactivateMandate(mandateId: string, userId: string): Promise<void> {
+export async function deactivateMandate(mandateId: string, userId: string, reason?: string): Promise<void> {
   if (!db) {
     throw new Error('Database not available');
   }
@@ -121,6 +149,19 @@ export async function deactivateMandate(mandateId: string, userId: string): Prom
     ));
 
   console.log(`[MandateService] Deactivated mandate ${mandateId}`);
+
+  // Record MANDATE_DEACTIVATED event
+  const eventData: MandateDeactivatedEventData = {
+    mandateId,
+    reason: reason || 'User deactivated mandate',
+  };
+
+  await recordMandateEvent({
+    userId,
+    eventType: 'MANDATE_DEACTIVATED',
+    eventData,
+    mandateId,
+  });
 }
 
 // ============================================
@@ -390,6 +431,22 @@ export async function recordViolation(
     .returning();
 
   console.log(`[MandateService] Recorded violation: ${params.type} for user ${userId}`);
+
+  // Record VIOLATION_BLOCKED event
+  const violationEventData: ViolationBlockedEventData = {
+    violationType: params.type,
+    attemptedValue: params.attempted,
+    limitValue: params.limit,
+    tradeContext: params.tradeDetails as Record<string, unknown>,
+  };
+
+  await recordMandateEvent({
+    userId,
+    eventType: 'VIOLATION_BLOCKED',
+    eventData: violationEventData,
+    mandateId,
+    relatedViolationId: violation.id,
+  });
 
   return formatViolation(violation);
 }
