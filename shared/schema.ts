@@ -730,6 +730,49 @@ export type InsertMandateViolation = z.infer<typeof insertMandateViolationSchema
 
 // ==================== END TRADING MANDATES ====================
 
+// ==================== MANDATE EVENTS (Blockchain Tracking) ====================
+
+export const mandateEvents = pgTable("mandate_events", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  mandateId: varchar("mandate_id").references(() => tradingMandates.id, { onDelete: "set null" }),
+
+  eventType: text("event_type").notNull(), // MANDATE_CREATED, MANDATE_DEACTIVATED, VIOLATION_BLOCKED, COMMITMENT_RECORDED
+  eventData: jsonb("event_data").notNull(),
+  eventHash: text("event_hash").notNull(), // SHA256 of event data
+
+  previousMandateId: varchar("previous_mandate_id").references(() => tradingMandates.id, { onDelete: "set null" }),
+  relatedViolationId: varchar("related_violation_id").references(() => mandateViolations.id, { onDelete: "set null" }),
+
+  actorId: varchar("actor_id").notNull(),
+  actorRole: text("actor_role").notNull().default("owner"),
+
+  solanaSignature: text("solana_signature"),
+  solanaSlot: bigint("solana_slot", { mode: "number" }),
+  solanaCluster: text("solana_cluster").default("devnet"),
+
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+  recordedOnChainAt: timestamp("recorded_on_chain_at"),
+}, (table) => [
+  index("mandate_events_user_id_idx").on(table.userId),
+  index("mandate_events_mandate_id_idx").on(table.mandateId),
+  index("mandate_events_type_idx").on(table.eventType),
+  index("mandate_events_created_at_idx").on(table.createdAt),
+]);
+
+export const insertMandateEventSchema = createInsertSchema(mandateEvents).omit({
+  id: true,
+  createdAt: true,
+  recordedOnChainAt: true,
+  solanaSignature: true,
+  solanaSlot: true,
+});
+
+export type MandateEvent = typeof mandateEvents.$inferSelect;
+export type InsertMandateEvent = z.infer<typeof insertMandateEventSchema>;
+
+// ==================== END MANDATE EVENTS ====================
+
 // ==================== AGENT KNOWLEDGE BASE ====================
 // Knowledge tables for the autonomous trading agent's learning system
 
