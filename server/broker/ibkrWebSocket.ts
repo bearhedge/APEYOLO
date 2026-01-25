@@ -482,11 +482,11 @@ export class IbkrWebSocketManager {
 
     this.isConnected = false;
     this.subscriptions.clear();
-    // CRITICAL: Clear cache and reset state to prevent stale data from being served
-    this.marketDataCache.clear();
-    this.lastDataReceived = null;
+    // Note: Don't clear marketDataCache - preserve last known prices for display
+    // Only clear subscription state since we'll need to resubscribe after reconnect
     this.subscriptionErrorMessage = null;
-    console.log('[IbkrWS] Cleared market data cache on disconnect');
+    // Keep lastDataReceived so frontend can show data age
+    console.log('[IbkrWS] Disconnected (cache preserved for display)');
   }
 
   /**
