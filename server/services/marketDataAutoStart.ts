@@ -13,6 +13,7 @@ import { db } from '../db';
 import { ibkrCredentials } from '@shared/schema';
 import { initIbkrWebSocket, getIbkrWebSocketManager } from '../broker/ibkrWebSocket';
 import { ensureIbkrReady, getIbkrCookieString, getIbkrSessionToken, clearIbkrSession } from '../broker/ibkr';
+import { getBroker } from '../broker';
 
 // Conids for key symbols
 const SPY_CONID = 756733;
@@ -150,6 +151,10 @@ async function startWebSocketStream(): Promise<void> {
     }
 
     console.log('[MarketDataAutoStart] Found IBKR credentials, initializing...');
+
+    // Create the IBKR provider singleton first (fixes initialization order bug)
+    // getBroker() creates activeClient which ensureIbkrReady() depends on
+    getBroker();
 
     // Ensure IBKR client is ready (this will restore tokens from database)
     await ensureIbkrReady();
