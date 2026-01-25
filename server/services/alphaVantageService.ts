@@ -11,8 +11,14 @@
  * - Calculate VWAP: Σ(price × volume) / Σ(volume)
  */
 
-const ALPHA_VANTAGE_API_KEY = '6EIZ8P6R9G9ZAIW6';
 const BASE_URL = 'https://www.alphavantage.co/query';
+
+/**
+ * Get Alpha Vantage API key from environment
+ */
+function getAlphaVantageApiKey(): string | undefined {
+  return process.env.ALPHA_VANTAGE_API_KEY;
+}
 
 interface IntradayBar {
   timestamp: number;  // Unix timestamp in seconds
@@ -79,11 +85,16 @@ function checkDailyReset(): void {
  * Fetch intraday 1-minute bars from Alpha Vantage
  */
 async function fetchIntradayBars(symbol: string): Promise<IntradayBar[]> {
+  const apiKey = getAlphaVantageApiKey();
+  if (!apiKey) {
+    throw new Error('ALPHA_VANTAGE_API_KEY not configured');
+  }
+
   if (!canMakeCall()) {
     throw new Error('Rate limit exceeded');
   }
 
-  const url = `${BASE_URL}?function=TIME_SERIES_INTRADAY&symbol=${symbol}&interval=1min&apikey=${ALPHA_VANTAGE_API_KEY}&outputsize=full`;
+  const url = `${BASE_URL}?function=TIME_SERIES_INTRADAY&symbol=${symbol}&interval=1min&apikey=${apiKey}&outputsize=full`;
 
   try {
     callsThisMinute++;
