@@ -33,7 +33,7 @@ const router = Router();
 // ============================================
 
 // Fixed baseline date for performance calculations (user's trading start date)
-const BASELINE_DATE = '2025-12-16';
+const BASELINE_DATE = '2026-01-26';
 
 // ============================================
 // Helper Functions

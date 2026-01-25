@@ -71,20 +71,19 @@ interface ComputedMetrics {
   recoveryFactor: number | null;
 }
 
-type Period = 'mtd' | 'ytd' | 'since_benchmark' | 'all';
+type Period = 'mtd' | 'ytd' | 'all';
 
-// Benchmark date: Jan 24, 2026 - public track record starts from this date
-const BENCHMARK_DATE = '2026-01-24';
+// Clean slate date: Jan 26, 2026 - performance tracking starts from this date
+const CLEAN_SLATE_DATE = '2026-01-26';
 
 const PERIOD_LABELS: Record<Period, string> = {
   mtd: 'MTD',
   ytd: 'YTD',
-  since_benchmark: 'Since Jan 24',
-  all: 'All Time',
+  all: 'ALL',
 };
 
 export function StatsWindow() {
-  const [selectedPeriod, setSelectedPeriod] = useState<Period>('since_benchmark');
+  const [selectedPeriod, setSelectedPeriod] = useState<Period>('all');
   const [showAttestation, setShowAttestation] = useState(false);
   const [attestationPreview, setAttestationPreview] = useState<AttestationPreview | null>(null);
 
@@ -118,16 +117,16 @@ export function StatsWindow() {
       // Map UI period to API period type
       const periodTypeMap: Record<string, string> = {
         mtd: 'mtd',
-        ytd: 'last_month', // TODO: Add ytd to API
-        since_benchmark: 'custom',
+        ytd: 'custom',
         all: 'custom',
       };
       const body: any = { periodType: periodTypeMap[period] || 'mtd' };
-      if (period === 'since_benchmark') {
-        body.customStart = BENCHMARK_DATE;
-        body.customEnd = new Date().toISOString().split('T')[0];
+      if (period === 'ytd') {
+        const now = new Date();
+        body.customStart = `${now.getFullYear()}-01-01`;
+        body.customEnd = now.toISOString().split('T')[0];
       } else if (period === 'all') {
-        body.customStart = '2020-01-01';
+        body.customStart = CLEAN_SLATE_DATE;
         body.customEnd = new Date().toISOString().split('T')[0];
       }
       const res = await fetch('/api/defi/generate-attestation', {
@@ -195,95 +194,122 @@ export function StatsWindow() {
     );
   }
 
-  const showRiskMetrics = metrics.tradeCount >= 30;
-
   return (
     <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 11 }}>
       {/* Period Selector */}
       <PeriodSelector selected={selectedPeriod} onChange={setSelectedPeriod} />
 
-      {/* Top Metrics - Big Numbers */}
+      {/* Hero Metrics - Return % and Win Rate */}
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: 'repeat(2, 1fr)',
+          gap: 12,
+          marginBottom: 16,
+        }}
+      >
+        <div
+          style={{
+            background: '#111',
+            border: '1px solid #222',
+            padding: 16,
+            textAlign: 'center',
+          }}
+        >
+          <div style={{ fontSize: 10, color: '#666', marginBottom: 4 }}>RETURN</div>
+          <div
+            style={{
+              fontSize: 28,
+              fontWeight: 700,
+              color: metrics.totalReturn >= 0 ? '#4ade80' : '#ef4444',
+            }}
+          >
+            {metrics.totalReturn >= 0 ? '+' : ''}{metrics.totalReturn.toFixed(2)}%
+          </div>
+        </div>
+        <div
+          style={{
+            background: '#111',
+            border: '1px solid #222',
+            padding: 16,
+            textAlign: 'center',
+          }}
+        >
+          <div style={{ fontSize: 10, color: '#666', marginBottom: 4 }}>WIN RATE</div>
+          <div
+            style={{
+              fontSize: 28,
+              fontWeight: 700,
+              color: metrics.winRate >= 50 ? '#4ade80' : '#ef4444',
+            }}
+          >
+            {metrics.winRate.toFixed(0)}%
+          </div>
+        </div>
+      </div>
+
+      {/* Supporting Stats - 3x3 Grid */}
       <div
         style={{
           display: 'grid',
           gridTemplateColumns: 'repeat(3, 1fr)',
           gap: 8,
-          marginBottom: 12,
+          marginBottom: 16,
         }}
       >
-        <MetricCard
-          label="Total Return"
-          value={`${metrics.totalReturn >= 0 ? '+' : ''}${metrics.totalReturn.toFixed(2)}%`}
-          color={metrics.totalReturn >= 0 ? '#4ade80' : '#ef4444'}
-        />
-        <MetricCard
+        {/* Row 1: Total P&L | Trades | Wins/Losses */}
+        <GridCell
           label="Total P&L"
           value={`${metrics.totalPnl >= 0 ? '+' : ''}$${metrics.totalPnl.toFixed(0)}`}
           color={metrics.totalPnl >= 0 ? '#4ade80' : '#ef4444'}
         />
-        <MetricCard label="Trades" value={metrics.tradeCount.toString()} color="#fff" />
-      </div>
+        <GridCell label="Trades" value={metrics.tradeCount.toString()} color="#fff" />
+        <GridCell label="W / L" value={`${metrics.winCount} / ${metrics.lossCount}`} color="#888" />
 
-      {/* Core Stats */}
-      <div style={{ borderTop: '1px solid #333', paddingTop: 10, marginBottom: 10 }}>
-        <p style={{ color: '#666', fontSize: 9, textTransform: 'uppercase', marginBottom: 6 }}>Core Stats</p>
-        <Row
-          label="Win Rate"
-          value={`${metrics.winRate.toFixed(1)}%`}
-          valueColor={metrics.winRate >= 50 ? '#4ade80' : '#f59e0b'}
+        {/* Row 2: Avg Win | Avg Loss | Profit Factor */}
+        <GridCell
+          label="Avg Win"
+          value={`+$${metrics.avgWin.toFixed(0)}`}
+          color="#4ade80"
         />
-        <Row label="Wins / Losses" value={`${metrics.winCount} / ${metrics.lossCount}`} />
-        <Row label="Avg Win" value={`+$${metrics.avgWin.toFixed(0)}`} valueColor="#4ade80" />
-        <Row label="Avg Loss" value={`-$${Math.abs(metrics.avgLoss).toFixed(0)}`} valueColor="#ef4444" />
-        {metrics.profitFactor !== null && (
-          <Row
-            label="Profit Factor"
-            value={metrics.profitFactor.toFixed(2)}
-            valueColor={metrics.profitFactor >= 1.5 ? '#4ade80' : '#f59e0b'}
-          />
-        )}
-        {metrics.expectancy !== null && (
-          <Row
-            label="Expectancy"
-            value={`${metrics.expectancy >= 0 ? '+' : ''}$${metrics.expectancy.toFixed(0)}/trade`}
-            valueColor={metrics.expectancy >= 0 ? '#4ade80' : '#ef4444'}
-          />
-        )}
+        <GridCell
+          label="Avg Loss"
+          value={`-$${Math.abs(metrics.avgLoss).toFixed(0)}`}
+          color="#ef4444"
+        />
+        <GridCell
+          label="Profit Factor"
+          value={metrics.profitFactor !== null ? metrics.profitFactor.toFixed(2) : '—'}
+          color={metrics.profitFactor !== null && metrics.profitFactor >= 1.5 ? '#4ade80' : '#f59e0b'}
+        />
+
+        {/* Row 3: Expectancy | Sharpe Ratio | Max Drawdown */}
+        <GridCell
+          label="Expectancy"
+          value={metrics.expectancy !== null ? `${metrics.expectancy >= 0 ? '+' : ''}$${metrics.expectancy.toFixed(0)}` : '—'}
+          color={metrics.expectancy !== null && metrics.expectancy >= 0 ? '#4ade80' : '#ef4444'}
+        />
+        <GridCell
+          label="Sharpe"
+          value={metrics.sharpeRatio !== null ? metrics.sharpeRatio.toFixed(2) : '—'}
+          color={
+            metrics.sharpeRatio === null ? '#666'
+            : metrics.sharpeRatio >= 1 ? '#4ade80'
+            : metrics.sharpeRatio >= 0.5 ? '#f59e0b'
+            : '#ef4444'
+          }
+        />
+        <GridCell
+          label="Max DD"
+          value={metrics.maxDrawdown !== null ? `-${metrics.maxDrawdown.toFixed(1)}%` : '—'}
+          color={
+            metrics.maxDrawdown === null ? '#666'
+            : metrics.maxDrawdown <= 5 ? '#4ade80'
+            : metrics.maxDrawdown <= 10 ? '#f59e0b'
+            : '#ef4444'
+          }
+        />
       </div>
-
-      {/* Risk-Adjusted Metrics (only show with 30+ trades) */}
-      {showRiskMetrics && (
-        <div style={{ borderTop: '1px solid #333', paddingTop: 10, marginBottom: 10 }}>
-          <p style={{ color: '#666', fontSize: 9, textTransform: 'uppercase', marginBottom: 6 }}>Risk-Adjusted</p>
-          {metrics.sharpeRatio !== null && (
-            <Row
-              label="Sharpe Ratio"
-              value={metrics.sharpeRatio.toFixed(2)}
-              valueColor={metrics.sharpeRatio >= 1 ? '#4ade80' : metrics.sharpeRatio >= 0.5 ? '#f59e0b' : '#ef4444'}
-            />
-          )}
-          {metrics.maxDrawdown !== null && (
-            <Row
-              label="Max Drawdown"
-              value={`-${metrics.maxDrawdown.toFixed(1)}%`}
-              valueColor={metrics.maxDrawdown <= 5 ? '#4ade80' : metrics.maxDrawdown <= 10 ? '#f59e0b' : '#ef4444'}
-            />
-          )}
-          {metrics.recoveryFactor !== null && (
-            <Row
-              label="Recovery Factor"
-              value={metrics.recoveryFactor.toFixed(2)}
-              valueColor={metrics.recoveryFactor >= 2 ? '#4ade80' : '#f59e0b'}
-            />
-          )}
-        </div>
-      )}
-
-      {!showRiskMetrics && metrics.tradeCount > 0 && (
-        <div style={{ color: '#666', fontSize: 10, marginBottom: 10, fontStyle: 'italic' }}>
-          Risk-adjusted metrics available after 30 trades ({30 - metrics.tradeCount} more)
-        </div>
-      )}
 
       {/* Attestation Section */}
       <div style={{ borderTop: '1px solid #333', paddingTop: 10 }}>
@@ -414,8 +440,6 @@ function filterTradesByPeriod(trades: Trade[], period: Period): Trade[] {
   const currentMonth = now.getMonth();
 
   switch (period) {
-    case 'since_benchmark':
-      return trades.filter(t => t.date >= BENCHMARK_DATE);
     case 'mtd': {
       const mtdStart = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-01`;
       return trades.filter(t => t.date >= mtdStart);
@@ -426,6 +450,7 @@ function filterTradesByPeriod(trades: Trade[], period: Period): Trade[] {
     }
     case 'all':
     default:
+      // ALL uses server-side BASELINE_DATE filtering
       return trades;
   }
 }
@@ -444,7 +469,7 @@ function calculateMetrics(
   if (apiData) {
     const periodData = period === 'mtd' ? apiData.mtd
       : period === 'ytd' ? apiData.ytd
-      : apiData.all; // Use 'all' for both 'since_benchmark' and 'all'
+      : apiData.all;
     totalReturn = periodData?.returnPercent || 0;
     totalPnl = periodData?.pnlUsd || 0;
   }
@@ -554,30 +579,6 @@ function PeriodSelector({ selected, onChange }: { selected: Period; onChange: (p
   );
 }
 
-function MetricCard({
-  label,
-  value,
-  color,
-}: {
-  label: string;
-  value: string;
-  color: string;
-}) {
-  return (
-    <div
-      style={{
-        background: '#111',
-        border: '1px solid #222',
-        padding: 8,
-        textAlign: 'center',
-      }}
-    >
-      <div style={{ fontSize: 9, color: '#666', marginBottom: 2 }}>{label}</div>
-      <div style={{ fontSize: 16, color, fontWeight: 600 }}>{value}</div>
-    </div>
-  );
-}
-
 function Row({
   label,
   value,
@@ -591,6 +592,32 @@ function Row({
     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4, fontSize: 11 }}>
       <span style={{ color: '#888' }}>{label}</span>
       <span style={{ color: valueColor || '#fff' }}>{value}</span>
+    </div>
+  );
+}
+
+function GridCell({
+  label,
+  value,
+  color,
+}: {
+  label: string;
+  value: string;
+  color: string;
+}) {
+  return (
+    <div
+      style={{
+        background: '#0a0a0a',
+        border: '1px solid #1a1a1a',
+        padding: '8px 6px',
+        textAlign: 'center',
+      }}
+    >
+      <div style={{ fontSize: 8, color: '#555', marginBottom: 2, textTransform: 'uppercase' }}>
+        {label}
+      </div>
+      <div style={{ fontSize: 13, color, fontWeight: 500 }}>{value}</div>
     </div>
   );
 }
