@@ -114,8 +114,9 @@ export class IbkrWebSocketManager {
   private subscriptions = new Map<number, Subscription>();
   private callbacks = new Set<MarketDataCallback>();
   private reconnectAttempts = 0;
-  private maxReconnectAttempts = 5;
+  private maxReconnectAttempts = 10;  // Increased from 5 to allow more attempts
   private reconnectDelay = 1000; // Start with 1 second
+  private lastReconnectReset = 0; // Track when we last reset the counter
   private heartbeatInterval: NodeJS.Timeout | null = null;
   private isConnecting = false;
   private isConnected = false;
@@ -868,9 +869,26 @@ export class IbkrWebSocketManager {
   }
 
   private scheduleReconnect(): void {
+    // Reset reconnect attempts after 5 minutes of trying (don't give up forever)
+    const now = Date.now();
+    if (this.lastReconnectReset && now - this.lastReconnectReset > 5 * 60 * 1000) {
+      console.log('[IbkrWS] Resetting reconnect attempts after 5 minutes');
+      this.reconnectAttempts = 0;
+    }
+
     if (this.reconnectAttempts >= this.maxReconnectAttempts) {
-      console.error('[IbkrWS] Max reconnect attempts reached');
+      console.error('[IbkrWS] Max reconnect attempts reached, will retry after 60s cooldown');
+      // Don't give up forever - schedule one more attempt after a longer cooldown
+      setTimeout(() => {
+        this.reconnectAttempts = 0;
+        this.lastReconnectReset = Date.now();
+        this.scheduleReconnect();
+      }, 60000);
       return;
+    }
+
+    if (this.reconnectAttempts === 0) {
+      this.lastReconnectReset = now;
     }
 
     this.reconnectAttempts++;
