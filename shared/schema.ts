@@ -596,6 +596,38 @@ export type InsertEconomicEvent = z.infer<typeof insertEconomicEventSchema>;
 
 // ==================== END ECONOMIC EVENTS ====================
 
+// ==================== EARNINGS CALENDAR ====================
+// Earnings announcements from Alpha Vantage API
+
+export const earningsCalendar = pgTable("earnings_calendar", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  symbol: text("symbol").notNull(), // AAPL, NVDA, etc.
+  companyName: text("company_name").notNull(),
+  reportDate: text("report_date").notNull(), // YYYY-MM-DD
+  fiscalQuarter: text("fiscal_quarter"), // Q1 2024, Q2 2024, etc.
+  estimate: decimal("estimate", { precision: 10, scale: 4 }), // EPS estimate
+  actual: decimal("actual", { precision: 10, scale: 4 }), // EPS actual
+  currency: text("currency").default("USD"),
+  source: text("source").notNull().default("alpha_vantage"),
+  fetchedAt: timestamp("fetched_at").notNull().defaultNow(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+}, (table) => [
+  index("earnings_calendar_date_idx").on(table.reportDate),
+  index("earnings_calendar_symbol_idx").on(table.symbol),
+  index("earnings_calendar_symbol_date_idx").on(table.symbol, table.reportDate),
+]);
+
+export const insertEarningsCalendarSchema = createInsertSchema(earningsCalendar).omit({
+  id: true,
+  createdAt: true,
+  fetchedAt: true,
+});
+
+export type EarningsCalendarEvent = typeof earningsCalendar.$inferSelect;
+export type InsertEarningsCalendarEvent = z.infer<typeof insertEarningsCalendarSchema>;
+
+// ==================== END EARNINGS CALENDAR ====================
+
 // ==================== CASH FLOWS ====================
 // Track deposits and withdrawals for accurate performance calculation
 
