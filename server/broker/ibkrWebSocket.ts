@@ -1022,7 +1022,9 @@ export class IbkrWebSocketManager {
     this.isConnecting = false;
     this.isAuthenticated = false;
 
-    // Clear stale cache since we have auth issues
+    // KEEP THIS CACHE CLEAR: Unlike disconnect(), forceReconnect is called when
+    // we receive auth errors DURING an active session, indicating data corruption.
+    // We want to clear potentially bad data and get fresh prices after reconnect.
     this.marketDataCache.clear();
     this.lastDataReceived = null;
 
