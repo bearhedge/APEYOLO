@@ -18,6 +18,7 @@ import { getBrokerForUser, getUsersWithActiveCredentials } from '../broker';
 import { ensureIbkrReady, ensureClientReady } from '../broker/ibkr';
 import { registerJobHandler, type JobResult } from './jobExecutor';
 import { linkTradeOutcome, normalizeExitReason } from './rlhfService';
+import { recordTradeClose } from './accountingService';
 
 // ============================================
 // Types
@@ -359,6 +360,16 @@ async function monitorOpenTradesForUser(userId: string): Promise<{ processed: nu
 
       // Link outcome to engine_run for RLHF (use net P&L for true performance tracking)
       await linkTradeOutcome(trade.id, netPnl, normalizeExitReason(exitReason));
+
+      // Record ledger entries for accounting (non-blocking)
+      recordTradeClose({
+        userId,
+        tradeId: trade.id,
+        exitPrice,
+        exitCommission,
+        symbol: trade.symbol,
+        contracts: trade.contracts,
+      }).catch(err => console.error('[TradeMonitor] Failed to record ledger entries:', err.message));
 
       // Update stop order(s) with fill time for holding time calculation
       const orderIds = trade.ibkrOrderIds as string[] | null;

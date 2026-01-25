@@ -220,3 +220,109 @@ export async function getUnreconciledEntries(userId: string): Promise<LedgerEntr
     )
     .orderBy(asc(ledgerEntries.timestamp));
 }
+
+// ==================== TRADE EVENT HELPERS ====================
+
+/**
+ * Record ledger entries when a trade is opened
+ * Creates premium_received and commission entries
+ */
+export async function recordTradeOpen(params: {
+  userId: string;
+  tradeId: string;
+  premium: number;
+  commission?: number;
+  symbol: string;
+  strike?: string;
+}): Promise<void> {
+  if (!db) {
+    console.warn('[Accounting] Database not available - skipping ledger entry');
+    return;
+  }
+
+  const today = new Date().toISOString().split('T')[0];
+
+  try {
+    // Record premium received (positive)
+    if (params.premium > 0) {
+      await createLedgerEntry({
+        userId: params.userId,
+        effectiveDate: today,
+        entryType: 'premium_received',
+        amount: params.premium.toFixed(2),
+        tradeId: params.tradeId,
+        description: `Premium received for ${params.symbol}${params.strike ? ' ' + params.strike : ''}`,
+      });
+    }
+
+    // Record commission (negative)
+    if (params.commission && params.commission > 0) {
+      await createLedgerEntry({
+        userId: params.userId,
+        effectiveDate: today,
+        entryType: 'commission',
+        amount: (-params.commission).toFixed(2),
+        tradeId: params.tradeId,
+        description: `Entry commission for ${params.symbol} trade`,
+      });
+    }
+
+    console.log(`[Accounting] Recorded trade open entries for trade ${params.tradeId}`);
+  } catch (error: any) {
+    console.error('[Accounting] Failed to record trade open entries:', error.message);
+    // Don't throw - we don't want to block trade execution
+  }
+}
+
+/**
+ * Record ledger entries when a trade is closed
+ * Creates cost_to_close and exit commission entries
+ */
+export async function recordTradeClose(params: {
+  userId: string;
+  tradeId: string;
+  exitPrice: number;
+  exitCommission?: number;
+  symbol: string;
+  contracts?: number;
+}): Promise<void> {
+  if (!db) {
+    console.warn('[Accounting] Database not available - skipping ledger entry');
+    return;
+  }
+
+  const today = new Date().toISOString().split('T')[0];
+
+  try {
+    // Record cost to close (negative) - only if there was a cost
+    if (params.exitPrice > 0) {
+      // For options, exit price is per contract, need to multiply by contracts and 100
+      const totalCost = params.exitPrice * (params.contracts || 1) * 100;
+      await createLedgerEntry({
+        userId: params.userId,
+        effectiveDate: today,
+        entryType: 'cost_to_close',
+        amount: (-totalCost).toFixed(2),
+        tradeId: params.tradeId,
+        description: `Cost to close ${params.symbol} position`,
+      });
+    }
+
+    // Record exit commission (negative)
+    if (params.exitCommission && params.exitCommission > 0) {
+      await createLedgerEntry({
+        userId: params.userId,
+        effectiveDate: today,
+        entryType: 'commission',
+        amount: (-params.exitCommission).toFixed(2),
+        tradeId: params.tradeId,
+        description: `Exit commission for ${params.symbol} trade`,
+      });
+    }
+
+    console.log(`[Accounting] Recorded trade close entries for trade ${params.tradeId}`);
+  } catch (error: any) {
+    console.error('[Accounting] Failed to record trade close entries:', error.message);
+    // Don't throw - we don't want to block trade processing
+  }
+}

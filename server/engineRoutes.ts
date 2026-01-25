@@ -18,6 +18,7 @@ import { db } from "./db";
 import { paperTrades, orders, engineRuns } from "../shared/schema";
 import { eq, and } from "drizzle-orm";
 import { enforceMandate } from "./services/mandateService";
+import { recordTradeOpen } from "./services/accountingService";
 import type { EngineAnalyzeResponse, TradeProposal, RiskProfile } from "../shared/types/engine";
 import type { EngineStreamEvent } from "../shared/types/engineStream";
 // Step-by-step imports for individual step endpoints
@@ -1200,6 +1201,19 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
       }).returning();
 
         engineTradeId = engineTrade.id;
+
+        // Record ledger entries for accounting (non-blocking)
+        if (req.user?.id) {
+          recordTradeOpen({
+            userId: req.user.id,
+            tradeId: engineTrade.id,
+            premium: tradeProposal.entryPremiumTotal,
+            commission: entryCommission,
+            symbol: tradeProposal.symbol,
+            strike: leg1.strike.toString(),
+          }).catch(err => console.error('[Engine/execute] Failed to record ledger entries:', err.message));
+        }
+
         break; // Success - exit retry loop
       } catch (dbErr: any) {
         console.error(`[Engine/execute] DB insert attempt ${dbAttempt}/${MAX_DB_RETRIES} failed:`, dbErr.message);
