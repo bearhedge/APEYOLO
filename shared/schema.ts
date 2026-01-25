@@ -1283,6 +1283,62 @@ export type TradeValidation = {
   deltaImpact: number;
 };
 
+// ==================== ACCOUNTING & RECONCILIATION ====================
+// Comprehensive accounting system for tracking every cent and reconciling with IBKR
+
+export const ledgerEntries = pgTable('ledger_entries', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar('user_id').references(() => users.id, { onDelete: 'cascade' }),
+
+  // Timing
+  timestamp: timestamp('timestamp', { withTimezone: true }).defaultNow().notNull(),
+  effectiveDate: text('effective_date').notNull(), // YYYY-MM-DD
+
+  // Classification
+  entryType: varchar('entry_type', { length: 50 }).notNull(),
+  // Types: 'premium_received', 'cost_to_close', 'commission',
+  //        'assignment_credit', 'assignment_debit', 'deposit', 'withdrawal',
+  //        'interest', 'dividend', 'fee', 'adjustment'
+
+  // Amount (positive = money in, negative = money out)
+  amount: decimal('amount', { precision: 15, scale: 2 }).notNull(),
+  currency: varchar('currency', { length: 3 }).default('USD'),
+
+  // References
+  tradeId: varchar('trade_id').references(() => paperTrades.id, { onDelete: 'set null' }),
+  orderId: varchar('order_id').references(() => orders.id, { onDelete: 'set null' }),
+  fillId: varchar('fill_id').references(() => fills.id, { onDelete: 'set null' }),
+
+  // IBKR linking (for reconciliation)
+  ibkrExecutionId: varchar('ibkr_execution_id', { length: 100 }),
+  ibkrOrderId: varchar('ibkr_order_id', { length: 100 }),
+
+  // Reconciliation status
+  reconciled: boolean('reconciled').default(false),
+  reconciledAt: timestamp('reconciled_at', { withTimezone: true }),
+
+  // Metadata
+  description: text('description'),
+  metadata: jsonb('metadata'),
+
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (table) => [
+  index('ledger_entries_user_date_idx').on(table.userId, table.effectiveDate),
+  index('ledger_entries_trade_idx').on(table.tradeId),
+  index('ledger_entries_ibkr_exec_idx').on(table.ibkrExecutionId),
+]);
+
+export const insertLedgerEntrySchema = createInsertSchema(ledgerEntries).omit({
+  id: true,
+  createdAt: true,
+  timestamp: true,
+});
+
+export type LedgerEntry = typeof ledgerEntries.$inferSelect;
+export type InsertLedgerEntry = z.infer<typeof insertLedgerEntrySchema>;
+
+// ==================== END ACCOUNTING & RECONCILIATION ====================
+
 // Account info type
 export type AccountInfo = {
   accountNumber: string;
