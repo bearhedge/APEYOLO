@@ -461,6 +461,7 @@ export function EngineWindow() {
             }}
           >
             <div style={{ color: '#00ffff', marginBottom: 16, fontSize: 14 }}>KEYBOARD SHORTCUTS</div>
+            <div style={{ color: '#888', marginBottom: 8 }}>TRADING</div>
             <div>[1] [2] [3] - Select strategy</div>
             <div>[{'\u2190'}] [{'\u2192'}] - Adjust spread width</div>
             <div>[{'\u2191'}] [{'\u2193'}] - Adjust contracts</div>
@@ -469,7 +470,11 @@ export function EngineWindow() {
             <div>[Esc] - Reset</div>
             <div>[A] - Analyze now</div>
             <div>[Space] - Pause auto mode</div>
-            <div>[?] - Toggle this help</div>
+            <div style={{ color: '#888', marginTop: 12, marginBottom: 8 }}>AGENT COMMANDS</div>
+            <div>[V] - VIX analysis</div>
+            <div>[M] - Market snapshot</div>
+            <div>[P] - Current positions</div>
+            <div style={{ color: '#555', marginTop: 12 }}>Type /help in command bar for more</div>
             <div style={{ marginTop: 16, color: '#555', fontSize: 11 }}>Press any key to close</div>
           </div>
         </div>
