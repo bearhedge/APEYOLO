@@ -779,7 +779,7 @@ router.get('/step1', requireAuth, async (req, res) => {
     }
 
     // Run Step 1 only
-    const marketRegime = await analyzeMarketRegime(true, symbol);
+    const marketRegime = await analyzeMarketRegime(true, symbol, req.user!.id);
     const tradingWindow = isWithinTradingWindow();
 
     console.log(`[Engine/step1] Completed in ${Date.now() - startTime}ms`);
