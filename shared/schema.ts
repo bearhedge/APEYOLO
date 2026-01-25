@@ -1337,6 +1337,52 @@ export const insertLedgerEntrySchema = createInsertSchema(ledgerEntries).omit({
 export type LedgerEntry = typeof ledgerEntries.$inferSelect;
 export type InsertLedgerEntry = z.infer<typeof insertLedgerEntrySchema>;
 
+// Daily snapshots - End-of-day checkpoints for reconciliation
+export const dailySnapshots = pgTable('daily_snapshots', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar('user_id').references(() => users.id, { onDelete: 'cascade' }),
+  snapshotDate: text('snapshot_date').notNull(), // YYYY-MM-DD
+
+  // Internal calculations (from ledger_entries)
+  internalCash: decimal('internal_cash', { precision: 15, scale: 2 }),
+  internalPositionsValue: decimal('internal_positions_value', { precision: 15, scale: 2 }),
+  internalNav: decimal('internal_nav', { precision: 15, scale: 2 }),
+  internalRealizedPnl: decimal('internal_realized_pnl', { precision: 15, scale: 2 }),
+  internalUnrealizedPnl: decimal('internal_unrealized_pnl', { precision: 15, scale: 2 }),
+
+  // IBKR reported values
+  ibkrCash: decimal('ibkr_cash', { precision: 15, scale: 2 }),
+  ibkrPositionsValue: decimal('ibkr_positions_value', { precision: 15, scale: 2 }),
+  ibkrNav: decimal('ibkr_nav', { precision: 15, scale: 2 }),
+  ibkrRealizedPnl: decimal('ibkr_realized_pnl', { precision: 15, scale: 2 }),
+  ibkrUnrealizedPnl: decimal('ibkr_unrealized_pnl', { precision: 15, scale: 2 }),
+
+  // Variance analysis
+  cashVariance: decimal('cash_variance', { precision: 15, scale: 2 }),
+  navVariance: decimal('nav_variance', { precision: 15, scale: 2 }),
+
+  // Reconciliation
+  reconciliationStatus: varchar('reconciliation_status', { length: 20 }).default('pending'),
+  // Status: 'pending', 'auto_reconciled', 'manual_reconciled', 'discrepancy'
+  reconciledAt: timestamp('reconciled_at', { withTimezone: true }),
+  reconciledBy: varchar('reconciled_by', { length: 100 }), // 'system' or user
+
+  // Raw IBKR response for audit
+  ibkrRawResponse: jsonb('ibkr_raw_response'),
+
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (table) => [
+  uniqueIndex('daily_snapshots_user_date_unique').on(table.userId, table.snapshotDate),
+]);
+
+export const insertDailySnapshotSchema = createInsertSchema(dailySnapshots).omit({
+  id: true,
+  createdAt: true,
+});
+
+export type DailySnapshot = typeof dailySnapshots.$inferSelect;
+export type InsertDailySnapshot = z.infer<typeof insertDailySnapshotSchema>;
+
 // ==================== END ACCOUNTING & RECONCILIATION ====================
 
 // Account info type
