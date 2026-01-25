@@ -1,12 +1,12 @@
 /**
- * MandateWindow - Trading mandate display and management
+ * MandateWindow - Trading mandate display and management with event timeline
  *
- * Full functionality: View, create, edit, commit to Solana.
+ * Full functionality: View, create, edit, commit to Solana, view event history.
  */
 
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
-import { Shield, Lock, ExternalLink, Loader2, Edit3, Save, X, Plus } from 'lucide-react';
+import { Shield, Lock, ExternalLink, Loader2, Edit3, Save, X, Plus, Clock, AlertTriangle, CheckCircle, FileText, History } from 'lucide-react';
 
 interface Mandate {
   id: string;
@@ -25,6 +25,17 @@ interface Mandate {
   isActive: boolean;
 }
 
+interface MandateEvent {
+  id: string;
+  eventType: string;
+  eventData: any;
+  eventHash: string;
+  solanaSignature?: string;
+  solanaSlot?: number;
+  createdAt: string;
+  recordedOnChainAt?: string;
+}
+
 interface MandateFormData {
   allowedSymbols: string;
   strategyType: string;
@@ -37,6 +48,8 @@ interface MandateFormData {
   tradingWindowStart: string;
   exitDeadline: string;
 }
+
+type TabType = 'rules' | 'history';
 
 const DEFAULT_FORM: MandateFormData = {
   allowedSymbols: 'SPY, SPX',
@@ -56,6 +69,7 @@ export function MandateWindow() {
   const [isEditing, setIsEditing] = useState(false);
   const [formData, setFormData] = useState<MandateFormData>(DEFAULT_FORM);
   const [error, setError] = useState<string | null>(null);
+  const [activeTab, setActiveTab] = useState<TabType>('rules');
 
   const { data: mandate, isLoading } = useQuery<Mandate | null>({
     queryKey: ['mandate'],
@@ -64,6 +78,20 @@ export function MandateWindow() {
       if (!res.ok) return null;
       const data = await res.json();
       return data.mandate || null;
+    },
+  });
+
+  const { data: eventData, isLoading: eventsLoading } = useQuery<{
+    events: MandateEvent[];
+    totalCount: number;
+    uncommittedCount: number;
+  }>({
+    queryKey: ['mandateEvents'],
+    queryFn: async () => {
+      const res = await fetch('/api/defi/mandate/events', { credentials: 'include' });
+      if (!res.ok) return { events: [], totalCount: 0, uncommittedCount: 0 };
+      const data = await res.json();
+      return data;
     },
   });
 
@@ -101,6 +129,7 @@ export function MandateWindow() {
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['mandate'] });
+      queryClient.invalidateQueries({ queryKey: ['mandateEvents'] });
       setIsEditing(false);
       setError(null);
     },
@@ -126,6 +155,27 @@ export function MandateWindow() {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['mandate'] });
       setError(null);
+    },
+    onError: (err: Error) => {
+      setError(err.message);
+    },
+  });
+
+  // Commit event mutation
+  const commitEventMutation = useMutation({
+    mutationFn: async (eventId: string) => {
+      const res = await fetch(`/api/defi/mandate/events/${eventId}/commit`, {
+        method: 'POST',
+        credentials: 'include',
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Failed to commit event');
+      }
+      return data;
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['mandateEvents'] });
     },
     onError: (err: Error) => {
       setError(err.message);
@@ -305,88 +355,146 @@ export function MandateWindow() {
     );
   }
 
-  // Display mode - Green table format
+  // Display mode - Tabbed interface
   return (
     <div style={{ fontFamily: "'IBM Plex Mono', monospace" }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-        <p style={{ color: '#4ade80', margin: 0 }}>
-          TRADING MANDATE
-        </p>
-        {!mandate.solanaSignature && (
-          <button onClick={startEditing} style={editButtonStyle}>
-            <Edit3 style={{ width: 12, height: 12 }} />
-          </button>
-        )}
+      {/* Tab Navigation */}
+      <div style={{ display: 'flex', borderBottom: '1px solid #333', marginBottom: 12 }}>
+        <TabButton active={activeTab === 'rules'} onClick={() => setActiveTab('rules')}>
+          <Shield style={{ width: 12, height: 12 }} />
+          Rules
+        </TabButton>
+        <TabButton active={activeTab === 'history'} onClick={() => setActiveTab('history')}>
+          <History style={{ width: 12, height: 12 }} />
+          History
+          {eventData?.uncommittedCount ? (
+            <span style={{
+              background: '#f59e0b',
+              color: '#000',
+              padding: '1px 6px',
+              borderRadius: 10,
+              fontSize: 10,
+              fontWeight: 600,
+            }}>
+              {eventData.uncommittedCount}
+            </span>
+          ) : null}
+        </TabButton>
       </div>
 
-      {/* Green bordered table */}
-      <table style={{
-        width: '100%',
-        borderCollapse: 'collapse',
-        border: '1px solid #4ade80',
-        fontSize: 12,
-        marginBottom: 16,
-      }}>
-        <tbody>
-          <TableRow label="Symbols" value={mandate.allowedSymbols.join(', ')} />
-          <TableRow label="Strategy" value={mandate.strategyType || 'Credit Spreads'} />
-          <TableRow label="Delta Range" value={`${(mandate.minDelta ?? 0.10).toFixed(2)} – ${(mandate.maxDelta ?? 0.35).toFixed(2)}`} />
-          <TableRow label="Daily Max Loss" value={`${((mandate.maxDailyLossPercent ?? 0.02) * 100).toFixed(0)}%`} />
-          <TableRow label="Entry Window" value="After 11:00am ET (12:00am HKT)" />
-          <TableRow label="Exit By" value="3:59pm ET (4:59am HKT)" />
-          <TableRow label="Stop Loss" value="Yes" highlight />
-          <TableRow label="Overnight" value="No" warn />
-        </tbody>
-      </table>
-
-      {/* Blockchain Status */}
-      <div style={{ borderTop: '1px solid #333', paddingTop: 12 }}>
-        <Row
-          label="On-Chain"
-          value={
-            mandate.solanaSignature ? (
-              <a
-                href={`https://explorer.solana.com/tx/${mandate.solanaSignature}`}
-                target="_blank"
-                rel="noopener noreferrer"
-                style={{ color: '#3b82f6', display: 'flex', alignItems: 'center', gap: 4 }}
-              >
-                <Lock style={{ width: 12, height: 12 }} />
-                Verified
-                <ExternalLink style={{ width: 12, height: 12 }} />
-              </a>
-            ) : (
-              <span style={{ color: '#f59e0b' }}>NOT COMMITTED</span>
-            )
-          }
-        />
-
-        {/* Commit Button */}
-        {!mandate.solanaSignature && (
-          <ActionButton
-            onClick={() => commitMutation.mutate()}
-            disabled={commitMutation.isPending}
-            primary
-            style={{ width: '100%', marginTop: 12 }}
-          >
-            {commitMutation.isPending ? (
-              <>
-                <Loader2 style={iconSpin} />
-                Committing...
-              </>
-            ) : (
-              <>
-                <Lock style={iconStyle} />
-                Commit to Blockchain
-              </>
+      {/* Rules Tab */}
+      {activeTab === 'rules' && (
+        <>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <p style={{ color: '#4ade80', margin: 0 }}>
+              TRADING MANDATE
+            </p>
+            {!mandate.solanaSignature && (
+              <button onClick={startEditing} style={editButtonStyle}>
+                <Edit3 style={{ width: 12, height: 12 }} />
+              </button>
             )}
-          </ActionButton>
-        )}
+          </div>
 
-        {error && (
-          <p style={{ color: '#ef4444', fontSize: 11, marginTop: 8 }}>&gt; ERROR: {error}</p>
-        )}
-      </div>
+          {/* Green bordered table */}
+          <table style={{
+            width: '100%',
+            borderCollapse: 'collapse',
+            border: '1px solid #4ade80',
+            fontSize: 12,
+            marginBottom: 16,
+          }}>
+            <tbody>
+              <TableRow label="Symbols" value={mandate.allowedSymbols.join(', ')} />
+              <TableRow label="Strategy" value={mandate.strategyType || 'Credit Spreads'} />
+              <TableRow label="Delta Range" value={`${(mandate.minDelta ?? 0.10).toFixed(2)} – ${(mandate.maxDelta ?? 0.35).toFixed(2)}`} />
+              <TableRow label="Daily Max Loss" value={`${((mandate.maxDailyLossPercent ?? 0.02) * 100).toFixed(0)}%`} />
+              <TableRow label="Entry Window" value="After 11:00am ET (12:00am HKT)" />
+              <TableRow label="Exit By" value="3:59pm ET (4:59am HKT)" />
+              <TableRow label="Stop Loss" value="Yes" highlight />
+              <TableRow label="Overnight" value="No" warn />
+            </tbody>
+          </table>
+
+          {/* Blockchain Status */}
+          <div style={{ borderTop: '1px solid #333', paddingTop: 12 }}>
+            <Row
+              label="On-Chain"
+              value={
+                mandate.solanaSignature ? (
+                  <a
+                    href={`https://explorer.solana.com/tx/${mandate.solanaSignature}`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    style={{ color: '#3b82f6', display: 'flex', alignItems: 'center', gap: 4 }}
+                  >
+                    <Lock style={{ width: 12, height: 12 }} />
+                    Verified
+                    <ExternalLink style={{ width: 12, height: 12 }} />
+                  </a>
+                ) : (
+                  <span style={{ color: '#f59e0b' }}>NOT COMMITTED</span>
+                )
+              }
+            />
+
+            {/* Commit Button */}
+            {!mandate.solanaSignature && (
+              <ActionButton
+                onClick={() => commitMutation.mutate()}
+                disabled={commitMutation.isPending}
+                primary
+                style={{ width: '100%', marginTop: 12 }}
+              >
+                {commitMutation.isPending ? (
+                  <>
+                    <Loader2 style={iconSpin} />
+                    Committing...
+                  </>
+                ) : (
+                  <>
+                    <Lock style={iconStyle} />
+                    Commit to Blockchain
+                  </>
+                )}
+              </ActionButton>
+            )}
+          </div>
+        </>
+      )}
+
+      {/* History Tab */}
+      {activeTab === 'history' && (
+        <div>
+          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
+            <p style={{ color: '#87ceeb', margin: 0 }}>EVENT HISTORY</p>
+            <span style={{ color: '#666', fontSize: 10 }}>
+              {eventData?.totalCount || 0} events
+            </span>
+          </div>
+
+          {eventsLoading ? (
+            <p style={{ color: '#666', fontSize: 12 }}>Loading events...</p>
+          ) : eventData?.events.length === 0 ? (
+            <p style={{ color: '#666', fontSize: 12 }}>No events recorded yet.</p>
+          ) : (
+            <div style={{ maxHeight: 300, overflowY: 'auto' }}>
+              {eventData?.events.map((event) => (
+                <EventRow
+                  key={event.id}
+                  event={event}
+                  onCommit={(id) => commitEventMutation.mutate(id)}
+                  isCommitting={commitEventMutation.isPending}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {error && (
+        <p style={{ color: '#ef4444', fontSize: 11, marginTop: 8 }}>&gt; ERROR: {error}</p>
+      )}
 
       <style>{`
         @keyframes spin {
@@ -544,5 +652,134 @@ function ActionButton({
     >
       {children}
     </button>
+  );
+}
+
+function TabButton({
+  active,
+  onClick,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        padding: '8px 16px',
+        background: active ? 'rgba(74, 222, 128, 0.2)' : 'transparent',
+        border: 'none',
+        borderBottom: active ? '2px solid #4ade80' : '2px solid transparent',
+        color: active ? '#4ade80' : '#888',
+        fontSize: 12,
+        cursor: 'pointer',
+        fontFamily: 'inherit',
+        display: 'flex',
+        alignItems: 'center',
+        gap: 6,
+      }}
+    >
+      {children}
+    </button>
+  );
+}
+
+function EventRow({
+  event,
+  onCommit,
+  isCommitting,
+}: {
+  event: MandateEvent;
+  onCommit: (id: string) => void;
+  isCommitting: boolean;
+}) {
+  const getEventIcon = (type: string) => {
+    switch (type) {
+      case 'MANDATE_CREATED':
+        return <FileText style={{ width: 14, height: 14, color: '#4ade80' }} />;
+      case 'MANDATE_DEACTIVATED':
+        return <X style={{ width: 14, height: 14, color: '#f59e0b' }} />;
+      case 'VIOLATION_BLOCKED':
+        return <AlertTriangle style={{ width: 14, height: 14, color: '#ef4444' }} />;
+      case 'COMMITMENT_RECORDED':
+        return <Lock style={{ width: 14, height: 14, color: '#3b82f6' }} />;
+      default:
+        return <Clock style={{ width: 14, height: 14, color: '#888' }} />;
+    }
+  };
+
+  const getEventTitle = (type: string) => {
+    switch (type) {
+      case 'MANDATE_CREATED':
+        return 'Mandate Created';
+      case 'MANDATE_DEACTIVATED':
+        return 'Mandate Deactivated';
+      case 'VIOLATION_BLOCKED':
+        return 'Violation Blocked';
+      case 'COMMITMENT_RECORDED':
+        return 'Committed to Chain';
+      default:
+        return type;
+    }
+  };
+
+  const formatDate = (dateStr: string) => {
+    const date = new Date(dateStr);
+    return date.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    });
+  };
+
+  return (
+    <div style={{
+      display: 'flex',
+      alignItems: 'center',
+      padding: '8px 0',
+      borderBottom: '1px solid #222',
+      gap: 12,
+    }}>
+      {getEventIcon(event.eventType)}
+      <div style={{ flex: 1 }}>
+        <div style={{ color: '#fff', fontSize: 12 }}>{getEventTitle(event.eventType)}</div>
+        <div style={{ color: '#666', fontSize: 10 }}>{formatDate(event.createdAt)}</div>
+      </div>
+      {event.solanaSignature ? (
+        <a
+          href={`https://explorer.solana.com/tx/${event.solanaSignature}?cluster=devnet`}
+          target="_blank"
+          rel="noopener noreferrer"
+          style={{ color: '#3b82f6', display: 'flex', alignItems: 'center', gap: 4, fontSize: 10 }}
+        >
+          <CheckCircle style={{ width: 12, height: 12 }} />
+          Verified
+          <ExternalLink style={{ width: 10, height: 10 }} />
+        </a>
+      ) : (
+        <button
+          onClick={() => onCommit(event.id)}
+          disabled={isCommitting}
+          style={{
+            padding: '4px 8px',
+            background: 'rgba(59, 130, 246, 0.2)',
+            border: '1px solid rgba(59, 130, 246, 0.5)',
+            color: '#3b82f6',
+            fontSize: 10,
+            cursor: isCommitting ? 'not-allowed' : 'pointer',
+            opacity: isCommitting ? 0.5 : 1,
+            display: 'flex',
+            alignItems: 'center',
+            gap: 4,
+          }}
+        >
+          {isCommitting ? <Loader2 style={{ width: 10, height: 10, animation: 'spin 1s linear infinite' }} /> : <Lock style={{ width: 10, height: 10 }} />}
+          Commit
+        </button>
+      )}
+    </div>
   );
 }
