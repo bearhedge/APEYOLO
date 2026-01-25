@@ -1431,6 +1431,60 @@ export const insertReconciliationIssueSchema = createInsertSchema(reconciliation
 export type ReconciliationIssue = typeof reconciliationIssues.$inferSelect;
 export type InsertReconciliationIssue = z.infer<typeof insertReconciliationIssueSchema>;
 
+// Attestation periods - Links verified periods to Solana on-chain proofs
+export const attestationPeriods = pgTable('attestation_periods', {
+  id: varchar('id').primaryKey().default(sql`gen_random_uuid()`),
+  userId: varchar('user_id').references(() => users.id, { onDelete: 'cascade' }),
+
+  // Period covered
+  periodStart: text('period_start').notNull(), // YYYY-MM-DD
+  periodEnd: text('period_end').notNull(), // YYYY-MM-DD
+  periodLabel: varchar('period_label', { length: 100 }), // e.g., "Week of Jan 20-26, 2026"
+
+  // Prerequisites
+  allDaysReconciled: boolean('all_days_reconciled').notNull(),
+  reconciliationIssuesCount: integer('reconciliation_issues_count').default(0),
+
+  // Performance summary
+  startingNav: decimal('starting_nav', { precision: 15, scale: 2 }),
+  endingNav: decimal('ending_nav', { precision: 15, scale: 2 }),
+  totalPnl: decimal('total_pnl', { precision: 15, scale: 2 }),
+  returnPercent: decimal('return_percent', { precision: 8, scale: 4 }),
+  tradeCount: integer('trade_count'),
+  winCount: integer('win_count'),
+  lossCount: integer('loss_count'),
+
+  // Hashes for verification
+  tradesHash: varchar('trades_hash', { length: 64 }), // SHA256 of all trade data
+  snapshotsHash: varchar('snapshots_hash', { length: 64 }), // SHA256 of daily snapshots
+  masterHash: varchar('master_hash', { length: 64 }), // SHA256(trades_hash + snapshots_hash)
+
+  // Solana attestation
+  solanaSignature: varchar('solana_signature', { length: 100 }),
+  solanaSlot: bigint('solana_slot', { mode: 'number' }),
+  solanaPda: varchar('solana_pda', { length: 100 }), // Program Derived Address
+  attestedAt: timestamp('attested_at', { withTimezone: true }),
+
+  // Status
+  status: varchar('status', { length: 20 }).default('draft'),
+  // Status: 'draft', 'ready', 'attested', 'superseded'
+
+  createdAt: timestamp('created_at', { withTimezone: true }).defaultNow(),
+}, (table) => [
+  uniqueIndex('attestation_periods_user_period_unique').on(table.userId, table.periodStart, table.periodEnd),
+  index('attestation_periods_user_idx').on(table.userId),
+  index('attestation_periods_status_idx').on(table.status),
+]);
+
+export const insertAttestationPeriodSchema = createInsertSchema(attestationPeriods).omit({
+  id: true,
+  createdAt: true,
+  attestedAt: true,
+});
+
+export type AttestationPeriod = typeof attestationPeriods.$inferSelect;
+export type InsertAttestationPeriod = z.infer<typeof insertAttestationPeriodSchema>;
+
 // ==================== END ACCOUNTING & RECONCILIATION ====================
 
 // Account info type
