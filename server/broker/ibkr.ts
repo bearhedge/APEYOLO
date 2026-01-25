@@ -2608,6 +2608,44 @@ class IbkrClient {
     }
   }
 
+  /**
+   * Get the last known price from IBKR historical data API
+   * Used as fallback when WebSocket cache is empty (e.g., weekends, after-hours)
+   */
+  private async getHistoricalLastPrice(conid: number): Promise<number> {
+    try {
+      const queryParams = new URLSearchParams({
+        conid: String(conid),
+        period: '1d',
+        bar: '1d',
+        outsideRth: 'true',
+      });
+
+      const url = `/v1/api/iserver/marketdata/history?${queryParams.toString()}`;
+      console.log(`[IBKR][getHistoricalLastPrice] Fetching ${url}`);
+
+      const resp = await Promise.race([
+        this.authenticatedGet(url),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('Historical price timeout (10s)')), 10000)
+        )
+      ]);
+
+      if (resp.status === 200 && resp.data?.data?.length > 0) {
+        const lastBar = resp.data.data[resp.data.data.length - 1];
+        const price = lastBar.c || lastBar.close || 0; // 'c' is close price
+        console.log(`[IBKR][getHistoricalLastPrice] conid=${conid} price=${price}`);
+        return price;
+      }
+
+      console.warn(`[IBKR][getHistoricalLastPrice] No data for conid=${conid}`);
+      return 0;
+    } catch (err: any) {
+      console.error(`[IBKR][getHistoricalLastPrice] Error:`, err.message);
+      return 0;
+    }
+  }
+
   async getTrades(): Promise<Trade[]> {
     // Fetch trade executions from IBKR for the past 7 days
     await this.ensureReady();
