@@ -19,6 +19,12 @@ import {
   commitMandateToSolana,
   recordViolationOnSolana,
 } from './services/mandateService';
+import {
+  getMandateEventHistory,
+  getMandateTimeline,
+  recordEventOnSolana,
+  recordEventsOnSolana,
+} from './services/mandateEventService';
 import { requireAuth } from './auth';
 import type { AttestationPeriod } from '@shared/types/defi';
 import type { CreateMandateRequest } from '@shared/types/mandate';
@@ -1171,6 +1177,168 @@ router.post('/violation/:id/record', requireAuth, async (req: Request, res: Resp
     res.status(500).json({
       success: false,
       error: error.message || 'Failed to record violation on Solana',
+    });
+  }
+});
+
+// ============================================
+// Mandate Event Endpoints
+// ============================================
+
+/**
+ * GET /api/defi/mandate/events
+ *
+ * Get event history for the authenticated user.
+ * Supports filtering by mandateId, eventType.
+ */
+router.get('/mandate/events', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const userId = req.user!.id;
+    const mandateId = req.query.mandateId as string | undefined;
+    const eventType = req.query.eventType as string | undefined;
+    const limit = parseInt(req.query.limit as string) || 50;
+    const offset = parseInt(req.query.offset as string) || 0;
+
+    const timeline = await getMandateEventHistory(userId, {
+      mandateId,
+      eventType: eventType as any,
+      limit,
+      offset,
+    });
+
+    res.json({
+      success: true,
+      ...timeline,
+    });
+  } catch (error: any) {
+    console.error('[DefiRoutes] Error getting mandate events:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to get mandate events',
+    });
+  }
+});
+
+/**
+ * GET /api/defi/mandate/:id/timeline
+ *
+ * Get full event timeline for a specific mandate.
+ */
+router.get('/mandate/:id/timeline', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const mandateId = req.params.id;
+
+    if (!mandateId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Mandate ID is required',
+      });
+    }
+
+    const events = await getMandateTimeline(mandateId);
+
+    res.json({
+      success: true,
+      events,
+      count: events.length,
+    });
+  } catch (error: any) {
+    console.error('[DefiRoutes] Error getting mandate timeline:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to get mandate timeline',
+    });
+  }
+});
+
+/**
+ * POST /api/defi/mandate/events/:id/commit
+ *
+ * Commit a single event to Solana blockchain.
+ */
+router.post('/mandate/events/:id/commit', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const eventId = req.params.id;
+
+    if (!eventId) {
+      return res.status(400).json({
+        success: false,
+        error: 'Event ID is required',
+      });
+    }
+
+    const result = await recordEventOnSolana(eventId);
+
+    if (result.success) {
+      res.json({
+        success: true,
+        signature: result.signature,
+        slot: result.slot,
+        explorerUrl: `https://explorer.solana.com/tx/${result.signature}?cluster=${process.env.SOLANA_CLUSTER || 'devnet'}`,
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        error: result.error,
+        signature: result.signature,
+      });
+    }
+  } catch (error: any) {
+    console.error('[DefiRoutes] Error committing event to Solana:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to commit event to Solana',
+    });
+  }
+});
+
+/**
+ * POST /api/defi/mandate/events/commit-batch
+ *
+ * Commit multiple events to Solana blockchain.
+ */
+router.post('/mandate/events/commit-batch', requireAuth, async (req: Request, res: Response) => {
+  try {
+    const { eventIds } = req.body as { eventIds: string[] };
+
+    if (!eventIds || !Array.isArray(eventIds) || eventIds.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: 'eventIds array is required',
+      });
+    }
+
+    if (eventIds.length > 10) {
+      return res.status(400).json({
+        success: false,
+        error: 'Maximum 10 events can be committed at once',
+      });
+    }
+
+    const results = await recordEventsOnSolana(eventIds);
+
+    const response: any = {
+      success: true,
+      results: {},
+      successCount: 0,
+      failureCount: 0,
+    };
+
+    for (const [id, result] of results) {
+      response.results[id] = result;
+      if (result.success) {
+        response.successCount++;
+      } else {
+        response.failureCount++;
+      }
+    }
+
+    res.json(response);
+  } catch (error: any) {
+    console.error('[DefiRoutes] Error committing events to Solana:', error);
+    res.status(500).json({
+      success: false,
+      error: error.message || 'Failed to commit events to Solana',
     });
   }
 });
