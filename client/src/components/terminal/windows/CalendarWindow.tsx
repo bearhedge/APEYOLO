@@ -5,6 +5,7 @@
  */
 
 import { useState, useMemo } from 'react';
+import { useJobs } from '../../../hooks/useJobs';
 
 // ============================================
 // Event Colors
@@ -15,166 +16,6 @@ const EVENT_COLORS = {
   early_close: '#f59e0b',  // Yellow - early close
   economic: '#3b82f6',     // Blue - economic event
   earnings: '#a855f7',     // Purple - earnings
-};
-
-// ============================================
-// Static Data: US Market Holidays 2025-2026
-// ============================================
-
-const US_HOLIDAYS: Record<string, string> = {
-  // 2025
-  '2025-01-01': "New Year's Day",
-  '2025-01-20': 'MLK Day',
-  '2025-02-17': "Presidents' Day",
-  '2025-04-18': 'Good Friday',
-  '2025-05-26': 'Memorial Day',
-  '2025-06-19': 'Juneteenth',
-  '2025-07-04': 'Independence Day',
-  '2025-09-01': 'Labor Day',
-  '2025-11-27': 'Thanksgiving',
-  '2025-12-25': 'Christmas',
-  // 2026
-  '2026-01-01': "New Year's Day",
-  '2026-01-19': 'MLK Day',
-  '2026-02-16': "Presidents' Day",
-  '2026-04-03': 'Good Friday',
-  '2026-05-25': 'Memorial Day',
-  '2026-06-19': 'Juneteenth',
-  '2026-07-03': 'Independence Day',
-  '2026-09-07': 'Labor Day',
-  '2026-11-26': 'Thanksgiving',
-  '2026-12-25': 'Christmas',
-};
-
-const EARLY_CLOSE_DAYS: Record<string, string> = {
-  // 2025
-  '2025-07-03': 'Early Close',
-  '2025-11-28': 'Early Close',
-  '2025-12-24': 'Early Close',
-  // 2026
-  '2026-11-27': 'Early Close',
-  '2026-12-24': 'Early Close',
-};
-
-// ============================================
-// Static Data: Key Economic Events 2025-2026
-// FOMC meetings, CPI, NFP (first Friday of month)
-// ============================================
-
-const ECONOMIC_EVENTS: Record<string, Array<{ name: string; time?: string; impact: 'high' | 'critical' }>> = {
-  // 2025 FOMC Meetings (8 per year)
-  '2025-01-29': [{ name: 'FOMC Rate Decision', time: '2:00 PM', impact: 'critical' }],
-  '2025-03-19': [{ name: 'FOMC Rate Decision', time: '2:00 PM', impact: 'critical' }],
-  '2025-05-07': [{ name: 'FOMC Rate Decision', time: '2:00 PM', impact: 'critical' }],
-  '2025-06-18': [{ name: 'FOMC Rate Decision', time: '2:00 PM', impact: 'critical' }],
-  '2025-07-30': [{ name: 'FOMC Rate Decision', time: '2:00 PM', impact: 'critical' }],
-  '2025-09-17': [{ name: 'FOMC Rate Decision', time: '2:00 PM', impact: 'critical' }],
-  '2025-11-05': [{ name: 'FOMC Rate Decision', time: '2:00 PM', impact: 'critical' }],
-  '2025-12-17': [{ name: 'FOMC Rate Decision', time: '2:00 PM', impact: 'critical' }],
-  // 2026 FOMC Meetings
-  '2026-01-28': [{ name: 'FOMC Rate Decision', time: '2:00 PM', impact: 'critical' }],
-  '2026-03-18': [{ name: 'FOMC Rate Decision', time: '2:00 PM', impact: 'critical' }],
-  '2026-05-06': [{ name: 'FOMC Rate Decision', time: '2:00 PM', impact: 'critical' }],
-  '2026-06-17': [{ name: 'FOMC Rate Decision', time: '2:00 PM', impact: 'critical' }],
-  '2026-07-29': [{ name: 'FOMC Rate Decision', time: '2:00 PM', impact: 'critical' }],
-  '2026-09-16': [{ name: 'FOMC Rate Decision', time: '2:00 PM', impact: 'critical' }],
-  '2026-11-04': [{ name: 'FOMC Rate Decision', time: '2:00 PM', impact: 'critical' }],
-  '2026-12-16': [{ name: 'FOMC Rate Decision', time: '2:00 PM', impact: 'critical' }],
-
-  // 2025 CPI Releases (around 12th of each month)
-  '2025-01-15': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-  '2025-02-12': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-  '2025-03-12': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-  '2025-04-10': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-  '2025-05-13': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-  '2025-06-11': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-  '2025-07-11': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-  '2025-08-13': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-  '2025-09-10': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-  '2025-10-10': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-  '2025-11-13': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-  '2025-12-10': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-  // 2026 CPI
-  '2026-01-14': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-  '2026-02-11': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-  '2026-03-11': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-  '2026-04-14': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-  '2026-05-12': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-  '2026-06-10': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-  '2026-07-14': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-  '2026-08-12': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-  '2026-09-15': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-  '2026-10-13': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-  '2026-11-12': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-  '2026-12-10': [{ name: 'CPI Report', time: '8:30 AM', impact: 'high' }],
-
-  // 2025 NFP (Jobs Report - first Friday of month)
-  '2025-01-10': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-  '2025-02-07': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-  '2025-03-07': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-  '2025-04-04': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-  '2025-05-02': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-  '2025-06-06': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-  '2025-07-03': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-  '2025-08-01': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-  '2025-09-05': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-  '2025-10-03': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-  '2025-11-07': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-  '2025-12-05': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-  // 2026 NFP
-  '2026-01-09': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-  '2026-02-06': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-  '2026-03-06': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-  '2026-04-03': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-  '2026-05-01': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-  '2026-06-05': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-  '2026-07-02': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-  '2026-08-07': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-  '2026-09-04': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-  '2026-10-02': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-  '2026-11-06': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-  '2026-12-04': [{ name: 'Jobs Report (NFP)', time: '8:30 AM', impact: 'high' }],
-};
-
-// ============================================
-// Static Data: Mag7 Earnings (Approximate dates)
-// These are estimated based on historical patterns
-// ============================================
-
-const MAG7_EARNINGS: Record<string, Array<{ ticker: string; name: string }>> = {
-  // Q4 2024 Earnings (reported Jan-Feb 2025)
-  '2025-01-29': [{ ticker: 'MSFT', name: 'Microsoft Earnings' }],
-  '2025-01-30': [{ ticker: 'AAPL', name: 'Apple Earnings' }, { ticker: 'META', name: 'Meta Earnings' }],
-  '2025-02-04': [{ ticker: 'GOOGL', name: 'Google Earnings' }, { ticker: 'AMZN', name: 'Amazon Earnings' }],
-  '2025-02-26': [{ ticker: 'NVDA', name: 'Nvidia Earnings' }],
-  '2025-01-29': [{ ticker: 'TSLA', name: 'Tesla Earnings' }],
-
-  // Q1 2025 Earnings (reported Apr-May 2025)
-  '2025-04-23': [{ ticker: 'TSLA', name: 'Tesla Earnings' }, { ticker: 'META', name: 'Meta Earnings' }],
-  '2025-04-29': [{ ticker: 'MSFT', name: 'Microsoft Earnings' }, { ticker: 'GOOGL', name: 'Google Earnings' }],
-  '2025-05-01': [{ ticker: 'AAPL', name: 'Apple Earnings' }, { ticker: 'AMZN', name: 'Amazon Earnings' }],
-  '2025-05-28': [{ ticker: 'NVDA', name: 'Nvidia Earnings' }],
-
-  // Q2 2025 Earnings (reported Jul-Aug 2025)
-  '2025-07-22': [{ ticker: 'TSLA', name: 'Tesla Earnings' }, { ticker: 'GOOGL', name: 'Google Earnings' }],
-  '2025-07-29': [{ ticker: 'MSFT', name: 'Microsoft Earnings' }],
-  '2025-07-30': [{ ticker: 'META', name: 'Meta Earnings' }],
-  '2025-07-31': [{ ticker: 'AAPL', name: 'Apple Earnings' }, { ticker: 'AMZN', name: 'Amazon Earnings' }],
-  '2025-08-27': [{ ticker: 'NVDA', name: 'Nvidia Earnings' }],
-
-  // Q3 2025 Earnings (reported Oct-Nov 2025)
-  '2025-10-21': [{ ticker: 'TSLA', name: 'Tesla Earnings' }],
-  '2025-10-28': [{ ticker: 'GOOGL', name: 'Google Earnings' }, { ticker: 'MSFT', name: 'Microsoft Earnings' }],
-  '2025-10-29': [{ ticker: 'META', name: 'Meta Earnings' }],
-  '2025-10-30': [{ ticker: 'AAPL', name: 'Apple Earnings' }, { ticker: 'AMZN', name: 'Amazon Earnings' }],
-  '2025-11-19': [{ ticker: 'NVDA', name: 'Nvidia Earnings' }],
-
-  // Q4 2025 Earnings (reported Jan-Feb 2026)
-  '2026-01-28': [{ ticker: 'TSLA', name: 'Tesla Earnings' }, { ticker: 'MSFT', name: 'Microsoft Earnings' }],
-  '2026-01-29': [{ ticker: 'META', name: 'Meta Earnings' }],
-  '2026-02-03': [{ ticker: 'GOOGL', name: 'Google Earnings' }, { ticker: 'AMZN', name: 'Amazon Earnings' }],
-  '2026-02-05': [{ ticker: 'AAPL', name: 'Apple Earnings' }],
-  '2026-02-25': [{ ticker: 'NVDA', name: 'Nvidia Earnings' }],
 };
 
 // ============================================
@@ -207,37 +48,7 @@ function formatDateStr(year: number, month: number, day: number): string {
   return `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
 }
 
-function getEventsForDate(dateStr: string): CalendarEvent[] {
-  const events: CalendarEvent[] = [];
-
-  // Check holidays
-  if (US_HOLIDAYS[dateStr]) {
-    events.push({ type: 'holiday', name: US_HOLIDAYS[dateStr] });
-  }
-
-  // Check early close
-  if (EARLY_CLOSE_DAYS[dateStr]) {
-    events.push({ type: 'early_close', name: EARLY_CLOSE_DAYS[dateStr] });
-  }
-
-  // Check economic events
-  if (ECONOMIC_EVENTS[dateStr]) {
-    for (const event of ECONOMIC_EVENTS[dateStr]) {
-      events.push({ type: 'economic', name: event.name, time: event.time });
-    }
-  }
-
-  // Check earnings
-  if (MAG7_EARNINGS[dateStr]) {
-    for (const earning of MAG7_EARNINGS[dateStr]) {
-      events.push({ type: 'earnings', name: `${earning.ticker} Earnings` });
-    }
-  }
-
-  return events;
-}
-
-function getCalendarDays(year: number, month: number): CalendarDay[] {
+function getCalendarDays(year: number, month: number, eventMap: Map<string, CalendarEvent[]>): CalendarDay[] {
   const today = new Date();
   const todayStr = formatDateStr(today.getFullYear(), today.getMonth(), today.getDate());
 
@@ -266,7 +77,7 @@ function getCalendarDays(year: number, month: number): CalendarDay[] {
       isCurrentMonth: false,
       isToday: dateStr === todayStr,
       isWeekend: dayOfWeek === 0 || dayOfWeek === 6,
-      events: getEventsForDate(dateStr),
+      events: eventMap.get(dateStr) || [],
     });
   }
 
@@ -282,7 +93,7 @@ function getCalendarDays(year: number, month: number): CalendarDay[] {
       isCurrentMonth: true,
       isToday: dateStr === todayStr,
       isWeekend: dayOfWeek === 0 || dayOfWeek === 6,
-      events: getEventsForDate(dateStr),
+      events: eventMap.get(dateStr) || [],
     });
   }
 
@@ -302,7 +113,7 @@ function getCalendarDays(year: number, month: number): CalendarDay[] {
       isCurrentMonth: false,
       isToday: dateStr === todayStr,
       isWeekend: dayOfWeek === 0 || dayOfWeek === 6,
-      events: getEventsForDate(dateStr),
+      events: eventMap.get(dateStr) || [],
     });
   }
 
@@ -314,16 +125,71 @@ function getCalendarDays(year: number, month: number): CalendarDay[] {
 // ============================================
 
 export function CalendarWindow() {
+  const { calendarQuery } = useJobs();
+  const { data: calendarData, isLoading, error } = calendarQuery;
+
   const [currentDate, setCurrentDate] = useState(() => new Date());
   const [selectedDay, setSelectedDay] = useState<CalendarDay | null>(null);
 
+  // Build event map from API data
+  const eventMap = useMemo(() => {
+    const map = new Map<string, CalendarEvent[]>();
+    if (!calendarData?.upcomingEvents) return map;
+    for (const event of calendarData.upcomingEvents) {
+      const existing = map.get(event.date) || [];
+      existing.push({
+        type: event.type,
+        name: event.event,
+        time: event.time,
+      });
+      map.set(event.date, existing);
+    }
+    return map;
+  }, [calendarData?.upcomingEvents]);
+
   const year = currentDate.getFullYear();
   const month = currentDate.getMonth();
-  const days = useMemo(() => getCalendarDays(year, month), [year, month]);
+  const days = useMemo(() => getCalendarDays(year, month, eventMap), [year, month, eventMap]);
 
   const goToPrevMonth = () => setCurrentDate(new Date(year, month - 1, 1));
   const goToNextMonth = () => setCurrentDate(new Date(year, month + 1, 1));
   const goToToday = () => setCurrentDate(new Date());
+
+  // Loading state
+  if (isLoading) {
+    return (
+      <div style={{
+        height: '100%',
+        backgroundColor: '#0a0a0a',
+        fontFamily: '"IBM Plex Mono", ui-monospace, monospace',
+        color: '#666',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}>
+        Loading calendar...
+      </div>
+    );
+  }
+
+  // Error state
+  if (error) {
+    return (
+      <div style={{
+        height: '100%',
+        backgroundColor: '#0a0a0a',
+        fontFamily: '"IBM Plex Mono", ui-monospace, monospace',
+        color: '#ef4444',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: '20px',
+        textAlign: 'center',
+      }}>
+        Failed to load calendar: {error.message}
+      </div>
+    );
+  }
 
   return (
     <div style={{

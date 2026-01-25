@@ -210,6 +210,9 @@ export function useJobs() {
     today,
     calendar: calendarQuery.data?.calendar ?? [],
 
+    // Raw query access (for components that need direct query access)
+    calendarQuery,
+
     // Loading states
     isLoading: jobsQuery.isLoading || historyQuery.isLoading,
     isLoadingCalendar: calendarQuery.isLoading,
