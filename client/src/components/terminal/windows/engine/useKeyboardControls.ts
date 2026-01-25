@@ -28,6 +28,10 @@ interface KeyboardControlsOptions {
   onRefresh: () => void;
   onShowHelp: () => void;
   onPauseAuto: () => void;
+  // Agent command hotkeys
+  onVix?: () => void;
+  onMarket?: () => void;
+  onPositions?: () => void;
 }
 
 export function useKeyboardControls({
@@ -42,6 +46,9 @@ export function useKeyboardControls({
   onRefresh,
   onShowHelp,
   onPauseAuto,
+  onVix,
+  onMarket,
+  onPositions,
 }: KeyboardControlsOptions) {
   const handleKeyDown = useCallback(
     (e: KeyboardEvent) => {
@@ -125,6 +132,23 @@ export function useKeyboardControls({
           e.preventDefault();
           onPauseAuto();
           break;
+
+        // Agent command hotkeys
+        case 'v':
+        case 'V':
+          e.preventDefault();
+          onVix?.();
+          break;
+        case 'm':
+        case 'M':
+          e.preventDefault();
+          onMarket?.();
+          break;
+        case 'p':
+        case 'P':
+          e.preventDefault();
+          onPositions?.();
+          break;
       }
     },
     [
@@ -139,6 +163,9 @@ export function useKeyboardControls({
       onRefresh,
       onShowHelp,
       onPauseAuto,
+      onVix,
+      onMarket,
+      onPositions,
     ]
   );
 

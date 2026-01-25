@@ -12,6 +12,7 @@
 
 import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useEngineAnalysis } from '@/hooks/useEngineAnalysis';
+import { useAgentOperator } from '@/hooks/useAgentOperator';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import {
   TopBar,
@@ -22,6 +23,17 @@ import {
   type LogLine,
   type Strategy,
 } from './engine';
+
+// Agent command mapping
+type AgentCommand = '/vix' | '/market' | '/positions' | '/analyze' | '/help';
+
+const AGENT_COMMANDS: Record<AgentCommand, { operation: 'analyze' | 'positions'; params?: { focus?: string } }> = {
+  '/vix': { operation: 'analyze', params: { focus: 'vix' } },
+  '/market': { operation: 'analyze', params: { focus: 'market' } },
+  '/positions': { operation: 'positions' },
+  '/analyze': { operation: 'analyze' },
+  '/help': { operation: 'analyze' }, // Will be handled specially
+};
 
 type Mode = 'MANUAL' | 'AUTO';
 
@@ -56,6 +68,13 @@ export function EngineWindow() {
     strategy: engineStrategy,
     riskTier: 'balanced',
   });
+
+  // Agent operator for AI-powered commands
+  const {
+    operate: agentOperate,
+    activities: agentActivities,
+    isProcessing: agentProcessing,
+  } = useAgentOperator({ enableStatusPolling: false });
 
   // Broker status
   const { data: ibkrStatus } = useQuery<{
@@ -199,6 +218,31 @@ export function EngineWindow() {
     }
   }, [completedSteps, isAnalyzing, analysis, hudState, addLogLine, contracts, credit, ibkrStatus?.nav, spreadWidth, loggedSteps]);
 
+  // Stream agent activities to log
+  useEffect(() => {
+    if (agentActivities.length === 0) return;
+
+    // Get the most recent activity
+    const latest = agentActivities[agentActivities.length - 1];
+
+    // Skip if we've already logged this activity
+    if (loggedSteps.has(`agent_${latest.id}`)) return;
+
+    // Map agent activity types to log line types
+    const typeMap: Record<string, LogLine['type']> = {
+      action: 'header',
+      thinking: 'info',
+      result: 'success',
+      tool_progress: 'success',
+      info: 'info',
+      error: 'error',
+    };
+
+    const logType = typeMap[latest.type] || 'info';
+    addLogLine(latest.content, logType);
+    setLoggedSteps(prev => new Set([...prev, `agent_${latest.id}`]));
+  }, [agentActivities, loggedSteps, addLogLine]);
+
   // Start analysis header
   const handleAnalyze = useCallback(() => {
     setLogLines([]);
@@ -216,6 +260,35 @@ export function EngineWindow() {
     setPutStrike(null);
     setCallStrike(null);
   }, []);
+
+  // Handle agent commands (V, M, P hotkeys or typed /commands)
+  const handleAgentCommand = useCallback((command: AgentCommand) => {
+    if (agentProcessing) return;
+
+    // Handle /help specially
+    if (command === '/help') {
+      setLogLines([]);
+      setLoggedSteps(new Set());
+      addLogLine('AVAILABLE COMMANDS', 'header');
+      addLogLine('/vix - VIX analysis and volatility regime', 'info');
+      addLogLine('/market - Full market snapshot', 'info');
+      addLogLine('/positions - Current holdings', 'info');
+      addLogLine('/analyze - Full 5-step analysis', 'info');
+      addLogLine('Press V, M, P, A for quick access', 'info');
+      return;
+    }
+
+    const config = AGENT_COMMANDS[command];
+    if (!config) return;
+
+    // Clear log and start agent operation
+    setLogLines([]);
+    setLoggedSteps(new Set());
+    setHudState('analyzing');
+    addLogLine(`Running ${command.slice(1).toUpperCase()}...`, 'header');
+
+    agentOperate(config.operation, { message: config.params?.focus });
+  }, [agentProcessing, agentOperate, addLogLine]);
 
   // Execute
   const handleExecute = useCallback(() => {
@@ -279,6 +352,10 @@ export function EngineWindow() {
         addLogLine('AUTO MODE PAUSED', 'info');
       }
     },
+    // Agent command hotkeys
+    onVix: () => handleAgentCommand('/vix'),
+    onMarket: () => handleAgentCommand('/market'),
+    onPositions: () => handleAgentCommand('/positions'),
   });
 
   return (
