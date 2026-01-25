@@ -313,11 +313,14 @@ export class IbkrWebSocketManager {
             console.log(`[IbkrWS] Sending session authentication: {"session":"${this.sessionToken.substring(0, 8)}..."}`);
             this.ws!.send(sessionMsg);
           } else {
-            console.warn('[IbkrWS] No session token available - WebSocket may not authenticate properly');
-            // Still resolve since connection is open, but auth may fail
+            console.error('[IbkrWS] CRITICAL: No session token available for auth!');
+            console.error('[IbkrWS] Aborting connection - cannot authenticate without token.');
             clearTimeout(connectionTimeout);
-            this.resubscribeAll();
-            resolve();
+            this.ws!.close();
+            this.isConnected = false;
+            this.isConnecting = false;
+            reject(new Error('Cannot authenticate WebSocket without session token'));
+            return;
           }
         });
 
@@ -355,10 +358,18 @@ export class IbkrWebSocketManager {
               // IBKR returns {"topic":"sts","authenticated":false} when session is invalid
               if (msg.authenticated === false) {
                 console.error('[IbkrWS] IBKR returned authenticated=false! Session token is invalid.');
-                console.error('[IbkrWS] Triggering force reconnect with fresh credentials...');
                 clearTimeout(connectionTimeout);
-                // Don't resolve - let the connection fail and trigger reconnect
-                this.forceReconnectWithFreshCredentials();
+                // Clean up and close connection - the 'close' handler will trigger scheduleReconnect
+                // which will refresh credentials with exponential backoff
+                this.stopHeartbeat();
+                this.stopSessionRefresh();
+                this.isConnected = false;
+                this.isConnecting = false;
+                this.isAuthenticated = false;
+                // Note: Don't clear cache here - keep Friday's data for weekend display
+                if (this.ws) {
+                  this.ws.close();
+                }
                 reject(new Error('IBKR WebSocket authentication failed - session invalid'));
                 return;
               }
@@ -977,7 +988,10 @@ export class IbkrWebSocketManager {
           this.sessionToken = sessionToken;
           console.log(`[IbkrWS] Credentials refreshed. Cookie length: ${cookieString?.length || 0}, Has session: ${!!sessionToken}`);
         } catch (err) {
-          console.error('[IbkrWS] Failed to refresh credentials:', err);
+          console.error('[IbkrWS] Failed to refresh credentials, will retry later:', err);
+          // Don't try to connect with stale credentials - schedule another attempt
+          this.scheduleReconnect();
+          return;
         }
       }
 
