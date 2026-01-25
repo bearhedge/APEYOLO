@@ -19,6 +19,7 @@ import {
   MainArea,
   SelectionBar,
   ActionBar,
+  CommandInput,
   useKeyboardControls,
   type LogLine,
   type Strategy,
@@ -290,6 +291,25 @@ export function EngineWindow() {
     agentOperate(config.operation, { message: config.params?.focus });
   }, [agentProcessing, agentOperate, addLogLine]);
 
+  // Handle typed command input (including natural language)
+  const handleCommandInput = useCallback((input: string) => {
+    // Check if it's a known command
+    const command = input.toLowerCase() as AgentCommand;
+    if (AGENT_COMMANDS[command]) {
+      handleAgentCommand(command);
+      return;
+    }
+
+    // Treat as natural language query
+    if (!agentProcessing) {
+      setLogLines([]);
+      setLoggedSteps(new Set());
+      setHudState('analyzing');
+      addLogLine(`Query: ${input}`, 'header');
+      agentOperate('analyze', { message: input });
+    }
+  }, [handleAgentCommand, agentProcessing, agentOperate, addLogLine]);
+
   // Execute
   const handleExecute = useCallback(() => {
     if (hudState !== 'ready' || !analysis?.tradeProposal) return;
@@ -386,6 +406,13 @@ export function EngineWindow() {
         isAnalyzing={isAnalyzing}
         progress={progress}
         isReady={hudState === 'ready'}
+      />
+
+      {/* Command input */}
+      <CommandInput
+        onCommand={handleCommandInput}
+        disabled={agentProcessing || isAnalyzing}
+        placeholder={agentProcessing ? 'Processing...' : '/help for commands'}
       />
 
       {/* Selection bar */}
