@@ -44,6 +44,7 @@ import publicRoutes from "./publicRoutes.js";
 import indicatorRoutes from "./indicatorRoutes.js";
 import replayRoutes from "./replayRoutes.js";
 import ddRoutes from "./ddRoutes.js";
+import accountingRoutes from "./accountingRoutes.js";
 import { initRelayWebSocket, hasRelayConnection, getRelayStatus, sendTradeSignal } from "./routes/relayRoutes";
 import cors from "cors";
 import { getTodayOpeningSnapshot, getTodayClosingSnapshot, getPreviousClosingSnapshot, isMarketHours } from "./services/navSnapshot.js";
@@ -134,6 +135,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Register DD routes (training decisions and research observations)
   app.use('/api/dd', ddRoutes);
+
+  // Register Accounting routes (ledger, reconciliation, attestation)
+  app.use('/api/accounting', accountingRoutes);
 
   // Register Public API routes (for bearhedge.com - no auth required)
   // CORS enabled for bearhedge.com and localhost development
