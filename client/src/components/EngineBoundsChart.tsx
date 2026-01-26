@@ -142,11 +142,11 @@ export function EngineBoundsChart({
 
   // Subscribe to chart price updates
   useEffect(() => {
-    const unsubscribe = onChartPriceUpdate((price, sym, timestamp) => {
-      if (sym === symbol && price > 0) {
-        setCurrentPrice(price);
+    const unsubscribe = onChartPriceUpdate((data) => {
+      if (data.symbol === symbol && data.price > 0) {
+        setCurrentPrice(data.price);
         // Update the chart's candlestick in real-time
-        chartRef.current?.updateWithTick(price, timestamp);
+        chartRef.current?.updateWithTick(data.price, data.timestamp);
       }
     });
     return unsubscribe;

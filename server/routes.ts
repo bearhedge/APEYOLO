@@ -683,8 +683,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
         if (broker.status.provider === 'ibkr') {
           try {
             const { getMarketData, getVIXData } = await import('./services/marketDataService.js');
+            const { getMetrics, calculateChangePercent } = await import('./services/marketMetrics.js');
             const spyData = await getMarketData('SPY');
             const vixData = await getVIXData();
+            const metrics = getMetrics();
 
             // Send real price update (replacing the fake data)
             ws.send(JSON.stringify({
@@ -711,15 +713,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
             }));
 
             // Chart price update for real-time current price line
-            // Only send if we have a valid price (>0)
+            // Includes bid/ask/previousClose for full market data display
             if (spyData.price > 0) {
+              const spyChangePct = calculateChangePercent(spyData.price, metrics.spyPrevClose);
               ws.send(JSON.stringify({
                 type: 'chart_price_update',
                 data: {
                   symbol: 'SPY',
                   price: spyData.price,
+                  bid: spyData.bid || 0,
+                  ask: spyData.ask || 0,
+                  previousClose: metrics.spyPrevClose || 0,
                   change: spyData.change || 0,
-                  changePct: spyData.changePercent || 0,
+                  changePct: spyChangePct,
                   timestamp: Date.now()
                 }
               }));
@@ -727,13 +733,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
             // VIX price update for volatility display
             if (vixData.value > 0) {
+              const vixChangePct = calculateChangePercent(vixData.value, metrics.vixPrevClose);
               ws.send(JSON.stringify({
                 type: 'chart_price_update',
                 data: {
                   symbol: 'VIX',
                   price: vixData.value,
+                  bid: vixData.bid || 0,
+                  ask: vixData.ask || 0,
+                  previousClose: metrics.vixPrevClose || 0,
                   change: vixData.change || 0,
-                  changePct: vixData.changePercent || 0,
+                  changePct: vixChangePct,
                   timestamp: Date.now()
                 }
               }));

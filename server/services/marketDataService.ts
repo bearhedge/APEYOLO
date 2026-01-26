@@ -46,6 +46,8 @@ export interface OptionContract {
 
 export interface VIXData {
   value: number;
+  bid: number;
+  ask: number;
   change: number;
   changePercent: number;
   high: number;
@@ -164,6 +166,8 @@ export async function getVIXData(): Promise<VIXData> {
 
     const vixData: VIXData = {
       value: vixMarketData.price,
+      bid: vixMarketData.bid || 0,
+      ask: vixMarketData.ask || 0,
       change: vixMarketData.change,
       changePercent: vixMarketData.changePercent,
       high: vixMarketData.price * 1.02, // IBKR snapshot doesn't provide high/low

@@ -59,7 +59,13 @@ export function EngineWindow() {
   // WebSocket for real-time market data
   const { isConnected: wsConnected, onChartPriceUpdate } = useWebSocket();
   const [wsSpyPrice, setWsSpyPrice] = useState(0);
+  const [wsSpyBid, setWsSpyBid] = useState(0);
+  const [wsSpyAsk, setWsSpyAsk] = useState(0);
+  const [wsSpyPrevClose, setWsSpyPrevClose] = useState(0);
   const [wsVix, setWsVix] = useState(0);
+  const [wsVixBid, setWsVixBid] = useState(0);
+  const [wsVixAsk, setWsVixAsk] = useState(0);
+  const [wsVixPrevClose, setWsVixPrevClose] = useState(0);
 
   // Engine analysis hook - map HUD strategy to engine strategy
   const engineStrategy = strategy === 'put-spread' ? 'put-only' : strategy === 'call-spread' ? 'call-only' : 'strangle';
@@ -103,12 +109,18 @@ export function EngineWindow() {
   useEffect(() => {
     console.log('[EngineWindow] Setting up WebSocket price subscription, wsConnected:', wsConnected);
 
-    const unsubscribe = onChartPriceUpdate((price, symbol, timestamp) => {
-      console.log('[EngineWindow] Received price update:', { symbol, price, timestamp });
-      if (symbol === 'SPY') {
-        setWsSpyPrice(price);
-      } else if (symbol === 'VIX') {
-        setWsVix(price);
+    const unsubscribe = onChartPriceUpdate((data) => {
+      console.log('[EngineWindow] Received price update:', data);
+      if (data.symbol === 'SPY') {
+        setWsSpyPrice(data.price);
+        setWsSpyBid(data.bid);
+        setWsSpyAsk(data.ask);
+        setWsSpyPrevClose(data.previousClose);
+      } else if (data.symbol === 'VIX') {
+        setWsVix(data.price);
+        setWsVixBid(data.bid);
+        setWsVixAsk(data.ask);
+        setWsVixPrevClose(data.previousClose);
       }
     });
     return () => {
@@ -144,8 +156,13 @@ export function EngineWindow() {
 
   // Derived values - prefer WebSocket prices, fall back to analysis data
   const spyPrice = wsSpyPrice > 0 ? wsSpyPrice : (analysis?.q1MarketRegime?.inputs?.spyPrice ?? 0);
-  const spyChangePct = 0; // Not available without market data API
+  const spyBid = wsSpyBid > 0 ? wsSpyBid : spyPrice;
+  const spyAsk = wsSpyAsk > 0 ? wsSpyAsk : spyPrice;
+  const spyPrevClose = wsSpyPrevClose;
   const vix = wsVix > 0 ? wsVix : (analysis?.q1MarketRegime?.inputs?.vixValue ?? 0);
+  const vixBid = wsVixBid > 0 ? wsVixBid : vix;
+  const vixAsk = wsVixAsk > 0 ? wsVixAsk : vix;
+  const vixPrevClose = wsVixPrevClose;
   const isConnected = ibkrStatus?.connected ?? false;
   const isWsConnected = wsConnected;
 
@@ -415,9 +432,12 @@ export function EngineWindow() {
     >
       {/* Top bar */}
       <TopBar
-        spyPrice={spyPrice}
-        spyChangePct={spyChangePct}
-        vix={vix}
+        spyBid={spyBid}
+        spyAsk={spyAsk}
+        spyPrevClose={spyPrevClose}
+        vixBid={vixBid}
+        vixAsk={vixAsk}
+        vixPrevClose={vixPrevClose}
         isConnected={isConnected}
         wsConnected={isWsConnected}
         mode={mode}

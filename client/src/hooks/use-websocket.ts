@@ -6,8 +6,19 @@ type WebSocketMessage = {
   message?: string;
 };
 
+// Full market data for chart price updates
+export interface ChartPriceData {
+  price: number;
+  symbol: string;
+  timestamp: number;
+  bid: number;
+  ask: number;
+  previousClose: number;
+  changePct: number;
+}
+
 // Callback type for chart price updates
-type ChartPriceCallback = (price: number, symbol: string, timestamp: number) => void;
+type ChartPriceCallback = (data: ChartPriceData) => void;
 
 // Callback type for option chain updates
 export interface OptionChainUpdate {
@@ -119,11 +130,20 @@ export function useWebSocket() {
 
             // Handle chart_price_update messages
             if (message.type === 'chart_price_update' && message.data) {
-              const { symbol, price, timestamp } = message.data;
+              const { symbol, price, timestamp, bid, ask, previousClose, changePct } = message.data;
               if (price > 0) {
+                const chartData: ChartPriceData = {
+                  price,
+                  symbol,
+                  timestamp,
+                  bid: bid || 0,
+                  ask: ask || 0,
+                  previousClose: previousClose || 0,
+                  changePct: changePct || 0,
+                };
                 chartPriceCallbacks.forEach(callback => {
                   try {
-                    callback(price, symbol, timestamp);
+                    callback(chartData);
                   } catch (err) {
                     console.error('[WebSocket] Chart price callback error:', err);
                   }
@@ -144,12 +164,22 @@ export function useWebSocket() {
             }
 
             // Handle underlying_price_update messages (also update chart)
+            // Note: This legacy message format doesn't include bid/ask/previousClose
             if (message.type === 'underlying_price_update') {
               const { symbol, price, timestamp } = message;
               if (price > 0) {
+                const chartData: ChartPriceData = {
+                  price,
+                  symbol,
+                  timestamp: new Date(timestamp).getTime(),
+                  bid: 0,
+                  ask: 0,
+                  previousClose: 0,
+                  changePct: 0,
+                };
                 chartPriceCallbacks.forEach(callback => {
                   try {
-                    callback(price, symbol, new Date(timestamp).getTime());
+                    callback(chartData);
                   } catch (err) {
                     console.error('[WebSocket] Underlying price callback error:', err);
                   }

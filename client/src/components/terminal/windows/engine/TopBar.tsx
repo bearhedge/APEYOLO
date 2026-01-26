@@ -1,13 +1,16 @@
 /**
  * TopBar - HUD status bar showing market data and mode
  *
- * Displays: SPY price, VIX, connection status, AUTO/MANUAL mode
+ * Displays: SPY bid x ask + % change, VIX bid x ask + % change, connection status, AUTO/MANUAL mode
  */
 
 interface TopBarProps {
-  spyPrice: number;
-  spyChangePct: number;
-  vix: number;
+  spyBid: number;
+  spyAsk: number;
+  spyPrevClose: number;
+  vixBid: number;
+  vixAsk: number;
+  vixPrevClose: number;
   isConnected: boolean;
   wsConnected?: boolean;
   mode: 'MANUAL' | 'AUTO';
@@ -16,23 +19,44 @@ interface TopBarProps {
 }
 
 export function TopBar({
-  spyPrice,
-  spyChangePct,
-  vix,
+  spyBid,
+  spyAsk,
+  spyPrevClose,
+  vixBid,
+  vixAsk,
+  vixPrevClose,
   isConnected,
   wsConnected,
   mode,
   autoCountdown,
   onModeToggle,
 }: TopBarProps) {
-  const priceColor = spyChangePct >= 0 ? '#4ade80' : '#ef4444';
-  const vixColor = vix > 20 ? '#f59e0b' : '#888';
+  // Calculate midpoint prices for % change calculation
+  const spyMidpoint = spyBid > 0 && spyAsk > 0 ? (spyBid + spyAsk) / 2 : 0;
+  const vixMidpoint = vixBid > 0 && vixAsk > 0 ? (vixBid + vixAsk) / 2 : 0;
+
+  // Calculate % change from previous close
+  const spyChangePct = spyPrevClose > 0 && spyMidpoint > 0
+    ? ((spyMidpoint - spyPrevClose) / spyPrevClose) * 100
+    : 0;
+  const vixChangePct = vixPrevClose > 0 && vixMidpoint > 0
+    ? ((vixMidpoint - vixPrevClose) / vixPrevClose) * 100
+    : 0;
+
+  const spyPriceColor = spyChangePct >= 0 ? '#4ade80' : '#ef4444';
+  const vixPriceColor = vixChangePct >= 0 ? '#4ade80' : '#ef4444';
+  const vixValueColor = vixMidpoint > 20 ? '#f59e0b' : '#888';
 
   const formatCountdown = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
     const secs = seconds % 60;
     return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
+
+  // Check if we have valid SPY data
+  const hasSpyData = spyBid > 0 && spyAsk > 0;
+  // Check if we have valid VIX data
+  const hasVixData = vixBid > 0 || vixMidpoint > 0;
 
   return (
     <div
@@ -49,13 +73,19 @@ export function TopBar({
     >
       {/* Left: Market data */}
       <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
-        {/* SPY - show N/A when price is 0 (SPY will never actually be $0) */}
+        {/* SPY - show bid x ask and % change */}
         <span>
           <span style={{ color: '#888' }}>SPY </span>
-          {spyPrice > 0 ? (
+          {hasSpyData ? (
             <>
-              <span style={{ color: '#fff', fontWeight: 600 }}>${spyPrice.toFixed(2)}</span>
-              <span style={{ color: priceColor, marginLeft: 6 }}>
+              <span style={{ color: '#fff', fontWeight: 600 }}>
+                ${spyBid.toFixed(2)}
+              </span>
+              <span style={{ color: '#666' }}> x </span>
+              <span style={{ color: '#fff', fontWeight: 600 }}>
+                ${spyAsk.toFixed(2)}
+              </span>
+              <span style={{ color: spyPriceColor, marginLeft: 6 }}>
                 {spyChangePct >= 0 ? '\u25B2' : '\u25BC'}
                 {spyChangePct >= 0 ? '+' : ''}{spyChangePct.toFixed(2)}%
               </span>
@@ -65,11 +95,33 @@ export function TopBar({
           )}
         </span>
 
-        {/* VIX - show N/A when value is 0 */}
+        {/* VIX - show bid x ask and % change */}
         <span>
           <span style={{ color: '#888' }}>VIX </span>
-          {vix > 0 ? (
-            <span style={{ color: vixColor, fontWeight: 500 }}>{vix.toFixed(1)}</span>
+          {hasVixData ? (
+            <>
+              {vixBid > 0 && vixAsk > 0 ? (
+                <>
+                  <span style={{ color: vixValueColor, fontWeight: 500 }}>
+                    {vixBid.toFixed(2)}
+                  </span>
+                  <span style={{ color: '#666' }}> x </span>
+                  <span style={{ color: vixValueColor, fontWeight: 500 }}>
+                    {vixAsk.toFixed(2)}
+                  </span>
+                </>
+              ) : (
+                <span style={{ color: vixValueColor, fontWeight: 500 }}>
+                  {vixMidpoint.toFixed(2)}
+                </span>
+              )}
+              {vixPrevClose > 0 && (
+                <span style={{ color: vixPriceColor, marginLeft: 6 }}>
+                  {vixChangePct >= 0 ? '\u25B2' : '\u25BC'}
+                  {vixChangePct >= 0 ? '+' : ''}{vixChangePct.toFixed(2)}%
+                </span>
+              )}
+            </>
           ) : (
             <span style={{ color: '#666', fontWeight: 500 }}>N/A</span>
           )}
