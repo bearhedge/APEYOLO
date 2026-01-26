@@ -231,10 +231,31 @@ export async function analyzeMarketRegime(useRealData: boolean = true, symbol: s
       console.log(`[Step1] No userId provided - skipping IBKR market data, using database fallback`);
     }
 
-    // Try 2: Database fallback (last known price for off-hours)
+    // Try 2: latest_prices table (recently persisted WebSocket data - most current)
     if (!spyPrice || spyPrice === 0) {
       try {
-        console.log(`[Step1] Trying database for last known ${symbol} price...`);
+        console.log(`[Step1] Trying latest_prices table for ${symbol}...`);
+        const result = await pool.query(`
+          SELECT price, updated_at
+          FROM latest_prices
+          WHERE symbol = $1
+          LIMIT 1
+        `, [symbol]);
+        if (result.rows.length > 0 && result.rows[0].price > 0) {
+          spyPrice = parseFloat(result.rows[0].price);
+          spyChange = 0;
+          spySource = 'latest_prices (WebSocket persisted)';
+          console.log(`[Step1] ${symbol} from latest_prices: $${spyPrice.toFixed(2)} (updated ${result.rows[0].updated_at})`);
+        }
+      } catch (error: any) {
+        console.warn(`[Step1] latest_prices fallback failed: ${error.message}`);
+      }
+    }
+
+    // Try 3: market_data table (old historical data - last resort)
+    if (!spyPrice || spyPrice === 0) {
+      try {
+        console.log(`[Step1] Trying market_data table for last known ${symbol} price...`);
         const result = await pool.query(`
           SELECT close, timestamp
           FROM market_data
@@ -245,11 +266,11 @@ export async function analyzeMarketRegime(useRealData: boolean = true, symbol: s
         if (result.rows.length > 0 && result.rows[0].close) {
           spyPrice = parseFloat(result.rows[0].close);
           spyChange = 0;
-          spySource = 'Database (last known)';
-          console.log(`[Step1] ${symbol} from database: $${spyPrice.toFixed(2)} (as of ${result.rows[0].timestamp})`);
+          spySource = 'market_data (historical)';
+          console.log(`[Step1] ${symbol} from market_data: $${spyPrice.toFixed(2)} (as of ${result.rows[0].timestamp})`);
         }
       } catch (error: any) {
-        console.warn(`[Step1] Database fallback failed: ${error.message}`);
+        console.warn(`[Step1] market_data fallback failed: ${error.message}`);
       }
     }
 
