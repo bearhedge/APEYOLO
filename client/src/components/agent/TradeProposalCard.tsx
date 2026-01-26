@@ -39,7 +39,7 @@ export interface TradeProposal {
 export interface CritiqueResult {
   approved: boolean;
   riskLevel: 'LOW' | 'MEDIUM' | 'HIGH';
-  mandateCompliant: boolean;
+  railCompliant: boolean;
   concerns: string[];
   suggestions?: string[];
   reasoning?: string;
@@ -219,7 +219,7 @@ export function TradeProposalCard({
   const premiumPerContract = legs.reduce((sum, leg) => sum + leg.premium, 0);
 
   // Determine if execution is allowed
-  const canExecute = critique?.approved && critique?.mandateCompliant && !executionResult?.success;
+  const canExecute = critique?.approved && critique?.railCompliant && !executionResult?.success;
 
   // Strategy display
   const strategyLabel = strategy === 'STRANGLE' ? 'SELL STRANGLE' :

@@ -17,7 +17,7 @@ import { useQuery } from '@tanstack/react-query';
 import { useWallet } from '@solana/wallet-adapter-react';
 // Note: WalletMultiButton removed - using global connect button in top nav
 import { LeftNav } from '@/components/LeftNav';
-import { MandateSummary } from '@/components/defi/MandateSummary';
+import { RailsSummary } from '@/components/defi/RailsSummary';
 import { PeriodSummaryTable } from '@/components/defi/PeriodSummaryTable';
 import { TradeLogTable } from '@/components/defi/TradeLogTable';
 import { AttestationControls } from '@/components/defi/AttestationControls';
@@ -28,7 +28,7 @@ import {
   Wallet,
 } from 'lucide-react';
 import type { AttestationData, AttestationPeriod } from '@shared/types/defi';
-import type { Mandate, CreateMandateRequest } from '@shared/types/mandate';
+import type { Rail, CreateRailRequest } from '@shared/types/rails';
 import { useWalletContext } from '@/components/WalletProvider';
 import { formatUSD } from '@/lib/solana';
 
@@ -85,8 +85,8 @@ interface Trade {
   entrySpy?: number | null;
 }
 
-// Default mandate values for new creation
-const DEFAULT_MANDATE: CreateMandateRequest = {
+// Default rail values for new creation
+const DEFAULT_RAIL: CreateRailRequest = {
   allowedSymbols: ['SPY', 'SPX'],
   strategyType: 'SELL',
   minDelta: 0.20,
@@ -142,13 +142,13 @@ export function DeFi() {
 
   const trades = tradesResponse?.trades || [];
 
-  // Mandate state
-  const [mandate, setMandate] = useState<Mandate | null>(null);
+  // Rail state
+  const [rail, setRail] = useState<Rail | null>(null);
   const [violationCount, setViolationCount] = useState(0);
-  const [mandateLoading, setMandateLoading] = useState(true);
-  const [showCreateMandate, setShowCreateMandate] = useState(false);
-  const [createMandateLoading, setCreateMandateLoading] = useState(false);
-  const [createMandateError, setCreateMandateError] = useState<string | null>(null);
+  const [railLoading, setRailLoading] = useState(true);
+  const [showCreateRail, setShowCreateRail] = useState(false);
+  const [createRailLoading, setCreateRailLoading] = useState(false);
+  const [createRailError, setCreateRailError] = useState<string | null>(null);
   const [confirmText, setConfirmText] = useState('');
 
   // Attestation state
@@ -156,58 +156,58 @@ export function DeFi() {
   const [previewData, setPreviewData] = useState<AttestationData | null>(null);
   const [isPreviewLoading, setIsPreviewLoading] = useState(false);
 
-  // Fetch mandate on mount
+  // Fetch rail on mount
   useEffect(() => {
-    fetchMandate();
+    fetchRail();
   }, []);
 
-  const fetchMandate = async () => {
-    setMandateLoading(true);
+  const fetchRail = async () => {
+    setRailLoading(true);
     try {
-      const response = await fetch('/api/defi/mandate', {
+      const response = await fetch('/api/defi/rails', {
         credentials: 'include',
       });
       const result = await response.json();
       if (result.success) {
-        setMandate(result.mandate);
+        setRail(result.rail);
         setViolationCount(result.violationCount || 0);
       }
     } catch (error) {
-      console.error('Error fetching mandate:', error);
+      console.error('Error fetching rail:', error);
     } finally {
-      setMandateLoading(false);
+      setRailLoading(false);
     }
   };
 
-  const handleCreateMandate = async () => {
+  const handleCreateRail = async () => {
     if (confirmText !== 'I UNDERSTAND') {
-      setCreateMandateError('Please type "I UNDERSTAND" to confirm');
+      setCreateRailError('Please type "I UNDERSTAND" to confirm');
       return;
     }
 
-    setCreateMandateLoading(true);
-    setCreateMandateError(null);
+    setCreateRailLoading(true);
+    setCreateRailError(null);
 
     try {
-      const response = await fetch('/api/defi/mandate', {
+      const response = await fetch('/api/defi/rails', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         credentials: 'include',
-        body: JSON.stringify(DEFAULT_MANDATE),
+        body: JSON.stringify(DEFAULT_RAIL),
       });
 
       const result = await response.json();
       if (result.success) {
-        setMandate(result.mandate);
-        setShowCreateMandate(false);
+        setRail(result.rail);
+        setShowCreateRail(false);
         setConfirmText('');
       } else {
-        setCreateMandateError(result.error || 'Failed to create mandate');
+        setCreateRailError(result.error || 'Failed to create rail');
       }
     } catch (error: any) {
-      setCreateMandateError(error.message || 'Failed to create mandate');
+      setCreateRailError(error.message || 'Failed to create rail');
     } finally {
-      setCreateMandateLoading(false);
+      setCreateRailLoading(false);
     }
   };
 
@@ -321,11 +321,11 @@ export function DeFi() {
 
             {/* Left Column - Controls (4 cols) */}
             <div className="col-span-4 space-y-4">
-              <MandateSummary
-                mandate={mandate}
+              <RailsSummary
+                rail={rail}
                 violationCount={violationCount}
-                onCreateClick={() => setShowCreateMandate(true)}
-                loading={mandateLoading}
+                onCreateClick={() => setShowCreateRail(true)}
+                loading={railLoading}
               />
 
               <AttestationControls
@@ -423,20 +423,20 @@ export function DeFi() {
           </div>
         </div>
 
-        {/* Create Mandate Modal */}
-        {showCreateMandate && (
+        {/* Create Rail Modal */}
+        {showCreateRail && (
           <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4">
             <div className="bg-terminal-panel terminal-grid max-w-lg w-full max-h-[90vh] overflow-y-auto">
               <div className="p-4 border-b border-terminal flex items-center justify-between">
                 <div className="flex items-center gap-2">
                   <Shield className="w-4 h-4 text-bloomberg-blue" />
-                  <span className="text-sm font-medium uppercase tracking-wide">Create Mandate</span>
+                  <span className="text-sm font-medium uppercase tracking-wide">Create DeFi Rails</span>
                 </div>
                 <button
                   onClick={() => {
-                    setShowCreateMandate(false);
+                    setShowCreateRail(false);
                     setConfirmText('');
-                    setCreateMandateError(null);
+                    setCreateRailError(null);
                   }}
                   className="text-terminal-dim hover:text-terminal-bright text-xl"
                 >
@@ -474,7 +474,7 @@ export function DeFi() {
                 <div className="flex items-start gap-2 text-xs text-bloomberg-amber">
                   <AlertCircle className="w-4 h-4 flex-shrink-0 mt-0.5" />
                   <div>
-                    <p className="font-medium mb-1">This mandate is permanent</p>
+                    <p className="font-medium mb-1">This rail is permanent</p>
                     <p className="text-bloomberg-amber/80">Cannot be modified once created.</p>
                   </div>
                 </div>
@@ -491,27 +491,27 @@ export function DeFi() {
                   placeholder="I UNDERSTAND"
                   className="w-full px-3 py-2 bg-terminal border border-terminal text-sm text-terminal-bright focus:border-bloomberg-blue focus:outline-none"
                 />
-                {createMandateError && (
-                  <p className="text-xs text-bloomberg-red mt-2">{createMandateError}</p>
+                {createRailError && (
+                  <p className="text-xs text-bloomberg-red mt-2">{createRailError}</p>
                 )}
 
                 <div className="flex gap-2 mt-4">
                   <button
                     onClick={() => {
-                      setShowCreateMandate(false);
+                      setShowCreateRail(false);
                       setConfirmText('');
-                      setCreateMandateError(null);
+                      setCreateRailError(null);
                     }}
                     className="flex-1 px-3 py-2 text-xs uppercase tracking-wide border border-terminal text-terminal-dim hover:text-terminal-bright"
                   >
                     Cancel
                   </button>
                   <button
-                    onClick={handleCreateMandate}
-                    disabled={createMandateLoading || confirmText !== 'I UNDERSTAND'}
+                    onClick={handleCreateRail}
+                    disabled={createRailLoading || confirmText !== 'I UNDERSTAND'}
                     className="flex-1 px-3 py-2 text-xs uppercase tracking-wide bg-bloomberg-blue text-black font-medium disabled:opacity-50 flex items-center justify-center gap-2"
                   >
-                    {createMandateLoading ? (
+                    {createRailLoading ? (
                       <Loader2 className="w-3 h-3 animate-spin" />
                     ) : (
                       'Create'

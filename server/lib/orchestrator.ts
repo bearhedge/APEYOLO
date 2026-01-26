@@ -3,7 +3,7 @@
  *
  * Implements the Review & Critique pattern from Google Cloud's Agentic AI patterns:
  * 1. PROPOSER (DeepSeek-R1:70b) analyzes and proposes trades
- * 2. CRITIC (Qwen2.5:72b) validates proposals against mandate and risk rules
+ * 2. CRITIC (Qwen2.5:72b) validates proposals against DeFi Rails and risk rules
  * 3. Both must agree before trade is presented for human approval
  *
  * This ensures safety through consensus - no single model can make a bad trade.
@@ -47,7 +47,7 @@ export interface TradeProposal {
 
 export interface CritiqueResult {
   approved: boolean;
-  mandateCompliant: boolean;
+  railCompliant: boolean;
   riskAssessment: 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
   concerns: string[];
   suggestions: string[];
@@ -94,8 +94,8 @@ export interface TradingContext {
   buyingPower: number;
   dayPnL: number;
 
-  // Mandate constraints
-  mandate: {
+  // Rail constraints
+  rail: {
     allowedSymbols: string[];
     strategyType: 'SELL' | 'BUY';
     minDelta: number;
@@ -114,7 +114,7 @@ const PROPOSER_SYSTEM_PROMPT = `You are APEYOLO's Trading Proposer - an expert 0
 
 Your role:
 1. Analyze market conditions and current positions
-2. Identify trading opportunities within the mandate
+2. Identify trading opportunities within the DeFi Rails
 3. Propose specific, actionable trades with clear reasoning
 
 When proposing trades, always include:
@@ -147,12 +147,12 @@ If no trade is recommended, respond with:
 const CRITIC_SYSTEM_PROMPT = `You are APEYOLO's Risk Critic - a strict risk management validator.
 
 Your role:
-1. Validate trade proposals against the trading mandate
+1. Validate trade proposals against the DeFi Rails
 2. Assess risk levels and potential issues
 3. Either APPROVE or REJECT proposals with clear reasoning
 
 Check every proposal for:
-- Mandate compliance (allowed symbols, strategy type, delta range)
+- Rail compliance (allowed symbols, strategy type, delta range)
 - Position sizing (not exceeding limits)
 - Risk assessment (Greeks exposure, market conditions)
 - Daily loss limits (not breaching max daily loss)
@@ -161,7 +161,7 @@ Check every proposal for:
 Format your critique as JSON:
 {
   "approved": true/false,
-  "mandateCompliant": true/false,
+  "railCompliant": true/false,
   "riskAssessment": "LOW" | "MEDIUM" | "HIGH" | "CRITICAL",
   "concerns": ["List of concerns if any"],
   "suggestions": ["List of suggestions if any"],
@@ -326,13 +326,13 @@ Day P&L: ${context.dayPnL >= 0 ? '+' : ''}$${context.dayPnL.toFixed(2)}
 ## Current Positions
 ${positionsSummary}
 
-## Trading Mandate
-- Allowed Symbols: ${context.mandate.allowedSymbols.join(', ')}
-- Strategy: ${context.mandate.strategyType} options
-- Delta Range: ${context.mandate.minDelta} to ${context.mandate.maxDelta}
-- Max Daily Loss: ${context.mandate.maxDailyLossPercent}%
-- Overnight Positions: ${context.mandate.noOvernightPositions ? 'NOT ALLOWED' : 'Allowed'}
-${context.mandate.maxPositionSize ? `- Max Position Size: $${context.mandate.maxPositionSize}` : ''}`;
+## DeFi Rails
+- Allowed Symbols: ${context.rail.allowedSymbols.join(', ')}
+- Strategy: ${context.rail.strategyType} options
+- Delta Range: ${context.rail.minDelta} to ${context.rail.maxDelta}
+- Max Daily Loss: ${context.rail.maxDailyLossPercent}%
+- Overnight Positions: ${context.rail.noOvernightPositions ? 'NOT ALLOWED' : 'Allowed'}
+${context.rail.maxPositionSize ? `- Max Position Size: $${context.rail.maxPositionSize}` : ''}`;
 }
 
 function parseProposal(content: string): TradeProposal | undefined {
@@ -372,7 +372,7 @@ function parseCritique(content: string): CritiqueResult | undefined {
       const parsed = JSON.parse(jsonMatch[0]);
       return {
         approved: parsed.approved === true,
-        mandateCompliant: parsed.mandateCompliant === true,
+        railCompliant: parsed.railCompliant === true,
         riskAssessment: parsed.riskAssessment || 'MEDIUM',
         concerns: parsed.concerns || [],
         suggestions: parsed.suggestions || [],
@@ -385,7 +385,7 @@ function parseCritique(content: string): CritiqueResult | undefined {
 
   return {
     approved: false,
-    mandateCompliant: false,
+    railCompliant: false,
     riskAssessment: 'HIGH',
     concerns: ['Could not parse critic response'],
     suggestions: [],

@@ -1098,7 +1098,7 @@ router.post('/chat/stream', requireAuth, async (req: Request, res: Response) => 
  * 3. Returns result with consensus status
  *
  * Body:
- * - context: TradingContext object with market data, positions, mandate
+ * - context: TradingContext object with market data, positions, rail
  * - request?: Optional user request/question
  */
 router.post('/propose', requireAuth, async (req: Request, res: Response) => {
@@ -1116,10 +1116,10 @@ router.post('/propose', requireAuth, async (req: Request, res: Response) => {
     }
 
     // Validate required context fields
-    if (typeof context.spyPrice !== 'number' || !context.mandate) {
+    if (typeof context.spyPrice !== 'number' || !context.rail) {
       return res.status(400).json({
         success: false,
-        error: 'Invalid context: spyPrice and mandate are required',
+        error: 'Invalid context: spyPrice and rail are required',
       });
     }
 
@@ -1679,7 +1679,7 @@ router.post('/operate', requireAuth, async (req: Request, res: Response) => {
             portfolioValue: 100000,
             buyingPower: 50000,
             dayPnL: 0,
-            mandate: {
+            rail: {
               allowedSymbols: ['SPY'],
               strategyType: 'SELL',
               minDelta: 0.05,
@@ -1753,7 +1753,7 @@ router.post('/operate', requireAuth, async (req: Request, res: Response) => {
             const critique = {
               approved: dualBrainResult.critique.approved || false,
               riskLevel: dualBrainResult.critique.riskAssessment || 'MEDIUM',
-              mandateCompliant: dualBrainResult.critique.mandateCompliant || false,
+              railCompliant: dualBrainResult.critique.railCompliant || false,
               concerns: dualBrainResult.critique.concerns || [],
               suggestions: dualBrainResult.critique.suggestions || [],
             };
@@ -1765,7 +1765,7 @@ router.post('/operate', requireAuth, async (req: Request, res: Response) => {
               critique: {
                 approved: true,
                 riskLevel: 'MEDIUM',
-                mandateCompliant: true,
+                railCompliant: true,
                 concerns: [],
                 suggestions: ['AI validation was skipped - review manually before executing'],
               },

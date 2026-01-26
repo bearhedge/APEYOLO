@@ -1,5 +1,5 @@
 /**
- * MandateWindow - Trading mandate display and management with event timeline
+ * RailsWindow - DeFi Rails display and management with event timeline
  *
  * Full functionality: View, create, edit, commit to Solana, view event history.
  */
@@ -8,7 +8,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Shield, Lock, ExternalLink, Loader2, Edit3, Save, X, Plus, Clock, AlertTriangle, CheckCircle, FileText, History } from 'lucide-react';
 
-interface Mandate {
+interface Rail {
   id: string;
   allowedSymbols: string[];
   strategyType: string;
@@ -25,7 +25,7 @@ interface Mandate {
   isActive: boolean;
 }
 
-interface MandateEvent {
+interface RailEvent {
   id: string;
   eventType: string;
   eventData: any;
@@ -36,7 +36,7 @@ interface MandateEvent {
   recordedOnChainAt?: string;
 }
 
-interface MandateFormData {
+interface RailFormData {
   allowedSymbols: string;
   strategyType: string;
   minDelta: string;
@@ -51,7 +51,7 @@ interface MandateFormData {
 
 type TabType = 'rules' | 'history';
 
-const DEFAULT_FORM: MandateFormData = {
+const DEFAULT_FORM: RailFormData = {
   allowedSymbols: 'SPY, SPX',
   strategyType: 'Credit Spreads',
   minDelta: '0.10',
@@ -64,38 +64,38 @@ const DEFAULT_FORM: MandateFormData = {
   exitDeadline: '15:59',        // 3:59pm ET = 3:59am HKT
 };
 
-export function MandateWindow() {
+export function RailsWindow() {
   const queryClient = useQueryClient();
   const [isEditing, setIsEditing] = useState(false);
-  const [formData, setFormData] = useState<MandateFormData>(DEFAULT_FORM);
+  const [formData, setFormData] = useState<RailFormData>(DEFAULT_FORM);
   const [error, setError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<TabType>('rules');
 
-  const { data: mandate, isLoading } = useQuery<Mandate | null>({
-    queryKey: ['mandate'],
+  const { data: rail, isLoading } = useQuery<Rail | null>({
+    queryKey: ['rails'],
     queryFn: async () => {
-      const res = await fetch('/api/defi/mandate', { credentials: 'include' });
+      const res = await fetch('/api/defi/rails', { credentials: 'include' });
       if (!res.ok) return null;
       const data = await res.json();
-      return data.mandate || null;
+      return data.rail || null;
     },
   });
 
   const { data: eventData, isLoading: eventsLoading } = useQuery<{
-    events: MandateEvent[];
+    events: RailEvent[];
     totalCount: number;
     uncommittedCount: number;
   }>({
-    queryKey: ['mandateEvents'],
+    queryKey: ['railEvents'],
     queryFn: async () => {
-      const res = await fetch('/api/defi/mandate/events', { credentials: 'include' });
+      const res = await fetch('/api/defi/rails/events', { credentials: 'include' });
       if (!res.ok) return { events: [], totalCount: 0, uncommittedCount: 0 };
       const data = await res.json();
       return data;
     },
   });
 
-  // Save/Create mandate mutation
+  // Save/Create rail mutation
   const saveMutation = useMutation({
     mutationFn: async (isNew: boolean) => {
       const body = {
@@ -111,7 +111,7 @@ export function MandateWindow() {
         exitDeadline: formData.exitDeadline || undefined,
       };
 
-      const url = isNew ? '/api/defi/mandate' : `/api/defi/mandate/${mandate?.id}`;
+      const url = isNew ? '/api/defi/rails' : `/api/defi/rails/${rail?.id}`;
       const method = isNew ? 'POST' : 'PUT';
 
       const res = await fetch(url, {
@@ -123,13 +123,13 @@ export function MandateWindow() {
 
       const data = await res.json();
       if (!res.ok || !data.success) {
-        throw new Error(data.error || 'Failed to save mandate');
+        throw new Error(data.error || 'Failed to save rail');
       }
       return data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['mandate'] });
-      queryClient.invalidateQueries({ queryKey: ['mandateEvents'] });
+      queryClient.invalidateQueries({ queryKey: ['rails'] });
+      queryClient.invalidateQueries({ queryKey: ['railEvents'] });
       setIsEditing(false);
       setError(null);
     },
@@ -141,8 +141,8 @@ export function MandateWindow() {
   // Commit to Solana mutation
   const commitMutation = useMutation({
     mutationFn: async () => {
-      if (!mandate) throw new Error('No mandate to commit');
-      const res = await fetch(`/api/defi/mandate/${mandate.id}/commit`, {
+      if (!rail) throw new Error('No rail to commit');
+      const res = await fetch(`/api/defi/rails/${rail.id}/commit`, {
         method: 'POST',
         credentials: 'include',
       });
@@ -153,7 +153,7 @@ export function MandateWindow() {
       return data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['mandate'] });
+      queryClient.invalidateQueries({ queryKey: ['rails'] });
       setError(null);
     },
     onError: (err: Error) => {
@@ -164,7 +164,7 @@ export function MandateWindow() {
   // Commit event mutation
   const commitEventMutation = useMutation({
     mutationFn: async (eventId: string) => {
-      const res = await fetch(`/api/defi/mandate/events/${eventId}/commit`, {
+      const res = await fetch(`/api/defi/rails/events/${eventId}/commit`, {
         method: 'POST',
         credentials: 'include',
       });
@@ -175,7 +175,7 @@ export function MandateWindow() {
       return data;
     },
     onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['mandateEvents'] });
+      queryClient.invalidateQueries({ queryKey: ['railEvents'] });
     },
     onError: (err: Error) => {
       setError(err.message);
@@ -183,18 +183,18 @@ export function MandateWindow() {
   });
 
   const startEditing = () => {
-    if (mandate) {
+    if (rail) {
       setFormData({
-        allowedSymbols: mandate.allowedSymbols.join(', '),
-        strategyType: mandate.strategyType,
-        minDelta: (mandate.minDelta ?? 0).toString(),
-        maxDelta: (mandate.maxDelta ?? 0).toString(),
-        maxDailyLossPercent: ((mandate.maxDailyLossPercent ?? 0) * 100).toString(),
-        noOvernightPositions: mandate.noOvernightPositions,
-        requireStopLoss: mandate.requireStopLoss,
-        maxStopLossMultiplier: mandate.maxStopLossMultiplier?.toString() || '',
-        tradingWindowStart: mandate.tradingWindowStart || '',
-        exitDeadline: mandate.exitDeadline || '',
+        allowedSymbols: rail.allowedSymbols.join(', '),
+        strategyType: rail.strategyType,
+        minDelta: (rail.minDelta ?? 0).toString(),
+        maxDelta: (rail.maxDelta ?? 0).toString(),
+        maxDailyLossPercent: ((rail.maxDailyLossPercent ?? 0) * 100).toString(),
+        noOvernightPositions: rail.noOvernightPositions,
+        requireStopLoss: rail.requireStopLoss,
+        maxStopLossMultiplier: rail.maxStopLossMultiplier?.toString() || '',
+        tradingWindowStart: rail.tradingWindowStart || '',
+        exitDeadline: rail.exitDeadline || '',
       });
     } else {
       setFormData(DEFAULT_FORM);
@@ -209,11 +209,11 @@ export function MandateWindow() {
   };
 
   const handleSave = () => {
-    saveMutation.mutate(!mandate);
+    saveMutation.mutate(!rail);
   };
 
   if (isLoading) {
-    return <p style={{ color: '#666' }}>&gt; Loading mandate...</p>;
+    return <p style={{ color: '#666' }}>&gt; Loading rails...</p>;
   }
 
   // Edit/Create Form
@@ -221,7 +221,7 @@ export function MandateWindow() {
     return (
       <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12 }}>
         <p style={{ color: '#87ceeb', marginBottom: 12 }}>
-          &gt; {mandate ? 'EDIT MANDATE' : 'CREATE MANDATE'}
+          &gt; {rail ? 'EDIT DEFI RAILS' : 'CREATE DEFI RAILS'}
         </p>
 
         <FormRow label="Symbols">
@@ -339,17 +339,17 @@ export function MandateWindow() {
     );
   }
 
-  // No mandate - show create button
-  if (!mandate) {
+  // No rail - show create button
+  if (!rail) {
     return (
       <div style={{ fontFamily: "'IBM Plex Mono', monospace" }}>
-        <p>&gt; NO ACTIVE MANDATE</p>
+        <p>&gt; NO ACTIVE DEFI RAILS</p>
         <p style={{ marginTop: 12, color: '#666', fontSize: 12 }}>
           &gt; Define your trading rules to enable guard rails.
         </p>
         <ActionButton onClick={startEditing} primary style={{ marginTop: 16 }}>
           <Plus style={iconStyle} />
-          Create Mandate
+          Create DeFi Rails
         </ActionButton>
       </div>
     );
@@ -387,9 +387,9 @@ export function MandateWindow() {
         <>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
             <p style={{ color: '#4ade80', margin: 0 }}>
-              TRADING MANDATE
+              DEFI RAILS
             </p>
-            {!mandate.solanaSignature && (
+            {!rail.solanaSignature && (
               <button onClick={startEditing} style={editButtonStyle}>
                 <Edit3 style={{ width: 12, height: 12 }} />
               </button>
@@ -405,10 +405,10 @@ export function MandateWindow() {
             marginBottom: 16,
           }}>
             <tbody>
-              <TableRow label="Symbols" value={mandate.allowedSymbols.join(', ')} />
-              <TableRow label="Strategy" value={mandate.strategyType || 'Credit Spreads'} />
-              <TableRow label="Delta Range" value={`${(mandate.minDelta ?? 0.10).toFixed(2)} – ${(mandate.maxDelta ?? 0.35).toFixed(2)}`} />
-              <TableRow label="Daily Max Loss" value={`${((mandate.maxDailyLossPercent ?? 0.02) * 100).toFixed(0)}%`} />
+              <TableRow label="Symbols" value={rail.allowedSymbols.join(', ')} />
+              <TableRow label="Strategy" value={rail.strategyType || 'Credit Spreads'} />
+              <TableRow label="Delta Range" value={`${(rail.minDelta ?? 0.10).toFixed(2)} – ${(rail.maxDelta ?? 0.35).toFixed(2)}`} />
+              <TableRow label="Daily Max Loss" value={`${((rail.maxDailyLossPercent ?? 0.02) * 100).toFixed(0)}%`} />
               <TableRow label="Entry Window" value="After 11:00am ET (12:00am HKT)" />
               <TableRow label="Exit By" value="3:59pm ET (4:59am HKT)" />
               <TableRow label="Stop Loss" value="Yes" highlight />
@@ -421,9 +421,9 @@ export function MandateWindow() {
             <Row
               label="On-Chain"
               value={
-                mandate.solanaSignature ? (
+                rail.solanaSignature ? (
                   <a
-                    href={`https://explorer.solana.com/tx/${mandate.solanaSignature}`}
+                    href={`https://explorer.solana.com/tx/${rail.solanaSignature}`}
                     target="_blank"
                     rel="noopener noreferrer"
                     style={{ color: '#3b82f6', display: 'flex', alignItems: 'center', gap: 4 }}
@@ -439,7 +439,7 @@ export function MandateWindow() {
             />
 
             {/* Commit Button */}
-            {!mandate.solanaSignature && (
+            {!rail.solanaSignature && (
               <ActionButton
                 onClick={() => commitMutation.mutate()}
                 disabled={commitMutation.isPending}
@@ -691,15 +691,15 @@ function EventRow({
   onCommit,
   isCommitting,
 }: {
-  event: MandateEvent;
+  event: RailEvent;
   onCommit: (id: string) => void;
   isCommitting: boolean;
 }) {
   const getEventIcon = (type: string) => {
     switch (type) {
-      case 'MANDATE_CREATED':
+      case 'RAIL_CREATED':
         return <FileText style={{ width: 14, height: 14, color: '#4ade80' }} />;
-      case 'MANDATE_DEACTIVATED':
+      case 'RAIL_DEACTIVATED':
         return <X style={{ width: 14, height: 14, color: '#f59e0b' }} />;
       case 'VIOLATION_BLOCKED':
         return <AlertTriangle style={{ width: 14, height: 14, color: '#ef4444' }} />;
@@ -712,10 +712,10 @@ function EventRow({
 
   const getEventTitle = (type: string) => {
     switch (type) {
-      case 'MANDATE_CREATED':
-        return 'Mandate Created';
-      case 'MANDATE_DEACTIVATED':
-        return 'Mandate Deactivated';
+      case 'RAIL_CREATED':
+        return 'Rails Created';
+      case 'RAIL_DEACTIVATED':
+        return 'Rails Deactivated';
       case 'VIOLATION_BLOCKED':
         return 'Violation Blocked';
       case 'COMMITMENT_RECORDED':

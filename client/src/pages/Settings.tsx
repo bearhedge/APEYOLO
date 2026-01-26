@@ -22,7 +22,7 @@ import {
 } from '@/lib/sas-client';
 import { ChainStatusPanel } from '@/components/admin/ChainStatusPanel';
 import { AttestationControls } from '@/components/defi/AttestationControls';
-import { MandateSummary } from '@/components/defi/MandateSummary';
+import { RailsSummary } from '@/components/defi/RailsSummary';
 import { SectionHeader } from '@/components/SectionHeader';
 import { LeftNav } from '@/components/LeftNav';
 import { Button } from '@/components/ui/button';
@@ -63,10 +63,10 @@ interface SettingsProps {
   onPreview?: () => void;
   onAttest?: () => void;
   isPreviewLoading?: boolean;
-  // Mandate props
-  mandate?: any | null;
+  // Rail props
+  rail?: any | null;
   violationCount?: number;
-  mandateLoading?: boolean;
+  railLoading?: boolean;
   // Attestation context
   attestations?: any[];
   cluster?: 'devnet' | 'mainnet-beta';
@@ -83,9 +83,9 @@ export function Settings({
   onPreview,
   onAttest,
   isPreviewLoading = false,
-  mandate,
+  rail,
   violationCount = 0,
-  mandateLoading = false,
+  railLoading = false,
   attestations = [],
   cluster = 'devnet',
   sasReady = false,
@@ -1534,13 +1534,13 @@ export function Settings({
               />
             </div>
 
-            {/* NEW: Mandate Summary */}
+            {/* NEW: Rails Summary */}
             <div className="p-6 border-b border-white/10">
-              <MandateSummary
-                mandate={mandate}
+              <RailsSummary
+                rail={rail}
                 violationCount={violationCount}
-                onCreateClick={() => {/* TODO: Handle create mandate */}}
-                loading={mandateLoading}
+                onCreateClick={() => {/* TODO: Handle create rail */}}
+                loading={railLoading}
               />
             </div>
 

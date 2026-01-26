@@ -6,7 +6,7 @@
 
 import { Window } from './Window';
 import { useWindowManager, type WindowId } from '@/hooks/useWindowManager';
-import { MandateWindow } from './windows/MandateWindow';
+import { RailsWindow } from './windows/RailsWindow';
 import { PositionsWindow } from './windows/PositionsWindow';
 import { TradesWindow } from './windows/TradesWindow';
 import { StatsWindow } from './windows/StatsWindow';
@@ -23,7 +23,7 @@ interface WindowManagerProps {
 }
 
 const WINDOW_CONTENT: Record<WindowId, React.ComponentType> = {
-  mandate: MandateWindow,
+  rails: RailsWindow,
   positions: PositionsWindow,
   trades: TradesWindow,
   stats: StatsWindow,

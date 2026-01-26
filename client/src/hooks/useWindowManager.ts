@@ -6,7 +6,7 @@
 
 import { useState, useCallback, useEffect } from 'react';
 
-export type WindowId = 'mandate' | 'positions' | 'trades' | 'stats' | 'engine' | 'settings' | 'agent' | 'jobs' | 'calendar' | 'accounting' | 'docs';
+export type WindowId = 'rails' | 'positions' | 'trades' | 'stats' | 'engine' | 'settings' | 'agent' | 'jobs' | 'calendar' | 'accounting' | 'docs';
 
 export interface WindowState {
   isOpen: boolean;
@@ -23,7 +23,7 @@ export interface WindowConfig {
 }
 
 export const WINDOW_CONFIGS: WindowConfig[] = [
-  { id: 'mandate', title: 'mandate.json', defaultPosition: { x: 60, y: 80 }, defaultSize: { width: 380, height: 400 } },
+  { id: 'rails', title: 'rails.json', defaultPosition: { x: 60, y: 80 }, defaultSize: { width: 380, height: 400 } },
   { id: 'positions', title: 'positions/', defaultPosition: { x: 480, y: 80 }, defaultSize: { width: 450, height: 350 } },
   { id: 'trades', title: 'trades.log', defaultPosition: { x: 100, y: 200 }, defaultSize: { width: 600, height: 400 } },
   { id: 'stats', title: 'stats.sh', defaultPosition: { x: 200, y: 120 }, defaultSize: { width: 400, height: 350 } },

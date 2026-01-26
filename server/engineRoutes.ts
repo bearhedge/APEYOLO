@@ -17,7 +17,7 @@ import { adaptTradingDecision } from "./engine/adapter";
 import { db } from "./db";
 import { paperTrades, orders, engineRuns } from "../shared/schema";
 import { eq, and } from "drizzle-orm";
-import { enforceMandate } from "./services/mandateService";
+import { enforceRail } from "./services/railsService";
 import { recordTradeOpen } from "./services/accountingService";
 import type { EngineAnalyzeResponse, TradeProposal, RiskProfile } from "../shared/types/engine";
 import type { EngineStreamEvent } from "../shared/types/engineStream";
@@ -984,21 +984,21 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
     // Determine trade side (SELL for credit strategies)
     const tradeSide: 'SELL' | 'BUY' = tradeProposal.legs[0]?.premium > 0 ? 'SELL' : 'BUY';
 
-    // Enforce mandate rules
-    const mandateCheck = await enforceMandate(userId, {
+    // Enforce rail rules
+    const railCheck = await enforceRail(userId, {
       symbol: tradeProposal.symbol,
       side: tradeSide,
       delta: avgDelta,
       contracts: tradeProposal.contracts,
     });
 
-    if (!mandateCheck.allowed) {
-      console.log(`[Engine/execute] MANDATE VIOLATION: ${mandateCheck.reason}`);
+    if (!railCheck.allowed) {
+      console.log(`[Engine/execute] RAIL VIOLATION: ${railCheck.reason}`);
       return res.status(403).json({
-        error: 'Trade blocked by mandate',
-        reason: mandateCheck.reason,
-        violation: mandateCheck.violation,
-        mandateEnforced: true,
+        error: 'Trade blocked by rail',
+        reason: railCheck.reason,
+        violation: railCheck.violation,
+        railEnforced: true,
       });
     }
     // ================================================
@@ -1318,20 +1318,20 @@ router.post('/execute-trade', requireAuth, async (req, res) => {
     const callDelta = decision.strikes?.callStrike?.delta ? Math.abs(decision.strikes.callStrike.delta) : 0;
     const avgDelta = (putDelta + callDelta) / (putDelta && callDelta ? 2 : 1);
 
-    const mandateCheck = await enforceMandate(req.user!.id, {
+    const railCheck = await enforceRail(req.user!.id, {
       symbol,
       side: 'SELL', // This endpoint is for selling options (credit strategies)
       delta: avgDelta,
       contracts: decision.positionSize?.contracts || 0,
     });
 
-    if (!mandateCheck.allowed) {
-      console.log(`[Engine/execute-trade] MANDATE VIOLATION: ${mandateCheck.reason}`);
+    if (!railCheck.allowed) {
+      console.log(`[Engine/execute-trade] RAIL VIOLATION: ${railCheck.reason}`);
       return res.status(403).json({
-        error: 'Trade blocked by mandate',
-        reason: mandateCheck.reason,
-        violation: mandateCheck.violation,
-        mandateEnforced: true,
+        error: 'Trade blocked by rail',
+        reason: railCheck.reason,
+        violation: railCheck.violation,
+        railEnforced: true,
       });
     }
     // ================================================
