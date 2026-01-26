@@ -3,31 +3,31 @@
  *
  * Endpoints for:
  * - Attestation data generation and verification
- * - Trading mandate management and enforcement
+ * - DeFi Rails management and enforcement
  */
 
 import { Router, Request, Response } from 'express';
 import { generateAttestationData, getRawDetails } from './services/attestationService';
 import {
-  createMandate,
-  getActiveMandate,
-  getUserMandates,
-  deactivateMandate,
-  getMandateViolations,
+  createRail,
+  getActiveRail,
+  getUserRails,
+  deactivateRail,
+  getRailViolations,
   getUserViolations,
   getMonthlyViolationCount,
-  commitMandateToSolana,
+  commitRailToSolana,
   recordViolationOnSolana,
-} from './services/mandateService';
+} from './services/railsService';
 import {
-  getMandateEventHistory,
-  getMandateTimeline,
+  getRailEventHistory,
+  getRailTimeline,
   recordEventOnSolana,
   recordEventsOnSolana,
-} from './services/mandateEventService';
+} from './services/railEventService';
 import { requireAuth } from './auth';
 import type { AttestationPeriod } from '@shared/types/defi';
-import type { CreateMandateRequest } from '@shared/types/mandate';
+import type { CreateRailRequest } from '@shared/types/rails';
 import { db } from './db';
 import { paperTrades, navSnapshots, orders, optionBars } from '@shared/schema';
 import { eq, and, gte, lte, desc, asc, inArray, sql, or } from 'drizzle-orm';
@@ -927,19 +927,19 @@ router.get('/periods', async (_req: Request, res: Response) => {
 });
 
 // ============================================
-// Trading Mandate Endpoints
+// DeFi Rails Endpoints
 // ============================================
 
 /**
- * POST /api/defi/mandate
+ * POST /api/defi/rails
  *
- * Create a new trading mandate for the authenticated user.
- * Mandates are locked forever once created - cannot be modified.
+ * Create a new DeFi Rail for the authenticated user.
+ * Rails are locked forever once created - cannot be modified.
  */
-router.post('/mandate', requireAuth, async (req: Request, res: Response) => {
+router.post('/rails', requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
-    const request = req.body as CreateMandateRequest;
+    const request = req.body as CreateRailRequest;
 
     // Validate required fields
     if (!request.allowedSymbols || !Array.isArray(request.allowedSymbols) || request.allowedSymbols.length === 0) {
@@ -984,35 +984,35 @@ router.post('/mandate', requireAuth, async (req: Request, res: Response) => {
       });
     }
 
-    const mandate = await createMandate(userId, request);
+    const rail = await createRail(userId, request);
 
     res.json({
       success: true,
-      mandate,
+      rail,
     });
   } catch (error: any) {
-    console.error('[DefiRoutes] Error creating mandate:', error);
+    console.error('[DefiRoutes] Error creating rail:', error);
     res.status(500).json({
       success: false,
-      error: error.message || 'Failed to create mandate',
+      error: error.message || 'Failed to create rail',
     });
   }
 });
 
 /**
- * GET /api/defi/mandate
+ * GET /api/defi/rails
  *
- * Get the active mandate for the authenticated user.
+ * Get the active rail for the authenticated user.
  */
-router.get('/mandate', requireAuth, async (req: Request, res: Response) => {
+router.get('/rails', requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
-    const mandate = await getActiveMandate(userId);
+    const rail = await getActiveRail(userId);
 
-    if (!mandate) {
+    if (!rail) {
       return res.json({
         success: true,
-        mandate: null,
+        rail: null,
         violations: [],
         violationCount: 0,
         monthlyViolations: 0,
@@ -1020,55 +1020,55 @@ router.get('/mandate', requireAuth, async (req: Request, res: Response) => {
     }
 
     // Get violations and counts
-    const violations = await getMandateViolations(mandate.id, 10);
-    const allViolations = await getMandateViolations(mandate.id, 1000);
-    const monthlyViolations = await getMonthlyViolationCount(mandate.id);
+    const violations = await getRailViolations(rail.id, 10);
+    const allViolations = await getRailViolations(rail.id, 1000);
+    const monthlyViolations = await getMonthlyViolationCount(rail.id);
 
     res.json({
       success: true,
-      mandate,
+      rail,
       violations,
       violationCount: allViolations.length,
       monthlyViolations,
     });
   } catch (error: any) {
-    console.error('[DefiRoutes] Error getting mandate:', error);
+    console.error('[DefiRoutes] Error getting rail:', error);
     res.status(500).json({
       success: false,
-      error: error.message || 'Failed to get mandate',
+      error: error.message || 'Failed to get rail',
     });
   }
 });
 
 /**
- * GET /api/defi/mandate/history
+ * GET /api/defi/rails/history
  *
- * Get all mandates (including inactive) for the authenticated user.
+ * Get all rails (including inactive) for the authenticated user.
  */
-router.get('/mandate/history', requireAuth, async (req: Request, res: Response) => {
+router.get('/rails/history', requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
-    const mandates = await getUserMandates(userId);
+    const rails = await getUserRails(userId);
 
     res.json({
       success: true,
-      mandates,
+      rails,
     });
   } catch (error: any) {
-    console.error('[DefiRoutes] Error getting mandate history:', error);
+    console.error('[DefiRoutes] Error getting rails history:', error);
     res.status(500).json({
       success: false,
-      error: error.message || 'Failed to get mandate history',
+      error: error.message || 'Failed to get rails history',
     });
   }
 });
 
 /**
- * GET /api/defi/mandate/violations
+ * GET /api/defi/rails/violations
  *
  * Get all violations for the authenticated user.
  */
-router.get('/mandate/violations', requireAuth, async (req: Request, res: Response) => {
+router.get('/rails/violations', requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
     const limit = parseInt(req.query.limit as string) || 100;
@@ -1088,64 +1088,64 @@ router.get('/mandate/violations', requireAuth, async (req: Request, res: Respons
 });
 
 /**
- * DELETE /api/defi/mandate/:id
+ * DELETE /api/defi/rails/:id
  *
- * Deactivate a mandate. Mandates cannot be deleted (kept for audit trail).
+ * Deactivate a rail. Rails cannot be deleted (kept for audit trail).
  */
-router.delete('/mandate/:id', requireAuth, async (req: Request, res: Response) => {
+router.delete('/rails/:id', requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
-    const mandateId = req.params.id;
+    const railId = req.params.id;
 
-    if (!mandateId) {
+    if (!railId) {
       return res.status(400).json({
         success: false,
-        error: 'Mandate ID is required',
+        error: 'Rail ID is required',
       });
     }
 
-    await deactivateMandate(mandateId, userId);
+    await deactivateRail(railId, userId);
 
     res.json({
       success: true,
-      message: 'Mandate deactivated successfully',
+      message: 'Rail deactivated successfully',
     });
   } catch (error: any) {
-    console.error('[DefiRoutes] Error deactivating mandate:', error);
+    console.error('[DefiRoutes] Error deactivating rail:', error);
     res.status(500).json({
       success: false,
-      error: error.message || 'Failed to deactivate mandate',
+      error: error.message || 'Failed to deactivate rail',
     });
   }
 });
 
 /**
- * POST /api/defi/mandate/:id/commit
+ * POST /api/defi/rails/:id/commit
  *
- * Commit a mandate hash to Solana for on-chain proof.
+ * Commit a rail hash to Solana for on-chain proof.
  */
-router.post('/mandate/:id/commit', requireAuth, async (req: Request, res: Response) => {
+router.post('/rails/:id/commit', requireAuth, async (req: Request, res: Response) => {
   try {
-    const mandateId = req.params.id;
+    const railId = req.params.id;
 
-    if (!mandateId) {
+    if (!railId) {
       return res.status(400).json({
         success: false,
-        error: 'Mandate ID is required',
+        error: 'Rail ID is required',
       });
     }
 
-    const result = await commitMandateToSolana(mandateId);
+    const result = await commitRailToSolana(railId);
 
     res.json({
       success: true,
       ...result,
     });
   } catch (error: any) {
-    console.error('[DefiRoutes] Error committing mandate to Solana:', error);
+    console.error('[DefiRoutes] Error committing rail to Solana:', error);
     res.status(500).json({
       success: false,
-      error: error.message || 'Failed to commit mandate to Solana',
+      error: error.message || 'Failed to commit rail to Solana',
     });
   }
 });
@@ -1182,25 +1182,25 @@ router.post('/violation/:id/record', requireAuth, async (req: Request, res: Resp
 });
 
 // ============================================
-// Mandate Event Endpoints
+// Rail Event Endpoints
 // ============================================
 
 /**
- * GET /api/defi/mandate/events
+ * GET /api/defi/rails/events
  *
  * Get event history for the authenticated user.
- * Supports filtering by mandateId, eventType.
+ * Supports filtering by railId, eventType.
  */
-router.get('/mandate/events', requireAuth, async (req: Request, res: Response) => {
+router.get('/rails/events', requireAuth, async (req: Request, res: Response) => {
   try {
     const userId = req.user!.id;
-    const mandateId = req.query.mandateId as string | undefined;
+    const railId = req.query.railId as string | undefined;
     const eventType = req.query.eventType as string | undefined;
     const limit = parseInt(req.query.limit as string) || 50;
     const offset = parseInt(req.query.offset as string) || 0;
 
-    const timeline = await getMandateEventHistory(userId, {
-      mandateId,
+    const timeline = await getRailEventHistory(userId, {
+      railId,
       eventType: eventType as any,
       limit,
       offset,
@@ -1211,31 +1211,31 @@ router.get('/mandate/events', requireAuth, async (req: Request, res: Response) =
       ...timeline,
     });
   } catch (error: any) {
-    console.error('[DefiRoutes] Error getting mandate events:', error);
+    console.error('[DefiRoutes] Error getting rail events:', error);
     res.status(500).json({
       success: false,
-      error: error.message || 'Failed to get mandate events',
+      error: error.message || 'Failed to get rail events',
     });
   }
 });
 
 /**
- * GET /api/defi/mandate/:id/timeline
+ * GET /api/defi/rails/:id/timeline
  *
- * Get full event timeline for a specific mandate.
+ * Get full event timeline for a specific rail.
  */
-router.get('/mandate/:id/timeline', requireAuth, async (req: Request, res: Response) => {
+router.get('/rails/:id/timeline', requireAuth, async (req: Request, res: Response) => {
   try {
-    const mandateId = req.params.id;
+    const railId = req.params.id;
 
-    if (!mandateId) {
+    if (!railId) {
       return res.status(400).json({
         success: false,
-        error: 'Mandate ID is required',
+        error: 'Rail ID is required',
       });
     }
 
-    const events = await getMandateTimeline(mandateId);
+    const events = await getRailTimeline(railId);
 
     res.json({
       success: true,
@@ -1243,20 +1243,20 @@ router.get('/mandate/:id/timeline', requireAuth, async (req: Request, res: Respo
       count: events.length,
     });
   } catch (error: any) {
-    console.error('[DefiRoutes] Error getting mandate timeline:', error);
+    console.error('[DefiRoutes] Error getting rail timeline:', error);
     res.status(500).json({
       success: false,
-      error: error.message || 'Failed to get mandate timeline',
+      error: error.message || 'Failed to get rail timeline',
     });
   }
 });
 
 /**
- * POST /api/defi/mandate/events/:id/commit
+ * POST /api/defi/rails/events/:id/commit
  *
  * Commit a single event to Solana blockchain.
  */
-router.post('/mandate/events/:id/commit', requireAuth, async (req: Request, res: Response) => {
+router.post('/rails/events/:id/commit', requireAuth, async (req: Request, res: Response) => {
   try {
     const eventId = req.params.id;
 
@@ -1293,11 +1293,11 @@ router.post('/mandate/events/:id/commit', requireAuth, async (req: Request, res:
 });
 
 /**
- * POST /api/defi/mandate/events/commit-batch
+ * POST /api/defi/rails/events/commit-batch
  *
  * Commit multiple events to Solana blockchain.
  */
-router.post('/mandate/events/commit-batch', requireAuth, async (req: Request, res: Response) => {
+router.post('/rails/events/commit-batch', requireAuth, async (req: Request, res: Response) => {
   try {
     const { eventIds } = req.body as { eventIds: string[] };
 

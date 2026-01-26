@@ -12,6 +12,9 @@
  */
 
 import WebSocket from 'ws';
+import { db } from '../db';
+import { latestPrices } from '@shared/schema';
+import { eq } from 'drizzle-orm';
 
 // Market data field codes from IBKR API
 export const IBKR_FIELDS = {
@@ -134,6 +137,8 @@ export class IbkrWebSocketManager {
   // Session token expiry tracking - proactive refresh before expiry
   private sessionTokenExpiresAt: number = 0;
   private sessionRefreshInterval: NodeJS.Timeout | null = null;
+  // Track last persist time per conid for debouncing (max once per 5 seconds)
+  private lastPersist = new Map<number, number>();
 
   constructor(cookieString: string, sessionToken?: string | null) {
     this.cookieString = cookieString;
@@ -761,12 +766,16 @@ export class IbkrWebSocketManager {
     if (msg[IBKR_FIELDS.OPEN_INTEREST]) update.openInterest = parseInt(msg[IBKR_FIELDS.OPEN_INTEREST], 10);
 
     // Update market data cache (for snapshot-free lookups)
-    const cached = this.marketDataCache.get(conid) || {
+    const cached: CachedMarketData = this.marketDataCache.get(conid) || {
       conid,
       symbol: sub?.symbol,
       last: 0,
       bid: 0,
       ask: 0,
+      dayHigh: undefined,
+      dayLow: undefined,
+      openPrice: undefined,
+      previousClose: undefined,
       timestamp: new Date(),
     };
     if (update.last != null) cached.last = update.last;
@@ -779,6 +788,9 @@ export class IbkrWebSocketManager {
     if (previousClose != null) cached.previousClose = previousClose;
     cached.timestamp = update.timestamp;
     this.marketDataCache.set(conid, cached);
+
+    // Persist to database for restart recovery (debounced - max once per 5 seconds per symbol)
+    this.persistPrice(conid, cached);
 
     // Track when we received actual data (critical for staleness detection)
     this.lastDataReceived = new Date();
@@ -806,6 +818,65 @@ export class IbkrWebSocketManager {
    */
   getAllCachedMarketData(): Map<number, CachedMarketData> {
     return this.marketDataCache;
+  }
+
+  /**
+   * Seed the cache with data from database (for startup recovery)
+   * Called before WebSocket connects to restore last known prices
+   */
+  seedCache(conid: number, data: { last: number; bid: number; ask: number; symbol?: string }): void {
+    this.marketDataCache.set(conid, {
+      conid,
+      symbol: data.symbol,
+      last: data.last,
+      bid: data.bid,
+      ask: data.ask,
+      timestamp: new Date()
+    });
+    console.log(`[IbkrWS] Seeded cache for ${data.symbol || conid}: $${data.last}`);
+  }
+
+  /**
+   * Persist price to database for restart recovery
+   * Debounced: max once per 5 seconds per symbol to avoid excessive writes
+   */
+  private async persistPrice(conid: number, data: CachedMarketData): Promise<void> {
+    const now = Date.now();
+    const last = this.lastPersist.get(conid) || 0;
+    if (now - last < 5000) return; // Debounce: max once per 5 seconds
+
+    this.lastPersist.set(conid, now);
+
+    // Only persist if we have a valid price and db is available
+    if (!data.last || data.last <= 0) return;
+    if (!db) return;
+
+    try {
+      const symbol = data.symbol || `conid:${conid}`;
+      await db.insert(latestPrices)
+        .values({
+          symbol,
+          conid,
+          price: String(data.last),
+          bid: data.bid ? String(data.bid) : null,
+          ask: data.ask ? String(data.ask) : null,
+          source: 'websocket',
+          updatedAt: new Date()
+        })
+        .onConflictDoUpdate({
+          target: latestPrices.symbol,
+          set: {
+            price: String(data.last),
+            bid: data.bid ? String(data.bid) : null,
+            ask: data.ask ? String(data.ask) : null,
+            source: 'websocket',
+            updatedAt: new Date()
+          }
+        });
+    } catch (err) {
+      // Log but don't throw - persistence failure shouldn't break streaming
+      console.error('[IbkrWS] Failed to persist price:', err);
+    }
   }
 
   /**

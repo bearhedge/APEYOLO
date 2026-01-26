@@ -1,21 +1,21 @@
 /**
- * Mandate Event Service
+ * Rail Event Service
  *
- * Records all mandate-related events for audit trail and blockchain commitment.
+ * Records all rail-related events for audit trail and blockchain commitment.
  * Events are hashed with SHA256 and can be committed to Solana.
  */
 
 import { createHash } from 'crypto';
 import { db } from '../db';
-import { mandateEvents } from '@shared/schema';
+import { railEvents } from '@shared/schema';
 import { eq, and, desc, isNull } from 'drizzle-orm';
 import { Connection, Keypair, Transaction, PublicKey, sendAndConfirmTransaction, clusterApiUrl } from '@solana/web3.js';
 import type {
-  MandateEvent,
-  MandateEventType,
-  MandateEventData,
-  MandateEventTimeline,
-} from '@shared/types/mandate';
+  RailEvent,
+  RailEventType,
+  RailEventData,
+  RailEventTimeline,
+} from '@shared/types/rails';
 
 // ============================================
 // Configuration
@@ -36,7 +36,7 @@ function getConnection(): Connection {
 
 function getWalletKeypair(): Keypair | null {
   if (!WALLET_PRIVATE_KEY) {
-    console.warn('[MandateEventService] No SOLANA_WALLET_PRIVATE_KEY configured');
+    console.warn('[RailEventService] No SOLANA_WALLET_PRIVATE_KEY configured');
     return null;
   }
 
@@ -50,7 +50,7 @@ function getWalletKeypair(): Keypair | null {
     const secretKey = bs58.decode(WALLET_PRIVATE_KEY);
     return Keypair.fromSecretKey(secretKey);
   } catch (error: any) {
-    console.error('[MandateEventService] Failed to parse wallet private key:', error.message);
+    console.error('[RailEventService] Failed to parse wallet private key:', error.message);
     return null;
   }
 }
@@ -58,7 +58,7 @@ function getWalletKeypair(): Keypair | null {
 /**
  * Generate SHA256 hash of event data
  */
-function hashEventData(eventType: MandateEventType, eventData: MandateEventData, timestamp: string): string {
+function hashEventData(eventType: RailEventType, eventData: RailEventData, timestamp: string): string {
   const data = JSON.stringify({
     eventType,
     eventData,
@@ -70,15 +70,15 @@ function hashEventData(eventType: MandateEventType, eventData: MandateEventData,
 /**
  * Format event for database
  */
-function formatEvent(dbEvent: any): MandateEvent {
+function formatEvent(dbEvent: any): RailEvent {
   return {
     id: dbEvent.id,
     userId: dbEvent.userId,
-    mandateId: dbEvent.mandateId,
-    eventType: dbEvent.eventType as MandateEventType,
-    eventData: dbEvent.eventData as MandateEventData,
+    railId: dbEvent.railId,
+    eventType: dbEvent.eventType as RailEventType,
+    eventData: dbEvent.eventData as RailEventData,
     eventHash: dbEvent.eventHash,
-    previousMandateId: dbEvent.previousMandateId,
+    previousRailId: dbEvent.previousRailId,
     relatedViolationId: dbEvent.relatedViolationId,
     actorId: dbEvent.actorId,
     actorRole: dbEvent.actorRole,
@@ -96,19 +96,19 @@ function formatEvent(dbEvent: any): MandateEvent {
 
 interface RecordEventParams {
   userId: string;
-  eventType: MandateEventType;
-  eventData: MandateEventData;
-  mandateId?: string;
-  previousMandateId?: string;
+  eventType: RailEventType;
+  eventData: RailEventData;
+  railId?: string;
+  previousRailId?: string;
   relatedViolationId?: string;
   actorId?: string;
   actorRole?: string;
 }
 
 /**
- * Record a mandate event
+ * Record a rail event
  */
-export async function recordMandateEvent(params: RecordEventParams): Promise<MandateEvent> {
+export async function recordRailEvent(params: RecordEventParams): Promise<RailEvent> {
   if (!db) {
     throw new Error('Database not available');
   }
@@ -117,21 +117,21 @@ export async function recordMandateEvent(params: RecordEventParams): Promise<Man
   const eventHash = hashEventData(params.eventType, params.eventData, timestamp);
 
   const [event] = await db
-    .insert(mandateEvents)
+    .insert(railEvents)
     .values({
       userId: params.userId,
-      mandateId: params.mandateId,
+      railId: params.railId,
       eventType: params.eventType,
       eventData: params.eventData,
       eventHash,
-      previousMandateId: params.previousMandateId,
+      previousRailId: params.previousRailId,
       relatedViolationId: params.relatedViolationId,
       actorId: params.actorId || params.userId,
       actorRole: params.actorRole || 'owner',
     })
     .returning();
 
-  console.log(`[MandateEventService] Recorded ${params.eventType} event: ${event.id}`);
+  console.log(`[RailEventService] Recorded ${params.eventType} event: ${event.id}`);
 
   return formatEvent(event);
 }
@@ -143,15 +143,15 @@ export async function recordMandateEvent(params: RecordEventParams): Promise<Man
 /**
  * Get event history for a user
  */
-export async function getMandateEventHistory(
+export async function getRailEventHistory(
   userId: string,
   options?: {
-    mandateId?: string;
-    eventType?: MandateEventType;
+    railId?: string;
+    eventType?: RailEventType;
     limit?: number;
     offset?: number;
   }
-): Promise<MandateEventTimeline> {
+): Promise<RailEventTimeline> {
   if (!db) {
     return { events: [], totalCount: 0, uncommittedCount: 0 };
   }
@@ -160,36 +160,36 @@ export async function getMandateEventHistory(
   const offset = options?.offset || 0;
 
   // Build where conditions
-  const conditions = [eq(mandateEvents.userId, userId)];
-  if (options?.mandateId) {
-    conditions.push(eq(mandateEvents.mandateId, options.mandateId));
+  const conditions = [eq(railEvents.userId, userId)];
+  if (options?.railId) {
+    conditions.push(eq(railEvents.railId, options.railId));
   }
   if (options?.eventType) {
-    conditions.push(eq(mandateEvents.eventType, options.eventType));
+    conditions.push(eq(railEvents.eventType, options.eventType));
   }
 
   // Get events
   const events = await db
     .select()
-    .from(mandateEvents)
+    .from(railEvents)
     .where(and(...conditions))
-    .orderBy(desc(mandateEvents.createdAt))
+    .orderBy(desc(railEvents.createdAt))
     .limit(limit)
     .offset(offset);
 
   // Get total count
   const allEvents = await db
-    .select({ id: mandateEvents.id })
-    .from(mandateEvents)
+    .select({ id: railEvents.id })
+    .from(railEvents)
     .where(and(...conditions));
 
   // Get uncommitted count
   const uncommitted = await db
-    .select({ id: mandateEvents.id })
-    .from(mandateEvents)
+    .select({ id: railEvents.id })
+    .from(railEvents)
     .where(and(
-      eq(mandateEvents.userId, userId),
-      isNull(mandateEvents.solanaSignature)
+      eq(railEvents.userId, userId),
+      isNull(railEvents.solanaSignature)
     ));
 
   return {
@@ -200,16 +200,16 @@ export async function getMandateEventHistory(
 }
 
 /**
- * Get timeline for a specific mandate
+ * Get timeline for a specific rail
  */
-export async function getMandateTimeline(mandateId: string): Promise<MandateEvent[]> {
+export async function getRailTimeline(railId: string): Promise<RailEvent[]> {
   if (!db) return [];
 
   const events = await db
     .select()
-    .from(mandateEvents)
-    .where(eq(mandateEvents.mandateId, mandateId))
-    .orderBy(desc(mandateEvents.createdAt));
+    .from(railEvents)
+    .where(eq(railEvents.railId, railId))
+    .orderBy(desc(railEvents.createdAt));
 
   return events.map(formatEvent);
 }
@@ -217,13 +217,13 @@ export async function getMandateTimeline(mandateId: string): Promise<MandateEven
 /**
  * Get a single event by ID
  */
-export async function getMandateEventById(eventId: string): Promise<MandateEvent | null> {
+export async function getRailEventById(eventId: string): Promise<RailEvent | null> {
   if (!db) return null;
 
   const [event] = await db
     .select()
-    .from(mandateEvents)
-    .where(eq(mandateEvents.id, eventId))
+    .from(railEvents)
+    .where(eq(railEvents.id, eventId))
     .limit(1);
 
   if (!event) return null;
@@ -250,7 +250,7 @@ export async function recordEventOnSolana(eventId: string): Promise<RecordOnSola
       return { success: false, error: 'Database not available' };
     }
 
-    const event = await getMandateEventById(eventId);
+    const event = await getRailEventById(eventId);
     if (!event) {
       return { success: false, error: 'Event not found' };
     }
@@ -264,8 +264,8 @@ export async function recordEventOnSolana(eventId: string): Promise<RecordOnSola
       return { success: false, error: 'Solana wallet not configured' };
     }
 
-    // Create compact memo: APE_YOLO|MANDATE|{type}|{hash}
-    const memo = `APE_YOLO|MANDATE|${event.eventType}|${event.eventHash.slice(0, 18)}`;
+    // Create compact memo: APE_YOLO|RAIL|{type}|{hash}
+    const memo = `APE_YOLO|RAIL|${event.eventType}|${event.eventHash.slice(0, 18)}`;
     const memoData = Buffer.from(memo, 'utf-8');
 
     const connection = getConnection();
@@ -291,20 +291,20 @@ export async function recordEventOnSolana(eventId: string): Promise<RecordOnSola
 
     // Update event with Solana data
     await db
-      .update(mandateEvents)
+      .update(railEvents)
       .set({
         solanaSignature: signature,
         solanaSlot: slot,
         solanaCluster: CLUSTER,
         recordedOnChainAt: new Date(),
       })
-      .where(eq(mandateEvents.id, eventId));
+      .where(eq(railEvents.id, eventId));
 
-    console.log(`[MandateEventService] Event ${eventId} recorded on Solana: ${signature}`);
+    console.log(`[RailEventService] Event ${eventId} recorded on Solana: ${signature}`);
 
     return { success: true, signature, slot };
   } catch (error: any) {
-    console.error('[MandateEventService] Failed to record event on Solana:', error);
+    console.error('[RailEventService] Failed to record event on Solana:', error);
     return { success: false, error: error.message || 'Failed to record on Solana' };
   }
 }

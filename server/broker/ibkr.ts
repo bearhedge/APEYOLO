@@ -7,6 +7,7 @@ import type {
   Trade,
   InsertTrade,
 } from "@shared/schema";
+import { latestPrices } from "@shared/schema";
 import type { BrokerProvider } from "./types";
 import { SignJWT, importPKCS8 } from "jose";
 import axios, { AxiosInstance } from 'axios';
@@ -18,6 +19,8 @@ import { EventEmitter } from 'events';
 import { storage } from "../storage";
 import { saveTokenState } from '../services/ibkrTokenPersistence';
 import { getIbkrWebSocketManager } from './ibkrWebSocket';
+import { db } from '../db';
+import { eq } from 'drizzle-orm';
 
 // Event emitter for IBKR authentication events
 export const ibkrEvents = new EventEmitter();
@@ -2573,10 +2576,10 @@ class IbkrClient {
       }
 
       // Fallback: Use historical data (also FREE) when WebSocket cache unavailable
-      console.log(`[IBKR][getMarketData][${reqId}] WebSocket cache miss, using historical data for ${symbol}`);
+      console.log(`[IBKR][getMarketData][${reqId}] WebSocket cache miss for ${symbol}, trying historical data...`);
       const histPrice = await this.getHistoricalLastPrice(conid);
 
-      if (histPrice > 0) {
+      if (histPrice !== null && histPrice > 0) {
         console.log(`[IBKR][getMarketData][${reqId}] ${symbol}: FROM HISTORY price=${histPrice}`);
         return {
           symbol,
@@ -2590,8 +2593,30 @@ class IbkrClient {
         };
       }
 
-      // Last resort: return zero values (don't charge for snapshot)
-      console.warn(`[IBKR][getMarketData][${reqId}] No cached or historical data for ${symbol}`);
+      // Database fallback: check latest_prices table for persisted WebSocket data
+      console.log(`[IBKR][getMarketData][${reqId}] Trying database fallback for ${symbol}...`);
+      const dbPrice = await db.select()
+        .from(latestPrices)
+        .where(eq(latestPrices.symbol, symbol))
+        .limit(1);
+
+      if (dbPrice.length > 0 && Number(dbPrice[0].price) > 0) {
+        const p = dbPrice[0];
+        console.log(`[IBKR][getMarketData][${reqId}] ${symbol}: FROM DATABASE price=$${p.price} (updated ${p.updatedAt})`);
+        return {
+          symbol,
+          price: Number(p.price),
+          bid: Number(p.bid) || Number(p.price),
+          ask: Number(p.ask) || Number(p.price),
+          volume: 0,
+          change: 0,
+          changePercent: 0,
+          timestamp: p.updatedAt || new Date(),
+        };
+      }
+
+      // Absolute last resort: return zero values
+      console.warn(`[IBKR][getMarketData][${reqId}] No data anywhere for ${symbol} - returning $0`);
       return {
         symbol,
         price: 0,
@@ -2611,8 +2636,9 @@ class IbkrClient {
   /**
    * Get the last known price from IBKR historical data API
    * Used as fallback when WebSocket cache is empty (e.g., weekends, after-hours)
+   * Returns null on error to allow database fallback to trigger
    */
-  private async getHistoricalLastPrice(conid: number): Promise<number> {
+  private async getHistoricalLastPrice(conid: number): Promise<number | null> {
     try {
       const queryParams = new URLSearchParams({
         conid: String(conid),
@@ -2631,18 +2657,23 @@ class IbkrClient {
         )
       ]);
 
+      // Log full response for debugging
+      console.log(`[IBKR][getHistoricalLastPrice] conid=${conid} status=${resp.status} hasData=${!!resp.data?.data?.length}`);
+
       if (resp.status === 200 && resp.data?.data?.length > 0) {
         const lastBar = resp.data.data[resp.data.data.length - 1];
         const price = lastBar.c || lastBar.close || 0; // 'c' is close price
-        console.log(`[IBKR][getHistoricalLastPrice] conid=${conid} price=${price}`);
-        return price;
+        console.log(`[IBKR][getHistoricalLastPrice] conid=${conid} price=${price} (from ${resp.data.data.length} bars)`);
+        return price > 0 ? price : null;
       }
 
-      console.warn(`[IBKR][getHistoricalLastPrice] No data for conid=${conid}`);
-      return 0;
+      // Log what we received if no data
+      console.warn(`[IBKR][getHistoricalLastPrice] No data for conid=${conid}, response: ${JSON.stringify(resp.data).slice(0, 200)}`);
+      return null;
     } catch (err: any) {
-      console.error(`[IBKR][getHistoricalLastPrice] Error:`, err.message);
-      return 0;
+      // Return null instead of 0 so database fallback can trigger
+      console.error(`[IBKR][getHistoricalLastPrice] Error for conid=${conid}:`, err.message);
+      return null;
     }
   }
 

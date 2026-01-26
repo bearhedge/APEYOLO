@@ -680,10 +680,10 @@ export type InsertNavSnapshot = z.infer<typeof insertNavSnapshotSchema>;
 
 // ==================== END NAV SNAPSHOTS ====================
 
-// ==================== TRADING MANDATES ====================
+// ==================== DEFI RAILS ====================
 // Blockchain-enforced trading rules for self-discipline and investor transparency
 
-export const tradingMandates = pgTable("trading_mandates", {
+export const defiRails = pgTable("defi_rails", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
 
@@ -703,20 +703,20 @@ export const tradingMandates = pgTable("trading_mandates", {
   isLocked: boolean("is_locked").notNull().default(true), // Cannot modify once created
 
   // On-chain commitment (Solana)
-  onChainHash: text("on_chain_hash"), // SHA256 hash of mandate rules
+  onChainHash: text("on_chain_hash"), // SHA256 hash of rail rules
   solanaSignature: text("solana_signature"), // Transaction signature
   solanaSlot: bigint("solana_slot", { mode: "number" }), // Slot when committed
 
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (table) => [
-  index("trading_mandates_user_id_idx").on(table.userId),
-  index("trading_mandates_active_idx").on(table.userId, table.isActive),
+  index("defi_rails_user_id_idx").on(table.userId),
+  index("defi_rails_active_idx").on(table.userId, table.isActive),
 ]);
 
-export const mandateViolations = pgTable("mandate_violations", {
+export const railViolations = pgTable("rail_violations", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  mandateId: varchar("mandate_id").notNull().references(() => tradingMandates.id, { onDelete: "cascade" }),
+  railId: varchar("rail_id").notNull().references(() => defiRails.id, { onDelete: "cascade" }),
 
   // Violation details
   violationType: text("violation_type").notNull(), // "symbol", "delta", "strategy", "overnight", "daily_loss"
@@ -734,12 +734,12 @@ export const mandateViolations = pgTable("mandate_violations", {
 
   createdAt: timestamp("created_at").notNull().defaultNow(),
 }, (table) => [
-  index("mandate_violations_user_id_idx").on(table.userId),
-  index("mandate_violations_mandate_id_idx").on(table.mandateId),
-  index("mandate_violations_created_at_idx").on(table.createdAt),
+  index("rail_violations_user_id_idx").on(table.userId),
+  index("rail_violations_rail_id_idx").on(table.railId),
+  index("rail_violations_created_at_idx").on(table.createdAt),
 ]);
 
-export const insertTradingMandateSchema = createInsertSchema(tradingMandates).omit({
+export const insertDefiRailSchema = createInsertSchema(defiRails).omit({
   id: true,
   createdAt: true,
   onChainHash: true,
@@ -747,7 +747,7 @@ export const insertTradingMandateSchema = createInsertSchema(tradingMandates).om
   solanaSlot: true,
 });
 
-export const insertMandateViolationSchema = createInsertSchema(mandateViolations).omit({
+export const insertRailViolationSchema = createInsertSchema(railViolations).omit({
   id: true,
   createdAt: true,
   onChainHash: true,
@@ -755,26 +755,26 @@ export const insertMandateViolationSchema = createInsertSchema(mandateViolations
   solanaSlot: true,
 });
 
-export type TradingMandate = typeof tradingMandates.$inferSelect;
-export type InsertTradingMandate = z.infer<typeof insertTradingMandateSchema>;
-export type MandateViolation = typeof mandateViolations.$inferSelect;
-export type InsertMandateViolation = z.infer<typeof insertMandateViolationSchema>;
+export type DefiRail = typeof defiRails.$inferSelect;
+export type InsertDefiRail = z.infer<typeof insertDefiRailSchema>;
+export type RailViolation = typeof railViolations.$inferSelect;
+export type InsertRailViolation = z.infer<typeof insertRailViolationSchema>;
 
-// ==================== END TRADING MANDATES ====================
+// ==================== END DEFI RAILS ====================
 
-// ==================== MANDATE EVENTS (Blockchain Tracking) ====================
+// ==================== RAIL EVENTS (Blockchain Tracking) ====================
 
-export const mandateEvents = pgTable("mandate_events", {
+export const railEvents = pgTable("rail_events", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
-  mandateId: varchar("mandate_id").references(() => tradingMandates.id, { onDelete: "set null" }),
+  railId: varchar("rail_id").references(() => defiRails.id, { onDelete: "set null" }),
 
-  eventType: text("event_type").notNull(), // MANDATE_CREATED, MANDATE_DEACTIVATED, VIOLATION_BLOCKED, COMMITMENT_RECORDED
+  eventType: text("event_type").notNull(), // RAIL_CREATED, RAIL_DEACTIVATED, VIOLATION_BLOCKED, COMMITMENT_RECORDED
   eventData: jsonb("event_data").notNull(),
   eventHash: text("event_hash").notNull(), // SHA256 of event data
 
-  previousMandateId: varchar("previous_mandate_id").references(() => tradingMandates.id, { onDelete: "set null" }),
-  relatedViolationId: varchar("related_violation_id").references(() => mandateViolations.id, { onDelete: "set null" }),
+  previousRailId: varchar("previous_rail_id").references(() => defiRails.id, { onDelete: "set null" }),
+  relatedViolationId: varchar("related_violation_id").references(() => railViolations.id, { onDelete: "set null" }),
 
   actorId: varchar("actor_id").notNull(),
   actorRole: text("actor_role").notNull().default("owner"),
@@ -786,13 +786,13 @@ export const mandateEvents = pgTable("mandate_events", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
   recordedOnChainAt: timestamp("recorded_on_chain_at"),
 }, (table) => [
-  index("mandate_events_user_id_idx").on(table.userId),
-  index("mandate_events_mandate_id_idx").on(table.mandateId),
-  index("mandate_events_type_idx").on(table.eventType),
-  index("mandate_events_created_at_idx").on(table.createdAt),
+  index("rail_events_user_id_idx").on(table.userId),
+  index("rail_events_rail_id_idx").on(table.railId),
+  index("rail_events_type_idx").on(table.eventType),
+  index("rail_events_created_at_idx").on(table.createdAt),
 ]);
 
-export const insertMandateEventSchema = createInsertSchema(mandateEvents).omit({
+export const insertRailEventSchema = createInsertSchema(railEvents).omit({
   id: true,
   createdAt: true,
   recordedOnChainAt: true,
@@ -800,10 +800,10 @@ export const insertMandateEventSchema = createInsertSchema(mandateEvents).omit({
   solanaSlot: true,
 });
 
-export type MandateEvent = typeof mandateEvents.$inferSelect;
-export type InsertMandateEvent = z.infer<typeof insertMandateEventSchema>;
+export type RailEvent = typeof railEvents.$inferSelect;
+export type InsertRailEvent = z.infer<typeof insertRailEventSchema>;
 
-// ==================== END MANDATE EVENTS ====================
+// ==================== END RAIL EVENTS ====================
 
 // ==================== AGENT KNOWLEDGE BASE ====================
 // Knowledge tables for the autonomous trading agent's learning system
@@ -1561,6 +1561,29 @@ export type AttestationPeriod = typeof attestationPeriods.$inferSelect;
 export type InsertAttestationPeriod = z.infer<typeof insertAttestationPeriodSchema>;
 
 // ==================== END ACCOUNTING & RECONCILIATION ====================
+
+// ==================== LATEST PRICES (WebSocket Price Persistence) ====================
+// Stores the most recent prices from WebSocket streaming for recovery after restarts
+// Ensures SPY/VIX prices survive server restarts and are available even when WebSocket is disconnected
+
+export const latestPrices = pgTable('latest_prices', {
+  symbol: text('symbol').primaryKey(),
+  conid: integer('conid'),
+  price: decimal('price', { precision: 12, scale: 4 }).notNull(),
+  bid: decimal('bid', { precision: 12, scale: 4 }),
+  ask: decimal('ask', { precision: 12, scale: 4 }),
+  source: text('source').notNull().default('websocket'), // 'websocket' | 'manual' | 'historical'
+  updatedAt: timestamp('updated_at').notNull().defaultNow(),
+}, (table) => [
+  index('latest_prices_conid_idx').on(table.conid),
+]);
+
+export const insertLatestPriceSchema = createInsertSchema(latestPrices);
+
+export type LatestPrice = typeof latestPrices.$inferSelect;
+export type InsertLatestPrice = z.infer<typeof insertLatestPriceSchema>;
+
+// ==================== END LATEST PRICES ====================
 
 // Account info type
 export type AccountInfo = {

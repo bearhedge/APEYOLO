@@ -29,6 +29,13 @@
       "when": 1767484800000,
       "tag": "0003_add_user_settings",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1737849600000,
+      "tag": "0006_rename_mandates_to_rails",
+      "breakpoints": true
     }
   ]
 }

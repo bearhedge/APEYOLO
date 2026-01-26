@@ -10,7 +10,7 @@
  */
 
 import { db } from '../db';
-import { ibkrCredentials } from '@shared/schema';
+import { ibkrCredentials, latestPrices } from '@shared/schema';
 import { initIbkrWebSocket, getIbkrWebSocketManager } from '../broker/ibkrWebSocket';
 import { ensureIbkrReady, getIbkrCookieString, getIbkrSessionToken, clearIbkrSession } from '../broker/ibkr';
 import { getBroker } from '../broker';
@@ -172,6 +172,26 @@ export async function startWebSocketStream(): Promise<void> {
 
     // Initialize WebSocket
     const wsManager = initIbkrWebSocket(cookieString, sessionToken);
+
+    // Restore last known prices from database BEFORE connecting
+    // This ensures cache has data even if WebSocket takes time to stream
+    try {
+      if (!db) throw new Error('Database not available');
+      const storedPrices = await db.select().from(latestPrices);
+      for (const p of storedPrices) {
+        if (p.conid && Number(p.price) > 0) {
+          wsManager.seedCache(p.conid, {
+            last: Number(p.price),
+            bid: Number(p.bid) || 0,
+            ask: Number(p.ask) || 0,
+            symbol: p.symbol
+          });
+        }
+      }
+      console.log(`[MarketDataAutoStart] Restored ${storedPrices.length} prices from database`);
+    } catch (dbErr: any) {
+      console.warn('[MarketDataAutoStart] Failed to restore prices from database:', dbErr.message);
+    }
 
     // Set up credential refresh callback for reconnections
     // CRITICAL: Must force refresh to get fresh OAuth + SSO tokens when WebSocket auth fails

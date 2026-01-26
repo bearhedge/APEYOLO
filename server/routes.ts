@@ -2120,6 +2120,130 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // FREE debug endpoint - shows WebSocket state without making any API calls
+  // Use this to diagnose why SPY/VIX show $0.0
+  app.get('/api/debug/ws-state', requireAuth, async (req, res) => {
+    const SPY_CONID = 756733;
+    const VIX_CONID = 13455763;
+
+    try {
+      const wsManager = getIbkrWebSocketManager();
+
+      if (!wsManager) {
+        return res.json({
+          ok: false,
+          error: 'WebSocket manager not initialized',
+          connected: false,
+          authenticated: false,
+          subscriptions: [],
+          cache: {}
+        });
+      }
+
+      // Get detailed status
+      const status = wsManager.getDetailedStatus();
+
+      // Get subscription list
+      const subscriptions = wsManager.getSubscriptions();
+      const subscriptionList: number[] = [];
+      for (const [conid] of subscriptions) {
+        subscriptionList.push(conid);
+      }
+
+      // Get cache data for SPY and VIX
+      const spyCache = wsManager.getCachedMarketData(SPY_CONID);
+      const vixCache = wsManager.getCachedMarketData(VIX_CONID);
+
+      // Build cache object with enhanced diagnostic info
+      const cache: Record<string, any> = {};
+      if (spyCache) {
+        const ageMs = spyCache.timestamp ? Date.now() - spyCache.timestamp.getTime() : null;
+        cache[SPY_CONID] = {
+          symbol: 'SPY',
+          last: spyCache.last,
+          bid: spyCache.bid,
+          ask: spyCache.ask,
+          dayHigh: spyCache.dayHigh,
+          dayLow: spyCache.dayLow,
+          openPrice: spyCache.openPrice,
+          previousClose: spyCache.previousClose,
+          timestamp: spyCache.timestamp?.toISOString(),
+          ageMs,
+          source: spyCache.last > 0 ? 'websocket' : 'none'
+        };
+      }
+      if (vixCache) {
+        const ageMs = vixCache.timestamp ? Date.now() - vixCache.timestamp.getTime() : null;
+        cache[VIX_CONID] = {
+          symbol: 'VIX',
+          last: vixCache.last,
+          bid: vixCache.bid,
+          ask: vixCache.ask,
+          openPrice: vixCache.openPrice,
+          previousClose: vixCache.previousClose,
+          timestamp: vixCache.timestamp?.toISOString(),
+          ageMs,
+          source: vixCache.last > 0 ? 'websocket' : 'none'
+        };
+      }
+
+      // Build subscription details with symbols
+      const subscriptionDetails: Record<number, { symbol?: string; type?: string }> = {};
+      for (const [conid, sub] of subscriptions) {
+        subscriptionDetails[conid] = {
+          symbol: sub.symbol,
+          type: sub.type
+        };
+      }
+
+      // Diagnosis
+      const issues: string[] = [];
+      if (!status.connected) issues.push('WebSocket not connected');
+      if (!status.authenticated) issues.push('WebSocket not authenticated');
+      if (!status.hasSessionToken) issues.push('No session token');
+      if (status.subscriptionError) issues.push(`Subscription error: ${status.subscriptionError}`);
+      if (subscriptionList.length === 0) issues.push('No active subscriptions');
+      if (!subscriptionList.includes(SPY_CONID)) issues.push('SPY (756733) not subscribed');
+      if (!subscriptionList.includes(VIX_CONID)) issues.push('VIX (13455763) not subscribed');
+      if (!spyCache) issues.push('SPY not in cache');
+      else if (spyCache.last === 0) issues.push('SPY cached price is $0');
+      if (!vixCache) issues.push('VIX not in cache');
+      else if (vixCache.last === 0) issues.push('VIX cached price is $0');
+
+      // Determine data freshness
+      const dataAgeMs = status.lastDataReceived ? Date.now() - new Date(status.lastDataReceived).getTime() : null;
+      const isDataFresh = dataAgeMs !== null && dataAgeMs < 60000; // Fresh if < 60 seconds
+
+      return res.json({
+        ok: issues.length === 0,
+        issues,
+        connected: status.connected,
+        authenticated: status.authenticated,
+        hasSessionToken: status.hasSessionToken,
+        subscriptions: subscriptionList,
+        subscriptionDetails,
+        subscriptionCount: subscriptionList.length,
+        subscriptionError: status.subscriptionError,
+        lastDataReceived: status.lastDataReceived,
+        dataAgeMs,
+        isDataFresh,
+        cache,
+        // Quick summary for debugging
+        summary: {
+          spy: spyCache?.last ? `$${spyCache.last.toFixed(2)}` : 'N/A',
+          vix: vixCache?.last ? `$${vixCache.last.toFixed(2)}` : 'N/A',
+          status: !status.connected ? 'DISCONNECTED' :
+                  !status.authenticated ? 'NOT_AUTHENTICATED' :
+                  status.subscriptionError ? 'SUBSCRIPTION_ERROR' :
+                  !isDataFresh ? 'STALE_DATA' : 'OK'
+        }
+      });
+    } catch (err: any) {
+      console.error('[DEBUG] ws-state error:', err);
+      return res.status(500).json({ ok: false, error: err.message });
+    }
+  });
+
   // Live market snapshot - gets SPY/VIX from WebSocket cache (FREE)
   // HTTP Snapshot removed - was costing $0.01-$0.03 per call
   app.get('/api/broker/stream/snapshot', requireAuth, async (req, res) => {

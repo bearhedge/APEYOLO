@@ -1,25 +1,25 @@
 /**
- * MandateSummary - Compact spec-sheet style mandate display
+ * RailsSummary - Compact spec-sheet style rails display
  *
  * Always visible, dense, terminal-style.
  */
 
 import { Shield, AlertTriangle } from 'lucide-react';
-import type { Mandate } from '@shared/types/mandate';
+import type { Rail } from '@shared/types/rails';
 
-interface MandateSummaryProps {
-  mandate: Mandate | null;
+interface RailsSummaryProps {
+  rail: Rail | null;
   violationCount?: number;
   onCreateClick?: () => void;
   loading?: boolean;
 }
 
-export function MandateSummary({
-  mandate,
+export function RailsSummary({
+  rail,
   violationCount = 0,
   onCreateClick,
   loading,
-}: MandateSummaryProps) {
+}: RailsSummaryProps) {
   if (loading) {
     return (
       <div className="bg-terminal-panel terminal-grid p-4">
@@ -32,19 +32,19 @@ export function MandateSummary({
     );
   }
 
-  if (!mandate) {
+  if (!rail) {
     return (
       <div className="bg-terminal-panel terminal-grid p-4">
         <div className="flex items-center gap-2 mb-3">
           <Shield className="w-4 h-4 text-terminal-dim" />
-          <span className="text-xs uppercase tracking-wide text-terminal-dim">Mandate</span>
+          <span className="text-xs uppercase tracking-wide text-terminal-dim">DeFi Rails</span>
         </div>
-        <p className="text-sm text-terminal-dim mb-3">No active mandate</p>
+        <p className="text-sm text-terminal-dim mb-3">No active rails</p>
         <button
           onClick={onCreateClick}
           className="text-xs text-bloomberg-blue hover:underline"
         >
-          + Create Mandate
+          + Create Rails
         </button>
       </div>
     );
@@ -56,7 +56,7 @@ export function MandateSummary({
       <div className="flex items-center justify-between mb-3">
         <div className="flex items-center gap-2">
           <Shield className="w-4 h-4 text-bloomberg-green" />
-          <span className="text-xs uppercase tracking-wide text-terminal-dim">Mandate</span>
+          <span className="text-xs uppercase tracking-wide text-terminal-dim">DeFi Rails</span>
         </div>
         <span className="text-xs text-bloomberg-green">ACTIVE</span>
       </div>
@@ -65,28 +65,28 @@ export function MandateSummary({
       <div className="space-y-1.5 text-xs font-mono">
         <div className="flex justify-between">
           <span className="text-terminal-dim">Symbols</span>
-          <span className="text-terminal-bright">{mandate.allowedSymbols.join(', ')}</span>
+          <span className="text-terminal-bright">{rail.allowedSymbols.join(', ')}</span>
         </div>
         <div className="flex justify-between">
           <span className="text-terminal-dim">Strategy</span>
-          <span className="text-terminal-bright">{mandate.strategyType} only</span>
+          <span className="text-terminal-bright">{rail.strategyType} only</span>
         </div>
         <div className="flex justify-between">
           <span className="text-terminal-dim">Delta</span>
           <span className="text-terminal-bright tabular-nums">
-            {mandate.minDelta.toFixed(2)} – {mandate.maxDelta.toFixed(2)}
+            {rail.minDelta.toFixed(2)} – {rail.maxDelta.toFixed(2)}
           </span>
         </div>
         <div className="flex justify-between">
           <span className="text-terminal-dim">Max Loss</span>
           <span className="text-terminal-bright tabular-nums">
-            {(mandate.maxDailyLossPercent * 100).toFixed(0)}%/day
+            {(rail.maxDailyLossPercent * 100).toFixed(0)}%/day
           </span>
         </div>
         <div className="flex justify-between">
           <span className="text-terminal-dim">Overnight</span>
-          <span className={mandate.noOvernightPositions ? 'text-bloomberg-red' : 'text-terminal-bright'}>
-            {mandate.noOvernightPositions ? 'NOT ALLOWED' : 'Allowed'}
+          <span className={rail.noOvernightPositions ? 'text-bloomberg-red' : 'text-terminal-bright'}>
+            {rail.noOvernightPositions ? 'NOT ALLOWED' : 'Allowed'}
           </span>
         </div>
       </div>

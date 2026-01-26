@@ -47,20 +47,30 @@ export function TopBar({
     >
       {/* Left: Market data */}
       <div style={{ display: 'flex', gap: 16, alignItems: 'center' }}>
-        {/* SPY */}
+        {/* SPY - show N/A when price is 0 (SPY will never actually be $0) */}
         <span>
           <span style={{ color: '#888' }}>SPY </span>
-          <span style={{ color: '#fff', fontWeight: 600 }}>${spyPrice.toFixed(2)}</span>
-          <span style={{ color: priceColor, marginLeft: 6 }}>
-            {spyChangePct >= 0 ? '\u25B2' : '\u25BC'}
-            {spyChangePct >= 0 ? '+' : ''}{spyChangePct.toFixed(2)}%
-          </span>
+          {spyPrice > 0 ? (
+            <>
+              <span style={{ color: '#fff', fontWeight: 600 }}>${spyPrice.toFixed(2)}</span>
+              <span style={{ color: priceColor, marginLeft: 6 }}>
+                {spyChangePct >= 0 ? '\u25B2' : '\u25BC'}
+                {spyChangePct >= 0 ? '+' : ''}{spyChangePct.toFixed(2)}%
+              </span>
+            </>
+          ) : (
+            <span style={{ color: '#666', fontWeight: 500 }}>N/A</span>
+          )}
         </span>
 
-        {/* VIX */}
+        {/* VIX - show N/A when value is 0 */}
         <span>
           <span style={{ color: '#888' }}>VIX </span>
-          <span style={{ color: vixColor, fontWeight: 500 }}>{vix.toFixed(1)}</span>
+          {vix > 0 ? (
+            <span style={{ color: vixColor, fontWeight: 500 }}>{vix.toFixed(1)}</span>
+          ) : (
+            <span style={{ color: '#666', fontWeight: 500 }}>N/A</span>
+          )}
         </span>
 
         {/* Connection */}

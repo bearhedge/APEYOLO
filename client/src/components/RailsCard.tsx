@@ -1,15 +1,15 @@
 /**
- * MandateCard Component
+ * RailsCard Component
  *
- * Displays a trading mandate in a formal legal document style.
- * Mandates are permanent once created - cannot be modified, only replaced.
+ * Displays a DeFi Rail in a formal legal document style.
+ * Rails are permanent once created - cannot be modified, only replaced.
  */
 
 import { ExternalLink, Clock, Shield } from 'lucide-react';
-import type { Mandate } from '@shared/types/mandate';
+import type { Rail } from '@shared/types/rails';
 
-interface MandateCardProps {
-  mandate: Mandate;
+interface RailsCardProps {
+  rail: Rail;
   cluster?: 'devnet' | 'mainnet-beta';
 }
 
@@ -36,11 +36,11 @@ function getExplorerUrl(signature: string, cluster: 'devnet' | 'mainnet-beta' = 
   return `${baseUrl}${signature}${cluster === 'devnet' ? '?cluster=devnet' : ''}`;
 }
 
-export function MandateCard({
-  mandate,
+export function RailsCard({
+  rail,
   cluster = 'devnet',
-}: MandateCardProps) {
-  const isActive = mandate.isActive;
+}: RailsCardProps) {
+  const isActive = rail.isActive;
 
   return (
     <div className="bg-charcoal rounded-2xl border border-white/10 shadow-lg overflow-hidden">
@@ -50,7 +50,7 @@ export function MandateCard({
           <div className="flex items-center gap-3">
             <Shield className="w-7 h-7 text-zinc-300" />
             <h2 className="text-lg font-semibold tracking-[0.15em] uppercase text-zinc-300">
-              Trading Mandate
+              DeFi Rails
             </h2>
           </div>
           <div className={`px-3 py-1 text-xs font-medium rounded-full ${
@@ -65,16 +65,16 @@ export function MandateCard({
         <div className="flex items-center justify-between text-sm">
           <div className="flex items-center gap-2 text-silver">
             <Clock className="w-4 h-4" />
-            <span>Effective: {formatDate(mandate.createdAt)}</span>
+            <span>Effective: {formatDate(rail.createdAt)}</span>
           </div>
-          {mandate.onChainHash && (
+          {rail.onChainHash && (
             <div className="flex items-center gap-2">
               <code className="text-xs font-mono text-silver bg-white/5 px-2 py-1 rounded">
-                {mandate.onChainHash.slice(0, 10)}...{mandate.onChainHash.slice(-6)}
+                {rail.onChainHash.slice(0, 10)}...{rail.onChainHash.slice(-6)}
               </code>
-              {mandate.solanaSignature && (
+              {rail.solanaSignature && (
                 <a
-                  href={getExplorerUrl(mandate.solanaSignature, cluster)}
+                  href={getExplorerUrl(rail.solanaSignature, cluster)}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="text-electric hover:underline flex items-center gap-1"
@@ -100,7 +100,7 @@ export function MandateCard({
               The Manager shall trade only the following underlyings:
             </p>
             <ul className="pl-12 space-y-1">
-              {mandate.allowedSymbols.map((symbol) => (
+              {rail.allowedSymbols.map((symbol) => (
                 <li key={symbol} className="font-medium">
                   {symbol === 'SPY' && 'SPY (SPDR S&P 500 ETF Trust)'}
                   {symbol === 'SPX' && 'SPX (S&P 500 Index)'}
@@ -123,16 +123,16 @@ export function MandateCard({
           <div className="space-y-4 text-[15px] leading-[1.8] text-zinc-200">
             <p className="pl-8 relative">
               <span className="absolute left-0 text-zinc-500">2.1</span>
-              Only <span className="font-medium">{mandate.strategyType}</span> (credit) strategies are permitted.
+              Only <span className="font-medium">{rail.strategyType}</span> (credit) strategies are permitted.
             </p>
             <p className="pl-8 relative">
               <span className="absolute left-0 text-zinc-500">2.2</span>
-              Delta range: <span className="font-medium">{mandate.minDelta.toFixed(2)} to {mandate.maxDelta.toFixed(2)}</span> (moderate out-of-the-money).
+              Delta range: <span className="font-medium">{rail.minDelta.toFixed(2)} to {rail.maxDelta.toFixed(2)}</span> (moderate out-of-the-money).
             </p>
-            {mandate.tradingWindowStart && mandate.tradingWindowEnd && (
+            {rail.tradingWindowStart && rail.tradingWindowEnd && (
               <p className="pl-8 relative">
                 <span className="absolute left-0 text-zinc-500">2.3</span>
-                Trading window: <span className="font-medium">{formatTime(mandate.tradingWindowStart)} - {formatTime(mandate.tradingWindowEnd)}</span> (recommended).
+                Trading window: <span className="font-medium">{formatTime(rail.tradingWindowStart)} - {formatTime(rail.tradingWindowEnd)}</span> (recommended).
               </p>
             )}
           </div>
@@ -144,17 +144,17 @@ export function MandateCard({
             Article III - Risk Management
           </h3>
           <div className="space-y-4 text-[15px] leading-[1.8] text-zinc-200">
-            {mandate.noOvernightPositions && (
+            {rail.noOvernightPositions && (
               <p className="pl-8 relative">
                 <span className="absolute left-0 text-zinc-500">3.1</span>
                 No overnight positions. All positions must be closed by{' '}
-                <span className="font-medium">{mandate.exitDeadline ? formatTime(mandate.exitDeadline) : '3:55 PM ET'}</span>,
+                <span className="font-medium">{rail.exitDeadline ? formatTime(rail.exitDeadline) : '3:55 PM ET'}</span>,
                 except 0DTE options expiring same day.
               </p>
             )}
             <p className="pl-8 relative">
               <span className="absolute left-0 text-zinc-500">3.2</span>
-              Maximum daily loss: <span className="font-medium">{(mandate.maxDailyLossPercent * 100).toFixed(0)}% of NAV</span>.
+              Maximum daily loss: <span className="font-medium">{(rail.maxDailyLossPercent * 100).toFixed(0)}% of NAV</span>.
               Upon reaching this threshold, all trading shall cease for the remainder of the trading day.
             </p>
           </div>
@@ -168,7 +168,7 @@ export function MandateCard({
           <div className="space-y-4 text-[15px] leading-[1.8] text-zinc-200">
             <p className="pl-8 relative">
               <span className="absolute left-0 text-zinc-500">4.1</span>
-              This mandate is permanent and cannot be modified. To adopt new rules, a new mandate must be created.
+              This rail is permanent and cannot be modified. To adopt new rules, a new rail must be created.
             </p>
           </div>
         </section>
@@ -177,13 +177,13 @@ export function MandateCard({
       {/* Signature Section */}
       <div className="border-t border-white/10 px-8 py-6 bg-white/5">
         <div className="text-sm text-zinc-400 italic">
-          Signed electronically on {formatDate(mandate.createdAt)}
+          Signed electronically on {formatDate(rail.createdAt)}
         </div>
-        {mandate.onChainHash && (
+        {rail.onChainHash && (
           <div className="mt-2">
             <span className="text-xs text-zinc-500">Hash: </span>
             <code className="text-xs font-mono text-zinc-400">
-              {mandate.onChainHash}
+              {rail.onChainHash}
             </code>
           </div>
         )}
@@ -192,4 +192,4 @@ export function MandateCard({
   );
 }
 
-export default MandateCard;
+export default RailsCard;

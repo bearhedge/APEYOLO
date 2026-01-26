@@ -1,55 +1,54 @@
 /**
- * Mandate Service
+ * Rails Service
  *
- * Manages trading mandates and enforces trading rules.
- * Mandates are permanent once created - cannot be modified, only replaced.
+ * Manages DeFi Rails and enforces trading rules.
+ * Rails are permanent once created - cannot be modified, only replaced.
  */
 
 import { createHash } from 'crypto';
 import { db } from '../db';
-import { tradingMandates, mandateViolations, navSnapshots } from '@shared/schema';
+import { defiRails, railViolations, navSnapshots } from '@shared/schema';
 import { eq, and, desc, gte } from 'drizzle-orm';
 import type {
-  Mandate,
-  MandateRules,
+  Rail,
+  RailRules,
   Violation,
   ViolationType,
   EnforcementResult,
-  CreateMandateRequest,
-  MandateValidation,
-  MandateCreatedEventData,
-  MandateDeactivatedEventData,
+  CreateRailRequest,
+  RailCreatedEventData,
+  RailDeactivatedEventData,
   ViolationBlockedEventData,
-} from '@shared/types/mandate';
-import { recordMandateEvent } from './mandateEventService';
+} from '@shared/types/rails';
+import { recordRailEvent } from './railEventService';
 
 // ============================================
-// Mandate CRUD Operations
+// Rail CRUD Operations
 // ============================================
 
 /**
- * Create a new trading mandate
- * Once created, mandates are locked and cannot be modified
+ * Create a new DeFi Rail
+ * Once created, rails are locked and cannot be modified
  */
-export async function createMandate(
+export async function createRail(
   userId: string,
-  request: CreateMandateRequest
-): Promise<Mandate> {
+  request: CreateRailRequest
+): Promise<Rail> {
   if (!db) {
     throw new Error('Database not available');
   }
 
-  // Check if user already has an active mandate
-  const existingMandate = await getActiveMandate(userId);
-  if (existingMandate) {
-    throw new Error('User already has an active mandate. Mandates cannot be modified - deactivate the existing one first.');
+  // Check if user already has an active rail
+  const existingRail = await getActiveRail(userId);
+  if (existingRail) {
+    throw new Error('User already has an active rail. Rails cannot be modified - deactivate the existing one first.');
   }
 
-  // Generate hash of mandate rules for on-chain commitment
-  const rulesHash = generateMandateHash(request);
+  // Generate hash of rail rules for on-chain commitment
+  const rulesHash = generateRailHash(request);
 
-  const [mandate] = await db
-    .insert(tradingMandates)
+  const [rail] = await db
+    .insert(defiRails)
     .values({
       userId,
       allowedSymbols: request.allowedSymbols,
@@ -67,11 +66,11 @@ export async function createMandate(
     })
     .returning();
 
-  console.log(`[MandateService] Created mandate ${mandate.id} for user ${userId}`);
+  console.log(`[RailsService] Created rail ${rail.id} for user ${userId}`);
 
-  // Record MANDATE_CREATED event
-  const eventData: MandateCreatedEventData = {
-    mandateId: mandate.id,
+  // Record RAIL_CREATED event
+  const eventData: RailCreatedEventData = {
+    railId: rail.id,
     rules: {
       allowedSymbols: request.allowedSymbols,
       strategyType: request.strategyType,
@@ -86,81 +85,81 @@ export async function createMandate(
     rulesHash: `0x${rulesHash}`,
   };
 
-  await recordMandateEvent({
+  await recordRailEvent({
     userId,
-    eventType: 'MANDATE_CREATED',
+    eventType: 'RAIL_CREATED',
     eventData,
-    mandateId: mandate.id,
+    railId: rail.id,
   });
 
-  return formatMandate(mandate);
+  return formatRail(rail);
 }
 
 /**
- * Get the active mandate for a user
+ * Get the active rail for a user
  */
-export async function getActiveMandate(userId: string): Promise<Mandate | null> {
+export async function getActiveRail(userId: string): Promise<Rail | null> {
   if (!db) return null;
 
-  const [mandate] = await db
+  const [rail] = await db
     .select()
-    .from(tradingMandates)
+    .from(defiRails)
     .where(and(
-      eq(tradingMandates.userId, userId),
-      eq(tradingMandates.isActive, true)
+      eq(defiRails.userId, userId),
+      eq(defiRails.isActive, true)
     ))
-    .orderBy(desc(tradingMandates.createdAt))
+    .orderBy(desc(defiRails.createdAt))
     .limit(1);
 
-  if (!mandate) return null;
+  if (!rail) return null;
 
-  return formatMandate(mandate);
+  return formatRail(rail);
 }
 
 /**
- * Get all mandates for a user (including inactive)
+ * Get all rails for a user (including inactive)
  */
-export async function getUserMandates(userId: string): Promise<Mandate[]> {
+export async function getUserRails(userId: string): Promise<Rail[]> {
   if (!db) return [];
 
-  const mandates = await db
+  const rails = await db
     .select()
-    .from(tradingMandates)
-    .where(eq(tradingMandates.userId, userId))
-    .orderBy(desc(tradingMandates.createdAt));
+    .from(defiRails)
+    .where(eq(defiRails.userId, userId))
+    .orderBy(desc(defiRails.createdAt));
 
-  return mandates.map(formatMandate);
+  return rails.map(formatRail);
 }
 
 /**
- * Deactivate a mandate (cannot delete - kept for audit trail)
+ * Deactivate a rail (cannot delete - kept for audit trail)
  */
-export async function deactivateMandate(mandateId: string, userId: string, reason?: string): Promise<void> {
+export async function deactivateRail(railId: string, userId: string, reason?: string): Promise<void> {
   if (!db) {
     throw new Error('Database not available');
   }
 
   await db
-    .update(tradingMandates)
+    .update(defiRails)
     .set({ isActive: false })
     .where(and(
-      eq(tradingMandates.id, mandateId),
-      eq(tradingMandates.userId, userId)
+      eq(defiRails.id, railId),
+      eq(defiRails.userId, userId)
     ));
 
-  console.log(`[MandateService] Deactivated mandate ${mandateId}`);
+  console.log(`[RailsService] Deactivated rail ${railId}`);
 
-  // Record MANDATE_DEACTIVATED event
-  const eventData: MandateDeactivatedEventData = {
-    mandateId,
-    reason: reason || 'User deactivated mandate',
+  // Record RAIL_DEACTIVATED event
+  const eventData: RailDeactivatedEventData = {
+    railId,
+    reason: reason || 'User deactivated rail',
   };
 
-  await recordMandateEvent({
+  await recordRailEvent({
     userId,
-    eventType: 'MANDATE_DEACTIVATED',
+    eventType: 'RAIL_DEACTIVATED',
     eventData,
-    mandateId,
+    railId,
   });
 }
 
@@ -177,102 +176,102 @@ interface TradeToValidate {
 }
 
 /**
- * Validate a trade against the user's active mandate
+ * Validate a trade against the user's active rail
  * Returns enforcement result indicating if trade is allowed
  */
-export async function enforceMandate(
+export async function enforceRail(
   userId: string,
   trade: TradeToValidate
 ): Promise<EnforcementResult> {
-  const mandate = await getActiveMandate(userId);
+  const rail = await getActiveRail(userId);
 
-  // No mandate = no restrictions
-  if (!mandate) {
+  // No rail = no restrictions
+  if (!rail) {
     return { allowed: true };
   }
 
   // Check 1: Symbol
-  if (!mandate.allowedSymbols.includes(trade.symbol)) {
-    await recordViolation(mandate.id, userId, {
+  if (!rail.allowedSymbols.includes(trade.symbol)) {
+    await recordViolation(rail.id, userId, {
       type: 'symbol',
       attempted: trade.symbol,
-      limit: mandate.allowedSymbols.join(','),
+      limit: rail.allowedSymbols.join(','),
       tradeDetails: trade,
     });
     return {
       allowed: false,
-      reason: `Symbol "${trade.symbol}" is not permitted. Allowed: ${mandate.allowedSymbols.join(', ')}`,
+      reason: `Symbol "${trade.symbol}" is not permitted. Allowed: ${rail.allowedSymbols.join(', ')}`,
       violation: {
         type: 'symbol',
         attempted: trade.symbol,
-        limit: mandate.allowedSymbols.join(','),
+        limit: rail.allowedSymbols.join(','),
       },
     };
   }
 
   // Check 2: Strategy (must be SELL for credit strategies)
-  if (trade.side !== mandate.strategyType) {
-    await recordViolation(mandate.id, userId, {
+  if (trade.side !== rail.strategyType) {
+    await recordViolation(rail.id, userId, {
       type: 'strategy',
       attempted: trade.side,
-      limit: mandate.strategyType,
+      limit: rail.strategyType,
       tradeDetails: trade,
     });
     return {
       allowed: false,
-      reason: `Only ${mandate.strategyType} strategies are permitted`,
+      reason: `Only ${rail.strategyType} strategies are permitted`,
       violation: {
         type: 'strategy',
         attempted: trade.side,
-        limit: mandate.strategyType,
+        limit: rail.strategyType,
       },
     };
   }
 
   // Check 3: Delta range
   if (trade.delta !== undefined) {
-    if (trade.delta < mandate.minDelta || trade.delta > mandate.maxDelta) {
-      await recordViolation(mandate.id, userId, {
+    if (trade.delta < rail.minDelta || trade.delta > rail.maxDelta) {
+      await recordViolation(rail.id, userId, {
         type: 'delta',
         attempted: trade.delta.toString(),
-        limit: `${mandate.minDelta}-${mandate.maxDelta}`,
+        limit: `${rail.minDelta}-${rail.maxDelta}`,
         tradeDetails: trade,
       });
       return {
         allowed: false,
-        reason: `Delta ${trade.delta.toFixed(2)} is outside allowed range (${mandate.minDelta}-${mandate.maxDelta})`,
+        reason: `Delta ${trade.delta.toFixed(2)} is outside allowed range (${rail.minDelta}-${rail.maxDelta})`,
         violation: {
           type: 'delta',
           attempted: trade.delta.toString(),
-          limit: `${mandate.minDelta}-${mandate.maxDelta}`,
+          limit: `${rail.minDelta}-${rail.maxDelta}`,
         },
       };
     }
   }
 
   // Check 4: Daily loss circuit breaker
-  const dailyLossCheck = await checkDailyLossLimit(userId, mandate);
+  const dailyLossCheck = await checkDailyLossLimit(userId, rail);
   if (!dailyLossCheck.allowed) {
-    await recordViolation(mandate.id, userId, {
+    await recordViolation(rail.id, userId, {
       type: 'daily_loss',
       attempted: dailyLossCheck.currentLoss?.toString() || 'unknown',
-      limit: `${mandate.maxDailyLossPercent * 100}%`,
+      limit: `${rail.maxDailyLossPercent * 100}%`,
       tradeDetails: trade,
     });
     return {
       allowed: false,
-      reason: `Daily loss limit (${mandate.maxDailyLossPercent * 100}%) has been reached. Trading suspended for the day.`,
+      reason: `Daily loss limit (${rail.maxDailyLossPercent * 100}%) has been reached. Trading suspended for the day.`,
       violation: {
         type: 'daily_loss',
         attempted: dailyLossCheck.currentLoss?.toString() || 'unknown',
-        limit: `${mandate.maxDailyLossPercent * 100}%`,
+        limit: `${rail.maxDailyLossPercent * 100}%`,
       },
     };
   }
 
   // Check 5: Trading time window (after 12 AM HKT)
-  if (mandate.tradingWindowStart) {
-    const timeCheck = checkTradingWindow(mandate.tradingWindowStart);
+  if (rail.tradingWindowStart) {
+    const timeCheck = checkTradingWindow(rail.tradingWindowStart);
     if (!timeCheck.allowed) {
       return {
         allowed: false,
@@ -326,7 +325,7 @@ function checkTradingWindow(windowStart: string): { allowed: boolean; reason?: s
  */
 async function checkDailyLossLimit(
   userId: string,
-  mandate: Mandate
+  rail: Rail
 ): Promise<{ allowed: boolean; currentLoss?: number }> {
   if (!db) return { allowed: true };
 
@@ -370,7 +369,7 @@ async function checkDailyLossLimit(
   const lossPercent = (openingNav - currentNav) / openingNav;
 
   // If loss exceeds limit, block trading
-  if (lossPercent >= mandate.maxDailyLossPercent) {
+  if (lossPercent >= rail.maxDailyLossPercent) {
     return {
       allowed: false,
       currentLoss: lossPercent,
@@ -392,10 +391,10 @@ interface RecordViolationParams {
 }
 
 /**
- * Record a mandate violation in the database
+ * Record a rail violation in the database
  */
 export async function recordViolation(
-  mandateId: string,
+  railId: string,
   userId: string,
   params: RecordViolationParams
 ): Promise<Violation> {
@@ -405,7 +404,7 @@ export async function recordViolation(
 
   // Generate hash for on-chain recording
   const violationData = {
-    mandateId,
+    railId,
     userId,
     type: params.type,
     attempted: params.attempted,
@@ -417,10 +416,10 @@ export async function recordViolation(
     .digest('hex');
 
   const [violation] = await db
-    .insert(mandateViolations)
+    .insert(railViolations)
     .values({
       userId,
-      mandateId,
+      railId,
       violationType: params.type,
       attemptedValue: params.attempted,
       limitValue: params.limit,
@@ -430,7 +429,7 @@ export async function recordViolation(
     })
     .returning();
 
-  console.log(`[MandateService] Recorded violation: ${params.type} for user ${userId}`);
+  console.log(`[RailsService] Recorded violation: ${params.type} for user ${userId}`);
 
   // Record VIOLATION_BLOCKED event
   const violationEventData: ViolationBlockedEventData = {
@@ -440,11 +439,11 @@ export async function recordViolation(
     tradeContext: params.tradeDetails as Record<string, unknown>,
   };
 
-  await recordMandateEvent({
+  await recordRailEvent({
     userId,
     eventType: 'VIOLATION_BLOCKED',
     eventData: violationEventData,
-    mandateId,
+    railId,
     relatedViolationId: violation.id,
   });
 
@@ -452,19 +451,19 @@ export async function recordViolation(
 }
 
 /**
- * Get violations for a mandate
+ * Get violations for a rail
  */
-export async function getMandateViolations(
-  mandateId: string,
+export async function getRailViolations(
+  railId: string,
   limit = 100
 ): Promise<Violation[]> {
   if (!db) return [];
 
   const violations = await db
     .select()
-    .from(mandateViolations)
-    .where(eq(mandateViolations.mandateId, mandateId))
-    .orderBy(desc(mandateViolations.createdAt))
+    .from(railViolations)
+    .where(eq(railViolations.railId, railId))
+    .orderBy(desc(railViolations.createdAt))
     .limit(limit);
 
   return violations.map(formatViolation);
@@ -481,9 +480,9 @@ export async function getUserViolations(
 
   const violations = await db
     .select()
-    .from(mandateViolations)
-    .where(eq(mandateViolations.userId, userId))
-    .orderBy(desc(mandateViolations.createdAt))
+    .from(railViolations)
+    .where(eq(railViolations.userId, userId))
+    .orderBy(desc(railViolations.createdAt))
     .limit(limit);
 
   return violations.map(formatViolation);
@@ -492,7 +491,7 @@ export async function getUserViolations(
 /**
  * Get violation count for this month
  */
-export async function getMonthlyViolationCount(mandateId: string): Promise<number> {
+export async function getMonthlyViolationCount(railId: string): Promise<number> {
   if (!db) return 0;
 
   const now = new Date();
@@ -500,10 +499,10 @@ export async function getMonthlyViolationCount(mandateId: string): Promise<numbe
 
   const violations = await db
     .select()
-    .from(mandateViolations)
+    .from(railViolations)
     .where(and(
-      eq(mandateViolations.mandateId, mandateId),
-      gte(mandateViolations.createdAt, monthStart)
+      eq(railViolations.railId, railId),
+      gte(railViolations.createdAt, monthStart)
     ));
 
   return violations.length;
@@ -514,19 +513,19 @@ export async function getMonthlyViolationCount(mandateId: string): Promise<numbe
 // ============================================
 
 /**
- * Commit mandate hash to Solana
+ * Commit rail hash to Solana
  * Returns transaction signature
  */
-export async function commitMandateToSolana(mandateId: string): Promise<{
+export async function commitRailToSolana(railId: string): Promise<{
   signature: string;
   slot: number;
 }> {
   // TODO: Implement actual Solana transaction
   // For now, return mock data
-  console.log(`[MandateService] Would commit mandate ${mandateId} to Solana`);
+  console.log(`[RailsService] Would commit rail ${railId} to Solana`);
 
   return {
-    signature: 'mock_signature_' + mandateId,
+    signature: 'mock_signature_' + railId,
     slot: Date.now(),
   };
 }
@@ -541,7 +540,7 @@ export async function recordViolationOnSolana(violationId: string): Promise<{
 }> {
   // TODO: Implement actual Solana transaction
   // For now, return mock data
-  console.log(`[MandateService] Would record violation ${violationId} on Solana`);
+  console.log(`[RailsService] Would record violation ${violationId} on Solana`);
 
   return {
     signature: 'mock_signature_' + violationId,
@@ -554,9 +553,9 @@ export async function recordViolationOnSolana(violationId: string): Promise<{
 // ============================================
 
 /**
- * Generate SHA256 hash of mandate rules
+ * Generate SHA256 hash of rail rules
  */
-function generateMandateHash(rules: MandateRules): string {
+function generateRailHash(rules: RailRules): string {
   const rulesObject = {
     allowedSymbols: rules.allowedSymbols.sort(), // Sort for consistency
     strategyType: rules.strategyType,
@@ -573,27 +572,27 @@ function generateMandateHash(rules: MandateRules): string {
 }
 
 /**
- * Format database mandate to API response
+ * Format database rail to API response
  */
-function formatMandate(dbMandate: any): Mandate {
+function formatRail(dbRail: any): Rail {
   return {
-    id: dbMandate.id,
-    userId: dbMandate.userId,
-    allowedSymbols: dbMandate.allowedSymbols as string[],
-    strategyType: dbMandate.strategyType as 'SELL' | 'BUY',
-    minDelta: parseFloat(dbMandate.minDelta) || 0,
-    maxDelta: parseFloat(dbMandate.maxDelta) || 0,
-    maxDailyLossPercent: parseFloat(dbMandate.maxDailyLossPercent) || 0,
-    noOvernightPositions: dbMandate.noOvernightPositions,
-    exitDeadline: dbMandate.exitDeadline,
-    tradingWindowStart: dbMandate.tradingWindowStart,
-    tradingWindowEnd: dbMandate.tradingWindowEnd,
-    isActive: dbMandate.isActive,
-    isLocked: dbMandate.isLocked,
-    onChainHash: dbMandate.onChainHash,
-    solanaSignature: dbMandate.solanaSignature,
-    solanaSlot: dbMandate.solanaSlot,
-    createdAt: dbMandate.createdAt?.toISOString() || new Date().toISOString(),
+    id: dbRail.id,
+    userId: dbRail.userId,
+    allowedSymbols: dbRail.allowedSymbols as string[],
+    strategyType: dbRail.strategyType as 'SELL' | 'BUY',
+    minDelta: parseFloat(dbRail.minDelta) || 0,
+    maxDelta: parseFloat(dbRail.maxDelta) || 0,
+    maxDailyLossPercent: parseFloat(dbRail.maxDailyLossPercent) || 0,
+    noOvernightPositions: dbRail.noOvernightPositions,
+    exitDeadline: dbRail.exitDeadline,
+    tradingWindowStart: dbRail.tradingWindowStart,
+    tradingWindowEnd: dbRail.tradingWindowEnd,
+    isActive: dbRail.isActive,
+    isLocked: dbRail.isLocked,
+    onChainHash: dbRail.onChainHash,
+    solanaSignature: dbRail.solanaSignature,
+    solanaSlot: dbRail.solanaSlot,
+    createdAt: dbRail.createdAt?.toISOString() || new Date().toISOString(),
   };
 }
 
@@ -604,7 +603,7 @@ function formatViolation(dbViolation: any): Violation {
   return {
     id: dbViolation.id,
     userId: dbViolation.userId,
-    mandateId: dbViolation.mandateId,
+    railId: dbViolation.railId,
     violationType: dbViolation.violationType as ViolationType,
     attemptedValue: dbViolation.attemptedValue,
     limitValue: dbViolation.limitValue,

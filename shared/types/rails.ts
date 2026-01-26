@@ -1,8 +1,8 @@
 /**
- * Trading Mandate Types
+ * DeFi Rails Types
  *
  * Blockchain-enforced trading rules for self-discipline and investor transparency.
- * Mandates are permanent once created - cannot be modified, only replaced.
+ * Rails are permanent once created - cannot be modified, only replaced.
  */
 
 // Violation types that can be recorded
@@ -16,8 +16,8 @@ export type ViolationType =
 // Action taken when a violation is detected
 export type ViolationAction = 'blocked' | 'warning';
 
-// Mandate rules configuration
-export interface MandateRules {
+// Rail rules configuration
+export interface RailRules {
   allowedSymbols: string[];        // ["SPY", "SPX"]
   strategyType: 'SELL' | 'BUY';    // Only SELL for credit strategies
   minDelta: number;                 // 0.20
@@ -29,8 +29,8 @@ export interface MandateRules {
   tradingWindowEnd?: string;        // "14:00" (guideline only)
 }
 
-// Full mandate with metadata
-export interface Mandate extends MandateRules {
+// Full rail with metadata
+export interface Rail extends RailRules {
   id: string;
   userId: string;
   isActive: boolean;
@@ -41,8 +41,8 @@ export interface Mandate extends MandateRules {
   createdAt: string;
 }
 
-// Mandate validation result
-export interface MandateValidation {
+// Rail validation result
+export interface RailValidation {
   valid: boolean;
   violation?: {
     type: ViolationType;
@@ -56,7 +56,7 @@ export interface MandateValidation {
 export interface Violation {
   id: string;
   userId: string;
-  mandateId: string;
+  railId: string;
   violationType: ViolationType;
   attemptedValue?: string;
   limitValue?: string;
@@ -69,7 +69,7 @@ export interface Violation {
 }
 
 // API request/response types
-export interface CreateMandateRequest {
+export interface CreateRailRequest {
   allowedSymbols: string[];
   strategyType: 'SELL' | 'BUY';
   minDelta: number;
@@ -81,8 +81,8 @@ export interface CreateMandateRequest {
   tradingWindowEnd?: string;
 }
 
-export interface MandateResponse {
-  mandate: Mandate;
+export interface RailResponse {
+  rail: Rail;
   violations: Violation[];
   violationCount: number;
 }
@@ -99,17 +99,17 @@ export interface EnforcementResult {
 }
 
 // Solana commitment data
-export interface MandateCommitment {
-  mandateId: string;
-  rulesHash: string;          // SHA256 of mandate rules
+export interface RailCommitment {
+  railId: string;
+  rulesHash: string;          // SHA256 of rail rules
   signature: string;          // Solana transaction signature
   slot: number;               // Solana slot number
   explorerUrl: string;        // Link to Solana Explorer
 }
 
 // For displaying in the legal document UI
-export interface MandateDisplay {
-  mandate: Mandate;
+export interface RailDisplay {
+  rail: Rail;
   statusText: 'ACTIVE' | 'INACTIVE';
   effectiveDate: string;      // Formatted date string
   onChainProof?: {
@@ -123,24 +123,24 @@ export interface MandateDisplay {
   };
 }
 
-// ==================== MANDATE EVENTS ====================
+// ==================== RAIL EVENTS ====================
 
 // Event types that can be tracked
-export type MandateEventType =
-  | 'MANDATE_CREATED'
-  | 'MANDATE_DEACTIVATED'
+export type RailEventType =
+  | 'RAIL_CREATED'
+  | 'RAIL_DEACTIVATED'
   | 'VIOLATION_BLOCKED'
   | 'COMMITMENT_RECORDED';
 
 // Event data structures for each event type
-export interface MandateCreatedEventData {
-  mandateId: string;
-  rules: MandateRules;
+export interface RailCreatedEventData {
+  railId: string;
+  rules: RailRules;
   rulesHash: string;
 }
 
-export interface MandateDeactivatedEventData {
-  mandateId: string;
+export interface RailDeactivatedEventData {
+  railId: string;
   reason?: string;
   replacedBy?: string;
 }
@@ -154,26 +154,26 @@ export interface ViolationBlockedEventData {
 
 export interface CommitmentRecordedEventData {
   targetId: string;
-  targetType: 'mandate' | 'violation';
+  targetType: 'rail' | 'violation';
   solanaSignature: string;
   solanaSlot: number;
 }
 
-export type MandateEventData =
-  | MandateCreatedEventData
-  | MandateDeactivatedEventData
+export type RailEventData =
+  | RailCreatedEventData
+  | RailDeactivatedEventData
   | ViolationBlockedEventData
   | CommitmentRecordedEventData;
 
 // Full event record
-export interface MandateEvent {
+export interface RailEvent {
   id: string;
   userId: string;
-  mandateId?: string;
-  eventType: MandateEventType;
-  eventData: MandateEventData;
+  railId?: string;
+  eventType: RailEventType;
+  eventData: RailEventData;
   eventHash: string;
-  previousMandateId?: string;
+  previousRailId?: string;
   relatedViolationId?: string;
   actorId: string;
   actorRole: string;
@@ -185,15 +185,15 @@ export interface MandateEvent {
 }
 
 // API response for event timeline
-export interface MandateEventTimeline {
-  events: MandateEvent[];
+export interface RailEventTimeline {
+  events: RailEvent[];
   totalCount: number;
   uncommittedCount: number;
 }
 
 // Event display formatting
-export interface MandateEventDisplay {
-  event: MandateEvent;
+export interface RailEventDisplay {
+  event: RailEvent;
   icon: string;
   color: string;
   title: string;
