@@ -21,6 +21,7 @@ import {
   SelectionBar,
   ActionBar,
   CommandInput,
+  CommandMenu,
   useKeyboardControls,
   type LogLine,
   type Strategy,
@@ -44,6 +45,7 @@ export function EngineWindow() {
   const [mode, setMode] = useState<Mode>('MANUAL');
   const [autoCountdown, setAutoCountdown] = useState(300); // 5 minutes
   const [showHelp, setShowHelp] = useState(false);
+  const [showCommandMenu, setShowCommandMenu] = useState(false);
 
   // Strategy and position state
   const [strategy, setStrategy] = useState<Strategy>('strangle');
@@ -327,20 +329,15 @@ export function EngineWindow() {
     setCallStrike(null);
   }, []);
 
-  // Handle agent commands (V, M, P hotkeys or typed /commands)
+  // Handle agent commands (typed /commands)
   const handleAgentCommand = useCallback((command: AgentCommand) => {
     if (agentProcessing) return;
 
-    // Handle /help specially
+    // Handle /help specially - show clickable command menu
     if (command === '/help') {
       setLogLines([]);
       setLoggedSteps(new Set());
-      addLogLine('AVAILABLE COMMANDS', 'header');
-      addLogLine('/vix - VIX analysis and volatility regime', 'info');
-      addLogLine('/market - Full market snapshot', 'info');
-      addLogLine('/positions - Current holdings', 'info');
-      addLogLine('/analyze - Full 5-step analysis', 'info');
-      addLogLine('Press V, M, P, A for quick access', 'info');
+      setShowCommandMenu(true);
       return;
     }
 
@@ -440,7 +437,13 @@ export function EngineWindow() {
     },
     onModeToggle: handleModeToggle,
     onEnter: hudState === 'ready' ? handleExecute : handleAnalyze,
-    onEscape: handleReset,
+    onEscape: () => {
+      if (showCommandMenu) {
+        setShowCommandMenu(false);
+      } else {
+        handleReset();
+      }
+    },
     onAnalyze: handleAnalyze,
     onRefresh: () => {
       // R key reserved for future agent commands
@@ -452,10 +455,6 @@ export function EngineWindow() {
         addLogLine('AUTO MODE PAUSED', 'info');
       }
     },
-    // Agent command hotkeys
-    onVix: () => handleAgentCommand('/vix'),
-    onMarket: () => handleAgentCommand('/market'),
-    onPositions: () => handleAgentCommand('/positions'),
   });
 
   return (
@@ -545,23 +544,27 @@ export function EngineWindow() {
             }}
           >
             <div style={{ color: '#00ffff', marginBottom: 16, fontSize: 14 }}>KEYBOARD SHORTCUTS</div>
-            <div style={{ color: '#888', marginBottom: 8 }}>TRADING</div>
             <div>[1] [2] [3] - Select strategy</div>
             <div>[{'\u2191'}] [{'\u2193'}] - Adjust put strike</div>
             <div>[{'\u2190'}] [{'\u2192'}] - Adjust call strike</div>
             <div>[Tab] - Toggle AUTO/MANUAL</div>
             <div>[Enter] - Analyze / Execute</div>
-            <div>[Esc] - Reset</div>
+            <div>[Esc] - Reset / Close menu</div>
             <div>[A] - Analyze now</div>
             <div>[Space] - Pause auto mode</div>
-            <div style={{ color: '#888', marginTop: 12, marginBottom: 8 }}>AGENT COMMANDS</div>
-            <div>[V] - VIX analysis</div>
-            <div>[M] - Market snapshot</div>
-            <div>[P] - Current positions</div>
-            <div style={{ color: '#555', marginTop: 12 }}>Type /help in command bar for more</div>
+            <div>[?] - Show this help</div>
+            <div style={{ color: '#555', marginTop: 12 }}>Type /help in command bar for commands</div>
             <div style={{ marginTop: 16, color: '#555', fontSize: 11 }}>Press any key to close</div>
           </div>
         </div>
+      )}
+
+      {/* Command menu overlay */}
+      {showCommandMenu && (
+        <CommandMenu
+          onCommand={(cmd) => handleAgentCommand(cmd as AgentCommand)}
+          onClose={() => setShowCommandMenu(false)}
+        />
       )}
     </div>
   );
