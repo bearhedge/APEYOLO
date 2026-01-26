@@ -47,7 +47,8 @@ export function TopBar({
 
   const spyPriceColor = spyChangePct >= 0 ? '#4ade80' : '#ef4444';
   const vixPriceColor = vixChangePct >= 0 ? '#4ade80' : '#ef4444';
-  const vixValueColor = vixMid > 20 ? '#f59e0b' : '#888';
+  // VIX in white, with orange warning if elevated (>25)
+  const vixValueColor = vixMid > 25 ? '#f59e0b' : '#fff';
 
   const formatCountdown = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -106,25 +107,20 @@ export function TopBar({
           )}
         </span>
 
-        {/* Connection */}
+        {/* Connection - based on whether we have live data */}
         <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
           <span
             style={{
               width: 8,
               height: 8,
               borderRadius: '50%',
-              background: isConnected ? '#4ade80' : '#ef4444',
+              background: spyMid > 0 ? '#4ade80' : '#ef4444',
               display: 'inline-block',
             }}
           />
-          <span style={{ color: isConnected ? '#4ade80' : '#ef4444', fontSize: 11 }}>
-            {isConnected ? 'CONNECTED' : 'DISCONNECTED'}
+          <span style={{ color: spyMid > 0 ? '#4ade80' : '#888', fontSize: 11 }}>
+            {spyMid > 0 ? 'LIVE' : 'OFFLINE'}
           </span>
-        </span>
-
-        {/* WebSocket Status */}
-        <span style={{ color: wsConnected ? '#4ade80' : '#666', marginLeft: 8 }}>
-          WS:{wsConnected ? 'ON' : 'OFF'}
         </span>
       </div>
 
