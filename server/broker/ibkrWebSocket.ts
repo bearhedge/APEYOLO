@@ -978,24 +978,27 @@ export class IbkrWebSocketManager {
       const spyAge = spyData ? now - spyData.timestamp.getTime() : Infinity;
       const vixAge = vixData ? now - vixData.timestamp.getTime() : Infinity;
 
-      // Log health status
+      // Log health status - VIX may not have last price, use bid/ask mid
       const spyPrice = spyData?.last || 0;
-      const vixPrice = vixData?.last || 0;
+      const vixPrice = vixData?.last || (vixData?.bid && vixData?.ask ? (vixData.bid + vixData.ask) / 2 : 0);
       console.log(`[IbkrWS] HEALTH CHECK: SPY=$${spyPrice.toFixed(2)} (${Math.round(spyAge/1000)}s old), VIX=${vixPrice.toFixed(2)} (${Math.round(vixAge/1000)}s old)`);
 
-      // CRITICAL: If SPY data is stale OR VIX is 0, we have a problem
+      // CRITICAL: Only reconnect if SPY data is truly stale
+      // VIX might not have 'last' price - that's OK if we have bid/ask
       const isSpyStale = spyAge > this.STALE_THRESHOLD_MS;
-      const isVixBroken = !vixData || vixData.last === 0 || vixData.last === undefined;
+      const vixHasAnyData = vixData && (vixData.last > 0 || (vixData.bid > 0 && vixData.ask > 0));
+      const isVixStale = !vixHasAnyData && vixAge > this.STALE_THRESHOLD_MS;
 
-      if (isSpyStale || isVixBroken) {
-        console.error(`[IbkrWS] ⚠️ STALE DATA DETECTED! SPY stale: ${isSpyStale}, VIX broken: ${isVixBroken}`);
-        console.error('[IbkrWS] Auto-reconnecting to get fresh data...');
+      if (isSpyStale) {
+        console.error(`[IbkrWS] ⚠️ SPY DATA STALE (${Math.round(spyAge/1000)}s old)! Auto-reconnecting...`);
 
         try {
           await this.forceFullReconnect();
         } catch (err: any) {
           console.error('[IbkrWS] Auto-reconnect failed:', err.message);
         }
+      } else if (isVixStale) {
+        console.warn(`[IbkrWS] VIX data stale but SPY OK - not reconnecting`);
       }
     }, this.HEALTH_CHECK_INTERVAL_MS);
 
@@ -1270,8 +1273,15 @@ export function getIbkrWebSocketDetailedStatus(): {
   const vixData = wsManagerInstance.getCachedMarketData(VIX_CONID);
   const status = wsManagerInstance.getDetailedStatus();
 
+  // SPY price from last
   const spyPrice = spyData?.last && spyData.last > 0 ? spyData.last : null;
-  const vixPrice = vixData?.last && vixData.last > 0 ? vixData.last : null;
+  // VIX price: try last first, then mid of bid/ask (VIX often doesn't have last price)
+  let vixPrice: number | null = null;
+  if (vixData?.last && vixData.last > 0) {
+    vixPrice = vixData.last;
+  } else if (vixData?.bid && vixData?.ask && vixData.bid > 0 && vixData.ask > 0) {
+    vixPrice = (vixData.bid + vixData.ask) / 2;
+  }
 
   // Calculate SPY-specific data age (different from general lastDataReceived which includes options)
   const spyDataAge = spyData?.timestamp
