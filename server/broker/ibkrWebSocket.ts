@@ -727,11 +727,14 @@ export class IbkrWebSocketManager {
     const updateCount = (this.updateCounts.get(conid) || 0) + 1;
     this.updateCounts.set(conid, updateCount);
     const price = msg[IBKR_FIELDS.LAST_PRICE];
-    // Log COMPLETE raw message for SPY to see ALL fields IBKR sends (debugging overnight streaming)
+    // Log COMPLETE raw message for SPY and VIX to see ALL fields IBKR sends
     if (conid === 756733) {
       // Log entire raw message to see what fields IBKR actually returns
       console.log(`[IbkrWS] RAW SPY #${updateCount}: ${JSON.stringify(msg)}`);
-    } else if (conid === 13455763 || updateCount % 10 === 1) {
+    } else if (conid === 13455763) {
+      // Log ALL VIX updates with full field details - VIX is an index, may have different fields
+      console.log(`[IbkrWS] RAW VIX #${updateCount}: last=${msg[IBKR_FIELDS.LAST_PRICE]} bid=${msg[IBKR_FIELDS.BID]} ask=${msg[IBKR_FIELDS.ASK]} raw=${JSON.stringify(msg)}`);
+    } else if (updateCount % 10 === 1) {
       console.log(`[IbkrWS] DATA conid=${conid} #${updateCount} last=$${price} bid=${msg[IBKR_FIELDS.BID]} ask=${msg[IBKR_FIELDS.ASK]}`);
     }
 
