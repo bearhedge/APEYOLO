@@ -2158,6 +2158,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const cache: Record<string, any> = {};
       if (spyCache) {
         const ageMs = spyCache.timestamp ? Date.now() - spyCache.timestamp.getTime() : null;
+        // Determine if data is from real WebSocket streaming (fresh < 2min) vs seeded from DB (stale)
+        const isRealStreaming = ageMs !== null && ageMs < 120000; // 2 minutes
         cache[SPY_CONID] = {
           symbol: 'SPY',
           last: spyCache.last,
@@ -2169,11 +2171,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
           previousClose: spyCache.previousClose,
           timestamp: spyCache.timestamp?.toISOString(),
           ageMs,
-          source: spyCache.last > 0 ? 'websocket' : 'none'
+          isRealStreaming,
+          source: spyCache.last > 0 ? (isRealStreaming ? 'websocket-live' : 'websocket-stale-or-db') : 'none'
         };
       }
       if (vixCache) {
         const ageMs = vixCache.timestamp ? Date.now() - vixCache.timestamp.getTime() : null;
+        const isRealStreaming = ageMs !== null && ageMs < 120000;
         cache[VIX_CONID] = {
           symbol: 'VIX',
           last: vixCache.last,
@@ -2183,7 +2187,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
           previousClose: vixCache.previousClose,
           timestamp: vixCache.timestamp?.toISOString(),
           ageMs,
-          source: vixCache.last > 0 ? 'websocket' : 'none'
+          isRealStreaming,
+          source: vixCache.last > 0 ? (isRealStreaming ? 'websocket-live' : 'websocket-stale-or-db') : 'none'
         };
       }
 
@@ -2210,9 +2215,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!vixCache) issues.push('VIX not in cache');
       else if (vixCache.last === 0) issues.push('VIX cached price is $0');
 
-      // Determine data freshness
+      // Determine data freshness (general and SPY-specific)
       const dataAgeMs = status.lastDataReceived ? Date.now() - new Date(status.lastDataReceived).getTime() : null;
       const isDataFresh = dataAgeMs !== null && dataAgeMs < 60000; // Fresh if < 60 seconds
+
+      // SPY-specific freshness check (critical for hasRealData)
+      const spyAgeMs = spyCache?.timestamp ? Date.now() - spyCache.timestamp.getTime() : null;
+      const isSpyFresh = spyAgeMs !== null && spyAgeMs < 120000; // SPY is fresh if < 2 minutes
+
+      // Check if SPY data is stale (indicates subscription or streaming issue)
+      if (spyCache && spyCache.last > 0 && !isSpyFresh) {
+        issues.push(`SPY data is stale (${Math.round((spyAgeMs || 0) / 1000)}s old) - may be DB-seeded, not live streaming`);
+      }
 
       return res.json({
         ok: issues.length === 0,
@@ -2227,15 +2241,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         lastDataReceived: status.lastDataReceived,
         dataAgeMs,
         isDataFresh,
+        // SPY-specific freshness (the key metric for hasRealData)
+        spyDataAgeMs: spyAgeMs,
+        isSpyFresh,
         cache,
         // Quick summary for debugging
         summary: {
           spy: spyCache?.last ? `$${spyCache.last.toFixed(2)}` : 'N/A',
           vix: vixCache?.last ? `$${vixCache.last.toFixed(2)}` : 'N/A',
+          spyStreaming: isSpyFresh ? 'LIVE' : (spyCache?.last ? 'STALE' : 'NONE'),
           status: !status.connected ? 'DISCONNECTED' :
                   !status.authenticated ? 'NOT_AUTHENTICATED' :
                   status.subscriptionError ? 'SUBSCRIPTION_ERROR' :
-                  !isDataFresh ? 'STALE_DATA' : 'OK'
+                  !isSpyFresh ? 'SPY_NOT_STREAMING' : 'OK'
         }
       });
     } catch (err: any) {

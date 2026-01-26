@@ -260,6 +260,7 @@ export async function startWebSocketStream(): Promise<void> {
 
 /**
  * Start periodic health check to ensure WebSocket stays connected
+ * Also verifies SPY/VIX subscriptions exist and adds them if missing
  */
 function startHealthCheck(): void {
   if (healthCheckInterval) {
@@ -285,6 +286,27 @@ function startHealthCheck(): void {
       } catch (err: any) {
         console.error('[MarketDataAutoStart][HealthCheck] Reconnection failed:', err.message);
       }
+      return; // Don't check subscriptions if we just reconnected - startWebSocketStream handles them
+    }
+
+    // Verify SPY/VIX subscriptions exist - add if missing
+    // This handles cases where subscriptions were lost but connection stayed up
+    const subs = wsManager.getSubscriptions();
+    const hasSpy = subs.has(SPY_CONID);
+    const hasVix = subs.has(VIX_CONID);
+
+    if (!hasSpy) {
+      console.log('[MarketDataAutoStart][HealthCheck] SPY not subscribed, adding...');
+      wsManager.subscribe(SPY_CONID, { symbol: 'SPY', type: 'stock' });
+    }
+    if (!hasVix) {
+      console.log('[MarketDataAutoStart][HealthCheck] VIX not subscribed, adding...');
+      wsManager.subscribe(VIX_CONID, { symbol: 'VIX', type: 'stock' });
+    }
+
+    // Log status if subscriptions were missing
+    if (!hasSpy || !hasVix) {
+      console.log(`[MarketDataAutoStart][HealthCheck] Subscription check: SPY=${hasSpy}, VIX=${hasVix} -> now subscribed`);
     }
   }, HEALTH_CHECK_INTERVAL_MS);
 }

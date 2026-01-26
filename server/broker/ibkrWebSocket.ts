@@ -1099,7 +1099,8 @@ export const VIX_CONID = 13455763;
 
 /**
  * Get detailed WebSocket status including real data flow verification
- * Only returns hasRealData=true when actual non-zero SPY price data has been received
+ * Only returns hasRealData=true when actual SPY data has been received recently (within 2 min)
+ * This prevents false positives when only options data is streaming or cache is DB-seeded
  */
 export function getIbkrWebSocketDetailedStatus(): {
   connected: boolean;
@@ -1109,6 +1110,7 @@ export function getIbkrWebSocketDetailedStatus(): {
   spyPrice: number | null;
   vixPrice: number | null;
   dataAge: number | null;
+  spyDataAge: number | null;
   subscriptionError: string | null;
 } | null {
   if (!wsManagerInstance) return null;
@@ -1120,18 +1122,28 @@ export function getIbkrWebSocketDetailedStatus(): {
   const spyPrice = spyData?.last && spyData.last > 0 ? spyData.last : null;
   const vixPrice = vixData?.last && vixData.last > 0 ? vixData.last : null;
 
-  // hasRealData = true ONLY if we have non-zero price AND actually received data from IBKR
-  // This prevents showing OK when cache is just DB-seeded but no actual streaming
-  const hasActuallyReceivedData = status.lastDataReceived !== null;
+  // Calculate SPY-specific data age (different from general lastDataReceived which includes options)
+  const spyDataAge = spyData?.timestamp
+    ? Date.now() - spyData.timestamp.getTime()
+    : null;
+
+  // hasRealData = true ONLY if:
+  // 1. We have a non-zero SPY price
+  // 2. SPY data was received recently (within 2 minutes)
+  // This prevents false positives when:
+  // - Only options data is streaming (lastDataReceived is set but SPY isn't)
+  // - Cache is seeded from DB but no actual WebSocket data flowing
+  const hasRealSpyData = spyPrice !== null && spyDataAge !== null && spyDataAge < 120000; // 2 min
 
   return {
     connected: status.connected,
     authenticated: status.authenticated,
     subscriptions: status.subscriptions,
-    hasRealData: spyPrice !== null && hasActuallyReceivedData,
+    hasRealData: hasRealSpyData,
     spyPrice,
     vixPrice,
     dataAge: status.lastDataReceived ? Date.now() - new Date(status.lastDataReceived).getTime() : null,
+    spyDataAge,
     subscriptionError: status.subscriptionError || null,
   };
 }
