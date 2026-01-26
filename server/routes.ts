@@ -2784,6 +2784,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // In relay mode, OAuth is not connected (WebSocket is intentionally disconnected)
           const isConnected = currentMode === 'relay' ? false : allStepsConnected;
 
+          // Try to fetch NAV from account
+          let nav: number | undefined;
+          try {
+            const globalBroker = getBroker();
+            if (globalBroker.api && isConnected) {
+              const account = await globalBroker.api.getAccount();
+              nav = account?.portfolioValue || account?.netLiquidation;
+            }
+          } catch (err) {
+            console.log('[IBKR Status] Failed to fetch NAV:', err);
+          }
+
           return res.json({
             configured: true,
             connected: isConnected,
@@ -2792,6 +2804,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
             accountId: process.env.IBKR_ACCOUNT_ID || 'Configured',
             clientId: (process.env.IBKR_CLIENT_ID || '').substring(0, 10) + '***',
             multiUserMode: true, // Multi-user mode enabled
+            nav, // Account NAV
             diagnostics: {
               oauth: {
                 status: oauthStatus,
@@ -2932,6 +2945,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // In relay mode, OAuth is not connected (WebSocket is intentionally disconnected)
       const isConnected = currentConnMode === 'relay' ? false : allStepsConnected;
 
+      // Try to fetch NAV from account
+      let navForUser: number | undefined;
+      try {
+        if (userBroker.api && isConnected) {
+          const account = await userBroker.api.getAccount();
+          navForUser = account?.portfolioValue || account?.netLiquidation;
+        }
+      } catch (err) {
+        console.log('[IBKR Status] Failed to fetch NAV for user:', err);
+      }
+
       return res.json({
         configured: true,
         connected: isConnected,
@@ -2940,6 +2964,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         accountId,
         clientId,
         multiUserMode: true, // Always true in multi-tenant mode
+        nav: navForUser, // Account NAV
         diagnostics: {
           oauth: {
             status: effectiveOAuthStatusUser,

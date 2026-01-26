@@ -224,14 +224,27 @@ export async function startWebSocketStream(): Promise<void> {
 
     // Register callback to broadcast updates to frontend WebSocket clients
     wsManager.onUpdate(async (update) => {
-      if (!update.symbol || !update.last || update.last <= 0) return;
+      if (!update.symbol) return;
+
+      // Get cached data which has the latest values
+      const cached = wsManager.getCachedMarketData(update.conid);
+
+      // Use last price, or mid of bid/ask, or cached last
+      let price = update.last;
+      if (!price || price <= 0) {
+        if (update.bid && update.ask && update.bid > 0 && update.ask > 0) {
+          price = (update.bid + update.ask) / 2;
+        } else if (cached?.last && cached.last > 0) {
+          price = cached.last;
+        }
+      }
+
+      // Still no price? Skip this update
+      if (!price || price <= 0) return;
 
       // Get previousClose from marketMetrics (more reliable than IBKR field)
       const { getMetrics } = await import('./marketMetrics.js');
       const metrics = getMetrics();
-
-      // Get cached data for IBKR previousClose as fallback
-      const cached = wsManager.getCachedMarketData(update.conid);
 
       let previousClose = 0;
       if (update.symbol === 'SPY') {
@@ -240,7 +253,6 @@ export async function startWebSocketStream(): Promise<void> {
         previousClose = metrics.vixPrevClose || cached?.previousClose || 0;
       }
 
-      const price = update.last;
       const changePct = previousClose > 0
         ? ((price - previousClose) / previousClose) * 100
         : 0;
@@ -251,8 +263,8 @@ export async function startWebSocketStream(): Promise<void> {
         broadcast({
           symbol: update.symbol,
           price,
-          bid: update.bid || price,
-          ask: update.ask || price,
+          bid: update.bid || cached?.bid || price,
+          ask: update.ask || cached?.ask || price,
           previousClose,
           changePct
         });
