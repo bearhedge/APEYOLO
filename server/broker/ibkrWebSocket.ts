@@ -1120,11 +1120,15 @@ export function getIbkrWebSocketDetailedStatus(): {
   const spyPrice = spyData?.last && spyData.last > 0 ? spyData.last : null;
   const vixPrice = vixData?.last && vixData.last > 0 ? vixData.last : null;
 
+  // hasRealData = true ONLY if we have non-zero price AND actually received data from IBKR
+  // This prevents showing OK when cache is just DB-seeded but no actual streaming
+  const hasActuallyReceivedData = status.lastDataReceived !== null;
+
   return {
     connected: status.connected,
     authenticated: status.authenticated,
     subscriptions: status.subscriptions,
-    hasRealData: spyPrice !== null,
+    hasRealData: spyPrice !== null && hasActuallyReceivedData,
     spyPrice,
     vixPrice,
     dataAge: status.lastDataReceived ? Date.now() - new Date(status.lastDataReceived).getTime() : null,
