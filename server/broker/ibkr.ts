@@ -18,7 +18,7 @@ import { webcrypto as nodeWebcrypto } from 'node:crypto';
 import { EventEmitter } from 'events';
 import { storage } from "../storage";
 import { saveTokenState } from '../services/ibkrTokenPersistence';
-import { getIbkrWebSocketManager } from './ibkrWebSocket';
+import { getIbkrWebSocketManager, getIbkrWebSocketStatus } from './ibkrWebSocket';
 import { db } from '../db';
 import { eq } from 'drizzle-orm';
 
@@ -1213,6 +1213,15 @@ class IbkrClient {
 
       // Handle 401/403 authentication errors
       if (retry && (msg.includes("401") || msg.includes("403"))) {
+        // DON'T clear auth if WebSocket is already working!
+        const wsStatus = getIbkrWebSocketStatus();
+        if (wsStatus?.authenticated && wsStatus?.connected) {
+          console.log('[IBKR] HTTP 401 but WebSocket authenticated - keeping auth state');
+          this.sessionReady = true;  // Mark ready since WS is working
+          return;  // Don't nuke, don't retry
+        }
+
+        // Only clear if WebSocket is also down
         console.log('[IBKR] Caught 401/403 error - clearing auth and retrying');
         this.accessToken = null;
         this.accessTokenExpiryMs = 0;
