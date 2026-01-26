@@ -1640,8 +1640,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Set up callback to broadcast updates to client WebSockets
       // Send as chart_price_update format which frontend expects
       wsManager.onUpdate((update: MarketDataUpdate) => {
-        // Only broadcast SPY and VIX updates with valid prices
+        // Only broadcast STOCK updates with valid prices (not option updates)
+        // This prevents option prices ($0.10) from being displayed as SPY underlying price
         if (!update.symbol || !update.last || update.last <= 0) return;
+        if (update.type === 'option') return;  // Skip option price updates
 
         // Get cached data for previousClose
         const cached = wsManager.getCachedMarketData(update.conid);
@@ -2103,17 +2105,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
         const cookieString = await getCookieStringFromClient(userBroker?.api || null);
         const sessionToken = await getSessionTokenFromClient(userBroker?.api || null);
 
-        if (cookieString) {
-          const newWs = initIbkrWebSocket(cookieString, sessionToken);
-          await newWs.connect();
-          // Resubscribe to SPY and VIX
-          newWs.subscribe(756733, { symbol: 'SPY', type: 'stock' });
-          newWs.subscribe(13455763, { symbol: 'VIX', type: 'stock' });
-          console.log('[WS-RECONNECT] WebSocket reconnected and resubscribed');
-          return res.json({ ok: true, message: 'WebSocket reconnected' });
-        } else {
+        if (!cookieString) {
           return res.json({ ok: false, message: 'No IBKR cookies available' });
         }
+        if (!sessionToken) {
+          console.error('[WS-RECONNECT] Session token is NULL - /tickle may have failed');
+          return res.json({ ok: false, message: 'No session token from /tickle - WebSocket cannot authenticate' });
+        }
+
+        const newWs = initIbkrWebSocket(cookieString, sessionToken);
+        await newWs.connect();
+        // Resubscribe to SPY and VIX
+        newWs.subscribe(756733, { symbol: 'SPY', type: 'stock' });
+        newWs.subscribe(13455763, { symbol: 'VIX', type: 'stock' });
+        console.log('[WS-RECONNECT] WebSocket reconnected and resubscribed');
+        return res.json({ ok: true, message: 'WebSocket reconnected' });
       }
       return res.json({ ok: false, message: 'No WebSocket manager' });
     } catch (err: any) {
@@ -3117,14 +3123,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // Initialize WebSocket for real-time data streaming (multi-tenant)
           const cookieString = await getCookieStringFromClient(userBroker.api);
           const sessionToken = await getSessionTokenFromClient(userBroker.api);
-          if (cookieString) {
+          if (cookieString && sessionToken) {
             console.log('[IBKR Test] Starting WebSocket for real-time data...');
+            console.log(`[IBKR Test] Session token present: ${sessionToken.substring(0, 8)}...`);
             const wsManager = initIbkrWebSocket(cookieString, sessionToken);
             await wsManager.connect();
             // Subscribe to SPY and VIX
             wsManager.subscribe(756733, { symbol: 'SPY', type: 'stock' }); // SPY
             wsManager.subscribe(13455763, { symbol: 'VIX', type: 'stock' }); // VIX
             console.log('[IBKR Test] WebSocket connected and subscribed to SPY/VIX');
+          } else if (cookieString && !sessionToken) {
+            console.error('[IBKR Test] CRITICAL: Cookies present but session token is NULL!');
+            console.error('[IBKR Test] WebSocket cannot authenticate without session token from /tickle');
+            console.error('[IBKR Test] This means OAuth succeeded but /tickle failed to return a session');
           }
         } catch (err) {
           console.error('[IBKR Test] Failed to establish gateway or WebSocket:', err);

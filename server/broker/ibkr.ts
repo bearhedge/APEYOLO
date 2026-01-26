@@ -989,17 +989,18 @@ class IbkrClient {
   private async initBrokerageWithSso(): Promise<void> {
     if (this.sessionReady) return;
 
-    const doInit = async () => {
-      // Use whatever auth method is available
+    const doInit = async (authMethod: 'sso' | 'oauth' | 'cookies') => {
+      // Use specified auth method (matching VALIDATE's fallback pattern)
       let headers: any = { 'Content-Type': 'application/json' };
 
-      if (this.ssoAccessToken) {
+      if (authMethod === 'sso' && this.ssoAccessToken) {
         headers = { ...this.authHeaders(), 'Content-Type': 'application/json' };
-      } else if (this.accessToken) {
-        console.log('[IBKR][INIT] Using OAuth token as fallback');
+        console.log('[IBKR][INIT] Using SSO Bearer token');
+      } else if (authMethod === 'oauth' && this.accessToken) {
         headers = { 'Authorization': `Bearer ${this.accessToken}`, 'Content-Type': 'application/json' };
+        console.log('[IBKR][INIT] Using OAuth token');
       } else {
-        console.log('[IBKR][INIT] Attempting init with cookies only');
+        console.log('[IBKR][INIT] Using cookies only');
       }
 
       const r = await this.http.post(
@@ -1010,21 +1011,40 @@ class IbkrClient {
       const bodyText = typeof r.data === 'string' ? r.data : JSON.stringify(r.data || {});
       const snippet = bodyText.slice(0, 200);
       const traceVal = (r.headers as any)['traceid'] || (r.headers as any)['x-traceid'] || (r.headers as any)['x-request-id'] || (r.headers as any)['x-correlation-id'];
-      console.log(`[IBKR][INIT] status=${r.status} traceId=${traceVal ?? ''} body=${snippet}`);
+      console.log(`[IBKR][INIT] status=${r.status} traceId=${traceVal ?? ''} body=${snippet} authMethod=${authMethod}`);
+      // Always update status - user needs to see real state, not cached success
+      this.last.init = { status: r.status, ts: new Date().toISOString(), requestId: traceVal };
       if (r.status >= 200 && r.status < 300) {
-        // Only update status on success - prevents UI from flashing red during refresh attempts
-        this.last.init = { status: r.status, ts: new Date().toISOString(), requestId: traceVal };
-        await storage.createAuditLog({ eventType: "IBKR_INIT", details: `OK http=${r.status} req=${traceVal ?? ''}`, status: "SUCCESS" });
+        await storage.createAuditLog({ eventType: "IBKR_INIT", details: `OK http=${r.status} req=${traceVal ?? ''} authMethod=${authMethod}`, status: "SUCCESS" });
       } else {
-        // Log failure but DON'T update this.last.init - keep showing previous success status
-        // The retry logic will handle recovery, no need to flash red in UI
-        await storage.createAuditLog({ eventType: "IBKR_INIT", details: `FAILED http=${r.status} req=${traceVal ?? ''} body=${snippet}`, status: "FAILED" });
+        await storage.createAuditLog({ eventType: "IBKR_INIT", details: `FAILED http=${r.status} req=${traceVal ?? ''} body=${snippet} authMethod=${authMethod}`, status: "FAILED" });
       }
       return r;
     };
 
-    // First attempt
-    let res = await doInit();
+    // Determine first auth method based on available tokens
+    let firstMethod: 'sso' | 'oauth' | 'cookies' = 'cookies';
+    if (this.ssoAccessToken) {
+      firstMethod = 'sso';
+    } else if (this.accessToken) {
+      firstMethod = 'oauth';
+    }
+
+    // First attempt with best available auth
+    let res = await doInit(firstMethod);
+
+    // If 401, try OAuth token (if we used SSO first)
+    if (res.status === 401 && firstMethod === 'sso' && this.accessToken) {
+      console.log('[IBKR][INIT] 401 with SSO token, trying OAuth token');
+      res = await doInit('oauth');
+    }
+
+    // If still 401, try cookies only (if we haven't already)
+    if (res.status === 401 && firstMethod !== 'cookies') {
+      console.log('[IBKR][INIT] 401 with tokens, trying cookies only');
+      res = await doInit('cookies');
+    }
+
     const bodyStr1 = typeof res.data === 'string' ? res.data : JSON.stringify(res.data || {});
 
     // Handle 410 Gone - session is completely stale
@@ -1049,10 +1069,19 @@ class IbkrClient {
     }
 
     if (res.status === 500 && /failed to generate sso dh token/i.test(bodyStr1)) {
-      // Wait, tickle, and retry once
+      // Wait, tickle, and retry with same fallback cascade
+      console.log('[IBKR][INIT] Got 500 (failed to generate sso dh token), waiting and retrying...');
       await this.sleep(3000);
       await this.tickle();
-      res = await doInit();
+
+      // Retry with fallback cascade
+      res = await doInit(firstMethod);
+      if (res.status === 401 && firstMethod === 'sso' && this.accessToken) {
+        res = await doInit('oauth');
+      }
+      if (res.status === 401 && firstMethod !== 'cookies') {
+        res = await doInit('cookies');
+      }
 
       // Check for 410 on retry as well
       if (res.status === 410) {
@@ -2189,6 +2218,16 @@ class IbkrClient {
       const ibkrMonth = this.formatMonthForIBKR(expirationMonth);
       diagnostics.monthFormatted = ibkrMonth;
 
+      // Step 0: WARM UP SESSION (critical for option data)
+      // Tickle refreshes the session before making option requests
+      console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Step 0: Warming up session...`);
+      try {
+        await this.tickle();
+        await this.sleep(500);
+      } catch (err: any) {
+        console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] Tickle warning: ${err.message}`);
+      }
+
       // MANDATORY FIRST STEP: Call /secdef/search to activate options data
       // Per IBKR docs: "The typical reason that empty strikes may be retrieved is because
       // the underlying contract was NOT first requested through the /secdef/search endpoint."
@@ -2199,7 +2238,7 @@ class IbkrClient {
       try {
         const searchResp = await this.httpGetWithBridgeRetry(searchUrl, `getOptionChainWithStrikes:secdef-search:${reqId}`);
         console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] /secdef/search response:`, JSON.stringify(searchResp.data).slice(0, 300));
-        await this.sleep(500); // Brief wait for IBKR to register the search
+        await this.sleep(1500); // INCREASED from 500ms - give IBKR time to register
       } catch (err: any) {
         console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] /secdef/search warning: ${err.message}`);
       }
@@ -2211,10 +2250,10 @@ class IbkrClient {
       console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Step 2: Calling /secdef/strikes: ${strikesUrl}`);
 
       // Prime strikes endpoint - first call may still need to subscribe
-      console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Priming strikes endpoint...`);
+      console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Step 2: Priming strikes endpoint...`);
       try {
         await this.httpGetWithBridgeRetry(strikesUrl, `getOptionChainWithStrikes:strikes-prime:${reqId}`);
-        await this.sleep(750); // Reduced from 1500ms for faster loading
+        await this.sleep(1500); // INCREASED from 750ms - give IBKR time to prepare data
       } catch (err: any) {
         console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] Strikes prime warning: ${err.message}`);
       }
@@ -2224,7 +2263,7 @@ class IbkrClient {
       let strikesData = strikesResp.data as { call?: number[]; put?: number[] };
 
       // Retry up to 3 times with increasing delays if empty
-      const retryDelays = [2000, 3000, 5000];
+      const retryDelays = [3000, 5000, 8000]; // INCREASED - longer delays for IBKR to prepare data
       for (let attempt = 0; attempt < retryDelays.length; attempt++) {
         if (strikesResp.status === 200 && strikesData.call?.length && strikesData.put?.length) {
           break; // Got data, exit retry loop

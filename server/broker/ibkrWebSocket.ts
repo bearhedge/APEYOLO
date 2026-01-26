@@ -72,6 +72,7 @@ const DEFAULT_STOCK_FIELDS = [
 export interface MarketDataUpdate {
   conid: number;
   symbol?: string;
+  type?: 'stock' | 'option';  // Subscription type to distinguish underlying from options
   last?: number;
   bid?: number;
   ask?: number;
@@ -739,6 +740,7 @@ export class IbkrWebSocketManager {
     const update: MarketDataUpdate = {
       conid,
       symbol: sub?.symbol,
+      type: sub?.type,  // Include subscription type to distinguish stock vs option updates
       timestamp: new Date(),
     };
 
