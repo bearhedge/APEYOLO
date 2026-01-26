@@ -233,6 +233,9 @@ export async function startWebSocketStream(): Promise<void> {
 
     // Register callback to broadcast updates to frontend WebSocket clients
     wsManager.onUpdate(async (update) => {
+      // Only broadcast stock data, not options (prevents option prices contaminating stock display)
+      if (update.type === 'option') return;
+
       if (!update.symbol) return;
 
       // Get cached data which has the latest values
