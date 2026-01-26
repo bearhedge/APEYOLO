@@ -1222,14 +1222,18 @@ class IbkrClient {
         }
 
         // Only clear if WebSocket is also down
-        console.log('[IBKR] Caught 401/403 error - clearing auth and retrying');
+        console.log('[IBKR] Caught 401/403 error - clearing auth and retrying with forceRefresh');
         this.accessToken = null;
         this.accessTokenExpiryMs = 0;
         this.ssoSessionId = null;
         this.ssoAccessToken = null;
+        this.ssoAccessTokenExpiryMs = 0;  // Also clear SSO token expiry
         this.sessionReady = false;
         this.accountSelected = false; // Must reset account selection when session resets
-        return this._doEnsureReady(false);
+        this.lastInitTimeMs = 0;  // Force re-init
+        this.lastValidateTimeMs = 0;  // Force re-validate
+        await this.sleep(1000);  // Brief delay before retry
+        return this._doEnsureReady(false, true);  // FIXED: forceRefresh = true
       }
 
       throw err;
