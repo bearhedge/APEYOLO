@@ -26,9 +26,42 @@ export interface OptionChainUpdate {
 }
 type OptionChainCallback = (update: OptionChainUpdate, symbol: string) => void;
 
+// Connection status from server state machine (push-based, not polling)
+export interface ConnectionStatusUpdate {
+  phase: 'disconnected' | 'authenticating' | 'connected' | 'streaming' | 'stale' | 'error';
+  auth: {
+    oauth: { success: boolean; timestamp: string | null };
+    sso: { success: boolean; timestamp: string | null };
+    validate: { success: boolean; timestamp: string | null };
+    init: { success: boolean; timestamp: string | null };
+  };
+  websocket: {
+    connected: boolean;
+    authenticated: boolean;
+    lastHeartbeat: string | null;
+  };
+  dataFlow: {
+    receiving: boolean;
+    lastTick: string | null;
+    spyPrice: number | null;
+    status: 'streaming' | 'stale' | 'none';
+  };
+  error?: {
+    message: string;
+    timestamp: string;
+    recoverable: boolean;
+  };
+  lastUpdated: string;
+}
+type ConnectionStatusCallback = (status: ConnectionStatusUpdate) => void;
+
 // Global callback registries (shared across hook instances)
 const chartPriceCallbacks = new Set<ChartPriceCallback>();
 const optionChainCallbacks = new Set<OptionChainCallback>();
+const connectionStatusCallbacks = new Set<ConnectionStatusCallback>();
+
+// Store latest connection status for immediate access
+let latestConnectionStatus: ConnectionStatusUpdate | null = null;
 
 // Reconnection settings
 const INITIAL_RECONNECT_DELAY = 1000; // 1 second
@@ -122,6 +155,19 @@ export function useWebSocket() {
                   }
                 });
               }
+            }
+
+            // Handle connection_status messages (push-based status updates)
+            if (message.type === 'connection_status' && message.data) {
+              const status = message.data as ConnectionStatusUpdate;
+              latestConnectionStatus = status;
+              connectionStatusCallbacks.forEach(callback => {
+                try {
+                  callback(status);
+                } catch (err) {
+                  console.error('[WebSocket] Connection status callback error:', err);
+                }
+              });
             }
           } catch (error) {
             console.error('[WebSocket] Failed to parse message:', error);
@@ -218,11 +264,32 @@ export function useWebSocket() {
     };
   }, []);
 
+  // Register a callback for connection status updates (push-based)
+  // Returns an unsubscribe function
+  const onConnectionStatusUpdate = useCallback((callback: ConnectionStatusCallback) => {
+    connectionStatusCallbacks.add(callback);
+    // Immediately call with latest status if available
+    if (latestConnectionStatus) {
+      callback(latestConnectionStatus);
+    }
+    return () => {
+      connectionStatusCallbacks.delete(callback);
+    };
+  }, []);
+
   return {
     isConnected,
     lastMessage,
     sendMessage,
     onChartPriceUpdate,
     onOptionChainUpdate,
+    onConnectionStatusUpdate,
   };
+}
+
+/**
+ * Get the latest connection status without subscribing to updates
+ */
+export function getLatestConnectionStatus(): ConnectionStatusUpdate | null {
+  return latestConnectionStatus;
 }

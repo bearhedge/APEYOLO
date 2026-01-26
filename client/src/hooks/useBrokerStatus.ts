@@ -1,9 +1,15 @@
 /**
  * useBrokerStatus - Unified hook for broker connection status
  * Single source of truth used across Engine, Settings, and Header components
+ *
+ * Two modes available:
+ * 1. useBrokerStatus() - HTTP-based (legacy, for initial load)
+ * 2. useConnectionStatus() - WebSocket push-based (preferred, real-time)
  */
 
 import { useQuery } from '@tanstack/react-query';
+import { useState, useEffect, useCallback } from 'react';
+import { useWebSocket, ConnectionStatusUpdate, getLatestConnectionStatus } from './use-websocket';
 
 export interface BrokerDiagnostics {
   oauth: { status: number; message: string };
@@ -139,5 +145,86 @@ export function getConnectionPhase(diagnostics?: BrokerDiagnostics): {
     phase: 'Connected',
     progress: 100,
     message: 'All phases completed',
+  };
+}
+
+/**
+ * WebSocket push-based connection status hook
+ * Preferred over useBrokerStatus for real-time updates without polling
+ */
+export function useConnectionStatus() {
+  const { onConnectionStatusUpdate } = useWebSocket();
+  const [status, setStatus] = useState<ConnectionStatusUpdate | null>(getLatestConnectionStatus);
+
+  useEffect(() => {
+    const unsubscribe = onConnectionStatusUpdate((update) => {
+      setStatus(update);
+    });
+    return unsubscribe;
+  }, [onConnectionStatusUpdate]);
+
+  // Derive connection state from status
+  const isAuthComplete = status?.auth
+    ? status.auth.oauth.success &&
+      status.auth.sso.success &&
+      status.auth.validate.success &&
+      status.auth.init.success
+    : false;
+
+  const isStreaming = status?.dataFlow?.status === 'streaming';
+  const isStale = status?.dataFlow?.status === 'stale';
+  const hasError = status?.phase === 'error';
+
+  // Convert to BrokerDiagnostics format for backward compatibility
+  const diagnostics: BrokerDiagnostics | undefined = status?.auth
+    ? {
+        oauth: {
+          status: status.auth.oauth.success ? 200 : 0,
+          message: status.auth.oauth.success ? 'Connected' : 'Not connected',
+        },
+        sso: {
+          status: status.auth.sso.success ? 200 : 0,
+          message: status.auth.sso.success ? 'Active' : 'Not active',
+        },
+        validate: {
+          status: status.auth.validate.success ? 200 : 0,
+          message: status.auth.validate.success ? 'Validated' : 'Not validated',
+        },
+        init: {
+          status: status.auth.init.success ? 200 : 0,
+          message: status.auth.init.success ? 'Ready' : 'Not initialized',
+        },
+      }
+    : undefined;
+
+  return {
+    // Raw status from server
+    rawStatus: status,
+
+    // Connection phase
+    phase: status?.phase ?? 'disconnected',
+    isAuthComplete,
+    isStreaming,
+    isStale,
+    hasError,
+
+    // Backward compatible fields
+    connected: isAuthComplete,
+    diagnostics,
+
+    // Data flow info
+    dataFlow: status?.dataFlow ?? null,
+    spyPrice: status?.dataFlow?.spyPrice ?? null,
+    lastTick: status?.dataFlow?.lastTick ?? null,
+
+    // WebSocket health
+    wsConnected: status?.websocket?.connected ?? false,
+    wsAuthenticated: status?.websocket?.authenticated ?? false,
+
+    // Error info
+    error: status?.error ?? null,
+
+    // Timestamps
+    lastUpdated: status?.lastUpdated ?? null,
   };
 }

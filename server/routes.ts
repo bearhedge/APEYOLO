@@ -763,6 +763,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
   };
 
+  // Export broadcast function for connection status updates (push-based, not polling)
+  (global as any).broadcastConnectionStatus = (state: any) => {
+    const message = JSON.stringify({
+      type: 'connection_status',
+      data: state,
+      timestamp: new Date().toISOString()
+    });
+
+    wsClients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(message);
+      }
+    });
+  };
+
   // Account info (via provider) - SECURED: requires auth + user's own IBKR credentials
   app.get('/api/account', requireAuth, async (req, res) => {
     try {
@@ -2694,12 +2709,17 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const wsDetailedStatusForCheck = getIbkrWebSocketDetailedStatus();
           const hasRealDataFlow = wsDetailedStatusForCheck?.hasRealData === true;
 
-          const allStepsConnected =
+          // Auth is complete when all 4 auth steps succeed
+          // Data flow is tracked separately - auth should stay green once authenticated
+          const authComplete =
             effectiveOAuthStatus === 200 &&
             effectiveSSOStatus === 200 &&
             effectiveValidateStatus === 200 &&
-            effectiveInitStatus === 200 &&
-            hasRealDataFlow; // NEW: require real data, not just auth
+            effectiveInitStatus === 200;
+
+          // Auth success = connected (stays green once authenticated)
+          // Data flow (hasRealDataFlow) is reported separately in WebSocket diagnostic
+          const allStepsConnected = authComplete;
 
           // Get connection mode for relay detection
           const { getConnectionMode } = require('./services/marketDataAutoStart');

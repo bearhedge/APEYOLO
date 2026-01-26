@@ -15,6 +15,7 @@ import WebSocket from 'ws';
 import { db } from '../db';
 import { latestPrices } from '@shared/schema';
 import { eq } from 'drizzle-orm';
+import { getConnectionStateManager } from './connectionState';
 
 // Market data field codes from IBKR API
 export const IBKR_FIELDS = {
@@ -304,6 +305,9 @@ export class IbkrWebSocketManager {
           this.reconnectAttempts = 0;
           this.reconnectDelay = 1000;
 
+          // Update connection state machine
+          getConnectionStateManager().setWebSocketStatus(true, false);
+
           // Start heartbeat to keep connection alive (every 10 seconds per IBKR docs)
           this.startHeartbeat();
 
@@ -376,6 +380,8 @@ export class IbkrWebSocketManager {
 
               // authenticated=true or no authenticated field (legacy) - we're good
               this.isAuthenticated = true;
+              // Update connection state machine - now authenticated
+              getConnectionStateManager().setWebSocketStatus(true, true);
               clearTimeout(connectionTimeout);
               // Start proactive session refresh to prevent token expiry
               this.startSessionRefresh();
@@ -397,6 +403,8 @@ export class IbkrWebSocketManager {
             if (isAuthConfirmed) {
               console.log('[IbkrWS] WebSocket authenticated successfully');
               this.isAuthenticated = true;
+              // Update connection state machine - now authenticated
+              getConnectionStateManager().setWebSocketStatus(true, true);
               clearTimeout(connectionTimeout);
               this.startSessionRefresh();
               // Now that we're authenticated, resubscribe
@@ -409,6 +417,8 @@ export class IbkrWebSocketManager {
             if (msg.session) {
               console.log('[IbkrWS] Session confirmed');
               this.isAuthenticated = true;
+              // Update connection state machine - now authenticated
+              getConnectionStateManager().setWebSocketStatus(true, true);
               clearTimeout(connectionTimeout);
               this.startSessionRefresh();
               this.resubscribeAll();
@@ -426,6 +436,8 @@ export class IbkrWebSocketManager {
           if (!this.isAuthenticated && msgStr.includes('"topic":"smd"')) {
             console.log('[IbkrWS] Received market data - connection authenticated');
             this.isAuthenticated = true;
+            // Update connection state machine - now authenticated
+            getConnectionStateManager().setWebSocketStatus(true, true);
             clearTimeout(connectionTimeout);
             this.startSessionRefresh();
             resolve();
@@ -448,6 +460,8 @@ export class IbkrWebSocketManager {
           this.isConnected = false;
           this.isConnecting = false;
           this.isAuthenticated = false;
+          // Update connection state machine - disconnected
+          getConnectionStateManager().setWebSocketStatus(false, false);
           this.stopHeartbeat();
 
           // Attempt reconnection
@@ -806,6 +820,11 @@ export class IbkrWebSocketManager {
     // Track when we received actual data (critical for staleness detection)
     this.lastDataReceived = new Date();
 
+    // Update connection state machine if this is SPY data
+    if (conid === SPY_CONID && cached.last > 0) {
+      getConnectionStateManager().setDataReceived(cached.last);
+    }
+
     // Notify all callbacks
     for (const callback of this.callbacks) {
       try {
@@ -930,6 +949,8 @@ export class IbkrWebSocketManager {
     this.heartbeatInterval = setInterval(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send('tic');
+        // Record heartbeat in connection state machine
+        getConnectionStateManager().recordHeartbeat();
       }
     }, 25000);
   }
@@ -1145,11 +1166,12 @@ export function getIbkrWebSocketDetailedStatus(): {
 
   // hasRealData = true ONLY if:
   // 1. We have a non-zero SPY price
-  // 2. SPY data was received recently (within 2 minutes)
+  // 2. SPY data was received recently (within 30 minutes)
+  // Using 30 min to handle sparse pre-market ticks and overnight gaps
   // This prevents false positives when:
   // - Only options data is streaming (lastDataReceived is set but SPY isn't)
   // - Cache is seeded from DB but no actual WebSocket data flowing
-  const hasRealSpyData = spyPrice !== null && spyDataAge !== null && spyDataAge < 120000; // 2 min
+  const hasRealSpyData = spyPrice !== null && spyDataAge !== null && spyDataAge < 1800000; // 30 min
 
   return {
     connected: status.connected,
