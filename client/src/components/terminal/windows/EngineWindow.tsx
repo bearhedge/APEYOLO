@@ -479,7 +479,6 @@ export function EngineWindow() {
         vixPrevClose={wsVixPrevClose}
         isConnected={isConnected}
         wsConnected={isWsConnected}
-        nav={ibkrStatus?.nav}
         mode={mode}
         autoCountdown={mode === 'AUTO' ? autoCountdown : undefined}
         onModeToggle={handleModeToggle}

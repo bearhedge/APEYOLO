@@ -1,8 +1,10 @@
 /**
  * TopBar - HUD status bar showing market data and mode
  *
- * Displays: SPY bid x ask + % change, VIX bid x ask + % change, connection status, AUTO/MANUAL mode
+ * Displays: SPY bid x ask + % change, VIX value, connection status, NY/HK times, AUTO/MANUAL mode
  */
+
+import { useState, useEffect } from 'react';
 
 interface TopBarProps {
   spyBid: number;
@@ -13,7 +15,6 @@ interface TopBarProps {
   vixPrevClose: number;
   isConnected: boolean;
   wsConnected?: boolean;
-  nav?: number;          // Account NAV
   mode: 'MANUAL' | 'AUTO';
   autoCountdown?: number; // seconds until next auto-analyze
   onModeToggle: () => void;
@@ -28,11 +29,35 @@ export function TopBar({
   vixPrevClose,
   isConnected,
   wsConnected,
-  nav,
   mode,
   autoCountdown,
   onModeToggle,
 }: TopBarProps) {
+  // NY/HK time state
+  const [times, setTimes] = useState({ ny: '', hk: '' });
+
+  useEffect(() => {
+    const updateTimes = () => {
+      const now = new Date();
+      const ny = now.toLocaleTimeString('en-US', {
+        timeZone: 'America/New_York',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      });
+      const hk = now.toLocaleTimeString('en-US', {
+        timeZone: 'Asia/Hong_Kong',
+        hour: '2-digit',
+        minute: '2-digit',
+        hour12: false
+      });
+      setTimes({ ny, hk });
+    };
+    updateTimes();
+    const interval = setInterval(updateTimes, 1000);
+    return () => clearInterval(interval);
+  }, []);
+
   // Calculate midpoint for % change
   const spyMid = (spyBid + spyAsk) / 2;
   const vixMid = (vixBid + vixAsk) / 2;
@@ -124,14 +149,14 @@ export function TopBar({
         </span>
       </div>
 
-      {/* Right: NAV + Mode toggle */}
+      {/* Right: NY/HK Times + Mode toggle */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-        {/* NAV */}
-        {nav !== undefined && nav > 0 && (
-          <span style={{ color: '#00ffff', fontWeight: 600 }}>
-            NAV ${nav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-          </span>
-        )}
+        {/* NY/HK Times */}
+        <span style={{ color: '#888', fontSize: 12 }}>
+          <span style={{ color: '#666' }}>NY</span> {times.ny}
+          <span style={{ margin: '0 8px', color: '#333' }}>|</span>
+          <span style={{ color: '#666' }}>HK</span> {times.hk}
+        </span>
 
         {/* Mode toggle */}
         <button
