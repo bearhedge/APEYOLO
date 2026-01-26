@@ -644,6 +644,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
   };
 
+  // Export broadcast function for market data updates (accessible from marketDataAutoStart)
+  (global as any).broadcastMarketData = (data: { symbol: string; price: number; bid: number; ask: number; previousClose: number; changePct: number }) => {
+    const message = JSON.stringify({
+      type: 'chart_price_update',
+      data: {
+        ...data,
+        timestamp: Date.now()
+      }
+    });
+    wsClients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(message);
+      }
+    });
+  };
+
   wss.on('connection', (ws) => {
     console.log('Client connected to websocket');
     wsClients.add(ws);
@@ -1595,11 +1611,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const wsManager = initIbkrWebSocket(cookieString, sessionToken);
 
       // Set up callback to broadcast updates to client WebSockets
+      // Send as chart_price_update format which frontend expects
       wsManager.onUpdate((update: MarketDataUpdate) => {
+        // Only broadcast SPY and VIX updates with valid prices
+        if (!update.symbol || !update.last || update.last <= 0) return;
+
+        // Get cached data for previousClose
+        const cached = wsManager.getCachedMarketData(update.conid);
+        const previousClose = cached?.previousClose || 0;
+        const changePct = previousClose > 0
+          ? ((update.last - previousClose) / previousClose) * 100
+          : 0;
+
         const message = JSON.stringify({
-          type: 'ibkr_market_data',
-          data: update,
-          timestamp: new Date().toISOString()
+          type: 'chart_price_update',
+          data: {
+            symbol: update.symbol,
+            price: update.last,
+            bid: update.bid || 0,
+            ask: update.ask || 0,
+            previousClose,
+            changePct,
+            timestamp: Date.now()
+          }
         });
 
         wsClients.forEach(client => {

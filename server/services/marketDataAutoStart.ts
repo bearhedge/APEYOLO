@@ -222,6 +222,44 @@ export async function startWebSocketStream(): Promise<void> {
     wsManager.subscribe(VIX_CONID, { symbol: 'VIX', type: 'stock' });
     console.log('[MarketDataAutoStart] Subscribed to SPY and VIX');
 
+    // Register callback to broadcast updates to frontend WebSocket clients
+    wsManager.onUpdate(async (update) => {
+      if (!update.symbol || !update.last || update.last <= 0) return;
+
+      // Get previousClose from marketMetrics (more reliable than IBKR field)
+      const { getMetrics } = await import('./marketMetrics.js');
+      const metrics = getMetrics();
+
+      // Get cached data for IBKR previousClose as fallback
+      const cached = wsManager.getCachedMarketData(update.conid);
+
+      let previousClose = 0;
+      if (update.symbol === 'SPY') {
+        previousClose = metrics.spyPrevClose || cached?.previousClose || 0;
+      } else if (update.symbol === 'VIX') {
+        previousClose = metrics.vixPrevClose || cached?.previousClose || 0;
+      }
+
+      const price = update.last;
+      const changePct = previousClose > 0
+        ? ((price - previousClose) / previousClose) * 100
+        : 0;
+
+      // Use global broadcast function (defined in routes.ts)
+      const broadcast = (global as any).broadcastMarketData;
+      if (broadcast) {
+        broadcast({
+          symbol: update.symbol,
+          price,
+          bid: update.bid || price,
+          ask: update.ask || price,
+          previousClose,
+          changePct
+        });
+      }
+    });
+    console.log('[MarketDataAutoStart] Registered callback for frontend broadcasting');
+
     console.log('[MarketDataAutoStart] Market data streaming active!');
 
     // Also try to start option chain streaming if market is open

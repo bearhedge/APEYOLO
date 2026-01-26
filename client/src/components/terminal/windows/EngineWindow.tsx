@@ -432,14 +432,15 @@ export function EngineWindow() {
     >
       {/* Top bar */}
       <TopBar
-        spyBid={spyBid}
-        spyAsk={spyAsk}
-        spyPrevClose={spyPrevClose}
-        vixBid={vixBid}
-        vixAsk={vixAsk}
-        vixPrevClose={vixPrevClose}
+        spyBid={wsSpyBid}
+        spyAsk={wsSpyAsk}
+        spyPrevClose={wsSpyPrevClose}
+        vixBid={wsVixBid}
+        vixAsk={wsVixAsk}
+        vixPrevClose={wsVixPrevClose}
         isConnected={isConnected}
         wsConnected={isWsConnected}
+        nav={ibkrStatus?.nav}
         mode={mode}
         autoCountdown={mode === 'AUTO' ? autoCountdown : undefined}
         onModeToggle={handleModeToggle}
