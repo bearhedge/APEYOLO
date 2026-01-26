@@ -186,30 +186,29 @@ export async function analyzeMarketRegime(useRealData: boolean = true, symbol: s
       console.error(`[Step1] VIX fetch FAILED: ${error.message}`);
     }
 
-    // VIX database fallback (for off-hours or API failures)
+    // VIX fallback: latest_prices table (WebSocket persisted)
     if (!vixLevel || vixLevel === 0) {
       try {
-        console.log(`[Step1] Trying database for last known VIX...`);
+        console.log(`[Step1] Trying latest_prices for VIX...`);
         const result = await pool.query(`
-          SELECT close, timestamp
-          FROM market_data
+          SELECT price, updated_at
+          FROM latest_prices
           WHERE symbol = 'VIX'
-          ORDER BY timestamp DESC
           LIMIT 1
         `);
-        if (result.rows.length > 0 && result.rows[0].close) {
-          vixLevel = parseFloat(result.rows[0].close);
+        if (result.rows.length > 0 && result.rows[0].price > 0) {
+          vixLevel = parseFloat(result.rows[0].price);
           vixChange = 0;
-          console.log(`[Step1] VIX from database: ${vixLevel.toFixed(2)} (as of ${result.rows[0].timestamp})`);
+          console.log(`[Step1] VIX from latest_prices: ${vixLevel.toFixed(2)} (updated ${result.rows[0].updated_at})`);
         }
       } catch (error: any) {
-        console.warn(`[Step1] VIX database fallback failed: ${error.message}`);
+        console.warn(`[Step1] VIX latest_prices query failed: ${error.message}`);
       }
     }
 
-    // Fetch underlying price with fallback:
-    // 1. IBKR market data snapshot (live price)
-    // 2. Database (last known close price for off-hours)
+    // Fetch underlying price:
+    // 1. IBKR WebSocket cache (live)
+    // 2. latest_prices table (WebSocket persisted)
     console.log(`[Step1] Fetching ${symbol} price...`);
 
     // Try 1: IBKR market data snapshot (direct call, no cache)
@@ -231,10 +230,11 @@ export async function analyzeMarketRegime(useRealData: boolean = true, symbol: s
       console.log(`[Step1] No userId provided - skipping IBKR market data, using database fallback`);
     }
 
-    // Try 2: latest_prices table (recently persisted WebSocket data - most current)
+    // Try 2: latest_prices table (WebSocket data persisted to DB)
+    // This is the ONLY database fallback - no stale historical data
     if (!spyPrice || spyPrice === 0) {
       try {
-        console.log(`[Step1] Trying latest_prices table for ${symbol}...`);
+        console.log(`[Step1] Trying latest_prices for ${symbol}...`);
         const result = await pool.query(`
           SELECT price, updated_at
           FROM latest_prices
@@ -244,33 +244,11 @@ export async function analyzeMarketRegime(useRealData: boolean = true, symbol: s
         if (result.rows.length > 0 && result.rows[0].price > 0) {
           spyPrice = parseFloat(result.rows[0].price);
           spyChange = 0;
-          spySource = 'latest_prices (WebSocket persisted)';
+          spySource = 'latest_prices';
           console.log(`[Step1] ${symbol} from latest_prices: $${spyPrice.toFixed(2)} (updated ${result.rows[0].updated_at})`);
         }
       } catch (error: any) {
-        console.warn(`[Step1] latest_prices fallback failed: ${error.message}`);
-      }
-    }
-
-    // Try 3: market_data table (old historical data - last resort)
-    if (!spyPrice || spyPrice === 0) {
-      try {
-        console.log(`[Step1] Trying market_data table for last known ${symbol} price...`);
-        const result = await pool.query(`
-          SELECT close, timestamp
-          FROM market_data
-          WHERE symbol = $1
-          ORDER BY timestamp DESC
-          LIMIT 1
-        `, [symbol]);
-        if (result.rows.length > 0 && result.rows[0].close) {
-          spyPrice = parseFloat(result.rows[0].close);
-          spyChange = 0;
-          spySource = 'market_data (historical)';
-          console.log(`[Step1] ${symbol} from market_data: $${spyPrice.toFixed(2)} (as of ${result.rows[0].timestamp})`);
-        }
-      } catch (error: any) {
-        console.warn(`[Step1] market_data fallback failed: ${error.message}`);
+        console.warn(`[Step1] latest_prices query failed: ${error.message}`);
       }
     }
 
