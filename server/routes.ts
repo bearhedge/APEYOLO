@@ -4,7 +4,7 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import WebSocket, { WebSocketServer } from "ws";
 import { storage } from "./storage";
-import { getBrokerForUser, clearUserBrokerCache } from "./broker";
+import { getBroker, getBrokerForUser, clearUserBrokerCache } from "./broker";
 import { getIbkrDiagnostics, getDiagnosticsFromClient, ensureIbkrReady, ensureClientReady, placePaperStockOrder, placePaperOptionOrder, listPaperOpenOrders, getIbkrCookieString, getIbkrSessionToken, getCookieStringFromClient, getSessionTokenFromClient, resolveSymbolConid } from "./broker/ibkr";
 import { IbkrWebSocketManager, initIbkrWebSocket, getIbkrWebSocketManager, destroyIbkrWebSocket, getIbkrWebSocketStatus, getIbkrWebSocketDetailedStatus, type MarketDataUpdate, wsManagerInstance } from "./broker/ibkrWebSocket";
 import { getOptionChainStreamer, initOptionChainStreamer } from "./broker/optionChainStreamer";
@@ -78,6 +78,9 @@ async function getSessionFromRequest(req: any) {
 }
 
 export async function registerRoutes(app: Express): Promise<Server> {
+  // Get the global broker instance (IBKR or mock based on env vars)
+  const broker = getBroker();
+
   // Add cookie parser middleware
   app.use(cookieParser());
 
