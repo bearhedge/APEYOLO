@@ -22,6 +22,7 @@ import {
   ActionBar,
   CommandInput,
   useKeyboardControls,
+  TradingFlow,
   type LogLine,
   type Strategy,
 } from './engine';
@@ -44,6 +45,7 @@ export function EngineWindow() {
   const [mode, setMode] = useState<Mode>('MANUAL');
   const [autoCountdown, setAutoCountdown] = useState(300); // 5 minutes
   const [showHelp, setShowHelp] = useState(false);
+  const [showTradingFlow, setShowTradingFlow] = useState(false);
 
   // Strategy and position state
   const [strategy, setStrategy] = useState<Strategy>('strangle');
@@ -419,6 +421,47 @@ export function EngineWindow() {
     onPositions: () => handleAgentCommand('/positions'),
   });
 
+  // If trading flow is active, show that instead
+  if (showTradingFlow) {
+    return (
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          height: '100%',
+          background: '#0a0a0a',
+        }}
+      >
+        {/* Header with back button */}
+        <div style={{
+          display: 'flex',
+          alignItems: 'center',
+          padding: '8px 12px',
+          borderBottom: '1px solid #222',
+          background: '#0a0a0a',
+        }}>
+          <button
+            onClick={() => setShowTradingFlow(false)}
+            style={{
+              padding: '4px 12px',
+              background: 'transparent',
+              border: '1px solid #444',
+              color: '#888',
+              fontSize: 11,
+              cursor: 'pointer',
+              fontFamily: 'inherit',
+            }}
+          >
+            ← EXIT TRADE
+          </button>
+        </div>
+        <div style={{ flex: 1, overflow: 'hidden' }}>
+          <TradingFlow symbol="SPY" onClose={() => setShowTradingFlow(false)} />
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div
       style={{
@@ -481,6 +524,31 @@ export function EngineWindow() {
         onReset={handleReset}
         isExecuting={executeMutation.isPending}
       />
+
+      {/* New Trade button */}
+      <div style={{
+        padding: '8px 12px',
+        borderTop: '1px solid #333',
+        background: '#111',
+        display: 'flex',
+        justifyContent: 'center',
+      }}>
+        <button
+          onClick={() => setShowTradingFlow(true)}
+          style={{
+            padding: '10px 24px',
+            background: '#1a3a3a',
+            border: '1px solid #00ffff',
+            color: '#00ffff',
+            fontSize: 12,
+            fontWeight: 600,
+            cursor: 'pointer',
+            fontFamily: 'inherit',
+          }}
+        >
+          NEW TRADE →
+        </button>
+      </div>
 
       {/* Help overlay */}
       {showHelp && (
