@@ -1643,7 +1643,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
         // Only broadcast STOCK updates with valid prices (not option updates)
         // This prevents option prices ($0.10) from being displayed as SPY underlying price
         if (!update.symbol || !update.last || update.last <= 0) return;
-        if (update.type === 'option') return;  // Skip option price updates
+        if (update.type !== 'stock') return;  // Only broadcast explicit stock updates
 
         // Get cached data for previousClose
         const cached = wsManager.getCachedMarketData(update.conid);
