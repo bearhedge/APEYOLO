@@ -3,7 +3,8 @@
  *
  * Controls:
  * [1] [2] [3]    - Select strategy
- * [Arrow keys]  - Adjust strikes/contracts
+ * [↑] [↓]       - Adjust put strike
+ * [←] [→]       - Adjust call strike
  * [Tab]         - Toggle AUTO/MANUAL
  * [Enter]       - Execute main action
  * [Esc]         - Cancel/Reset
@@ -19,7 +20,8 @@ import type { Strategy } from './SelectionBar';
 interface KeyboardControlsOptions {
   enabled: boolean;
   onStrategyChange: (s: Strategy) => void;
-  onStrikeAdjust: (direction: 'wider' | 'tighter') => void;
+  onPutStrikeAdjust: (direction: 'up' | 'down') => void;
+  onCallStrikeAdjust: (direction: 'up' | 'down') => void;
   onContractAdjust: (direction: 'up' | 'down') => void;
   onModeToggle: () => void;
   onEnter: () => void;
@@ -37,7 +39,8 @@ interface KeyboardControlsOptions {
 export function useKeyboardControls({
   enabled,
   onStrategyChange,
-  onStrikeAdjust,
+  onPutStrikeAdjust,
+  onCallStrikeAdjust,
   onContractAdjust,
   onModeToggle,
   onEnter,
@@ -77,24 +80,24 @@ export function useKeyboardControls({
           onStrategyChange('strangle');
           break;
 
-        // Strike adjustment
-        case 'ArrowLeft':
-          e.preventDefault();
-          onStrikeAdjust('tighter');
-          break;
-        case 'ArrowRight':
-          e.preventDefault();
-          onStrikeAdjust('wider');
-          break;
-
-        // Contract adjustment
+        // Put strike adjustment (Up/Down)
         case 'ArrowUp':
           e.preventDefault();
-          onContractAdjust('up');
+          onPutStrikeAdjust('up');
           break;
         case 'ArrowDown':
           e.preventDefault();
-          onContractAdjust('down');
+          onPutStrikeAdjust('down');
+          break;
+
+        // Call strike adjustment (Left/Right)
+        case 'ArrowLeft':
+          e.preventDefault();
+          onCallStrikeAdjust('down');
+          break;
+        case 'ArrowRight':
+          e.preventDefault();
+          onCallStrikeAdjust('up');
           break;
 
         // Mode toggle
@@ -154,7 +157,8 @@ export function useKeyboardControls({
     [
       enabled,
       onStrategyChange,
-      onStrikeAdjust,
+      onPutStrikeAdjust,
+      onCallStrikeAdjust,
       onContractAdjust,
       onModeToggle,
       onEnter,

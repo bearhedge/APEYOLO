@@ -22,7 +22,6 @@ import {
   ActionBar,
   CommandInput,
   useKeyboardControls,
-  TradingFlow,
   type LogLine,
   type Strategy,
 } from './engine';
@@ -40,32 +39,13 @@ const AGENT_COMMANDS: Record<AgentCommand, { operation: 'analyze' | 'positions';
 
 type Mode = 'MANUAL' | 'AUTO';
 
-// Flow steps for 3-step trade flow
-type FlowStep = 1 | 2 | 3; // 1=Strategy, 2=Chain, 3=Confirm
-
-// Option strike data for display
-export interface OptionStrike {
-  strike: number;
-  bid: number;
-  ask: number;
-  delta: number;
-  oi?: number;
-}
-
 export function EngineWindow() {
   // Mode state
   const [mode, setMode] = useState<Mode>('MANUAL');
   const [autoCountdown, setAutoCountdown] = useState(300); // 5 minutes
   const [showHelp, setShowHelp] = useState(false);
-  const [showTradingFlow, setShowTradingFlow] = useState(false);
 
-  // 3-Step Flow State
-  const [flowStep, setFlowStep] = useState<FlowStep>(1);
-  const [selectedStrategy, setSelectedStrategy] = useState<Strategy | null>(null);
-  const [selectedStrike, setSelectedStrike] = useState<OptionStrike | null>(null);
-  const [optionsChain, setOptionsChain] = useState<{ puts: OptionStrike[]; calls: OptionStrike[] }>({ puts: [], calls: [] });
-
-  // Strategy and position state (legacy, kept for compatibility)
+  // Strategy and position state
   const [strategy, setStrategy] = useState<Strategy>('strangle');
   const [contracts, setContracts] = useState(2);
   const [putStrike, setPutStrike] = useState<number | null>(null);
@@ -247,21 +227,43 @@ export function EngineWindow() {
     if (completedSteps.has(3) && !loggedSteps.has('step3')) {
       const putStrikeVal = analysis?.q3Strikes?.selectedPut?.strike;
       const callStrikeVal = analysis?.q3Strikes?.selectedCall?.strike;
-      const putDelta = Math.abs(analysis?.q3Strikes?.selectedPut?.delta ?? 0.12);
-      const callDelta = Math.abs(analysis?.q3Strikes?.selectedCall?.delta ?? 0.12);
 
-      if (putStrikeVal) {
-        setPutStrike(putStrikeVal);
-        addLogLine(`PUT SPREAD: ${putStrikeVal}/${putStrikeVal - spreadWidth} @ $${(analysis?.q3Strikes?.selectedPut?.premium ?? 0).toFixed(2)} credit (${(putDelta * 100).toFixed(0)}d)`, 'success');
+      // Set selected strikes
+      if (putStrikeVal) setPutStrike(putStrikeVal);
+      if (callStrikeVal) setCallStrike(callStrikeVal);
+
+      // Get candidate strikes from analysis
+      const putCandidates = analysis?.q3Strikes?.smartCandidates?.puts || [];
+      const callCandidates = analysis?.q3Strikes?.smartCandidates?.calls || [];
+
+      // Print PUT option chain
+      if (putCandidates.length > 0) {
+        addLogLine(`PUTS (0DTE) - ${putCandidates.length} strikes:`, 'success');
+        addLogLine('─────────────────────────────────', 'info');
+        putCandidates.slice(0, 5).forEach((p: any) => {
+          const isSelected = p.strike === putStrikeVal;
+          const arrow = isSelected ? '→ ' : '  ';
+          const selected = isSelected ? ' ← SELECTED' : '';
+          const delta = `.${Math.abs(p.delta * 100).toFixed(0).padStart(2, '0')}`;
+          addLogLine(`${arrow}${p.strike}  │  ${p.bid.toFixed(2)}/${p.ask.toFixed(2)}  │  ${delta}${selected}`, isSelected ? 'result' : 'info');
+        });
+        addLogLine('─────────────────────────────────', 'info');
       }
-      if (callStrikeVal) {
-        setCallStrike(callStrikeVal);
-        addLogLine(`CALL SPREAD: ${callStrikeVal}/${callStrikeVal + spreadWidth} @ $${(analysis?.q3Strikes?.selectedCall?.premium ?? 0).toFixed(2)} credit (${(callDelta * 100).toFixed(0)}d)`, 'success');
+
+      // Print CALL option chain
+      if (callCandidates.length > 0) {
+        addLogLine(`CALLS (0DTE) - ${callCandidates.length} strikes:`, 'success');
+        addLogLine('─────────────────────────────────', 'info');
+        callCandidates.slice(0, 5).forEach((c: any) => {
+          const isSelected = c.strike === callStrikeVal;
+          const arrow = isSelected ? '→ ' : '  ';
+          const selected = isSelected ? ' ← SELECTED' : '';
+          const delta = `.${Math.abs(c.delta * 100).toFixed(0).padStart(2, '0')}`;
+          addLogLine(`${arrow}${c.strike}  │  ${c.bid.toFixed(2)}/${c.ask.toFixed(2)}  │  ${delta}${selected}`, isSelected ? 'result' : 'info');
+        });
+        addLogLine('─────────────────────────────────', 'info');
       }
-      if (putStrikeVal && callStrikeVal) {
-        const totalCredit = (analysis?.q3Strikes?.selectedPut?.premium ?? 0) + (analysis?.q3Strikes?.selectedCall?.premium ?? 0);
-        addLogLine(`STRANGLE: $${totalCredit.toFixed(2)} total credit`, 'result');
-      }
+
       setLoggedSteps(prev => new Set([...prev, 'step3']));
     }
 
@@ -269,10 +271,10 @@ export function EngineWindow() {
       const contractCount = analysis?.q4Size?.recommendedContracts ?? contracts;
       const nav = ibkrStatus?.nav ?? 100000;
       const maxLoss = (analysis?.tradeProposal?.maxLoss ?? 0);
-      const maxProfit = credit * 100;
+      const totalCredit = (analysis?.q3Strikes?.selectedPut?.premium ?? 0) + (analysis?.q3Strikes?.selectedCall?.premium ?? 0);
       setContracts(contractCount);
-      addLogLine(`Account: $${nav.toLocaleString()} | Risk: 2% | Contracts: ${contractCount}`, 'info');
-      addLogLine(`Max loss: $${maxLoss.toFixed(0)} | Max profit: $${maxProfit.toFixed(0)}`, 'info');
+      addLogLine(`Contracts: ${contractCount} | Credit: $${totalCredit.toFixed(2)} | Max Loss: $${maxLoss.toFixed(0)}`, 'result');
+      addLogLine(`[↑↓ put strike] [←→ call strike] [ENTER: APE IN]`, 'info');
       setLoggedSteps(prev => new Set([...prev, 'step4']));
     }
 
@@ -323,121 +325,6 @@ export function EngineWindow() {
     setHudState('idle');
     setPutStrike(null);
     setCallStrike(null);
-    // Reset flow state
-    setFlowStep(1);
-    setSelectedStrategy(null);
-    setSelectedStrike(null);
-    setOptionsChain({ puts: [], calls: [] });
-  }, []);
-
-  // === 3-STEP FLOW HANDLERS ===
-
-  // Step 1: Strategy selected -> fetch options chain and go to Step 2
-  const handleStrategySelect = useCallback(async (strat: Strategy) => {
-    setSelectedStrategy(strat);
-    setStrategy(strat); // Keep legacy state in sync
-    setHudState('analyzing');
-    setLogLines([]);
-    setLoggedSteps(new Set());
-    addLogLine(`Selected ${strat.toUpperCase()}...`, 'header');
-    addLogLine('Fetching options chain...', 'info');
-
-    // Trigger analysis to get options chain data
-    analyze();
-  }, [analyze, addLogLine]);
-
-  // Watch for analysis completion to populate options chain and advance to Step 2
-  useEffect(() => {
-    if (flowStep === 1 && selectedStrategy && completedSteps.has(3) && analysis?.q3Strikes) {
-      // Extract options chain from analysis
-      const puts = analysis.q3Strikes.smartCandidates?.puts || [];
-      const calls = analysis.q3Strikes.smartCandidates?.calls || [];
-
-      const chainPuts: OptionStrike[] = puts.map((p: any) => ({
-        strike: p.strike,
-        bid: p.bid,
-        ask: p.ask,
-        delta: p.delta,
-        oi: p.openInterest,
-      }));
-
-      const chainCalls: OptionStrike[] = calls.map((c: any) => ({
-        strike: c.strike,
-        bid: c.bid,
-        ask: c.ask,
-        delta: c.delta,
-        oi: c.openInterest,
-      }));
-
-      setOptionsChain({ puts: chainPuts, calls: chainCalls });
-
-      // Pre-select the engine-recommended strike(s)
-      if (selectedStrategy === 'put-spread' && analysis.q3Strikes.selectedPut) {
-        setSelectedStrike({
-          strike: analysis.q3Strikes.selectedPut.strike,
-          bid: analysis.q3Strikes.selectedPut.bid,
-          ask: analysis.q3Strikes.selectedPut.ask,
-          delta: analysis.q3Strikes.selectedPut.delta,
-        });
-        setPutStrike(analysis.q3Strikes.selectedPut.strike);
-      } else if (selectedStrategy === 'call-spread' && analysis.q3Strikes.selectedCall) {
-        setSelectedStrike({
-          strike: analysis.q3Strikes.selectedCall.strike,
-          bid: analysis.q3Strikes.selectedCall.bid,
-          ask: analysis.q3Strikes.selectedCall.ask,
-          delta: analysis.q3Strikes.selectedCall.delta,
-        });
-        setCallStrike(analysis.q3Strikes.selectedCall.strike);
-      } else if (selectedStrategy === 'strangle') {
-        // For strangle, pre-select both strikes and skip to confirmation
-        if (analysis.q3Strikes.selectedPut) {
-          setPutStrike(analysis.q3Strikes.selectedPut.strike);
-        }
-        if (analysis.q3Strikes.selectedCall) {
-          setCallStrike(analysis.q3Strikes.selectedCall.strike);
-        }
-        // Strangle skips strike selection - go straight to confirmation
-        setFlowStep(3);
-        setHudState('ready');
-        return;
-      }
-
-      setFlowStep(2);
-      setHudState('idle');
-    }
-  }, [flowStep, selectedStrategy, completedSteps, analysis]);
-
-  // Step 2: Strike selected -> go to Step 3
-  const handleStrikeSelect = useCallback((strike: OptionStrike) => {
-    setSelectedStrike(strike);
-    if (selectedStrategy === 'put-spread') {
-      setPutStrike(strike.strike);
-    } else if (selectedStrategy === 'call-spread') {
-      setCallStrike(strike.strike);
-    }
-  }, [selectedStrategy]);
-
-  // Step 2: Next button -> go to confirmation
-  const handleNextToConfirm = useCallback(() => {
-    if (!selectedStrike) return;
-    setFlowStep(3);
-    setHudState('ready');
-  }, [selectedStrike]);
-
-  // Step 3: Back to chain
-  const handleBackToChain = useCallback(() => {
-    setFlowStep(2);
-    setHudState('idle');
-  }, []);
-
-  // Step 2: Back to strategy
-  const handleBackToStrategy = useCallback(() => {
-    setFlowStep(1);
-    setSelectedStrategy(null);
-    setSelectedStrike(null);
-    setOptionsChain({ puts: [], calls: [] });
-    setHudState('idle');
-    setLogLines([]);
   }, []);
 
   // Handle agent commands (V, M, P hotkeys or typed /commands)
@@ -526,13 +413,28 @@ export function EngineWindow() {
     return (engineStep / 5) * 100;
   }, [isAnalyzing, engineStep, completedSteps.size]);
 
-  // Keyboard controls
+  // Handle put strike adjustment (only when ready)
+  const handlePutStrikeAdjust = useCallback((dir: 'up' | 'down') => {
+    if (hudState !== 'ready' || putStrike === null) return;
+    const newStrike = dir === 'up' ? putStrike + 1 : putStrike - 1;
+    setPutStrike(newStrike);
+    addLogLine(`Put strike: ${putStrike} → ${newStrike}`, 'info');
+  }, [hudState, putStrike, addLogLine]);
+
+  // Handle call strike adjustment (only when ready)
+  const handleCallStrikeAdjust = useCallback((dir: 'up' | 'down') => {
+    if (hudState !== 'ready' || callStrike === null) return;
+    const newStrike = dir === 'up' ? callStrike + 1 : callStrike - 1;
+    setCallStrike(newStrike);
+    addLogLine(`Call strike: ${callStrike} → ${newStrike}`, 'info');
+  }, [hudState, callStrike, addLogLine]);
+
+  // Keyboard controls - enabled when ready
   useKeyboardControls({
-    enabled: false, // DISABLED: Preventing accidental triggers while testing WebSocket
+    enabled: true,
     onStrategyChange: setStrategy,
-    onStrikeAdjust: (dir) => {
-      setSpreadWidth((w) => (dir === 'wider' ? Math.min(w + 1, 10) : Math.max(w - 1, 1)));
-    },
+    onPutStrikeAdjust: handlePutStrikeAdjust,
+    onCallStrikeAdjust: handleCallStrikeAdjust,
     onContractAdjust: (dir) => {
       setContracts((c) => (dir === 'up' ? Math.min(c + 1, 10) : Math.max(c - 1, 1)));
     },
@@ -555,47 +457,6 @@ export function EngineWindow() {
     onMarket: () => handleAgentCommand('/market'),
     onPositions: () => handleAgentCommand('/positions'),
   });
-
-  // If trading flow is active, show that instead
-  if (showTradingFlow) {
-    return (
-      <div
-        style={{
-          display: 'flex',
-          flexDirection: 'column',
-          height: '100%',
-          background: '#0a0a0a',
-        }}
-      >
-        {/* Header with back button */}
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          padding: '8px 12px',
-          borderBottom: '1px solid #222',
-          background: '#0a0a0a',
-        }}>
-          <button
-            onClick={() => setShowTradingFlow(false)}
-            style={{
-              padding: '4px 12px',
-              background: 'transparent',
-              border: '1px solid #444',
-              color: '#888',
-              fontSize: 11,
-              cursor: 'pointer',
-              fontFamily: 'inherit',
-            }}
-          >
-            ← EXIT TRADE
-          </button>
-        </div>
-        <div style={{ flex: 1, overflow: 'hidden' }}>
-          <TradingFlow symbol="SPY" onClose={() => setShowTradingFlow(false)} />
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div
@@ -624,51 +485,32 @@ export function EngineWindow() {
         onModeToggle={handleModeToggle}
       />
 
-      {/* Main area */}
+      {/* Main area - terminal log only */}
       <MainArea
         lines={logLines}
         isAnalyzing={isAnalyzing}
         progress={progress}
         isReady={hudState === 'ready'}
-        flowStep={flowStep}
-        selectedStrategy={selectedStrategy}
-        optionsChain={optionsChain}
-        selectedStrike={selectedStrike}
-        onStrategySelect={handleStrategySelect}
-        onStrikeSelect={handleStrikeSelect}
-        onNext={handleNextToConfirm}
-        onBack={flowStep === 3 ? handleBackToChain : handleBackToStrategy}
-        contracts={contracts}
-        spreadWidth={spreadWidth}
-        credit={credit}
-        maxLoss={analysis?.tradeProposal?.maxLoss}
-        putStrike={putStrike}
-        callStrike={callStrike}
-        onExecute={handleExecute}
       />
 
-      {/* Command input - only show when not in 3-step flow */}
-      {flowStep === 1 && !isAnalyzing && (
-        <CommandInput
-          onCommand={handleCommandInput}
-          disabled={agentProcessing || isAnalyzing}
-          placeholder={agentProcessing ? 'Processing...' : '/help for commands'}
-        />
-      )}
+      {/* Command input - always visible */}
+      <CommandInput
+        onCommand={handleCommandInput}
+        disabled={agentProcessing || isAnalyzing}
+        placeholder={agentProcessing ? 'Processing...' : '/help for commands'}
+      />
 
-      {/* Selection bar - hide during 3-step flow */}
-      {flowStep === 1 && !selectedStrategy && (
-        <SelectionBar
-          strategy={strategy}
-          onStrategyChange={setStrategy}
-          putStrike={putStrike}
-          callStrike={callStrike}
-          putSpread={spreadWidth}
-          callSpread={spreadWidth}
-        />
-      )}
+      {/* Selection bar - always visible */}
+      <SelectionBar
+        strategy={strategy}
+        onStrategyChange={setStrategy}
+        putStrike={putStrike}
+        callStrike={callStrike}
+        putSpread={spreadWidth}
+        callSpread={spreadWidth}
+      />
 
-      {/* Action bar - adapts based on flow step */}
+      {/* Action bar */}
       <ActionBar
         state={hudState}
         credit={credit}
@@ -677,33 +519,7 @@ export function EngineWindow() {
         onExecute={handleExecute}
         onReset={handleReset}
         isExecuting={executeMutation.isPending}
-        flowStep={flowStep}
       />
-
-      {/* New Trade button */}
-      <div style={{
-        padding: '8px 12px',
-        borderTop: '1px solid #333',
-        background: '#111',
-        display: 'flex',
-        justifyContent: 'center',
-      }}>
-        <button
-          onClick={() => setShowTradingFlow(true)}
-          style={{
-            padding: '10px 24px',
-            background: '#1a3a3a',
-            border: '1px solid #00ffff',
-            color: '#00ffff',
-            fontSize: 12,
-            fontWeight: 600,
-            cursor: 'pointer',
-            fontFamily: 'inherit',
-          }}
-        >
-          NEW TRADE →
-        </button>
-      </div>
 
       {/* Help overlay */}
       {showHelp && (
@@ -732,8 +548,8 @@ export function EngineWindow() {
             <div style={{ color: '#00ffff', marginBottom: 16, fontSize: 14 }}>KEYBOARD SHORTCUTS</div>
             <div style={{ color: '#888', marginBottom: 8 }}>TRADING</div>
             <div>[1] [2] [3] - Select strategy</div>
-            <div>[{'\u2190'}] [{'\u2192'}] - Adjust spread width</div>
-            <div>[{'\u2191'}] [{'\u2193'}] - Adjust contracts</div>
+            <div>[{'\u2191'}] [{'\u2193'}] - Adjust put strike</div>
+            <div>[{'\u2190'}] [{'\u2192'}] - Adjust call strike</div>
             <div>[Tab] - Toggle AUTO/MANUAL</div>
             <div>[Enter] - Analyze / Execute</div>
             <div>[Esc] - Reset</div>
