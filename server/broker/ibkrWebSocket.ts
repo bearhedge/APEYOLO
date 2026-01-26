@@ -140,6 +140,10 @@ export class IbkrWebSocketManager {
   private sessionRefreshInterval: NodeJS.Timeout | null = null;
   // Track last persist time per conid for debouncing (max once per 5 seconds)
   private lastPersist = new Map<number, number>();
+  // Auto-healing: health check interval that detects stale data and auto-reconnects
+  private healthCheckInterval: NodeJS.Timeout | null = null;
+  private readonly STALE_THRESHOLD_MS = 60000; // Data older than 60s = stale
+  private readonly HEALTH_CHECK_INTERVAL_MS = 30000; // Check every 30s
 
   constructor(cookieString: string, sessionToken?: string | null) {
     this.cookieString = cookieString;
@@ -955,6 +959,56 @@ export class IbkrWebSocketManager {
     }, 25000);
   }
 
+  /**
+   * Start auto-healing health check
+   * Detects when data stops flowing and auto-reconnects
+   */
+  private startHealthCheck(): void {
+    this.stopHealthCheck();
+
+    this.healthCheckInterval = setInterval(async () => {
+      // Only check if we think we're connected
+      if (!this.isConnected || !this.isAuthenticated) return;
+
+      // Check if SPY data is fresh (SPY is our canary)
+      const spyData = this.marketDataCache.get(SPY_CONID);
+      const vixData = this.marketDataCache.get(VIX_CONID);
+
+      const now = Date.now();
+      const spyAge = spyData ? now - spyData.timestamp.getTime() : Infinity;
+      const vixAge = vixData ? now - vixData.timestamp.getTime() : Infinity;
+
+      // Log health status
+      const spyPrice = spyData?.last || 0;
+      const vixPrice = vixData?.last || 0;
+      console.log(`[IbkrWS] HEALTH CHECK: SPY=$${spyPrice.toFixed(2)} (${Math.round(spyAge/1000)}s old), VIX=${vixPrice.toFixed(2)} (${Math.round(vixAge/1000)}s old)`);
+
+      // CRITICAL: If SPY data is stale OR VIX is 0, we have a problem
+      const isSpyStale = spyAge > this.STALE_THRESHOLD_MS;
+      const isVixBroken = !vixData || vixData.last === 0 || vixData.last === undefined;
+
+      if (isSpyStale || isVixBroken) {
+        console.error(`[IbkrWS] ⚠️ STALE DATA DETECTED! SPY stale: ${isSpyStale}, VIX broken: ${isVixBroken}`);
+        console.error('[IbkrWS] Auto-reconnecting to get fresh data...');
+
+        try {
+          await this.forceFullReconnect();
+        } catch (err: any) {
+          console.error('[IbkrWS] Auto-reconnect failed:', err.message);
+        }
+      }
+    }, this.HEALTH_CHECK_INTERVAL_MS);
+
+    console.log('[IbkrWS] Health check started (checking every 30s for stale data)');
+  }
+
+  private stopHealthCheck(): void {
+    if (this.healthCheckInterval) {
+      clearInterval(this.healthCheckInterval);
+      this.healthCheckInterval = null;
+    }
+  }
+
   private stopHeartbeat(): void {
     if (this.heartbeatInterval) {
       clearInterval(this.heartbeatInterval);
@@ -1020,6 +1074,66 @@ export class IbkrWebSocketManager {
         console.error('[IbkrWS] Reconnection failed:', err.message);
       });
     }, delay);
+  }
+
+  /**
+   * PUBLIC: Force complete WebSocket reconnection
+   * Call this when data is stale but connection shows "connected"
+   * Destroys everything and starts fresh
+   */
+  async forceFullReconnect(): Promise<void> {
+    console.log('[IbkrWS] ========== FORCE FULL RECONNECT ==========');
+    console.log('[IbkrWS] Destroying stale WebSocket and clearing all cached data...');
+
+    // 1. Stop all intervals
+    this.stopHeartbeat();
+    this.stopSessionRefresh();
+
+    // 2. Destroy the WebSocket completely
+    if (this.ws) {
+      this.ws.removeAllListeners();
+      this.ws.terminate();
+      this.ws = null;
+    }
+
+    // 3. Reset ALL state
+    this.isConnected = false;
+    this.isConnecting = false;
+    this.isAuthenticated = false;
+
+    // 4. CLEAR THE STALE CACHE - this is critical!
+    console.log(`[IbkrWS] Clearing stale cache (had ${this.marketDataCache.size} entries)`);
+    this.marketDataCache.clear();
+    this.lastDataReceived = null;
+    this.subscriptionErrorMessage = null;
+    this.updateCounts.clear();
+    this.lastPersist.clear();
+
+    // 5. Reset reconnect counters
+    this.reconnectAttempts = 0;
+    this.reconnectDelay = 1000;
+
+    // 6. Get FRESH credentials
+    if (this.credentialRefreshCallback) {
+      try {
+        console.log('[IbkrWS] Getting FRESH credentials from /tickle...');
+        const { cookieString, sessionToken } = await this.credentialRefreshCallback();
+        this.cookieString = cookieString;
+        this.sessionToken = sessionToken;
+        console.log(`[IbkrWS] Fresh credentials obtained. Session token: ${sessionToken ? sessionToken.substring(0, 8) + '...' : 'NONE'}`);
+      } catch (err: any) {
+        console.error('[IbkrWS] FAILED to get fresh credentials:', err.message);
+        throw new Error(`Cannot reconnect: ${err.message}`);
+      }
+    } else {
+      console.error('[IbkrWS] NO credential refresh callback - cannot get fresh session!');
+      throw new Error('No credential refresh callback configured');
+    }
+
+    // 7. Connect with fresh credentials
+    console.log('[IbkrWS] Connecting with fresh credentials...');
+    await this.connect();
+    console.log('[IbkrWS] ========== RECONNECT COMPLETE ==========');
   }
 
   /**

@@ -2552,11 +2552,21 @@ class IbkrClient {
       }
 
       // Try WebSocket cache first (FREE - uses streaming subscription)
-      // ALWAYS check cache even if disconnected - cache persists data
+      // CRITICAL: During market hours, data must be LIVE (< 5 seconds old)
+      // Outside market hours, allow older cached data (for weekends)
       const wsManager = getIbkrWebSocketManager();
       if (wsManager) {
         const cached = wsManager.getCachedMarketData(conid);
-        if (cached && cached.last > 0) {
+        const cacheAge = cached ? Date.now() - cached.timestamp.getTime() : Infinity;
+
+        const { getMarketStatus } = await import('../services/marketCalendar.js');
+        const marketStatus = getMarketStatus();
+
+        // Market open: data must be LIVE (< 5 seconds) - no stale garbage
+        // Market closed: allow older data (up to 24 hours for weekend display)
+        const MAX_CACHE_AGE_MS = marketStatus.isOpen ? 5000 : 86400000;
+
+        if (cached && cached.last > 0 && cacheAge < MAX_CACHE_AGE_MS) {
           const { getMarketStatus } = await import('../services/marketCalendar.js');
           const marketStatus = getMarketStatus();
 
@@ -2570,7 +2580,7 @@ class IbkrClient {
             priceSource = 'ws-last';
           }
 
-          console.log(`[IBKR][getMarketData][${reqId}] ${symbol}: FROM CACHE last=${cached.last}, bid=${cached.bid}, ask=${cached.ask}, price=${price} (${priceSource})`);
+          console.log(`[IBKR][getMarketData][${reqId}] ${symbol}: FROM CACHE last=${cached.last}, bid=${cached.bid}, ask=${cached.ask}, price=${price} (${priceSource}, ${Math.round(cacheAge/1000)}s old, market=${marketStatus.isOpen ? 'OPEN' : 'CLOSED'})`);
 
           return {
             symbol,
@@ -2586,6 +2596,9 @@ class IbkrClient {
       }
 
       // Fallback: Use historical data (also FREE) when WebSocket cache unavailable
+      if (cached && cached.last > 0 && cacheAge >= MAX_CACHE_AGE_MS) {
+        console.warn(`[IBKR][getMarketData][${reqId}] ${symbol}: REJECTED STALE CACHE (${Math.round(cacheAge/1000)}s old, max=${MAX_CACHE_AGE_MS/1000}s, market=${marketStatus.isOpen ? 'OPEN' : 'CLOSED'})`);
+      }
       console.log(`[IBKR][getMarketData][${reqId}] WebSocket cache miss for ${symbol}, trying historical data...`);
       const histPrice = await this.getHistoricalLastPrice(conid);
 

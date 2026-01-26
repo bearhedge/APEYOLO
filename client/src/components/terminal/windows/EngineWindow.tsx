@@ -107,6 +107,8 @@ export function EngineWindow() {
       console.log('[EngineWindow] Received price update:', { symbol, price, timestamp });
       if (symbol === 'SPY') {
         setWsSpyPrice(price);
+      } else if (symbol === 'VIX') {
+        setWsVix(price);
       }
     });
     return () => {

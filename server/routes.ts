@@ -724,6 +724,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 }
               }));
             }
+
+            // VIX price update for volatility display
+            if (vixData.value > 0) {
+              ws.send(JSON.stringify({
+                type: 'chart_price_update',
+                data: {
+                  symbol: 'VIX',
+                  price: vixData.value,
+                  change: vixData.change || 0,
+                  changePct: vixData.changePercent || 0,
+                  timestamp: Date.now()
+                }
+              }));
+            }
           } catch (error) {
             console.error('[WebSocket] Error fetching market data:', error);
             // Send error status so frontend knows data is unavailable
