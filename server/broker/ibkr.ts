@@ -2543,8 +2543,9 @@ class IbkrClient {
       }
 
       // Try WebSocket cache first (FREE - uses streaming subscription)
+      // ALWAYS check cache even if disconnected - cache persists data
       const wsManager = getIbkrWebSocketManager();
-      if (wsManager?.connected) {
+      if (wsManager) {
         const cached = wsManager.getCachedMarketData(conid);
         if (cached && cached.last > 0) {
           const { getMarketStatus } = await import('../services/marketCalendar.js');
