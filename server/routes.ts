@@ -2694,28 +2694,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
           // Use the global broker for status
           const diag = getIbkrDiagnostics();
 
-          // If WebSocket is authenticated, HTTP auth definitely succeeded
-          // (WebSocket requires valid HTTP session cookies from OAuth flow)
-          const wsStatus = getIbkrWebSocketStatus();
-          const wsAuthenticated = wsStatus?.authenticated === true;
+          // Use actual diagnostic status directly (not dependent on WebSocket)
+          const oauthStatus = diag.oauth.status;
+          const ssoStatus = diag.sso.status;
+          const validateStatus = diag.validate.status;
+          const initStatus = diag.init.status;
 
-          // Use effective status: if WS authenticated, all HTTP steps succeeded
-          const effectiveOAuthStatus = wsAuthenticated ? 200 : diag.oauth.status;
-          const effectiveSSOStatus = wsAuthenticated ? 200 : diag.sso.status;
-          const effectiveValidateStatus = wsAuthenticated ? 200 : diag.validate.status;
-          const effectiveInitStatus = wsAuthenticated ? 200 : diag.init.status;
-
-          // Check for real data flow (non-zero SPY price)
+          // WebSocket status for the websocket diagnostic step
           const wsDetailedStatusForCheck = getIbkrWebSocketDetailedStatus();
           const hasRealDataFlow = wsDetailedStatusForCheck?.hasRealData === true;
 
           // Auth is complete when all 4 auth steps succeed
           // Data flow is tracked separately - auth should stay green once authenticated
           const authComplete =
-            effectiveOAuthStatus === 200 &&
-            effectiveSSOStatus === 200 &&
-            effectiveValidateStatus === 200 &&
-            effectiveInitStatus === 200;
+            oauthStatus === 200 &&
+            ssoStatus === 200 &&
+            validateStatus === 200 &&
+            initStatus === 200;
 
           // Auth success = connected (stays green once authenticated)
           // Data flow (hasRealDataFlow) is reported separately in WebSocket diagnostic
@@ -2738,24 +2733,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
             multiUserMode: true, // Multi-user mode enabled
             diagnostics: {
               oauth: {
-                status: effectiveOAuthStatus,
-                message: effectiveOAuthStatus === 200 ? 'Connected' : effectiveOAuthStatus === 0 ? 'Not attempted' : 'Failed',
-                success: effectiveOAuthStatus === 200
+                status: oauthStatus,
+                message: oauthStatus === 200 ? 'Connected' : oauthStatus === 0 ? 'Not attempted' : 'Failed',
+                success: oauthStatus === 200
               },
               sso: {
-                status: effectiveSSOStatus,
-                message: effectiveSSOStatus === 200 ? 'Active' : effectiveSSOStatus === 0 ? 'Not attempted' : 'Failed',
-                success: effectiveSSOStatus === 200
+                status: ssoStatus,
+                message: ssoStatus === 200 ? 'Active' : ssoStatus === 0 ? 'Not attempted' : 'Failed',
+                success: ssoStatus === 200
               },
               validate: {
-                status: effectiveValidateStatus,
-                message: effectiveValidateStatus === 200 ? 'Validated' : effectiveValidateStatus === 0 ? 'Not attempted' : 'Failed',
-                success: effectiveValidateStatus === 200
+                status: validateStatus,
+                message: validateStatus === 200 ? 'Validated' : validateStatus === 0 ? 'Not attempted' : 'Failed',
+                success: validateStatus === 200
               },
               init: {
-                status: effectiveInitStatus,
-                message: effectiveInitStatus === 200 ? 'Ready' : effectiveInitStatus === 0 ? 'Not attempted' : 'Failed',
-                success: effectiveInitStatus === 200
+                status: initStatus,
+                message: initStatus === 200 ? 'Ready' : initStatus === 0 ? 'Not attempted' : 'Failed',
+                success: initStatus === 200
               },
               websocket: (() => {
                 const wsDetailedStatus = getIbkrWebSocketDetailedStatus();
