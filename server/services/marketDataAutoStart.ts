@@ -238,9 +238,15 @@ export async function startWebSocketStream(): Promise<void> {
       // Get cached data which has the latest values
       const cached = wsManager.getCachedMarketData(update.conid);
 
-      // Use last price, or mid of bid/ask, or cached last
+      // VIX-specific handling: VIX typically only has bid/ask from IBKR, no last price
+      const isVIX = update.conid === VIX_CONID;
       let price = update.last;
-      if (!price || price <= 0) {
+
+      if (isVIX && update.bid && update.ask && update.bid > 0 && update.ask > 0) {
+        // VIX: always use mid-price from bid/ask (IBKR doesn't provide last for VIX)
+        price = (update.bid + update.ask) / 2;
+      } else if (!price || price <= 0) {
+        // Other symbols: fallback chain
         if (update.bid && update.ask && update.bid > 0 && update.ask > 0) {
           price = (update.bid + update.ask) / 2;
         } else if (cached?.last && cached.last > 0) {

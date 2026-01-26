@@ -221,9 +221,7 @@ export function EngineWindow() {
     }
 
     if (completedSteps.has(2) && !loggedSteps.has('step2')) {
-      const direction = analysis?.q2Direction?.recommendedDirection ?? 'NEUTRAL';
-      const conf = analysis?.q2Direction?.confidencePct ?? 70;
-      addLogLine(`${direction} bias detected (${conf}% confidence)`, 'success');
+      // Skip bias message per user request - just mark step as logged
       setLoggedSteps(prev => new Set([...prev, 'step2']));
     }
 

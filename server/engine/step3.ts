@@ -896,49 +896,51 @@ export async function selectStrikes(
     selection.riskAssessment = riskAssessment;
     console.log(`[Step3] RISK ASSESSMENT: ${riskAssessment.reasoning}`);
 
-    // Check for EXTREME regime - do not trade
+    // Check for EXTREME regime - do not trade, but still populate option chain for display
     if (riskAssessment.riskRegime === 'EXTREME') {
       console.warn(`[Step3] EXTREME risk regime (VIX ${vix}) - NO TRADE recommended`);
       selection.reasoning = `NO TRADE: ${riskAssessment.reasoning}`;
-      // Still return selection with risk assessment but no strikes selected
-      return selection;
+      // Don't return early - continue to populate nearbyStrikes for UI display
     }
 
     // Get dynamic delta targets based on risk assessment
     const dynamicTargets = getDeltaTargets(riskAssessment.targetDelta);
     console.log(`[Step3] Dynamic delta targets: PUT [${dynamicTargets.put.min.toFixed(2)}, ${dynamicTargets.put.max.toFixed(2)}], CALL [${dynamicTargets.call.min.toFixed(2)}, ${dynamicTargets.call.max.toFixed(2)}]`);
 
-    // Select PUT strike from real data (PUTs have NEGATIVE delta)
-    if (direction === 'PUT' || direction === 'STRANGLE') {
-      if (fullChain.putStrikes.length > 0) {
-        const putStrike = findBestStrike(fullChain.putStrikes, 'PUT', dynamicTargets.put);
-        if (putStrike) {
-          selection.putStrike = putStrike;
-          console.log(`[Step3] Selected PUT: $${putStrike.strike} (delta: ${putStrike.delta.toFixed(3)}, bid: $${putStrike.bid.toFixed(2)}, ask: $${putStrike.ask.toFixed(2)})`);
-          selection.reasoning += `PUT (IBKR ${dataSource}): Strike $${putStrike.strike} with delta ${putStrike.delta.toFixed(3)}. `;
+    // Only select strikes if NOT in EXTREME regime (but always populate nearbyStrikes below)
+    if (riskAssessment.riskRegime !== 'EXTREME') {
+      // Select PUT strike from real data (PUTs have NEGATIVE delta)
+      if (direction === 'PUT' || direction === 'STRANGLE') {
+        if (fullChain.putStrikes.length > 0) {
+          const putStrike = findBestStrike(fullChain.putStrikes, 'PUT', dynamicTargets.put);
+          if (putStrike) {
+            selection.putStrike = putStrike;
+            console.log(`[Step3] Selected PUT: $${putStrike.strike} (delta: ${putStrike.delta.toFixed(3)}, bid: $${putStrike.bid.toFixed(2)}, ask: $${putStrike.ask.toFixed(2)})`);
+            selection.reasoning += `PUT (IBKR ${dataSource}): Strike $${putStrike.strike} with delta ${putStrike.delta.toFixed(3)}. `;
+          } else {
+            console.error(`[Step3] Failed to find PUT strike matching delta target ${dynamicTargets.put.ideal}`);
+          }
         } else {
-          console.error(`[Step3] Failed to find PUT strike matching delta target ${dynamicTargets.put.ideal}`);
+          console.error(`[Step3] No PUT strikes in option chain`);
+          throw new Error('[IBKR] No PUT strikes available - cannot proceed without real option data');
         }
-      } else {
-        console.error(`[Step3] No PUT strikes in option chain`);
-        throw new Error('[IBKR] No PUT strikes available - cannot proceed without real option data');
       }
-    }
 
-    // Select CALL strike from real data (CALLs have POSITIVE delta)
-    if (direction === 'CALL' || direction === 'STRANGLE') {
-      if (fullChain.callStrikes.length > 0) {
-        const callStrike = findBestStrike(fullChain.callStrikes, 'CALL', dynamicTargets.call);
-        if (callStrike) {
-          selection.callStrike = callStrike;
-          console.log(`[Step3] Selected CALL: $${callStrike.strike} (delta: ${callStrike.delta.toFixed(3)}, bid: $${callStrike.bid.toFixed(2)}, ask: $${callStrike.ask.toFixed(2)})`);
-          selection.reasoning += `CALL (IBKR ${dataSource}): Strike $${callStrike.strike} with delta ${callStrike.delta.toFixed(3)}. `;
+      // Select CALL strike from real data (CALLs have POSITIVE delta)
+      if (direction === 'CALL' || direction === 'STRANGLE') {
+        if (fullChain.callStrikes.length > 0) {
+          const callStrike = findBestStrike(fullChain.callStrikes, 'CALL', dynamicTargets.call);
+          if (callStrike) {
+            selection.callStrike = callStrike;
+            console.log(`[Step3] Selected CALL: $${callStrike.strike} (delta: ${callStrike.delta.toFixed(3)}, bid: $${callStrike.bid.toFixed(2)}, ask: $${callStrike.ask.toFixed(2)})`);
+            selection.reasoning += `CALL (IBKR ${dataSource}): Strike $${callStrike.strike} with delta ${callStrike.delta.toFixed(3)}. `;
+          } else {
+            console.error(`[Step3] Failed to find CALL strike matching delta target ${dynamicTargets.call.ideal}`);
+          }
         } else {
-          console.error(`[Step3] Failed to find CALL strike matching delta target ${dynamicTargets.call.ideal}`);
+          console.error(`[Step3] No CALL strikes in option chain`);
+          throw new Error('[IBKR] No CALL strikes available - cannot proceed without real option data');
         }
-      } else {
-        console.error(`[Step3] No CALL strikes in option chain`);
-        throw new Error('[IBKR] No CALL strikes available - cannot proceed without real option data');
       }
     }
 
