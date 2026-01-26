@@ -354,6 +354,25 @@ export async function registerRoutes(app: Express): Promise<Server> {
       try {
         const account = await broker.api.getAccount();
 
+        // Check WebSocket streaming status for complete health check
+        const { getIbkrWebSocketDetailedStatus, wsManagerInstance } = await import('./broker/ibkrWebSocket.js');
+        const wsStatus = getIbkrWebSocketDetailedStatus();
+
+        // Reset circuit breaker on successful credential test
+        if (wsManagerInstance) {
+          wsManagerInstance.resetCircuitBreaker();
+        }
+
+        // Determine WebSocket health
+        const wsHealthy = wsStatus?.connected && wsStatus?.authenticated && wsStatus?.hasRealData;
+        const wsWarning = wsStatus?.connected && wsStatus?.authenticated && !wsStatus?.hasRealData
+          ? 'WebSocket connected but not receiving market data yet'
+          : wsStatus?.connected && !wsStatus?.authenticated
+            ? 'WebSocket connected but not authenticated'
+            : !wsStatus?.connected
+              ? 'WebSocket not connected - streaming may not work'
+              : null;
+
         // Update credential status to active
         await db.update(ibkrCredentials)
           .set({
@@ -366,13 +385,21 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         return res.json({
           success: true,
-          message: 'IBKR connection successful',
+          message: wsWarning
+            ? `IBKR connection successful. Warning: ${wsWarning}`
+            : 'IBKR connection successful - HTTP and WebSocket both working',
           status: 'active',
           connected: broker.status.connected,
           environment: broker.status.env,
           account: {
             accountId: account.accountId,
             netValue: account.netValue
+          },
+          websocket: {
+            connected: wsStatus?.connected ?? false,
+            authenticated: wsStatus?.authenticated ?? false,
+            hasRealData: wsStatus?.hasRealData ?? false,
+            warning: wsWarning
           }
         });
       } catch (accountError) {

@@ -379,11 +379,12 @@ export function Settings({
     },
     refetchInterval: (query) => {
       // Adaptive polling based on connection state
+      // Reduced intervals to detect disconnects faster (UI shows stale status otherwise)
       const data = query.state.data as { configured?: boolean; connected?: boolean } | undefined;
       if (!data?.configured) return false; // Don't poll if not configured
-      // Increase poll interval when disconnected to prevent collision with auto-reconnect
-      if (data?.configured && !data?.connected) return 5000; // 5s when connecting (was 3s)
-      return 30000; // 30s when stable
+      // Fast polling when disconnected to quickly show reconnect status
+      if (data?.configured && !data?.connected) return 3000; // 3s when disconnected/connecting
+      return 5000; // 5s when connected (was 30s - caused 30s stale UI on disconnect)
     },
     refetchOnWindowFocus: true,
     refetchOnMount: true,
@@ -437,13 +438,40 @@ export function Settings({
   const [retryCount, setRetryCount] = useState<number>(0);
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Cleanup timeout on unmount
+  // Rate limiting for manual reconnect button (60 second cooldown)
+  const [reconnectCooldown, setReconnectCooldown] = useState<number>(0);
+  const reconnectCooldownRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Cleanup timeouts on unmount
   useEffect(() => {
     return () => {
       if (reconnectTimeoutRef.current) {
         clearTimeout(reconnectTimeoutRef.current);
       }
+      if (reconnectCooldownRef.current) {
+        clearInterval(reconnectCooldownRef.current);
+      }
     };
+  }, []);
+
+  // Start cooldown timer for manual reconnect button
+  const startReconnectCooldown = useCallback(() => {
+    setReconnectCooldown(60);
+    if (reconnectCooldownRef.current) {
+      clearInterval(reconnectCooldownRef.current);
+    }
+    reconnectCooldownRef.current = setInterval(() => {
+      setReconnectCooldown((prev) => {
+        if (prev <= 1) {
+          if (reconnectCooldownRef.current) {
+            clearInterval(reconnectCooldownRef.current);
+            reconnectCooldownRef.current = null;
+          }
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
   }, []);
 
   // Single async reconnect attempt - no nested mutations
@@ -769,40 +797,56 @@ export function Settings({
     return 'Inactive';
   };
 
-  const getConnectionIcon = () => {
-    if (!ibkrStatus?.configured) return <AlertCircle className="w-5 h-5 text-yellow-500" />;
-    // In relay mode, show neutral icon (not connected to OAuth, using TWS/Gateway)
-    if (ibkrStatus?.connectionMode === 'relay') {
-      return <Database className="w-5 h-5 text-purple-500" />;
-    }
-    if (ibkrStatus?.connected) return <CheckCircle className="w-5 h-5 text-green-500" />;
-    if (isAutoConnecting || warmMutation.isPending || reconnectMutation.isPending) {
-      return <RefreshCw className="w-5 h-5 text-blue-500 animate-spin" />;
-    }
-    return <XCircle className="w-5 h-5 text-red-500" />;
+  // CONSOLIDATED CONNECTION STATE
+  // Single source of truth for all connection status display
+  type ConnectionState = 'not_configured' | 'relay_mode' | 'connected' | 'connecting' | 'disconnected' | 'circuit_breaker';
+
+  const connectionState: ConnectionState = (() => {
+    if (!ibkrStatus?.configured) return 'not_configured';
+    if (ibkrStatus?.connectionMode === 'relay') return 'relay_mode';
+    // Check circuit breaker (from WebSocket status if available)
+    if (ibkrStatus?.diagnostics?.websocket?.circuitBreakerOpen) return 'circuit_breaker';
+    if (ibkrStatus?.connected) return 'connected';
+    if (isAutoConnecting || warmMutation.isPending || reconnectMutation.isPending) return 'connecting';
+    return 'disconnected';
+  })();
+
+  const connectionDisplay = {
+    not_configured: {
+      icon: <AlertCircle className="w-5 h-5 text-yellow-500" />,
+      text: 'Not Configured',
+      color: 'text-yellow-500',
+    },
+    relay_mode: {
+      icon: <Database className="w-5 h-5 text-purple-500" />,
+      text: 'TWS Mode',
+      color: 'text-purple-500',
+    },
+    connected: {
+      icon: <CheckCircle className="w-5 h-5 text-green-500" />,
+      text: 'Connected',
+      color: 'text-green-500',
+    },
+    connecting: {
+      icon: <RefreshCw className="w-5 h-5 text-blue-500 animate-spin" />,
+      text: 'Connecting...',
+      color: 'text-blue-500',
+    },
+    disconnected: {
+      icon: <XCircle className="w-5 h-5 text-red-500" />,
+      text: 'Disconnected',
+      color: 'text-red-500',
+    },
+    circuit_breaker: {
+      icon: <XCircle className="w-5 h-5 text-orange-500" />,
+      text: 'Auth Failed - Check Credentials',
+      color: 'text-orange-500',
+    },
   };
 
-  const getConnectionStatus = () => {
-    if (!ibkrStatus?.configured) return 'Not Configured';
-    // In relay mode, show TWS Mode status (OAuth intentionally disconnected)
-    if (ibkrStatus?.connectionMode === 'relay') {
-      return 'TWS Mode';
-    }
-    if (ibkrStatus?.connected) return 'Connected';
-    if (isAutoConnecting || warmMutation.isPending || reconnectMutation.isPending) {
-      return 'Connecting...';
-    }
-    return 'Disconnected';
-  };
-
-  const getConnectionStatusColor = () => {
-    // In relay mode, show purple color (neutral, different from OAuth connected)
-    if (ibkrStatus?.connectionMode === 'relay') return 'text-purple-500';
-    if (ibkrStatus?.connected) return 'text-green-500';
-    if (isAutoConnecting || warmMutation.isPending || reconnectMutation.isPending) return 'text-blue-500';
-    if (ibkrStatus?.configured) return 'text-red-500';
-    return 'text-yellow-500';
-  };
+  const getConnectionIcon = () => connectionDisplay[connectionState].icon;
+  const getConnectionStatus = () => connectionDisplay[connectionState].text;
+  const getConnectionStatusColor = () => connectionDisplay[connectionState].color;
 
   return (
     <div className="flex h-[calc(100vh-64px)]">
@@ -1265,13 +1309,18 @@ export function Settings({
                       setRetryCount(0);
                       setBackoffMs(3000);
                       reconnectMutation.mutate();
+                      startReconnectCooldown();
                     }}
                     className="btn-secondary"
-                    disabled={reconnectMutation.isPending || warmMutation.isPending}
+                    disabled={reconnectMutation.isPending || warmMutation.isPending || reconnectCooldown > 0}
                     data-testid="button-reconnect"
                   >
                     <RefreshCw className={`w-4 h-4 mr-2 ${(reconnectMutation.isPending || warmMutation.isPending) ? 'animate-spin' : ''}`} />
-                    {reconnectMutation.isPending || warmMutation.isPending ? 'Reconnecting...' : 'Force Reconnect'}
+                    {reconnectMutation.isPending || warmMutation.isPending
+                      ? 'Reconnecting...'
+                      : reconnectCooldown > 0
+                        ? `Wait ${reconnectCooldown}s`
+                        : 'Force Reconnect'}
                   </Button>
                 )}
 
@@ -1413,10 +1462,23 @@ export function Settings({
                     </p>
                   </div>
                 </div>
-                <div className="flex items-center gap-2 text-yellow-400">
-                  <AlertCircle className="w-4 h-4" />
-                  <span className="text-sm">Relay not connected</span>
-                </div>
+                {/* Relay Connection Status - dynamic based on data flow */}
+                {ibkrStatus?.diagnostics?.websocket?.hasRealData ? (
+                  <div className="flex items-center gap-2 text-green-400">
+                    <CheckCircle className="w-4 h-4" />
+                    <span className="text-sm">Relay connected - receiving data</span>
+                  </div>
+                ) : ibkrStatus?.diagnostics?.websocket?.connected ? (
+                  <div className="flex items-center gap-2 text-blue-400">
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span className="text-sm">Relay connected - waiting for data</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-yellow-400">
+                    <AlertCircle className="w-4 h-4" />
+                    <span className="text-sm">Relay not connected - run the connector command above</span>
+                  </div>
+                )}
               </div>
             )}
           </div>

@@ -19,6 +19,7 @@ import { EventEmitter } from 'events';
 import { storage } from "../storage";
 import { saveTokenState } from '../services/ibkrTokenPersistence';
 import { getIbkrWebSocketManager, getIbkrWebSocketStatus } from './ibkrWebSocket';
+import { getConnectionMode } from '../services/marketDataAutoStart';
 import { db } from '../db';
 import { eq } from 'drizzle-orm';
 
@@ -708,12 +709,15 @@ class IbkrClient {
       this.accessToken = json.access_token;
       this.accessTokenExpiryMs = this.now() + json.expires_in * 1000;
 
-      // Persist tokens to database
+      // Persist tokens to database - await to ensure they're saved before returning
       if (this.userId) {
         const state = this.getTokenState();
-        saveTokenState(this.userId, state).catch(err =>
-          console.error('[IBKR] Failed to persist tokens:', err)
-        );
+        try {
+          await saveTokenState(this.userId, state);
+        } catch (err) {
+          // Log but don't fail the auth flow if persistence fails
+          console.error('[IBKR] Failed to persist tokens after OAuth:', err);
+        }
       }
 
       await storage.createAuditLog({
@@ -854,12 +858,15 @@ class IbkrClient {
 
     await storage.createAuditLog({ eventType: 'IBKR_SSO_SESSION', details: `OK http=${res.status} req=${traceVal ?? ''} hasToken=${!!this.ssoAccessToken}` , status: 'SUCCESS' });
 
-    // Persist tokens to database
+    // Persist tokens to database - await to ensure they're saved before continuing
     if (this.userId) {
       const state = this.getTokenState();
-      saveTokenState(this.userId, state).catch(err =>
-        console.error('[IBKR] Failed to persist tokens:', err)
-      );
+      try {
+        await saveTokenState(this.userId, state);
+      } catch (err) {
+        // Log but don't fail the auth flow if persistence fails
+        console.error('[IBKR] Failed to persist tokens after SSO:', err);
+      }
     }
 
     // Delay 3s after successful SSO per requirement
@@ -1090,10 +1097,21 @@ class IbkrClient {
   }
 
   private async ensureReady(retry = true, forceRefresh = false): Promise<void> {
-    // MUTEX: If already in progress, wait for that one
-    if (this.ensureReadyPromise && !forceRefresh) {
+    // MUTEX: If already in progress, always wait for it to complete first
+    // This prevents race conditions where parallel executions corrupt session state
+    if (this.ensureReadyPromise) {
       console.log('[IBKR] ensureReady already in progress, waiting...');
-      return this.ensureReadyPromise;
+      try {
+        await this.ensureReadyPromise;
+      } catch {
+        // Ignore errors from previous attempt - we'll retry below if forceRefresh
+      }
+      // If we weren't requesting forceRefresh, the completed call satisfied our need
+      if (!forceRefresh) {
+        return;
+      }
+      // Otherwise fall through to start a new forceRefresh attempt
+      console.log('[IBKR] Previous ensureReady completed, starting force refresh...');
     }
 
     // Start new ensureReady operation
@@ -1213,16 +1231,23 @@ class IbkrClient {
 
       // Handle 401/403 authentication errors
       if (retry && (msg.includes("401") || msg.includes("403"))) {
-        // DON'T clear auth if WebSocket is already working!
-        const wsStatus = getIbkrWebSocketStatus();
-        if (wsStatus?.authenticated && wsStatus?.connected) {
-          console.log('[IBKR] HTTP 401 but WebSocket authenticated - keeping auth state');
-          this.sessionReady = true;  // Mark ready since WS is working
-          return;  // Don't nuke, don't retry
+        // Check connection mode - in relay mode, HTTP auth is independent of WebSocket
+        const connMode = getConnectionMode();
+        if (connMode === 'relay') {
+          // In relay mode, WebSocket is intentionally disconnected - handle HTTP auth normally
+          console.log('[IBKR] HTTP 401/403 in relay mode - clearing auth and retrying');
+        } else {
+          // In OAuth mode, check if WebSocket is working - if so, don't nuke everything
+          const wsStatus = getIbkrWebSocketStatus();
+          if (wsStatus?.authenticated && wsStatus?.connected) {
+            console.log('[IBKR] HTTP 401 but WebSocket authenticated - keeping auth state');
+            this.sessionReady = true;  // Mark ready since WS is working
+            return;  // Don't nuke, don't retry
+          }
+          console.log('[IBKR] HTTP 401/403 and WebSocket also down - clearing auth and retrying');
         }
 
-        // Only clear if WebSocket is also down
-        console.log('[IBKR] Caught 401/403 error - clearing auth and retrying with forceRefresh');
+        // Clear tokens and retry with forceRefresh
         this.accessToken = null;
         this.accessTokenExpiryMs = 0;
         this.ssoSessionId = null;
