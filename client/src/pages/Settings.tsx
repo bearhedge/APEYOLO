@@ -1,6 +1,6 @@
 // @ts-nocheck - Solana SAS integration incomplete
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { RefreshCw, CheckCircle, XCircle, AlertCircle, Trash2, Key, Eye, EyeOff, Save, Building2, Wallet, Copy, Loader2, ExternalLink, Zap, Database } from 'lucide-react';
+import { RefreshCw, CheckCircle, XCircle, AlertCircle, Trash2, Key, Eye, EyeOff, Save, Building2, Wallet, Copy, Loader2, ExternalLink, Zap, Database, ChevronDown, Clock } from 'lucide-react';
 import { useWallet, useConnection } from '@solana/wallet-adapter-react';
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui';
 import { Transaction, PublicKey } from '@solana/web3.js';
@@ -53,6 +53,68 @@ interface IbkrCredentialsStatus {
   message?: string;
 }
 
+// Helper to translate cryptic IBKR errors to user-friendly messages
+function translateIbkrError(rawError: string | null | undefined): { title: string; message: string; action?: string } | null {
+  if (!rawError) return null;
+
+  const errorLower = rawError.toLowerCase();
+
+  if (errorLower.includes('timeout') || errorLower.includes('30000ms')) {
+    return {
+      title: 'Connection Timed Out',
+      message: 'Could not reach IBKR servers. Please check your internet connection.',
+      action: 'Try Again',
+    };
+  }
+
+  if (errorLower.includes('iserver') || errorLower.includes('bridge')) {
+    return {
+      title: 'Market Data Unavailable',
+      message: 'Cannot connect to market data service. Make sure IBKR is open and running.',
+      action: 'Check IBKR',
+    };
+  }
+
+  if (errorLower.includes('authentication') || errorLower.includes('auth failed')) {
+    return {
+      title: 'Authentication Failed',
+      message: 'Login credentials are invalid or expired. Please verify your credentials.',
+      action: 'Update Credentials',
+    };
+  }
+
+  if (errorLower.includes('401') || errorLower.includes('unauthorized')) {
+    return {
+      title: 'Session Expired',
+      message: 'Your session has expired. Click Test Connection to reconnect.',
+      action: 'Reconnect',
+    };
+  }
+
+  if (errorLower.includes('network') || errorLower.includes('econnrefused')) {
+    return {
+      title: 'Network Error',
+      message: 'Could not establish connection. Check your internet and firewall settings.',
+      action: 'Try Again',
+    };
+  }
+
+  if (errorLower.includes('rate limit') || errorLower.includes('too many')) {
+    return {
+      title: 'Rate Limited',
+      message: 'Too many connection attempts. Please wait a moment before trying again.',
+      action: 'Wait',
+    };
+  }
+
+  // Default fallback - show a cleaned up version of the error
+  return {
+    title: 'Connection Issue',
+    message: rawError.length > 100 ? rawError.substring(0, 100) + '...' : rawError,
+    action: 'Try Again',
+  };
+}
+
 interface SettingsProps {
   /** Hide LeftNav when embedded in another page (e.g., Review page) */
   hideLeftNav?: boolean;
@@ -96,21 +158,6 @@ export function Settings({
   const [orderResult, setOrderResult] = useState<any>(null);
   const [clearResult, setClearResult] = useState<any>(null);
 
-  // Data Source Preference - stored in localStorage
-  const [dataSource, setDataSource] = useState<'websocket' | 'http'>(() => {
-    if (typeof window !== 'undefined') {
-      return (localStorage.getItem('apeyolo-data-source') as 'websocket' | 'http') || 'http';
-    }
-    return 'http';
-  });
-
-  const handleDataSourceChange = (source: 'websocket' | 'http') => {
-    setDataSource(source);
-    localStorage.setItem('apeyolo-data-source', source);
-    // Trigger page reload to apply new data source
-    window.location.reload();
-  };
-
   // IBKR Credentials Form State
   const [showCredentialsForm, setShowCredentialsForm] = useState(false);
   const [credClientId, setCredClientId] = useState('');
@@ -123,6 +170,9 @@ export function Settings({
   const [showPrivateKey, setShowPrivateKey] = useState(false);
   const [credSaveResult, setCredSaveResult] = useState<any>(null);
   const [credTestResult, setCredTestResult] = useState<any>(null);
+
+  // Advanced settings section visibility
+  const [showAdvanced, setShowAdvanced] = useState(false);
 
   // Connection Method Toggle - OAuth vs TWS/Gateway
   const [connectionMethod, setConnectionMethod] = useState<'oauth' | 'relay'>(() => {
@@ -876,6 +926,123 @@ export function Settings({
               </div>
             </div>
 
+            {/* MODE Toggle - LIVE/PAPER */}
+            <div className="p-4 border-b border-white/10 bg-dark-gray/30">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-silver">Trading Mode</span>
+                <div className="flex items-center gap-2">
+                  <span className={`px-3 py-1 rounded-full text-sm font-medium ${
+                    ibkrStatus?.environment === 'live'
+                      ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30'
+                      : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                  }`}>
+                    {ibkrStatus?.environment === 'live' ? 'LIVE' : 'PAPER'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* ACCOUNT SUMMARY Section */}
+            {ibkrStatus?.configured && (
+              <div className="p-6 border-b border-white/10">
+                <h4 className="text-sm font-medium text-silver uppercase tracking-wider mb-4">Account Summary</h4>
+                <div className="grid grid-cols-4 gap-3">
+                  <div className="p-3 bg-dark-gray rounded-lg">
+                    <p className="text-xs text-silver mb-1">Account ID</p>
+                    <p className="text-sm font-mono font-medium">{ibkrStatus?.accountId || '—'}</p>
+                  </div>
+                  <div className="p-3 bg-dark-gray rounded-lg">
+                    <p className="text-xs text-silver mb-1">Portfolio Value</p>
+                    <p className="text-sm font-medium tabular-nums">
+                      {ibkrStatus?.nav
+                        ? `$${ibkrStatus.nav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                        : ibkrStatus?.netValue
+                          ? `$${ibkrStatus.netValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                          : '—'}
+                    </p>
+                  </div>
+                  <div className="p-3 bg-dark-gray rounded-lg">
+                    <p className="text-xs text-silver mb-1">Buying Power</p>
+                    <p className="text-sm font-medium tabular-nums">
+                      {ibkrStatus?.buyingPower
+                        ? `$${ibkrStatus.buyingPower.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                        : '—'}
+                    </p>
+                  </div>
+                  <div className="p-3 bg-dark-gray rounded-lg">
+                    <p className="text-xs text-silver mb-1">Last Updated</p>
+                    <p className="text-sm text-silver flex items-center gap-1">
+                      <Clock className="w-3 h-3" />
+                      {ibkrStatus?.lastUpdated
+                        ? (() => {
+                            const diff = Date.now() - new Date(ibkrStatus.lastUpdated).getTime();
+                            const mins = Math.floor(diff / 60000);
+                            return mins < 1 ? 'Just now' : `${mins}m ago`;
+                          })()
+                        : '—'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Connection Status Indicators - Compact */}
+                {ibkrStatus?.diagnostics && connectionMethod === 'oauth' && (
+                  <div className="mt-4 flex items-center gap-3 text-xs">
+                    <span className="text-silver">Status:</span>
+                    <div className="flex items-center gap-2">
+                      <span className={`flex items-center gap-1 ${ibkrStatus.diagnostics.oauth?.success ? 'text-green-400' : 'text-zinc-500'}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${ibkrStatus.diagnostics.oauth?.success ? 'bg-green-400' : 'bg-zinc-500'}`} />
+                        OAuth
+                      </span>
+                      <span className={`flex items-center gap-1 ${ibkrStatus.diagnostics.sso?.success ? 'text-green-400' : 'text-zinc-500'}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${ibkrStatus.diagnostics.sso?.success ? 'bg-green-400' : 'bg-zinc-500'}`} />
+                        SSO
+                      </span>
+                      <span className={`flex items-center gap-1 ${ibkrStatus.diagnostics.websocket?.success ? 'text-green-400' : 'text-zinc-500'}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${ibkrStatus.diagnostics.websocket?.success ? 'bg-green-400' : 'bg-zinc-500'}`} />
+                        WebSocket
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Error Display - User Friendly */}
+            {(ibkrStatus?.errorMessage || userCredentials?.errorMessage) && (
+              (() => {
+                const error = translateIbkrError(ibkrStatus?.errorMessage || userCredentials?.errorMessage);
+                if (!error) return null;
+                return (
+                  <div className="mx-6 mt-4 p-4 bg-red-900/20 border border-red-500/30 rounded-lg">
+                    <div className="flex items-start gap-3">
+                      <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+                      <div className="flex-1">
+                        <p className="text-sm font-medium text-red-400">{error.title}</p>
+                        <p className="text-xs text-red-300/80 mt-1">{error.message}</p>
+                      </div>
+                      {error.action && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="text-xs border-red-500/30 text-red-400 hover:bg-red-500/10"
+                          onClick={() => {
+                            if (error.action === 'Update Credentials') {
+                              setShowCredentialsForm(true);
+                              setShowAdvanced(true);
+                            } else {
+                              testCredentialsMutation.mutate();
+                            }
+                          }}
+                        >
+                          {error.action}
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()
+            )}
+
             {/* CONNECTION METHOD Toggle */}
             <div className="p-6 border-b border-white/10">
               <h4 className="text-sm font-medium text-silver uppercase tracking-wider mb-4">Connection Method</h4>
@@ -928,357 +1095,334 @@ export function Settings({
               )}
             </div>
 
-            {/* CONNECTION Section - OAuth */}
-            <div className={`p-6 border-b border-white/10 transition-opacity ${connectionMethod !== 'oauth' ? 'opacity-40' : ''}`}>
-              <h4 className="text-sm font-medium text-silver uppercase tracking-wider mb-4">Connection</h4>
-
-              <div className="grid grid-cols-3 gap-4 mb-4">
-                <div className="p-3 bg-dark-gray rounded-lg">
-                  <p className="text-xs text-silver mb-1">Environment</p>
-                  <p className={`text-sm font-medium ${ibkrStatus?.environment === 'live' ? 'text-red-400' : 'text-blue-400'}`}>
-                    {ibkrStatus?.environment?.toUpperCase() || 'PAPER'}
-                  </p>
-                </div>
-                <div className="p-3 bg-dark-gray rounded-lg">
-                  <p className="text-xs text-silver mb-1">Account ID</p>
-                  <p className="text-sm font-mono">{ibkrStatus?.accountId || '—'}</p>
-                </div>
-                <div className="p-3 bg-dark-gray rounded-lg">
-                  <p className="text-xs text-silver mb-1">Multi-User</p>
-                  <p className="text-sm">{ibkrStatus?.multiUserMode ? 'Enabled' : 'Disabled'}</p>
-                </div>
-              </div>
-
-              {/* Auth Pipeline - Compact Inline */}
-              {ibkrStatus?.configured && ibkrStatus.diagnostics && (
-                <div className="p-3 bg-dark-gray rounded-lg">
-                  <p className="text-xs text-silver mb-2">Auth Pipeline</p>
-                  {/* In relay mode, show all steps as inactive (OAuth not used) */}
-                  {ibkrStatus?.connectionMode === 'relay' ? (
-                    <div className="flex items-center gap-4 flex-wrap">
-                      <StatusStep name="OAuth" status={0} message="Not used in TWS mode" success={false} compact />
-                      <StatusStep name="SSO" status={0} message="Not used in TWS mode" success={false} compact />
-                      <StatusStep name="Validate" status={0} message="Not used in TWS mode" success={false} compact />
-                      <StatusStep name="Init" status={0} message="Not used in TWS mode" success={false} compact />
-                      <span className="text-xs text-silver">— WebSocket</span>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-4 flex-wrap">
-                      <StatusStep
-                        name="OAuth"
-                        status={ibkrStatus.diagnostics.oauth?.status || 0}
-                        message={ibkrStatus.diagnostics.oauth?.message || 'Not attempted'}
-                        success={ibkrStatus.diagnostics.oauth?.success}
-                        compact
-                      />
-                      <StatusStep
-                        name="SSO"
-                        status={ibkrStatus.diagnostics.sso?.status || 0}
-                        message={ibkrStatus.diagnostics.sso?.message || 'Not attempted'}
-                        success={ibkrStatus.diagnostics.sso?.success}
-                        compact
-                      />
-                      <StatusStep
-                        name="Validate"
-                        status={ibkrStatus.diagnostics.validate?.status || ibkrStatus.diagnostics.validated?.status || 0}
-                        message={ibkrStatus.diagnostics.validate?.message || ibkrStatus.diagnostics.validated?.message || 'Not attempted'}
-                        success={ibkrStatus.diagnostics.validate?.success || ibkrStatus.diagnostics.validated?.success}
-                        compact
-                      />
-                      <StatusStep
-                        name="Init"
-                        status={ibkrStatus.diagnostics.init?.status || ibkrStatus.diagnostics.initialized?.status || 0}
-                        message={ibkrStatus.diagnostics.init?.message || ibkrStatus.diagnostics.initialized?.message || 'Not attempted'}
-                        success={ibkrStatus.diagnostics.init?.success || ibkrStatus.diagnostics.initialized?.success}
-                        compact
-                      />
-                      <StatusStep
-                        name="WebSocket"
-                        status={ibkrStatus.diagnostics.websocket?.status || 0}
-                        message={ibkrStatus.diagnostics.websocket?.message || 'Not initialized'}
-                        success={ibkrStatus.diagnostics.websocket?.success}
-                        compact
-                      />
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {/* Test/Order Results */}
-              {testResult && (
-                <div className={`mt-4 p-3 rounded-lg border ${
-                  testResult.success ? 'bg-green-900/20 border-green-500/30' : 'bg-red-900/20 border-red-500/30'
-                }`}>
-                  <p className={`text-sm font-medium ${testResult.success ? 'text-green-400' : 'text-red-400'}`}>
-                    Connection Test: {testResult.message}
-                  </p>
-                </div>
-              )}
-
-              {orderResult && (
-                <div className={`mt-4 p-3 rounded-lg border ${
-                  orderResult.success ? 'bg-green-900/20 border-green-500/30' : 'bg-red-900/20 border-red-500/30'
-                }`}>
-                  <p className={`text-sm font-medium ${orderResult.success ? 'text-green-400' : 'text-red-400'}`}>
-                    Test Order: {orderResult.message || (orderResult.success ? 'Order Submitted' : 'Order Failed')}
-                  </p>
-                  {orderResult.orderId && (
-                    <p className="text-xs text-silver mt-1">Order ID: {orderResult.orderId}</p>
-                  )}
-                </div>
-              )}
-
-              {clearResult && (
-                <div className={`mt-4 p-3 rounded-lg border ${
-                  clearResult.success ? 'bg-green-900/20 border-green-500/30' : 'bg-red-900/20 border-red-500/30'
-                }`}>
-                  <p className={`text-sm font-medium ${clearResult.success ? 'text-green-400' : 'text-red-400'}`}>
-                    {clearResult.message || 'Clear Orders Result'}
-                  </p>
-                  {clearResult.cleared > 0 && (
-                    <p className="text-xs text-silver mt-1">Cleared {clearResult.cleared} order(s)</p>
-                  )}
-                </div>
-              )}
-            </div>
-
-            {/* DATA SOURCE Section */}
-            <div className={`p-6 border-b border-white/10 transition-opacity ${connectionMethod !== 'oauth' ? 'opacity-40' : ''}`}>
-              <h4 className="text-sm font-medium text-silver uppercase tracking-wider mb-4">Data Source</h4>
-              <p className="text-xs text-silver mb-4">
-                Market data is streamed via WebSocket (FREE with OPRA subscription).
-              </p>
-
-              <div className="p-4 rounded-lg border bg-electric/20 border-electric">
-                <div className="flex items-center gap-3 mb-2">
-                  <Zap className="w-5 h-5 text-electric" />
-                  <span className="font-medium text-white">WebSocket Streaming</span>
-                  <span className="text-xs bg-green-500/20 text-green-400 px-2 py-0.5 rounded-full">FREE</span>
-                </div>
-                <p className="text-xs text-silver">
-                  Real-time push updates • ~50ms latency • Covered by OPRA subscription
-                </p>
-              </div>
-            </div>
-
-            {/* CREDENTIALS Section */}
-            <div className={`p-6 border-b border-white/10 transition-opacity ${connectionMethod !== 'oauth' ? 'opacity-40' : ''}`}>
-              <div className="flex items-center justify-between mb-4">
-                <h4 className="text-sm font-medium text-silver uppercase tracking-wider">Credentials</h4>
-                <span className={`text-sm font-medium ${getCredentialStatusColor()}`}>
-                  {getCredentialStatusText()}
-                </span>
-              </div>
-
-              {/* Current Credentials Display */}
-              {userCredentials?.configured && !showCredentialsForm && (
-                <div className="grid grid-cols-3 gap-4 mb-4">
-                  <div className="p-3 bg-dark-gray rounded-lg">
-                    <p className="text-xs text-silver mb-1">Client ID</p>
-                    <p className="text-sm font-mono truncate">{userCredentials.clientId}</p>
-                  </div>
-                  <div className="p-3 bg-dark-gray rounded-lg">
-                    <p className="text-xs text-silver mb-1">Username</p>
-                    <p className="text-sm font-mono">{userCredentials.credential}</p>
-                  </div>
-                  <div className="p-3 bg-dark-gray rounded-lg">
-                    <p className="text-xs text-silver mb-1">Last Connected</p>
-                    <p className="text-sm">
-                      {userCredentials.lastConnectedAt
-                        ? new Date(userCredentials.lastConnectedAt).toLocaleDateString()
-                        : '—'}
+            {/* Test/Order Results - shown when present */}
+            {(testResult || orderResult || clearResult || credTestResult) && (
+              <div className={`p-6 border-b border-white/10 transition-opacity ${connectionMethod !== 'oauth' ? 'opacity-40' : ''}`}>
+                {testResult && (
+                  <div className={`p-3 rounded-lg border ${
+                    testResult.success ? 'bg-green-900/20 border-green-500/30' : 'bg-red-900/20 border-red-500/30'
+                  }`}>
+                    <p className={`text-sm font-medium ${testResult.success ? 'text-green-400' : 'text-red-400'}`}>
+                      Connection Test: {testResult.message}
                     </p>
                   </div>
-                </div>
-              )}
+                )}
 
-              {/* Error Message */}
-              {userCredentials?.errorMessage && !showCredentialsForm && (
-                <div className="p-3 bg-red-900/20 border border-red-500/30 rounded-lg mb-4">
-                  <p className="text-sm text-red-400">{userCredentials.errorMessage}</p>
-                </div>
-              )}
-
-              {/* Credentials Test Result */}
-              {credTestResult && !showCredentialsForm && (
-                <div className={`p-3 rounded-lg border mb-4 ${
-                  credTestResult.success ? 'bg-green-900/20 border-green-500/30' : 'bg-red-900/20 border-red-500/30'
-                }`}>
-                  <p className={`text-sm font-medium ${credTestResult.success ? 'text-green-400' : 'text-red-400'}`}>
-                    {credTestResult.message}
-                  </p>
-                  {credTestResult.account && (
-                    <p className="text-xs text-silver mt-1">
-                      Account: {credTestResult.account.accountId} | NAV: ${credTestResult.account.netValue?.toLocaleString()}
+                {credTestResult && (
+                  <div className={`${testResult ? 'mt-3' : ''} p-3 rounded-lg border ${
+                    credTestResult.success ? 'bg-green-900/20 border-green-500/30' : 'bg-red-900/20 border-red-500/30'
+                  }`}>
+                    <p className={`text-sm font-medium ${credTestResult.success ? 'text-green-400' : 'text-red-400'}`}>
+                      {credTestResult.message}
                     </p>
-                  )}
-                </div>
-              )}
-
-              {/* Credentials Form */}
-              {showCredentialsForm && (
-                <div className="space-y-4">
-                  <p className="text-sm text-silver">
-                    Enter your IBKR OAuth credentials from the API Gateway. These will be encrypted and stored securely.
-                  </p>
-
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <Label htmlFor="cred-client-id">Client ID *</Label>
-                      <Input
-                        id="cred-client-id"
-                        value={credClientId}
-                        onChange={(e) => setCredClientId(e.target.value)}
-                        placeholder="Your IBKR Client ID"
-                        className="input-monochrome mt-1"
-                      />
-                    </div>
-                    <div>
-                      <Label htmlFor="cred-client-key-id">Client Key ID *</Label>
-                      <Input
-                        id="cred-client-key-id"
-                        value={credClientKeyId}
-                        onChange={(e) => setCredClientKeyId(e.target.value)}
-                        placeholder="e.g., main"
-                        className="input-monochrome mt-1"
-                      />
-                    </div>
+                    {credTestResult.account && (
+                      <p className="text-xs text-silver mt-1">
+                        Account: {credTestResult.account.accountId} | NAV: ${credTestResult.account.netValue?.toLocaleString()}
+                      </p>
+                    )}
                   </div>
+                )}
 
-                  <div>
-                    <Label htmlFor="cred-username">IBKR Username *</Label>
-                    <Input
-                      id="cred-username"
-                      value={credUsername}
-                      onChange={(e) => setCredUsername(e.target.value)}
-                      placeholder="Your IBKR login username"
-                      className="input-monochrome mt-1"
-                    />
+                {orderResult && (
+                  <div className={`${testResult || credTestResult ? 'mt-3' : ''} p-3 rounded-lg border ${
+                    orderResult.success ? 'bg-green-900/20 border-green-500/30' : 'bg-red-900/20 border-red-500/30'
+                  }`}>
+                    <p className={`text-sm font-medium ${orderResult.success ? 'text-green-400' : 'text-red-400'}`}>
+                      Test Order: {orderResult.message || (orderResult.success ? 'Order Submitted' : 'Order Failed')}
+                    </p>
+                    {orderResult.orderId && (
+                      <p className="text-xs text-silver mt-1">Order ID: {orderResult.orderId}</p>
+                    )}
                   </div>
+                )}
 
-                  <div>
-                    <div className="flex items-center justify-between">
-                      <Label htmlFor="cred-private-key">Private Key (PEM) *</Label>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => setShowPrivateKey(!showPrivateKey)}
-                        className="text-xs text-silver hover:text-white"
-                      >
-                        {showPrivateKey ? <EyeOff className="w-3 h-3 mr-1" /> : <Eye className="w-3 h-3 mr-1" />}
-                        {showPrivateKey ? 'Hide' : 'Show'}
-                      </Button>
-                    </div>
-                    <Textarea
-                      id="cred-private-key"
-                      value={credPrivateKey}
-                      onChange={(e) => setCredPrivateKey(e.target.value)}
-                      placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
-                      className={`input-monochrome mt-1 min-h-32 font-mono text-xs ${!showPrivateKey ? 'blur-sm hover:blur-none focus:blur-none' : ''}`}
-                    />
+                {clearResult && (
+                  <div className={`${testResult || credTestResult || orderResult ? 'mt-3' : ''} p-3 rounded-lg border ${
+                    clearResult.success ? 'bg-green-900/20 border-green-500/30' : 'bg-red-900/20 border-red-500/30'
+                  }`}>
+                    <p className={`text-sm font-medium ${clearResult.success ? 'text-green-400' : 'text-red-400'}`}>
+                      {clearResult.message || 'Clear Orders Result'}
+                    </p>
+                    {clearResult.cleared > 0 && (
+                      <p className="text-xs text-silver mt-1">Cleared {clearResult.cleared} order(s)</p>
+                    )}
                   </div>
+                )}
+              </div>
+            )}
 
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <Label htmlFor="cred-account-id">Account ID (optional)</Label>
-                      <Input
-                        id="cred-account-id"
-                        value={credAccountId}
-                        onChange={(e) => setCredAccountId(e.target.value)}
-                        placeholder="U1234567"
-                        className="input-monochrome mt-1"
-                      />
-                    </div>
-                    <div>
-                      <Label htmlFor="cred-environment">Environment</Label>
-                      <Select value={credEnvironment} onValueChange={(v) => setCredEnvironment(v as 'paper' | 'live')}>
-                        <SelectTrigger className="input-monochrome mt-1">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent className="bg-charcoal border-white/10">
-                          <SelectItem value="paper">Paper Trading</SelectItem>
-                          <SelectItem value="live">Live Trading</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
+            {/* ADVANCED Section - Collapsible */}
+            <div className={`border-b border-white/10 transition-opacity ${connectionMethod !== 'oauth' ? 'opacity-40' : ''}`}>
+              <button
+                onClick={() => setShowAdvanced(!showAdvanced)}
+                className="w-full p-4 flex items-center justify-between text-left hover:bg-white/5 transition-colors"
+              >
+                <span className="text-sm font-medium text-silver uppercase tracking-wider">Advanced Settings</span>
+                <ChevronDown className={`w-4 h-4 text-silver transition-transform ${showAdvanced ? 'rotate-180' : ''}`} />
+              </button>
 
-                  <div>
-                    <Label htmlFor="cred-allowed-ip">Allowed IP (optional)</Label>
-                    <Input
-                      id="cred-allowed-ip"
-                      value={credAllowedIp}
-                      onChange={(e) => setCredAllowedIp(e.target.value)}
-                      placeholder="Your server's static IP"
-                      className="input-monochrome mt-1"
-                    />
-                  </div>
-
-                  {/* Save Result */}
-                  {credSaveResult && (
-                    <div className={`p-3 rounded-lg border ${
-                      credSaveResult.success ? 'bg-green-900/20 border-green-500/30' : 'bg-red-900/20 border-red-500/30'
-                    }`}>
-                      <p className={`text-sm ${credSaveResult.success ? 'text-green-400' : 'text-red-400'}`}>
-                        {credSaveResult.message || credSaveResult.error}
+              {showAdvanced && (
+                <div className="pb-6">
+                  {/* Data Source Info */}
+                  <div className="px-6 pb-4">
+                    <div className="p-3 rounded-lg border bg-electric/10 border-electric/30">
+                      <div className="flex items-center gap-2">
+                        <Zap className="w-4 h-4 text-electric" />
+                        <span className="text-sm text-white">WebSocket Streaming</span>
+                        <span className="text-xs bg-green-500/20 text-green-400 px-2 py-0.5 rounded-full">FREE</span>
+                      </div>
+                      <p className="text-xs text-silver mt-1">
+                        Real-time push updates • ~50ms latency • Covered by OPRA subscription
                       </p>
                     </div>
-                  )}
-
-                  <div className="flex gap-2">
-                    <Button
-                      onClick={handleSaveCredentials}
-                      className="btn-primary flex-1"
-                      disabled={saveCredentialsMutation.isPending}
-                    >
-                      <Save className="w-4 h-4 mr-2" />
-                      {saveCredentialsMutation.isPending ? 'Saving...' : 'Save Credentials'}
-                    </Button>
-                    <Button
-                      onClick={() => {
-                        setShowCredentialsForm(false);
-                        setCredSaveResult(null);
-                      }}
-                      className="btn-secondary"
-                    >
-                      Cancel
-                    </Button>
                   </div>
-                </div>
-              )}
 
-              {/* Credentials Actions */}
-              {!showCredentialsForm && (
-                <div className="flex gap-2">
-                  {!userCredentials?.configured ? (
-                    <Button
-                      onClick={() => setShowCredentialsForm(true)}
-                      className="btn-primary flex-1"
-                    >
-                      <Key className="w-4 h-4 mr-2" />
-                      Add IBKR Credentials
-                    </Button>
-                  ) : (
-                    <>
-                      <Button
-                        onClick={() => setShowCredentialsForm(true)}
-                        className="btn-secondary flex-1"
-                      >
-                        Update Credentials
-                      </Button>
-                      <Button
-                        onClick={() => {
-                          if (window.confirm('Are you sure you want to delete your IBKR credentials?')) {
-                            deleteCredentialsMutation.mutate();
-                          }
-                        }}
-                        className="btn-secondary text-red-400 hover:text-red-300"
-                        disabled={deleteCredentialsMutation.isPending}
-                      >
-                        <Trash2 className="w-4 h-4" />
-                      </Button>
-                    </>
+                  {/* Auth Pipeline - Detailed */}
+                  {ibkrStatus?.configured && ibkrStatus.diagnostics && connectionMethod === 'oauth' && (
+                    <div className="px-6 pb-4">
+                      <p className="text-xs text-silver mb-2">Auth Pipeline</p>
+                      <div className="p-3 bg-dark-gray rounded-lg">
+                        <div className="flex items-center gap-4 flex-wrap">
+                          <StatusStep
+                            name="OAuth"
+                            status={ibkrStatus.diagnostics.oauth?.status || 0}
+                            message={ibkrStatus.diagnostics.oauth?.message || 'Not attempted'}
+                            success={ibkrStatus.diagnostics.oauth?.success}
+                            compact
+                          />
+                          <StatusStep
+                            name="SSO"
+                            status={ibkrStatus.diagnostics.sso?.status || 0}
+                            message={ibkrStatus.diagnostics.sso?.message || 'Not attempted'}
+                            success={ibkrStatus.diagnostics.sso?.success}
+                            compact
+                          />
+                          <StatusStep
+                            name="Validate"
+                            status={ibkrStatus.diagnostics.validate?.status || ibkrStatus.diagnostics.validated?.status || 0}
+                            message={ibkrStatus.diagnostics.validate?.message || ibkrStatus.diagnostics.validated?.message || 'Not attempted'}
+                            success={ibkrStatus.diagnostics.validate?.success || ibkrStatus.diagnostics.validated?.success}
+                            compact
+                          />
+                          <StatusStep
+                            name="Init"
+                            status={ibkrStatus.diagnostics.init?.status || ibkrStatus.diagnostics.initialized?.status || 0}
+                            message={ibkrStatus.diagnostics.init?.message || ibkrStatus.diagnostics.initialized?.message || 'Not attempted'}
+                            success={ibkrStatus.diagnostics.init?.success || ibkrStatus.diagnostics.initialized?.success}
+                            compact
+                          />
+                          <StatusStep
+                            name="WebSocket"
+                            status={ibkrStatus.diagnostics.websocket?.status || 0}
+                            message={ibkrStatus.diagnostics.websocket?.message || 'Not initialized'}
+                            success={ibkrStatus.diagnostics.websocket?.success}
+                            compact
+                          />
+                        </div>
+                      </div>
+                    </div>
                   )}
+
+                  {/* Credentials Management */}
+                  <div className="px-6">
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="text-xs text-silver">Credentials</p>
+                      <span className={`text-xs font-medium ${getCredentialStatusColor()}`}>
+                        {getCredentialStatusText()}
+                      </span>
+                    </div>
+
+                    {/* Current Credentials Display */}
+                    {userCredentials?.configured && !showCredentialsForm && (
+                      <div className="grid grid-cols-3 gap-3 mb-3">
+                        <div className="p-2 bg-dark-gray rounded-lg">
+                          <p className="text-xs text-silver mb-0.5">Client ID</p>
+                          <p className="text-xs font-mono truncate">{userCredentials.clientId}</p>
+                        </div>
+                        <div className="p-2 bg-dark-gray rounded-lg">
+                          <p className="text-xs text-silver mb-0.5">Username</p>
+                          <p className="text-xs font-mono">{userCredentials.credential}</p>
+                        </div>
+                        <div className="p-2 bg-dark-gray rounded-lg">
+                          <p className="text-xs text-silver mb-0.5">Last Connected</p>
+                          <p className="text-xs">
+                            {userCredentials.lastConnectedAt
+                              ? new Date(userCredentials.lastConnectedAt).toLocaleDateString()
+                              : '—'}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Credentials Form - Keep existing form structure */}
+                    {showCredentialsForm && (
+                      <div className="space-y-4">
+                        <p className="text-sm text-silver">
+                          Enter your IBKR OAuth credentials from the API Gateway.
+                        </p>
+
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <Label htmlFor="cred-client-id" className="text-xs">Client ID *</Label>
+                            <Input
+                              id="cred-client-id"
+                              value={credClientId}
+                              onChange={(e) => setCredClientId(e.target.value)}
+                              placeholder="Your IBKR Client ID"
+                              className="input-monochrome mt-1 text-sm"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="cred-client-key-id" className="text-xs">Client Key ID *</Label>
+                            <Input
+                              id="cred-client-key-id"
+                              value={credClientKeyId}
+                              onChange={(e) => setCredClientKeyId(e.target.value)}
+                              placeholder="e.g., main"
+                              className="input-monochrome mt-1 text-sm"
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <Label htmlFor="cred-username" className="text-xs">IBKR Username *</Label>
+                          <Input
+                            id="cred-username"
+                            value={credUsername}
+                            onChange={(e) => setCredUsername(e.target.value)}
+                            placeholder="Your IBKR login username"
+                            className="input-monochrome mt-1 text-sm"
+                          />
+                        </div>
+
+                        <div>
+                          <div className="flex items-center justify-between">
+                            <Label htmlFor="cred-private-key" className="text-xs">Private Key (PEM) *</Label>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setShowPrivateKey(!showPrivateKey)}
+                              className="text-xs text-silver hover:text-white h-6"
+                            >
+                              {showPrivateKey ? <EyeOff className="w-3 h-3 mr-1" /> : <Eye className="w-3 h-3 mr-1" />}
+                              {showPrivateKey ? 'Hide' : 'Show'}
+                            </Button>
+                          </div>
+                          <Textarea
+                            id="cred-private-key"
+                            value={credPrivateKey}
+                            onChange={(e) => setCredPrivateKey(e.target.value)}
+                            placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
+                            className={`input-monochrome mt-1 min-h-24 font-mono text-xs ${!showPrivateKey ? 'blur-sm hover:blur-none focus:blur-none' : ''}`}
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <Label htmlFor="cred-account-id" className="text-xs">Account ID (optional)</Label>
+                            <Input
+                              id="cred-account-id"
+                              value={credAccountId}
+                              onChange={(e) => setCredAccountId(e.target.value)}
+                              placeholder="U1234567"
+                              className="input-monochrome mt-1 text-sm"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="cred-environment" className="text-xs">Environment</Label>
+                            <Select value={credEnvironment} onValueChange={(v) => setCredEnvironment(v as 'paper' | 'live')}>
+                              <SelectTrigger className="input-monochrome mt-1 text-sm">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent className="bg-charcoal border-white/10">
+                                <SelectItem value="paper">Paper Trading</SelectItem>
+                                <SelectItem value="live">Live Trading</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </div>
+
+                        <div>
+                          <Label htmlFor="cred-allowed-ip" className="text-xs">Allowed IP (optional)</Label>
+                          <Input
+                            id="cred-allowed-ip"
+                            value={credAllowedIp}
+                            onChange={(e) => setCredAllowedIp(e.target.value)}
+                            placeholder="Your server's static IP"
+                            className="input-monochrome mt-1 text-sm"
+                          />
+                        </div>
+
+                        {credSaveResult && (
+                          <div className={`p-3 rounded-lg border ${
+                            credSaveResult.success ? 'bg-green-900/20 border-green-500/30' : 'bg-red-900/20 border-red-500/30'
+                          }`}>
+                            <p className={`text-sm ${credSaveResult.success ? 'text-green-400' : 'text-red-400'}`}>
+                              {credSaveResult.message || credSaveResult.error}
+                            </p>
+                          </div>
+                        )}
+
+                        <div className="flex gap-2">
+                          <Button
+                            onClick={handleSaveCredentials}
+                            className="btn-primary flex-1"
+                            disabled={saveCredentialsMutation.isPending}
+                          >
+                            <Save className="w-4 h-4 mr-2" />
+                            {saveCredentialsMutation.isPending ? 'Saving...' : 'Save Credentials'}
+                          </Button>
+                          <Button
+                            onClick={() => {
+                              setShowCredentialsForm(false);
+                              setCredSaveResult(null);
+                            }}
+                            className="btn-secondary"
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Credentials Actions */}
+                    {!showCredentialsForm && (
+                      <div className="flex gap-2">
+                        {!userCredentials?.configured ? (
+                          <Button
+                            onClick={() => setShowCredentialsForm(true)}
+                            className="btn-primary flex-1"
+                            size="sm"
+                          >
+                            <Key className="w-4 h-4 mr-2" />
+                            Add IBKR Credentials
+                          </Button>
+                        ) : (
+                          <>
+                            <Button
+                              onClick={() => setShowCredentialsForm(true)}
+                              className="btn-secondary flex-1"
+                              size="sm"
+                            >
+                              Update Credentials
+                            </Button>
+                            <Button
+                              onClick={() => {
+                                if (window.confirm('Are you sure you want to delete your IBKR credentials?')) {
+                                  deleteCredentialsMutation.mutate();
+                                }
+                              }}
+                              className="btn-secondary text-red-400 hover:text-red-300"
+                              size="sm"
+                              disabled={deleteCredentialsMutation.isPending}
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
@@ -1288,7 +1432,14 @@ export function Settings({
               {!ibkrStatus?.configured && (
                 <div className="p-3 bg-yellow-900/20 border border-yellow-500/30 rounded-lg mb-4">
                   <p className="text-sm text-yellow-400">
-                    IBKR credentials not configured. Add your credentials above to connect.
+                    IBKR credentials not configured.{' '}
+                    <button
+                      onClick={() => setShowAdvanced(true)}
+                      className="underline hover:text-yellow-300"
+                    >
+                      Open Advanced Settings
+                    </button>
+                    {' '}to add your credentials.
                   </p>
                 </div>
               )}
