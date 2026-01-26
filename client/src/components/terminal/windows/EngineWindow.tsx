@@ -212,7 +212,8 @@ export function EngineWindow() {
 
     // Log each step completion (with deduplication)
     if (completedSteps.has(1) && !loggedSteps.has('step1')) {
-      const vixVal = analysis?.q1MarketRegime?.inputs?.vixValue ?? 0;
+      // Use WebSocket VIX if available, otherwise fall back to analysis result
+      const vixVal = wsVix > 0 ? wsVix : (analysis?.q1MarketRegime?.inputs?.vixValue ?? 0);
       const regime = analysis?.q1MarketRegime?.regimeLabel ?? 'NORMAL';
       const regimeStr = String(regime);
       addLogLine(`VIX ${vixVal.toFixed(1)} - ${regimeStr.toLowerCase()}, ${regimeStr === 'ELEVATED' ? 'caution advised' : 'safe to trade'}`, 'success');
@@ -284,7 +285,7 @@ export function EngineWindow() {
     if (completedSteps.size >= 4 && !isAnalyzing && hudState === 'analyzing') {
       setHudState('ready');
     }
-  }, [completedSteps, isAnalyzing, analysis, hudState, addLogLine, contracts, credit, ibkrStatus?.nav, spreadWidth, loggedSteps]);
+  }, [completedSteps, isAnalyzing, analysis, hudState, addLogLine, contracts, credit, ibkrStatus?.nav, spreadWidth, loggedSteps, wsVix]);
 
   // Stream agent activities to log
   useEffect(() => {

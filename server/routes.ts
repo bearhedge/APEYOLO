@@ -852,14 +852,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.get('/api/account', requireAuth, async (req, res) => {
     try {
       // Get broker for this specific user (no fallback to shared credentials)
-      const userBroker = await getBrokerForUser(req.user!.id);
+      let userBroker = await getBrokerForUser(req.user!.id);
 
-      // If user has no IBKR credentials, return error (no fallback to env credentials)
+      // If user has no IBKR credentials, fall back to global broker (env var credentials)
       if (!userBroker.api || userBroker.status.provider === 'none') {
-        return res.status(403).json({
-          error: 'No IBKR credentials configured',
-          message: 'Please configure your IBKR credentials in Settings'
-        });
+        const globalBroker = getBroker();
+        if (globalBroker.api && globalBroker.status.connected) {
+          userBroker = globalBroker;
+        } else {
+          return res.status(403).json({
+            error: 'No IBKR credentials configured',
+            message: 'Please configure your IBKR credentials in Settings'
+          });
+        }
       }
 
       if (userBroker.status.provider === 'ibkr') {
