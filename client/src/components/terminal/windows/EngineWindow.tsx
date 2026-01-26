@@ -11,6 +11,7 @@
  */
 
 import { useState, useCallback, useMemo, useEffect } from 'react';
+import { useWebSocket } from '@/hooks/use-websocket';
 import { useEngineAnalysis } from '@/hooks/useEngineAnalysis';
 import { useAgentOperator } from '@/hooks/useAgentOperator';
 import { useQuery, useMutation } from '@tanstack/react-query';
@@ -55,6 +56,11 @@ export function EngineWindow() {
   const [logLines, setLogLines] = useState<LogLine[]>([]);
   const [hudState, setHudState] = useState<'idle' | 'analyzing' | 'ready'>('idle');
 
+  // WebSocket for real-time market data
+  const { isConnected: wsConnected, onChartPriceUpdate } = useWebSocket();
+  const [wsSpyPrice, setWsSpyPrice] = useState(0);
+  const [wsVix, setWsVix] = useState(0);
+
   // Engine analysis hook - map HUD strategy to engine strategy
   const engineStrategy = strategy === 'put-spread' ? 'put-only' : strategy === 'call-spread' ? 'call-only' : 'strangle';
   const {
@@ -93,6 +99,21 @@ export function EngineWindow() {
     refetchInterval: 30000,
   });
 
+  // Subscribe to WebSocket price updates
+  useEffect(() => {
+    console.log('[EngineWindow] Setting up WebSocket price subscription, wsConnected:', wsConnected);
+
+    const unsubscribe = onChartPriceUpdate((price, symbol, timestamp) => {
+      console.log('[EngineWindow] Received price update:', { symbol, price, timestamp });
+      if (symbol === 'SPY') {
+        setWsSpyPrice(price);
+      }
+    });
+    return () => {
+      console.log('[EngineWindow] Cleaning up WebSocket subscription');
+      unsubscribe();
+    };
+  }, [onChartPriceUpdate, wsConnected]);
 
   // Execute trade mutation
   const executeMutation = useMutation({
@@ -119,11 +140,12 @@ export function EngineWindow() {
     },
   });
 
-  // Derived values from analysis (no paid data sources)
-  const spyPrice = analysis?.q1MarketRegime?.inputs?.spyPrice ?? 0;
+  // Derived values - prefer WebSocket prices, fall back to analysis data
+  const spyPrice = wsSpyPrice > 0 ? wsSpyPrice : (analysis?.q1MarketRegime?.inputs?.spyPrice ?? 0);
   const spyChangePct = 0; // Not available without market data API
-  const vix = analysis?.q1MarketRegime?.inputs?.vixValue ?? 0;
+  const vix = wsVix > 0 ? wsVix : (analysis?.q1MarketRegime?.inputs?.vixValue ?? 0);
   const isConnected = ibkrStatus?.connected ?? false;
+  const isWsConnected = wsConnected;
 
   // Calculate credit
   const credit = useMemo(() => {
@@ -350,7 +372,7 @@ export function EngineWindow() {
 
   // Keyboard controls
   useKeyboardControls({
-    enabled: true,
+    enabled: false, // DISABLED: Preventing accidental triggers while testing WebSocket
     onStrategyChange: setStrategy,
     onStrikeAdjust: (dir) => {
       setSpreadWidth((w) => (dir === 'wider' ? Math.min(w + 1, 10) : Math.max(w - 1, 1)));
@@ -395,6 +417,7 @@ export function EngineWindow() {
         spyChangePct={spyChangePct}
         vix={vix}
         isConnected={isConnected}
+        wsConnected={isWsConnected}
         mode={mode}
         autoCountdown={mode === 'AUTO' ? autoCountdown : undefined}
         onModeToggle={handleModeToggle}

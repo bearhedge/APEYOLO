@@ -9,6 +9,7 @@ interface TopBarProps {
   spyChangePct: number;
   vix: number;
   isConnected: boolean;
+  wsConnected?: boolean;
   mode: 'MANUAL' | 'AUTO';
   autoCountdown?: number; // seconds until next auto-analyze
   onModeToggle: () => void;
@@ -19,6 +20,7 @@ export function TopBar({
   spyChangePct,
   vix,
   isConnected,
+  wsConnected,
   mode,
   autoCountdown,
   onModeToggle,
@@ -87,6 +89,11 @@ export function TopBar({
           <span style={{ color: isConnected ? '#4ade80' : '#ef4444', fontSize: 11 }}>
             {isConnected ? 'CONNECTED' : 'DISCONNECTED'}
           </span>
+        </span>
+
+        {/* WebSocket Status */}
+        <span style={{ color: wsConnected ? '#4ade80' : '#666', marginLeft: 8 }}>
+          WS:{wsConnected ? 'ON' : 'OFF'}
         </span>
       </div>
 
