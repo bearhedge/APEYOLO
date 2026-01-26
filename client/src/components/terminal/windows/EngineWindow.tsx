@@ -40,6 +40,18 @@ const AGENT_COMMANDS: Record<AgentCommand, { operation: 'analyze' | 'positions';
 
 type Mode = 'MANUAL' | 'AUTO';
 
+// Flow steps for 3-step trade flow
+type FlowStep = 1 | 2 | 3; // 1=Strategy, 2=Chain, 3=Confirm
+
+// Option strike data for display
+export interface OptionStrike {
+  strike: number;
+  bid: number;
+  ask: number;
+  delta: number;
+  oi?: number;
+}
+
 export function EngineWindow() {
   // Mode state
   const [mode, setMode] = useState<Mode>('MANUAL');
@@ -47,7 +59,13 @@ export function EngineWindow() {
   const [showHelp, setShowHelp] = useState(false);
   const [showTradingFlow, setShowTradingFlow] = useState(false);
 
-  // Strategy and position state
+  // 3-Step Flow State
+  const [flowStep, setFlowStep] = useState<FlowStep>(1);
+  const [selectedStrategy, setSelectedStrategy] = useState<Strategy | null>(null);
+  const [selectedStrike, setSelectedStrike] = useState<OptionStrike | null>(null);
+  const [optionsChain, setOptionsChain] = useState<{ puts: OptionStrike[]; calls: OptionStrike[] }>({ puts: [], calls: [] });
+
+  // Strategy and position state (legacy, kept for compatibility)
   const [strategy, setStrategy] = useState<Strategy>('strangle');
   const [contracts, setContracts] = useState(2);
   const [putStrike, setPutStrike] = useState<number | null>(null);
@@ -161,6 +179,7 @@ export function EngineWindow() {
   const spyBid = wsSpyBid > 0 ? wsSpyBid : spyPrice;
   const spyAsk = wsSpyAsk > 0 ? wsSpyAsk : spyPrice;
   const spyPrevClose = wsSpyPrevClose;
+  const spyChangePct = analysis?.q1MarketRegime?.inputs?.spyChangePct ?? 0;
   const vix = wsVix > 0 ? wsVix : (analysis?.q1MarketRegime?.inputs?.vixValue ?? 0);
   const vixBid = wsVixBid > 0 ? wsVixBid : vix;
   const vixAsk = wsVixAsk > 0 ? wsVixAsk : vix;
@@ -213,7 +232,8 @@ export function EngineWindow() {
     if (completedSteps.has(1) && !loggedSteps.has('step1')) {
       const vixVal = analysis?.q1MarketRegime?.inputs?.vixValue ?? 0;
       const regime = analysis?.q1MarketRegime?.regimeLabel ?? 'NORMAL';
-      addLogLine(`VIX ${vixVal.toFixed(1)} - ${regime.toLowerCase()}, ${regime === 'ELEVATED' ? 'caution advised' : 'safe to trade'}`, 'success');
+      const regimeStr = String(regime);
+      addLogLine(`VIX ${vixVal.toFixed(1)} - ${regimeStr.toLowerCase()}, ${regimeStr === 'ELEVATED' ? 'caution advised' : 'safe to trade'}`, 'success');
       setLoggedSteps(prev => new Set([...prev, 'step1']));
     }
 
@@ -303,6 +323,121 @@ export function EngineWindow() {
     setHudState('idle');
     setPutStrike(null);
     setCallStrike(null);
+    // Reset flow state
+    setFlowStep(1);
+    setSelectedStrategy(null);
+    setSelectedStrike(null);
+    setOptionsChain({ puts: [], calls: [] });
+  }, []);
+
+  // === 3-STEP FLOW HANDLERS ===
+
+  // Step 1: Strategy selected -> fetch options chain and go to Step 2
+  const handleStrategySelect = useCallback(async (strat: Strategy) => {
+    setSelectedStrategy(strat);
+    setStrategy(strat); // Keep legacy state in sync
+    setHudState('analyzing');
+    setLogLines([]);
+    setLoggedSteps(new Set());
+    addLogLine(`Selected ${strat.toUpperCase()}...`, 'header');
+    addLogLine('Fetching options chain...', 'info');
+
+    // Trigger analysis to get options chain data
+    analyze();
+  }, [analyze, addLogLine]);
+
+  // Watch for analysis completion to populate options chain and advance to Step 2
+  useEffect(() => {
+    if (flowStep === 1 && selectedStrategy && completedSteps.has(3) && analysis?.q3Strikes) {
+      // Extract options chain from analysis
+      const puts = analysis.q3Strikes.smartCandidates?.puts || [];
+      const calls = analysis.q3Strikes.smartCandidates?.calls || [];
+
+      const chainPuts: OptionStrike[] = puts.map((p: any) => ({
+        strike: p.strike,
+        bid: p.bid,
+        ask: p.ask,
+        delta: p.delta,
+        oi: p.openInterest,
+      }));
+
+      const chainCalls: OptionStrike[] = calls.map((c: any) => ({
+        strike: c.strike,
+        bid: c.bid,
+        ask: c.ask,
+        delta: c.delta,
+        oi: c.openInterest,
+      }));
+
+      setOptionsChain({ puts: chainPuts, calls: chainCalls });
+
+      // Pre-select the engine-recommended strike(s)
+      if (selectedStrategy === 'put-spread' && analysis.q3Strikes.selectedPut) {
+        setSelectedStrike({
+          strike: analysis.q3Strikes.selectedPut.strike,
+          bid: analysis.q3Strikes.selectedPut.bid,
+          ask: analysis.q3Strikes.selectedPut.ask,
+          delta: analysis.q3Strikes.selectedPut.delta,
+        });
+        setPutStrike(analysis.q3Strikes.selectedPut.strike);
+      } else if (selectedStrategy === 'call-spread' && analysis.q3Strikes.selectedCall) {
+        setSelectedStrike({
+          strike: analysis.q3Strikes.selectedCall.strike,
+          bid: analysis.q3Strikes.selectedCall.bid,
+          ask: analysis.q3Strikes.selectedCall.ask,
+          delta: analysis.q3Strikes.selectedCall.delta,
+        });
+        setCallStrike(analysis.q3Strikes.selectedCall.strike);
+      } else if (selectedStrategy === 'strangle') {
+        // For strangle, pre-select both strikes and skip to confirmation
+        if (analysis.q3Strikes.selectedPut) {
+          setPutStrike(analysis.q3Strikes.selectedPut.strike);
+        }
+        if (analysis.q3Strikes.selectedCall) {
+          setCallStrike(analysis.q3Strikes.selectedCall.strike);
+        }
+        // Strangle skips strike selection - go straight to confirmation
+        setFlowStep(3);
+        setHudState('ready');
+        return;
+      }
+
+      setFlowStep(2);
+      setHudState('idle');
+    }
+  }, [flowStep, selectedStrategy, completedSteps, analysis]);
+
+  // Step 2: Strike selected -> go to Step 3
+  const handleStrikeSelect = useCallback((strike: OptionStrike) => {
+    setSelectedStrike(strike);
+    if (selectedStrategy === 'put-spread') {
+      setPutStrike(strike.strike);
+    } else if (selectedStrategy === 'call-spread') {
+      setCallStrike(strike.strike);
+    }
+  }, [selectedStrategy]);
+
+  // Step 2: Next button -> go to confirmation
+  const handleNextToConfirm = useCallback(() => {
+    if (!selectedStrike) return;
+    setFlowStep(3);
+    setHudState('ready');
+  }, [selectedStrike]);
+
+  // Step 3: Back to chain
+  const handleBackToChain = useCallback(() => {
+    setFlowStep(2);
+    setHudState('idle');
+  }, []);
+
+  // Step 2: Back to strategy
+  const handleBackToStrategy = useCallback(() => {
+    setFlowStep(1);
+    setSelectedStrategy(null);
+    setSelectedStrike(null);
+    setOptionsChain({ puts: [], calls: [] });
+    setHudState('idle');
+    setLogLines([]);
   }, []);
 
   // Handle agent commands (V, M, P hotkeys or typed /commands)
@@ -495,26 +630,45 @@ export function EngineWindow() {
         isAnalyzing={isAnalyzing}
         progress={progress}
         isReady={hudState === 'ready'}
-      />
-
-      {/* Command input */}
-      <CommandInput
-        onCommand={handleCommandInput}
-        disabled={agentProcessing || isAnalyzing}
-        placeholder={agentProcessing ? 'Processing...' : '/help for commands'}
-      />
-
-      {/* Selection bar */}
-      <SelectionBar
-        strategy={strategy}
-        onStrategyChange={setStrategy}
+        flowStep={flowStep}
+        selectedStrategy={selectedStrategy}
+        optionsChain={optionsChain}
+        selectedStrike={selectedStrike}
+        onStrategySelect={handleStrategySelect}
+        onStrikeSelect={handleStrikeSelect}
+        onNext={handleNextToConfirm}
+        onBack={flowStep === 3 ? handleBackToChain : handleBackToStrategy}
+        contracts={contracts}
+        spreadWidth={spreadWidth}
+        credit={credit}
+        maxLoss={analysis?.tradeProposal?.maxLoss}
         putStrike={putStrike}
         callStrike={callStrike}
-        putSpread={spreadWidth}
-        callSpread={spreadWidth}
+        onExecute={handleExecute}
       />
 
-      {/* Action bar */}
+      {/* Command input - only show when not in 3-step flow */}
+      {flowStep === 1 && !isAnalyzing && (
+        <CommandInput
+          onCommand={handleCommandInput}
+          disabled={agentProcessing || isAnalyzing}
+          placeholder={agentProcessing ? 'Processing...' : '/help for commands'}
+        />
+      )}
+
+      {/* Selection bar - hide during 3-step flow */}
+      {flowStep === 1 && !selectedStrategy && (
+        <SelectionBar
+          strategy={strategy}
+          onStrategyChange={setStrategy}
+          putStrike={putStrike}
+          callStrike={callStrike}
+          putSpread={spreadWidth}
+          callSpread={spreadWidth}
+        />
+      )}
+
+      {/* Action bar - adapts based on flow step */}
       <ActionBar
         state={hudState}
         credit={credit}
@@ -523,6 +677,7 @@ export function EngineWindow() {
         onExecute={handleExecute}
         onReset={handleReset}
         isExecuting={executeMutation.isPending}
+        flowStep={flowStep}
       />
 
       {/* New Trade button */}
