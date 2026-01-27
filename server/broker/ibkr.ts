@@ -202,7 +202,7 @@ class IbkrClient {
       jar: this.jar,
       withCredentials: true,
       validateStatus: () => true,
-      timeout: 30000,  // 30 second timeout (reduced from 60s for faster failure)
+      timeout: 60000,  // 60 second timeout (IBKR can be slow during market hours)
       headers: { 'User-Agent': 'apeyolo/1.0' },
     }));
   }
