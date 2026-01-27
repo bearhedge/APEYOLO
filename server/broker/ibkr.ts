@@ -2407,6 +2407,11 @@ class IbkrClient {
 
       // DIAGNOSTIC: Log conid resolution results
       console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Conid resolution complete: putConidMap=${putConidMap.size}, callConidMap=${callConidMap.size}`);
+      // DIAGNOSTIC: Show first few conids for each type
+      const firstPuts = Array.from(putConidMap.entries()).slice(0, 3).map(([s, c]) => `$${s}:${c}`).join(', ');
+      const firstCalls = Array.from(callConidMap.entries()).slice(0, 3).map(([s, c]) => `$${s}:${c}`).join(', ');
+      console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Sample PUT conids: ${firstPuts || 'NONE'}`);
+      console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Sample CALL conids: ${firstCalls || 'NONE'}`);
 
       // Phase 2: Batch fetch market data for all option conids (including Greeks, OI, IV)
       const allConids = [...Array.from(putConidMap.values()), ...Array.from(callConidMap.values())];
@@ -2517,6 +2522,28 @@ class IbkrClient {
 
         // DIAGNOSTIC: Log marketDataMap stats
         console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] marketDataMap populated: ${marketDataMap.size} entries (WebSocket-only, $0 snapshot cost)`);
+
+        // DIAGNOSTIC: Separate PUT vs CALL bid/ask stats to identify which side is failing
+        let putWithBidAsk = 0, putWithoutBidAsk = 0;
+        let callWithBidAsk = 0, callWithoutBidAsk = 0;
+        for (const [strike, conid] of putConidMap) {
+          const data = marketDataMap.get(conid);
+          if (data && (data.bid > 0 || data.ask > 0)) {
+            putWithBidAsk++;
+          } else {
+            putWithoutBidAsk++;
+          }
+        }
+        for (const [strike, conid] of callConidMap) {
+          const data = marketDataMap.get(conid);
+          if (data && (data.bid > 0 || data.ask > 0)) {
+            callWithBidAsk++;
+          } else {
+            callWithoutBidAsk++;
+          }
+        }
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] PUT bid/ask: ${putWithBidAsk}/${putConidMap.size} valid, ${putWithoutBidAsk} empty`);
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] CALL bid/ask: ${callWithBidAsk}/${callConidMap.size} valid, ${callWithoutBidAsk} empty`);
 
         // Phase 2c: OFF-HOURS FALLBACK - If snapshot returned no data (market closed), use historical prices
         // Check if most options have no bid/ask data (indicates market is closed)
