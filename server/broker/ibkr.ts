@@ -4179,6 +4179,21 @@ export async function getIbkrSessionToken(): Promise<string | null> {
   return activeClient.getSessionToken();
 }
 
+/**
+ * Get token expiry timestamps for proactive refresh monitoring
+ * Used by oauthTokenRefresher to check when tokens need refreshing
+ */
+export function getIbkrTokenExpiry(): { oauthExpiresAt: number; ssoExpiresAt: number } {
+  if (!activeClient) {
+    return { oauthExpiresAt: 0, ssoExpiresAt: 0 };
+  }
+  const state = activeClient.getTokenState();
+  return {
+    oauthExpiresAt: state.accessTokenExpiryMs,
+    ssoExpiresAt: state.ssoTokenExpiryMs,
+  };
+}
+
 // Get cookie string from any IbkrClient instance (for multi-tenant)
 export async function getCookieStringFromClient(client: BrokerProvider | null): Promise<string> {
   if (!client || typeof (client as any).getCookieString !== 'function') {

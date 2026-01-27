@@ -646,6 +646,18 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // GET /api/token-refresh/logs - Get OAuth token refresh log entries
+  app.get('/api/token-refresh/logs', requireAuth, (_req, res) => {
+    try {
+      const { getRefreshLogs } = require('./services/oauthTokenRefresher');
+      const logs = getRefreshLogs();
+      return res.json({ logs });
+    } catch (error) {
+      console.error('[Settings] Get token refresh logs error:', error);
+      res.status(500).json({ error: 'Failed to get token refresh logs' });
+    }
+  });
+
   // ==================== END API KEYS ====================
 
   // Initialize jobs system (register handlers, seed default jobs)
@@ -680,6 +692,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
         ...data,
         timestamp: Date.now()
       }
+    });
+    wsClients.forEach(client => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(message);
+      }
+    });
+  };
+
+  // Export broadcast function for token refresh logs (accessible from oauthTokenRefresher)
+  (global as any).broadcastTokenRefreshLog = (entry: any) => {
+    const message = JSON.stringify({
+      type: 'token_refresh_log',
+      data: entry,
     });
     wsClients.forEach(client => {
       if (client.readyState === WebSocket.OPEN) {

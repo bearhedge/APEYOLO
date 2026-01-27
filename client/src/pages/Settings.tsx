@@ -38,6 +38,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useTokenRefreshLogs, type RefreshLogEntry } from '@/hooks/useTokenRefreshLogs';
 
 interface IbkrCredentialsStatus {
   configured: boolean;
@@ -113,6 +114,87 @@ function translateIbkrError(rawError: string | null | undefined): { title: strin
     message: rawError.length > 100 ? rawError.substring(0, 100) + '...' : rawError,
     action: 'Try Again',
   };
+}
+
+/**
+ * Token Refresh Log Panel Component
+ * Shows real-time OAuth token refresh activity in a collapsible panel
+ */
+function TokenRefreshLogPanel() {
+  const [expanded, setExpanded] = useState(false);
+  const { logs } = useTokenRefreshLogs();
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Auto-scroll to bottom on new log entries when expanded
+  useEffect(() => {
+    if (expanded && scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    }
+  }, [logs, expanded]);
+
+  const getLogColor = (type: RefreshLogEntry['type']) => {
+    switch (type) {
+      case 'refresh_success':
+      case 'ws_updated':
+        return 'text-green-400';
+      case 'refresh_error':
+        return 'text-red-400';
+      case 'refresh_start':
+        return 'text-yellow-400';
+      default:
+        return 'text-silver';
+    }
+  };
+
+  const formatTime = (ts: string) => {
+    return new Date(ts).toLocaleTimeString('en-US', { hour12: false });
+  };
+
+  const getLogPrefix = (type: RefreshLogEntry['type']) => {
+    switch (type) {
+      case 'refresh_success':
+      case 'ws_updated':
+        return '\u2713 '; // checkmark
+      case 'refresh_error':
+        return '\u2717 '; // X mark
+      default:
+        return '';
+    }
+  };
+
+  return (
+    <div className="px-6 pb-4">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-2 text-xs text-silver hover:text-white transition-colors"
+      >
+        <ChevronDown className={`w-3 h-3 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+        Token Refresh Log
+        {logs.length > 0 && (
+          <span className="bg-white/10 px-1.5 py-0.5 rounded text-xs">{logs.length}</span>
+        )}
+      </button>
+
+      {expanded && (
+        <div
+          ref={scrollRef}
+          className="mt-2 bg-black/50 rounded-lg p-3 max-h-48 overflow-y-auto font-mono text-xs"
+        >
+          {logs.length === 0 ? (
+            <p className="text-silver">No refresh activity yet...</p>
+          ) : (
+            logs.map((log, i) => (
+              <div key={i} className={`${getLogColor(log.type)} leading-relaxed`}>
+                <span className="text-zinc-500">[{formatTime(log.timestamp)}]</span>{' '}
+                {getLogPrefix(log.type)}
+                {log.message}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 interface SettingsProps {
@@ -1221,6 +1303,11 @@ export function Settings({
                         </div>
                       </div>
                     </div>
+                  )}
+
+                  {/* Token Refresh Log Panel - Only visible for OAuth mode */}
+                  {connectionMethod === 'oauth' && (
+                    <TokenRefreshLogPanel />
                   )}
 
                   {/* Credentials Management */}

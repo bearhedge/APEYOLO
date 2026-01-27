@@ -179,6 +179,7 @@ export class IbkrWebSocketManager {
 
   /**
    * Update session token with optional expiry tracking
+   * Also immediately sends to active WebSocket if connected
    * @param sessionToken - New session token
    * @param expiresInSeconds - Token lifetime in seconds (default 540 = 9 minutes)
    */
@@ -187,6 +188,12 @@ export class IbkrWebSocketManager {
     if (sessionToken) {
       this.sessionTokenExpiresAt = Date.now() + (expiresInSeconds * 1000);
       console.log(`[IbkrWS] Session token updated, expires in ${expiresInSeconds}s`);
+
+      // Immediately send to active WebSocket connection
+      if (this.ws && this.isConnected && this.ws.readyState === WebSocket.OPEN) {
+        this.ws.send(JSON.stringify({ session: sessionToken }));
+        console.log('[IbkrWS] Sent updated session token to active WebSocket');
+      }
     } else {
       this.sessionTokenExpiresAt = 0;
     }

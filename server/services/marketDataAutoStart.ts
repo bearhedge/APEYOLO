@@ -14,6 +14,7 @@ import { ibkrCredentials, latestPrices } from '@shared/schema';
 import { initIbkrWebSocket, getIbkrWebSocketManager } from '../broker/ibkrWebSocket';
 import { ensureIbkrReady, getIbkrCookieString, getIbkrSessionToken, clearIbkrSession } from '../broker/ibkr';
 import { getBroker } from '../broker';
+import { startTokenRefresher, stopTokenRefresher } from './oauthTokenRefresher';
 
 // Conids for key symbols
 const SPY_CONID = 756733;
@@ -51,6 +52,10 @@ export function setConnectionMode(mode: 'oauth' | 'relay'): void {
     // Fully disconnect OAuth - clear session and disconnect WebSocket
     console.log('[MarketDataAutoStart] Clearing OAuth session for TWS/Gateway mode...');
     clearIbkrSession();
+
+    // Stop proactive token refresher
+    stopTokenRefresher();
+    console.log('[MarketDataAutoStart] Token refresher stopped for relay mode');
 
     const wsManager = getIbkrWebSocketManager();
     if (wsManager?.connected) {
@@ -225,6 +230,10 @@ export async function startWebSocketStream(): Promise<void> {
     // Connect to IBKR
     await wsManager.connect();
     console.log('[MarketDataAutoStart] WebSocket connected!');
+
+    // Start proactive OAuth token refresher
+    startTokenRefresher();
+    console.log('[MarketDataAutoStart] Proactive token refresher started');
 
     // Subscribe to SPY and VIX
     wsManager.subscribe(SPY_CONID, { symbol: 'SPY', type: 'stock' });
