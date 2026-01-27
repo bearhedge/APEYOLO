@@ -1,14 +1,14 @@
 /**
- * EngineStepper - Progress bar showing 4-step wizard progress
+ * EngineStepper - Progress bar showing 3-step wizard progress
  *
- * Displays: Market → Strikes → Size → Exit
+ * Displays: Market → Strikes → APE IN
  * States: completed (✓), current (●), future (○)
  * Clickable to navigate back (not forward)
  */
 
 import { Check } from 'lucide-react';
 
-export type StepId = 1 | 2 | 3 | 4;
+export type StepId = 1 | 2 | 3;
 
 interface EngineStepperProps {
   currentStep: StepId;
@@ -19,8 +19,7 @@ interface EngineStepperProps {
 const STEPS: { id: StepId; label: string }[] = [
   { id: 1, label: 'Market' },
   { id: 2, label: 'Strikes' },
-  { id: 3, label: 'Size' },
-  { id: 4, label: 'Exit' },
+  { id: 3, label: 'APE IN' },
 ];
 
 export function EngineStepper({ currentStep, completedSteps, onStepClick }: EngineStepperProps) {
