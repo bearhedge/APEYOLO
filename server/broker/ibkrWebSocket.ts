@@ -82,6 +82,7 @@ export interface MarketDataUpdate {
   vega?: number;
   iv?: number;
   openInterest?: number;
+  isClose?: boolean;  // true if showing closing price (prefixed with "C" from IBKR)
   timestamp: Date;
 }
 
@@ -816,6 +817,12 @@ export class IbkrWebSocketManager {
       }
     } else if (lastPriceRaw) {
       update.last = parsePrice(lastPriceRaw);
+    }
+
+    // Track if this is a closing price (for VIX display during extended hours)
+    // Only set isClose if we're using the closing price, not an extended hours price
+    if (isClosingPrice && !extendedLast) {
+      update.isClose = true;
     }
 
     if (msg[IBKR_FIELDS.BID]) update.bid = parsePrice(msg[IBKR_FIELDS.BID]);

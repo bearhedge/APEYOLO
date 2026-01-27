@@ -15,6 +15,7 @@ export interface ChartPriceData {
   ask: number;
   previousClose: number;
   changePct: number;
+  isClose?: boolean;  // true if showing closing price (VIX during extended hours)
 }
 
 // Callback type for chart price updates
@@ -130,7 +131,7 @@ export function useWebSocket() {
 
             // Handle chart_price_update messages
             if (message.type === 'chart_price_update' && message.data) {
-              const { symbol, price, timestamp, bid, ask, previousClose, changePct } = message.data;
+              const { symbol, price, timestamp, bid, ask, previousClose, changePct, isClose } = message.data;
               if (price > 0) {
                 const chartData: ChartPriceData = {
                   price,
@@ -140,6 +141,7 @@ export function useWebSocket() {
                   ask: ask || 0,
                   previousClose: previousClose || 0,
                   changePct: changePct || 0,
+                  isClose: isClose || false,
                 };
                 chartPriceCallbacks.forEach(callback => {
                   try {

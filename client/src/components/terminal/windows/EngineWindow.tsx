@@ -68,6 +68,7 @@ export function EngineWindow() {
   const [wsVixBid, setWsVixBid] = useState(0);
   const [wsVixAsk, setWsVixAsk] = useState(0);
   const [wsVixPrevClose, setWsVixPrevClose] = useState(0);
+  const [wsVixIsClose, setWsVixIsClose] = useState(false);
 
   // Engine analysis hook - map HUD strategy to engine strategy
   const engineStrategy = strategy === 'put-spread' ? 'put-only' : strategy === 'call-spread' ? 'call-only' : 'strangle';
@@ -123,6 +124,7 @@ export function EngineWindow() {
         setWsVixBid(data.bid);
         setWsVixAsk(data.ask);
         setWsVixPrevClose(data.previousClose);
+        setWsVixIsClose(data.isClose || false);
       }
     });
     return () => {
@@ -475,6 +477,7 @@ export function EngineWindow() {
         vixBid={wsVixBid}
         vixAsk={wsVixAsk}
         vixPrevClose={wsVixPrevClose}
+        vixIsClose={wsVixIsClose}
         isConnected={isConnected}
         wsConnected={isWsConnected}
         mode={mode}

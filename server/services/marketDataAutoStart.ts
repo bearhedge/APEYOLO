@@ -292,7 +292,8 @@ export async function startWebSocketStream(): Promise<void> {
           bid: update.bid || cached?.bid || price,
           ask: update.ask || cached?.ask || price,
           previousClose,
-          changePct
+          changePct,
+          isClose: isVIX && update.isClose  // Only pass isClose for VIX
         });
       }
     });

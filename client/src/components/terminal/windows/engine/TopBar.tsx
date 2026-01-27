@@ -13,11 +13,38 @@ interface TopBarProps {
   vixBid: number;
   vixAsk: number;
   vixPrevClose: number;
+  vixIsClose?: boolean;  // true if VIX is showing closing price
   isConnected: boolean;
   wsConnected?: boolean;
   mode: 'MANUAL' | 'AUTO';
   autoCountdown?: number; // seconds until next auto-analyze
   onModeToggle: () => void;
+}
+
+type MarketSession = 'PRE' | 'OPEN' | 'AH' | 'OVERNIGHT' | 'CLOSED';
+
+function getMarketSession(): { session: MarketSession; color: string } {
+  const now = new Date();
+  const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+  const day = et.getDay();
+  const hour = et.getHours();
+  const min = et.getMinutes();
+  const time = hour * 60 + min;
+
+  // Weekend
+  if (day === 0 || day === 6) return { session: 'CLOSED', color: '#ef4444' };
+
+  // Pre-market: 4:00 AM - 9:30 AM ET
+  if (time >= 240 && time < 570) return { session: 'PRE', color: '#f59e0b' };
+
+  // Regular: 9:30 AM - 4:00 PM ET
+  if (time >= 570 && time < 960) return { session: 'OPEN', color: '#4ade80' };
+
+  // After-hours: 4:00 PM - 8:00 PM ET
+  if (time >= 960 && time < 1200) return { session: 'AH', color: '#f59e0b' };
+
+  // Overnight: 8:00 PM - 4:00 AM ET
+  return { session: 'OVERNIGHT', color: '#666' };
 }
 
 export function TopBar({
@@ -27,6 +54,7 @@ export function TopBar({
   vixBid,
   vixAsk,
   vixPrevClose,
+  vixIsClose,
   isConnected,
   wsConnected,
   mode,
@@ -35,6 +63,9 @@ export function TopBar({
 }: TopBarProps) {
   // NY/HK time state
   const [times, setTimes] = useState({ ny: '', hk: '' });
+
+  // Market session state (updates every second with times)
+  const [sessionInfo, setSessionInfo] = useState(getMarketSession);
 
   useEffect(() => {
     const updateTimes = () => {
@@ -52,6 +83,7 @@ export function TopBar({
         hour12: false
       });
       setTimes({ ny, hk });
+      setSessionInfo(getMarketSession());
     };
     updateTimes();
     const interval = setInterval(updateTimes, 1000);
@@ -108,6 +140,11 @@ export function TopBar({
               <span style={{ color: '#fff', fontWeight: 600 }}>
                 ${spyAsk.toFixed(2)}
               </span>
+              {sessionInfo.session !== 'OPEN' && sessionInfo.session !== 'CLOSED' && (
+                <span style={{ color: sessionInfo.color, marginLeft: 4, fontSize: 11 }}>
+                  ({sessionInfo.session === 'OVERNIGHT' ? 'overnight' : sessionInfo.session.toLowerCase()})
+                </span>
+              )}
               {spyPrevClose > 0 && (
                 <span style={{ color: spyPriceColor, marginLeft: 6 }}>
                   {spyChangePct >= 0 ? '\u25B2' : '\u25BC'}
@@ -124,9 +161,12 @@ export function TopBar({
         <span>
           <span style={{ color: '#888' }}>VIX </span>
           {vixMid > 0 ? (
-            <span style={{ color: vixValueColor, fontWeight: 500 }}>
-              {vixMid.toFixed(2)}
-            </span>
+            <>
+              <span style={{ color: vixValueColor, fontWeight: 500 }}>
+                {vixMid.toFixed(2)}
+              </span>
+              {vixIsClose && <span style={{ color: '#666', fontSize: 11 }}> (close)</span>}
+            </>
           ) : (
             <span style={{ color: '#ef4444', fontWeight: 500 }}>--</span>
           )}
@@ -151,11 +191,13 @@ export function TopBar({
 
       {/* Right: NY/HK Times + Mode toggle */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-        {/* NY/HK Times */}
+        {/* NY/HK Times + Session */}
         <span style={{ color: '#888', fontSize: 12 }}>
           <span style={{ color: '#666' }}>NY</span> {times.ny}
           <span style={{ margin: '0 8px', color: '#333' }}>|</span>
           <span style={{ color: '#666' }}>HK</span> {times.hk}
+          <span style={{ margin: '0 8px', color: '#333' }}>|</span>
+          <span style={{ color: sessionInfo.color, fontWeight: 600 }}>{sessionInfo.session}</span>
         </span>
 
         {/* Mode toggle */}
