@@ -2437,8 +2437,9 @@ class IbkrClient {
 
         // Phase 2b: Wait for WebSocket data to arrive
         // WebSocket streams bid/ask/last + Greeks (delta, gamma, theta, vega, iv, oi)
-        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Waiting 1000ms for WebSocket data stream...`);
-        await new Promise(r => setTimeout(r, 1000));
+        // Increased from 1000ms to 2500ms to give WebSocket more time to stream bid/ask
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Waiting 2500ms for WebSocket data stream...`);
+        await new Promise(r => setTimeout(r, 2500));
 
         // Phase 2c: Read from WebSocket cache (FREE)
         console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Reading from WebSocket cache...`);
@@ -2520,6 +2521,41 @@ class IbkrClient {
           console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] After retry: ${emptyBidAskCount}/${marketDataMap.size} still empty`);
         }
 
+        // Phase 2d-2: Retry specifically for strikes with delta but no bid/ask (partial data race condition)
+        // This catches cases where delta arrives faster than bid/ask from IBKR WebSocket
+        const partialDataStrikes: [number, typeof marketDataMap extends Map<number, infer V> ? V : never][] = [];
+        for (const [conid, data] of marketDataMap.entries()) {
+          if (data.delta != null && data.bid === 0 && data.ask === 0) {
+            partialDataStrikes.push([conid, data]);
+          }
+        }
+
+        if (partialDataStrikes.length > 0) {
+          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] ${partialDataStrikes.length} strikes have delta but no bid/ask, waiting for prices...`);
+          await new Promise(r => setTimeout(r, 1500));  // Additional wait for partial data
+
+          for (const [conid] of partialDataStrikes) {
+            const cached = wsManager.getCachedMarketData(conid);
+            if (cached && (cached.bid || cached.ask)) {
+              const existing = marketDataMap.get(conid);
+              marketDataMap.set(conid, {
+                ...existing!,
+                bid: cached.bid || 0,
+                ask: cached.ask || 0,
+                last: cached.last || existing?.last || 0,
+              });
+            }
+          }
+
+          // Log how many were fixed
+          let stillPartial = 0;
+          for (const [conid] of partialDataStrikes) {
+            const data = marketDataMap.get(conid);
+            if (data && data.bid === 0 && data.ask === 0) stillPartial++;
+          }
+          console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] After partial data retry: ${partialDataStrikes.length - stillPartial}/${partialDataStrikes.length} fixed, ${stillPartial} still missing bid/ask`);
+        }
+
         // DIAGNOSTIC: Log marketDataMap stats
         console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] marketDataMap populated: ${marketDataMap.size} entries (WebSocket-only, $0 snapshot cost)`);
 
@@ -2551,7 +2587,7 @@ class IbkrClient {
         for (const data of marketDataMap.values()) {
           if (data.bid === 0 && data.ask === 0 && data.last === 0) emptyPriceCount++;
         }
-        const isOffHours = emptyPriceCount > marketDataMap.size * 0.8; // >80% empty = market closed
+        const isOffHours = emptyPriceCount > marketDataMap.size * 0.5; // >50% empty = trigger historical fallback
 
         if (isOffHours && allConids.length > 0) {
           isHistorical = true; // Mark as historical data for UI indicator
