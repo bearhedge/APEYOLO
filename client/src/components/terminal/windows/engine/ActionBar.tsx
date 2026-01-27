@@ -3,14 +3,11 @@
  *
  * Shows:
  * - ANALYZE / RESET main button
- * - Credit display
  * - APE IN execute button (enabled when ready)
  */
 
 interface ActionBarProps {
   state: 'idle' | 'analyzing' | 'ready';
-  credit: number;
-  contracts: number;
   onAnalyze: () => void;
   onExecute: () => void;
   onReset: () => void;
@@ -19,8 +16,6 @@ interface ActionBarProps {
 
 export function ActionBar({
   state,
-  credit,
-  contracts,
   onAnalyze,
   onExecute,
   onReset,
@@ -64,17 +59,6 @@ export function ActionBar({
         <span>{state === 'analyzing' ? 'ANALYZING...' : mainAction}</span>
         <span style={{ color: '#555' }}>{'\u25B6'}</span>
       </button>
-
-      {/* Credit display */}
-      <div style={{ color: '#888' }}>
-        <span style={{ color: '#555' }}>CREDIT: </span>
-        <span style={{ color: credit > 0 ? '#4ade80' : '#666', fontWeight: 600 }}>
-          ${credit.toFixed(2)}
-        </span>
-        <span style={{ color: '#555', marginLeft: 8 }}>
-          ({contracts} contracts)
-        </span>
-      </div>
 
       {/* Execute button */}
       <button

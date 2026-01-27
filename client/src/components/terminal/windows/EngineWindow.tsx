@@ -591,8 +591,6 @@ export function EngineWindow() {
       {/* Action bar */}
       <ActionBar
         state={hudState}
-        credit={credit}
-        contracts={contracts}
         onAnalyze={handleAnalyze}
         onExecute={handleExecute}
         onReset={handleReset}
