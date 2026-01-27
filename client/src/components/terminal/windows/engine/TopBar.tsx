@@ -174,17 +174,9 @@ export function TopBar({
         <span>
           <span style={{ color: '#888' }}>VIX </span>
           {displayVix > 0 ? (
-            <>
-              <span style={{ color: vixValueColor, fontWeight: 500 }}>
-                {displayVix.toFixed(2)}
-              </span>
-              {vixMid === 0 && !vixIsClose && (
-                <span style={{ color: '#666', fontSize: 10, marginLeft: 4 }}>(cached)</span>
-              )}
-              {vixIsClose && (
-                <span style={{ color: '#666', fontSize: 11 }}> (close)</span>
-              )}
-            </>
+            <span style={{ color: vixValueColor, fontWeight: 500 }}>
+              {displayVix.toFixed(2)}
+            </span>
           ) : (
             <span style={{ color: '#888', fontWeight: 500 }}>--</span>
           )}
