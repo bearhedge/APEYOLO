@@ -2762,12 +2762,14 @@ class IbkrClient {
             timestamp: cached.timestamp,
           };
         }
+
+        // Stale data warning (inside wsManager block where cached/cacheAge/marketStatus are defined)
+        if (cached && cached.last > 0 && cacheAge >= MAX_AGE_MS) {
+          console.warn(`[IBKR][getMarketData][${reqId}] ${symbol}: REJECTED STALE DATA (${cacheAge}ms old, max=${MAX_AGE_MS}ms, market=${marketStatus.isOpen ? 'OPEN' : 'CLOSED'}) - WebSocket not streaming!`);
+        }
       }
 
       // Fallback: Use historical data (also FREE) when WebSocket stream unavailable
-      if (cached && cached.last > 0 && cacheAge >= MAX_AGE_MS) {
-        console.warn(`[IBKR][getMarketData][${reqId}] ${symbol}: REJECTED STALE DATA (${cacheAge}ms old, max=${MAX_AGE_MS}ms, market=${marketStatus.isOpen ? 'OPEN' : 'CLOSED'}) - WebSocket not streaming!`);
-      }
       console.log(`[IBKR][getMarketData][${reqId}] WebSocket cache miss for ${symbol}, trying historical data...`);
       const histPrice = await this.getHistoricalLastPrice(conid);
 
