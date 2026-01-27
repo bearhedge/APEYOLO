@@ -343,8 +343,9 @@ export function useEngineAnalysis(options: UseEngineAnalysisOptions = {}): UseEn
           // Candidates for display (legacy)
           candidates: [],
 
-          // AI Strike Selector: Use nearbyStrikes directly (smartCandidates filtering was too aggressive)
-          smartCandidates: {
+          // AI Strike Selector: Use server's pre-filtered smartCandidates if available,
+          // otherwise fall back to mapping nearbyStrikes
+          smartCandidates: step3Result.smartCandidates ?? {
             puts: (step3Result.nearbyStrikes?.puts ?? []).map((s: any) => ({
               strike: s.strike,
               optionType: 'PUT' as const,

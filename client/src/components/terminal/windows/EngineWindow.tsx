@@ -343,6 +343,12 @@ export function EngineWindow() {
         addLogLine('─────────────────────────────────', 'info');
       }
 
+      // Show error if no strikes available
+      if (putCandidates.length === 0 && callCandidates.length === 0) {
+        addLogLine('No option strikes available from IBKR', 'error');
+        addLogLine('Check: 1) IBKR connected 2) Market open 3) Try refresh', 'info');
+      }
+
       setLoggedSteps(prev => new Set([...prev, 'step3']));
     }
 
