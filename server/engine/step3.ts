@@ -695,6 +695,7 @@ interface FullOptionChainResult {
   vix?: number;
   expectedMove?: number;
   source: 'websocket' | 'http' | 'mock';
+  isHistorical?: boolean;
   diagnostics?: {
     conid: number | null;
     symbol: string;
