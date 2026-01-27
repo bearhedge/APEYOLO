@@ -271,8 +271,7 @@ export async function startWebSocketStream(): Promise<void> {
         } else if (cached?.last && cached.last > 0) {
           price = cached.last;
         }
-        // Log VIX updates for debugging
-        console.log(`[MarketDataAutoStart] VIX update: last=${update.last} bid=${update.bid} ask=${update.ask} -> price=${price}`);
+        // VIX logging removed to reduce console noise
       } else if (!price || price <= 0) {
         // Other symbols: fallback chain
         if (update.bid && update.ask && update.bid > 0 && update.ask > 0) {

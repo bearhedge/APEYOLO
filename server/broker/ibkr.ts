@@ -1334,11 +1334,10 @@ class IbkrClient {
       // Subscribe to key symbols via WebSocket (FREE with streaming subscription)
       const wsManager = getIbkrWebSocketManager();
       if (wsManager) {
-        // Subscribe to SPY, VIX, ARM via WebSocket streaming
+        // Subscribe to SPY, VIX via WebSocket streaming
         wsManager.subscribe(756733, { symbol: 'SPY', type: 'stock' });
         wsManager.subscribe(13455763, { symbol: 'VIX', type: 'stock' });
-        wsManager.subscribe(653400472, { symbol: 'ARM', type: 'stock' });
-        console.log(`[IBKR][primeMarketData][${reqId}] Subscribed SPY, VIX, ARM via WebSocket`);
+        console.log(`[IBKR][primeMarketData][${reqId}] Subscribed SPY, VIX via WebSocket`);
       }
 
       // Prime option chain endpoints for SPY (prevents "no bridge" in Step 3)
@@ -2266,7 +2265,7 @@ class IbkrClient {
       try {
         const searchResp = await this.httpGetWithBridgeRetry(searchUrl, `getOptionChainWithStrikes:secdef-search:${reqId}`);
         console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] /secdef/search response:`, JSON.stringify(searchResp.data).slice(0, 300));
-        await this.sleep(1500); // INCREASED from 500ms - give IBKR time to register
+        await this.sleep(500); // Reduced from 1500ms - IBKR doesn't need long delays
       } catch (err: any) {
         console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] /secdef/search warning: ${err.message}`);
       }
@@ -2281,7 +2280,7 @@ class IbkrClient {
       console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Step 2: Priming strikes endpoint...`);
       try {
         await this.httpGetWithBridgeRetry(strikesUrl, `getOptionChainWithStrikes:strikes-prime:${reqId}`);
-        await this.sleep(1500); // INCREASED from 750ms - give IBKR time to prepare data
+        await this.sleep(500); // Reduced from 1500ms - IBKR doesn't need long delays
       } catch (err: any) {
         console.warn(`[IBKR][getOptionChainWithStrikes][${reqId}] Strikes prime warning: ${err.message}`);
       }
@@ -2360,8 +2359,8 @@ class IbkrClient {
         };
 
         // Process in parallel batches to balance speed vs IBKR rate limits
-        // Batch size 8 with 250ms delays: optimized for faster loading
-        const batchSize = 8;
+        // Batch size 16 with 250ms delays: doubled for faster conid resolution
+        const batchSize = 16;
         const allStrikesWithType = [
           ...otmPuts.map(s => ({ strike: s, type: 'PUT' as const })),
           ...otmCalls.map(s => ({ strike: s, type: 'CALL' as const })),
@@ -2421,8 +2420,8 @@ class IbkrClient {
 
         // Phase 2b: Wait for WebSocket data to arrive
         // WebSocket streams bid/ask/last + Greeks (delta, gamma, theta, vega, iv, oi)
-        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Waiting 2500ms for WebSocket data stream...`);
-        await new Promise(r => setTimeout(r, 2500));
+        console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Waiting 1000ms for WebSocket data stream...`);
+        await new Promise(r => setTimeout(r, 1000));
 
         // Phase 2c: Read from WebSocket cache (FREE)
         console.log(`[IBKR][getOptionChainWithStrikes][${reqId}] Reading from WebSocket cache...`);
