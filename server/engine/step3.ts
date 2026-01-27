@@ -467,7 +467,7 @@ const DEFAULT_SMART_FILTER: SmartFilterConfig = {
   deltaMax: 0.25,         // Maximum delta (exclude ATM/ITM)
   minBid: 0.01,           // Minimum bid price
   maxSpread: 0.10,        // Maximum bid-ask spread for SPY
-  minLiquidity: 100,      // Minimum OI + Volume
+  minLiquidity: 0,        // OI filter disabled - WebSocket streaming doesn't reliably include OI
   minYield: 0.0003,       // Minimum yield 0.03% (premium / underlying)
 };
 
