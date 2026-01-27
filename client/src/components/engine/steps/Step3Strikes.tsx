@@ -39,26 +39,26 @@ function getVisibleStrikes(
   ascending: boolean = true
 ): SmartStrikeCandidate[] {
   if (candidates.length === 0) return [];
-  if (candidates.length <= 7) return candidates;
+  if (candidates.length <= 10) return candidates;
 
   // Sort by strike
   const sorted = [...candidates].sort((a, b) =>
     ascending ? a.strike - b.strike : b.strike - a.strike
   );
 
-  // If no recommended, return first 7
-  if (!recommendedStrike) return sorted.slice(0, 7);
+  // If no recommended, return first 10
+  if (!recommendedStrike) return sorted.slice(0, 10);
 
   // Find index of recommended
   const recIdx = sorted.findIndex(c => c.strike === recommendedStrike);
-  if (recIdx === -1) return sorted.slice(0, 7);
+  if (recIdx === -1) return sorted.slice(0, 10);
 
-  // Get 3 above, recommended, 3 below (centered)
-  const start = Math.max(0, recIdx - 3);
-  const end = Math.min(sorted.length, start + 7);
-  const adjustedStart = end === sorted.length ? Math.max(0, sorted.length - 7) : start;
+  // Get 5 above, recommended, 4 below (centered)
+  const start = Math.max(0, recIdx - 5);
+  const end = Math.min(sorted.length, start + 10);
+  const adjustedStart = end === sorted.length ? Math.max(0, sorted.length - 10) : start;
 
-  return sorted.slice(adjustedStart, adjustedStart + 7);
+  return sorted.slice(adjustedStart, adjustedStart + 10);
 }
 
 /**
@@ -87,12 +87,12 @@ function StrikeRow({
   const delta = streamedData?.delta ?? candidate.delta;
 
   const rowClasses = [
-    'grid grid-cols-4 gap-2 px-3 py-2 rounded-lg cursor-pointer transition-all',
+    'grid grid-cols-4 gap-2 px-3 py-3 rounded-lg cursor-pointer transition-all min-h-[44px]',
     isSelected
       ? 'bg-blue-500/20 border-l-2 border-l-blue-500 border border-blue-500/30'
       : isRecommended
       ? 'bg-amber-500/10 border border-amber-500/30'
-      : 'bg-zinc-900/50 border border-zinc-800 hover:bg-zinc-800/50',
+      : 'bg-zinc-900/50 border border-zinc-800 hover:bg-zinc-700/50 hover:border-zinc-600',
   ].join(' ');
 
   const colorClass = optionType === 'PUT' ? 'text-red-400' : 'text-green-400';
@@ -447,10 +447,10 @@ export function Step3Strikes({
       <Button
         onClick={onContinue}
         disabled={!selectedPutStrike && !selectedCallStrike}
-        className="w-full py-6 text-base"
+        className="w-full py-6 text-base bg-green-600 hover:bg-green-700"
         size="lg"
       >
-        Calculate Size
+        APE IN
       </Button>
     </div>
   );

@@ -464,7 +464,7 @@ function calculateMarginRequirement(putStrike?: Strike, callStrike?: Strike): nu
 // Default smart filter configuration
 const DEFAULT_SMART_FILTER: SmartFilterConfig = {
   deltaMin: 0.05,         // Minimum delta (exclude ultra-far OTM)
-  deltaMax: 0.25,         // Maximum delta (exclude ATM/ITM)
+  deltaMax: 0.35,         // Maximum delta (include near-money strikes)
   minBid: 0.01,           // Minimum bid price
   maxSpread: 0.10,        // Maximum bid-ask spread for SPY
   minLiquidity: 0,        // OI filter disabled - WebSocket streaming doesn't reliably include OI
@@ -475,15 +475,15 @@ const DEFAULT_SMART_FILTER: SmartFilterConfig = {
 // Historical data has synthetic ±2% spreads and may lack real-time OI
 const OFF_HOURS_SMART_FILTER: SmartFilterConfig = {
   deltaMin: 0.05,         // Keep delta filtering (still valid from historical prices)
-  deltaMax: 0.25,         // Keep delta filtering
+  deltaMax: 0.35,         // Keep delta filtering (include near-money strikes)
   minBid: 0,              // Allow $0 bids (historical data may have zeros)
   maxSpread: 1.00,        // Allow wide spreads (synthetic ±2% = ~$0.20 spread)
   minLiquidity: 0,        // Disable OI filter (may be stale)
   minYield: 0,            // Disable yield filter (synthetic prices unreliable)
 };
 
-// ATM range for strike display (±$8 from underlying)
-const ATM_RANGE = 8;
+// ATM range for strike display (±$12 from underlying)
+const ATM_RANGE = 12;
 
 /**
  * Calculate quality score (1-5 stars) based on strike metrics
