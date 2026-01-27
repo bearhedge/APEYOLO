@@ -44,7 +44,7 @@ function getMarketSession(): { session: MarketSession; color: string } {
   if (time >= 960 && time < 1200) return { session: 'AH', color: '#f59e0b' };
 
   // Overnight: 8:00 PM - 4:00 AM ET
-  return { session: 'OVERNIGHT', color: '#666' };
+  return { session: 'OVERNIGHT', color: '#fbbf24' };
 }
 
 export function TopBar({
@@ -63,6 +63,9 @@ export function TopBar({
 }: TopBarProps) {
   // NY/HK time state
   const [times, setTimes] = useState({ ny: '', hk: '' });
+
+  // Persist last known VIX value
+  const [lastKnownVix, setLastKnownVix] = useState(0);
 
   // Market session state (updates every second with times)
   const [sessionInfo, setSessionInfo] = useState(getMarketSession);
@@ -94,6 +97,16 @@ export function TopBar({
   const spyMid = (spyBid + spyAsk) / 2;
   const vixMid = (vixBid + vixAsk) / 2;
 
+  // Persist VIX value when available
+  useEffect(() => {
+    if (vixMid > 0) {
+      setLastKnownVix(vixMid);
+    }
+  }, [vixMid]);
+
+  // Display last known VIX when live data unavailable
+  const displayVix = vixMid > 0 ? vixMid : lastKnownVix;
+
   // Calculate % change from previous close
   const spyChangePct = spyPrevClose > 0 && spyMid > 0
     ? ((spyMid - spyPrevClose) / spyPrevClose) * 100
@@ -105,7 +118,7 @@ export function TopBar({
   const spyPriceColor = spyChangePct >= 0 ? '#4ade80' : '#ef4444';
   const vixPriceColor = vixChangePct >= 0 ? '#4ade80' : '#ef4444';
   // VIX in white, with orange warning if elevated (>25)
-  const vixValueColor = vixMid > 25 ? '#f59e0b' : '#fff';
+  const vixValueColor = displayVix > 25 ? '#f59e0b' : '#fff';
 
   const formatCountdown = (seconds: number) => {
     const mins = Math.floor(seconds / 60);
@@ -140,11 +153,6 @@ export function TopBar({
               <span style={{ color: '#fff', fontWeight: 600 }}>
                 ${spyAsk.toFixed(2)}
               </span>
-              {sessionInfo.session !== 'OPEN' && sessionInfo.session !== 'CLOSED' && (
-                <span style={{ color: sessionInfo.color, marginLeft: 4, fontSize: 11 }}>
-                  ({sessionInfo.session === 'OVERNIGHT' ? 'overnight' : sessionInfo.session.toLowerCase()})
-                </span>
-              )}
               {spyPrevClose > 0 && (
                 <span style={{ color: spyPriceColor, marginLeft: 6 }}>
                   {spyChangePct >= 0 ? '\u25B2' : '\u25BC'}
@@ -160,15 +168,20 @@ export function TopBar({
         {/* VIX value only */}
         <span>
           <span style={{ color: '#888' }}>VIX </span>
-          {vixMid > 0 ? (
+          {displayVix > 0 ? (
             <>
               <span style={{ color: vixValueColor, fontWeight: 500 }}>
-                {vixMid.toFixed(2)}
+                {displayVix.toFixed(2)}
               </span>
-              {vixIsClose && <span style={{ color: '#666', fontSize: 11 }}> (close)</span>}
+              {vixMid === 0 && !vixIsClose && (
+                <span style={{ color: '#666', fontSize: 10, marginLeft: 4 }}>(cached)</span>
+              )}
+              {vixIsClose && (
+                <span style={{ color: '#666', fontSize: 11 }}> (close)</span>
+              )}
             </>
           ) : (
-            <span style={{ color: '#ef4444', fontWeight: 500 }}>--</span>
+            <span style={{ color: '#888', fontWeight: 500 }}>--</span>
           )}
         </span>
 
@@ -191,11 +204,13 @@ export function TopBar({
 
       {/* Right: NY/HK Times + Mode toggle */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
-        {/* NY/HK Times + Session */}
-        <span style={{ color: '#888', fontSize: 12 }}>
-          <span style={{ color: '#666' }}>NY</span> {times.ny}
+        {/* NY/HK Times with colors + Session */}
+        <span style={{ fontSize: 12 }}>
+          <span style={{ color: '#a78bfa' }}>NY</span>{' '}
+          <span style={{ color: '#a78bfa' }}>{times.ny}</span>
           <span style={{ margin: '0 8px', color: '#333' }}>|</span>
-          <span style={{ color: '#666' }}>HK</span> {times.hk}
+          <span style={{ color: '#93c5fd' }}>HK</span>{' '}
+          <span style={{ color: '#93c5fd' }}>{times.hk}</span>
           <span style={{ margin: '0 8px', color: '#333' }}>|</span>
           <span style={{ color: sessionInfo.color, fontWeight: 600 }}>{sessionInfo.session}</span>
         </span>
