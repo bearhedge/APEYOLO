@@ -150,6 +150,8 @@ export class IbkrWebSocketManager {
   private consecutiveAuthFailures = 0;
   private readonly MAX_AUTH_FAILURES = 10;
   private circuitBreakerOpen = false; // When true, requires manual re-entry of credentials
+  // Mutex for connect() to prevent race conditions with simultaneous connection attempts
+  private connectPromise: Promise<void> | null = null;
 
   constructor(cookieString: string, sessionToken?: string | null) {
     this.cookieString = cookieString;
@@ -220,7 +222,9 @@ export class IbkrWebSocketManager {
     this.stopSessionRefresh();
 
     this.sessionRefreshInterval = setInterval(async () => {
-      if (this.isConnected && this.isAuthenticated && this.credentialRefreshCallback) {
+      // Always refresh tokens when expiring - especially important during disconnects
+      // so reconnection has valid credentials ready
+      if (this.credentialRefreshCallback) {
         // Check if token will expire in next 2 minutes
         if (this.sessionTokenExpiresAt > 0 && this.sessionTokenExpiresAt < Date.now() + 120_000) {
           console.log('[IbkrWS] Session token expiring soon, refreshing...');
@@ -283,11 +287,26 @@ export class IbkrWebSocketManager {
    * 5. Then subscribe to market data
    */
   async connect(timeoutMs: number = 30000): Promise<void> {
-    if (this.isConnecting || this.isConnected) {
-      console.log('[IbkrWS] Already connected or connecting');
+    // Mutex: if a connection attempt is already in progress, return the same promise
+    if (this.connectPromise) {
+      console.log('[IbkrWS] Connection already in progress, returning existing promise');
+      return this.connectPromise;
+    }
+
+    if (this.isConnected) {
+      console.log('[IbkrWS] Already connected');
       return;
     }
 
+    // Start the connection attempt and store the promise
+    this.connectPromise = this._doConnect(timeoutMs).finally(() => {
+      this.connectPromise = null;
+    });
+
+    return this.connectPromise;
+  }
+
+  private async _doConnect(timeoutMs: number): Promise<void> {
     this.isConnecting = true;
     this.isAuthenticated = false;
 

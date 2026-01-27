@@ -27,6 +27,7 @@ const HEALTH_CHECK_INTERVAL_MS = 30000; // 30 seconds
 
 let healthCheckInterval: NodeJS.Timeout | null = null;
 let isStarting = false;
+let isStartingTimestamp: number = 0;
 
 // Connection mode: 'oauth' = use cloud OAuth, 'relay' = use local TWS/Gateway
 // This is in-memory only - no database changes needed
@@ -125,9 +126,16 @@ export async function autoStartMarketDataStream(): Promise<void> {
  */
 export async function startWebSocketStream(): Promise<void> {
   if (isStarting) {
-    throw new Error('Already starting');
+    // Auto-reset after 60s to prevent deadlock from stuck health checks
+    if (Date.now() - isStartingTimestamp > 60000) {
+      console.warn('[MarketDataAutoStart] isStarting stuck for >60s, resetting');
+      isStarting = false;
+    } else {
+      throw new Error('Already starting');
+    }
   }
   isStarting = true;
+  isStartingTimestamp = Date.now();
 
   try {
     // Check if we have IBKR credentials (either in database or env vars)

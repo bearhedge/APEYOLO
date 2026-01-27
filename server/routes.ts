@@ -62,6 +62,7 @@ import {
 } from "./services/marketMetrics.js";
 import { getSPYVWAP, getCachedVWAP } from "./services/yahooVwapService.js";
 import { fetchOvernightQuote } from "./services/overnightQuoteService.js";
+import { startTokenRefresher } from "./services/oauthTokenRefresher.js";
 
 // Helper function to get session from request
 async function getSessionFromRequest(req: any) {
@@ -2155,6 +2156,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
         const newWs = initIbkrWebSocket(cookieString, sessionToken);
         await newWs.connect();
+        // Start token refresher to keep credentials valid
+        startTokenRefresher();
         // Resubscribe to SPY and VIX
         newWs.subscribe(756733, { symbol: 'SPY', type: 'stock' });
         newWs.subscribe(13455763, { symbol: 'VIX', type: 'stock' });
