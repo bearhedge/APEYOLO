@@ -1,7 +1,7 @@
 /**
  * Engine Components - Barrel Export
  *
- * Wizard layout components for the 4-step trading flow
+ * Wizard layout components for the 3-step trading flow
  */
 
 // Layout components
@@ -12,6 +12,4 @@ export { EngineWizardLayout } from './EngineWizardLayout';
 export {
   Step1Market,
   Step3Strikes,
-  Step4Size,
-  Step5Exit,
 } from './steps';
