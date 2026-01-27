@@ -577,6 +577,7 @@ export function Engine({
             expectedPremium={premiumPerContract}
             isStreamLoading={isStreamLoading}
             streamLoadingMessage={streamLoadingMessage}
+            isActive={currentStep === 2}
           />
         );
 

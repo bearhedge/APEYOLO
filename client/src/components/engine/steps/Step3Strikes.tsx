@@ -5,7 +5,7 @@
  * Click any row to select. Real-time streaming of bid/ask/delta via WebSocket.
  */
 
-import { useMemo } from 'react';
+import { useMemo, useEffect, useRef, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Star, TrendingUp, TrendingDown, Loader2 } from 'lucide-react';
 import { useMarketSnapshot } from '@/hooks/useMarketSnapshot';
@@ -26,6 +26,8 @@ interface Step3StrikesProps {
   expectedPremium: number;
   isStreamLoading?: boolean;
   streamLoadingMessage?: string;
+  /** Whether this step is currently active (enables keyboard navigation) */
+  isActive?: boolean;
 }
 
 /**
@@ -137,6 +139,7 @@ export function Step3Strikes({
   expectedPremium,
   isStreamLoading = false,
   streamLoadingMessage = '',
+  isActive = false,
 }: Step3StrikesProps) {
   // Live market data (same as Step 1)
   const { snapshot } = useMarketSnapshot();
@@ -146,6 +149,92 @@ export function Step3Strikes({
   const spyAsk = snapshot?.spyAsk ?? null;
   const source = snapshot?.source ?? 'none';
   const marketState = snapshot?.marketState ?? 'CLOSED';
+
+  // Refs to avoid stale closures in keyboard handler
+  const putCandidatesRef = useRef(putCandidates);
+  const callCandidatesRef = useRef(callCandidates);
+  putCandidatesRef.current = putCandidates;
+  callCandidatesRef.current = callCandidates;
+
+  // Keyboard navigation handler
+  const handleKeyDown = useCallback((e: KeyboardEvent) => {
+    const puts = putCandidatesRef.current;
+    const calls = callCandidatesRef.current;
+
+    // Handle PUT strikes with ↑/↓
+    if (e.key === 'ArrowUp' || e.key === 'ArrowDown') {
+      if (puts.length === 0) return;
+      e.preventDefault(); // Stop page scroll
+
+      // Sort descending (higher strikes first - more OTM for puts)
+      const sortedPuts = [...puts].sort((a, b) => b.strike - a.strike);
+      const currentIdx = selectedPutStrike
+        ? sortedPuts.findIndex(c => c.strike === selectedPutStrike)
+        : -1;
+
+      let newIdx: number;
+      if (currentIdx === -1) {
+        // No selection - start at recommended or first
+        const recIdx = recommendedPutStrike
+          ? sortedPuts.findIndex(c => c.strike === recommendedPutStrike)
+          : 0;
+        newIdx = recIdx >= 0 ? recIdx : 0;
+      } else {
+        // ↑ moves to higher strike (lower index), ↓ moves to lower strike (higher index)
+        newIdx = e.key === 'ArrowUp'
+          ? Math.max(0, currentIdx - 1)
+          : Math.min(sortedPuts.length - 1, currentIdx + 1);
+      }
+
+      if (sortedPuts[newIdx]) {
+        onPutSelect(sortedPuts[newIdx].strike);
+      }
+    }
+
+    // Handle CALL strikes with ←/→
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') {
+      if (calls.length === 0) return;
+      e.preventDefault(); // Stop page scroll
+
+      // Sort ascending (lower strikes first - more ITM, higher strikes are more OTM for calls)
+      const sortedCalls = [...calls].sort((a, b) => a.strike - b.strike);
+      const currentIdx = selectedCallStrike
+        ? sortedCalls.findIndex(c => c.strike === selectedCallStrike)
+        : -1;
+
+      let newIdx: number;
+      if (currentIdx === -1) {
+        // No selection - start at recommended or first
+        const recIdx = recommendedCallStrike
+          ? sortedCalls.findIndex(c => c.strike === recommendedCallStrike)
+          : 0;
+        newIdx = recIdx >= 0 ? recIdx : 0;
+      } else {
+        // → moves to higher strike (more OTM), ← moves to lower strike (more ITM)
+        newIdx = e.key === 'ArrowRight'
+          ? Math.min(sortedCalls.length - 1, currentIdx + 1)
+          : Math.max(0, currentIdx - 1);
+      }
+
+      if (sortedCalls[newIdx]) {
+        onCallSelect(sortedCalls[newIdx].strike);
+      }
+    }
+
+    // Handle Enter to continue
+    if (e.key === 'Enter' && (selectedPutStrike || selectedCallStrike)) {
+      e.preventDefault();
+      onContinue();
+    }
+  }, [selectedPutStrike, selectedCallStrike, recommendedPutStrike, recommendedCallStrike, onPutSelect, onCallSelect, onContinue]);
+
+  // Attach/detach keyboard listener based on isActive
+  useEffect(() => {
+    if (!isActive) return;
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isActive, handleKeyDown]);
 
   // Get visible strikes (7 per side)
   const visiblePuts = useMemo(
@@ -336,6 +425,15 @@ export function Step3Strikes({
           <span>Your Selection</span>
         </div>
       </div>
+
+      {/* Keyboard Navigation Hint */}
+      {isActive && (putCandidates.length > 0 || callCandidates.length > 0) && (
+        <div className="flex items-center justify-center gap-4 py-2 text-xs text-zinc-500 bg-zinc-900/30 rounded border border-zinc-800">
+          {putCandidates.length > 0 && <span className="font-mono">[↑↓ PUT]</span>}
+          {callCandidates.length > 0 && <span className="font-mono">[←→ CALL]</span>}
+          <span className="font-mono">[ENTER: Continue]</span>
+        </div>
+      )}
 
       {/* Total Premium Display */}
       <div className="p-4 bg-green-500/5 rounded-lg border border-green-500/20">
