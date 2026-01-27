@@ -3213,10 +3213,10 @@ class IbkrClient {
       }
 
       // Alternative: Try the strikes endpoint to get available options
+      // NOTE: Do NOT use exchange=SMART - per IBKR docs and for consistency with getOptionChainWithStrikes
       const strikesUrl = `/v1/api/iserver/secdef/strikes`;
       const strikesParams = new URLSearchParams({
         conid: underlyingConid.toString(),
-        exchange: 'SMART',
         sectype: 'OPT',
         month: this.formatMonthForIBKR(expiration.slice(0, 6)), // MMMy format
       });
@@ -3229,7 +3229,14 @@ class IbkrClient {
         const strikesData = strikesResp.data;
         const availableStrikes = optionType === 'CALL' ? strikesData.call : strikesData.put;
 
-        if (Array.isArray(availableStrikes) && availableStrikes.includes(strike)) {
+        // Diagnostic logging to debug CALL conid resolution failures
+        console.log(`[IBKR][resolveOptionConid][${reqId}] Strikes data: put=${strikesData?.put?.length || 0} strikes, call=${strikesData?.call?.length || 0} strikes`);
+        console.log(`[IBKR][resolveOptionConid][${reqId}] Looking for ${optionType} strike ${strike} in available: ${JSON.stringify(availableStrikes?.slice(0, 10) || [])}...`);
+
+        // Use tolerance-based matching instead of exact includes() to handle float precision
+        const strikeExists = Array.isArray(availableStrikes) && availableStrikes.some(s => Math.abs(s - strike) < 0.01);
+
+        if (strikeExists) {
           // Use secdef/info to get the actual conid for this specific strike
           const infoUrl = `/v1/api/iserver/secdef/info`;
           const infoParams = new URLSearchParams({
@@ -3261,6 +3268,9 @@ class IbkrClient {
             // Log what maturities we found if no match
             console.log(`[IBKR][resolveOptionConid][${reqId}] Info returned maturities: ${infoResp.data.slice(0, 5).map((o: any) => o.maturityDate).join(', ')} - looking for ${expiration}`);
           }
+        } else {
+          // Strike not found in available strikes - this is why CALLs may be failing!
+          console.log(`[IBKR][resolveOptionConid][${reqId}] Strike ${strike} NOT in available ${optionType} strikes. Available ${optionType.toLowerCase()}s: ${JSON.stringify(availableStrikes?.slice(0, 15) || [])}`);
         }
       }
 
