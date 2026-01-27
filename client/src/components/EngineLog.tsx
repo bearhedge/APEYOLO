@@ -12,6 +12,10 @@ interface EngineLogProps {
   log: EnhancedEngineLog | null;
   isRunning?: boolean;
   className?: string;
+  onPutSelect?: (strike: number | null) => void;
+  onCallSelect?: (strike: number | null) => void;
+  selectedPutStrike?: number | null;
+  selectedCallStrike?: number | null;
 }
 
 /**
@@ -123,14 +127,43 @@ function MetricsSection({ metrics }: { metrics: StepMetric[] }) {
 }
 
 /**
- * Nearby strikes table - Step 3 specific
+ * Nearby strikes table - Step 3 specific - NOW CLICKABLE
  */
-function NearbyStrikesTable({ strikes }: { strikes: NearbyStrike[] }) {
+function NearbyStrikesTable({
+  strikes,
+  onPutSelect,
+  onCallSelect,
+  selectedPutStrike,
+  selectedCallStrike,
+}: {
+  strikes: NearbyStrike[];
+  onPutSelect?: (strike: number | null) => void;
+  onCallSelect?: (strike: number | null) => void;
+  selectedPutStrike?: number | null;
+  selectedCallStrike?: number | null;
+}) {
   if (!strikes || strikes.length === 0) return null;
+
+  const handleStrikeClick = (strike: NearbyStrike) => {
+    console.log('[EngineLog] Strike clicked:', { strike: strike.strike, optionType: strike.optionType });
+    if (strike.optionType === 'PUT' && onPutSelect) {
+      const newValue = selectedPutStrike === strike.strike ? null : strike.strike;
+      console.log('[EngineLog] Calling onPutSelect:', newValue);
+      onPutSelect(newValue);
+    } else if (strike.optionType === 'CALL' && onCallSelect) {
+      const newValue = selectedCallStrike === strike.strike ? null : strike.strike;
+      console.log('[EngineLog] Calling onCallSelect:', newValue);
+      onCallSelect(newValue);
+    }
+  };
+
+  const isClickable = !!onPutSelect || !!onCallSelect;
 
   return (
     <div className="mt-4">
-      <div className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">Nearby Strikes</div>
+      <div className="text-xs font-medium text-zinc-500 uppercase tracking-wider mb-2">
+        Nearby Strikes {isClickable && <span className="text-blue-400">(Click to select)</span>}
+      </div>
       <div className="overflow-x-auto">
         <table className="w-full font-mono text-sm">
           <thead>
@@ -143,21 +176,35 @@ function NearbyStrikesTable({ strikes }: { strikes: NearbyStrike[] }) {
             </tr>
           </thead>
           <tbody>
-            {strikes.map((s, i) => (
-              <tr
-                key={i}
-                className={`${s.selected ? 'bg-zinc-800 text-emerald-400' : 'text-zinc-300'} border-t border-zinc-800`}
-              >
-                <td className="py-1 pr-4">
-                  ${s.strike}{s.optionType === 'PUT' ? 'P' : 'C'}
-                  {s.selected && ' *'}
-                </td>
-                <td className="text-right py-1 px-4">{s.delta.toFixed(2)}</td>
-                <td className="text-right py-1 px-4">${s.bid.toFixed(2)}</td>
-                <td className="text-right py-1 px-4">${s.ask.toFixed(2)}</td>
-                <td className="text-right py-1 pl-4">${s.spread.toFixed(2)}</td>
-              </tr>
-            ))}
+            {strikes.map((s, i) => {
+              // Check if this strike is selected by the user
+              const isUserSelected = s.optionType === 'PUT'
+                ? selectedPutStrike === s.strike
+                : selectedCallStrike === s.strike;
+              const isEngineSelected = s.selected;
+
+              return (
+                <tr
+                  key={i}
+                  onClick={() => isClickable && handleStrikeClick(s)}
+                  className={`
+                    ${isUserSelected ? 'bg-blue-500/20 text-blue-400' : isEngineSelected ? 'bg-zinc-800 text-emerald-400' : 'text-zinc-300'}
+                    border-t border-zinc-800
+                    ${isClickable ? 'cursor-pointer hover:bg-zinc-700/50' : ''}
+                  `}
+                >
+                  <td className="py-1 pr-4">
+                    ${s.strike}{s.optionType === 'PUT' ? 'P' : 'C'}
+                    {isUserSelected && ' ✓'}
+                    {isEngineSelected && !isUserSelected && ' *'}
+                  </td>
+                  <td className="text-right py-1 px-4">{s.delta.toFixed(2)}</td>
+                  <td className="text-right py-1 px-4">${s.bid.toFixed(2)}</td>
+                  <td className="text-right py-1 px-4">${s.ask.toFixed(2)}</td>
+                  <td className="text-right py-1 pl-4">${s.spread.toFixed(2)}</td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -168,10 +215,14 @@ function NearbyStrikesTable({ strikes }: { strikes: NearbyStrike[] }) {
 /**
  * Single step row - collapsible
  */
-function StepRow({ step, isExpanded, onToggle }: {
+function StepRow({ step, isExpanded, onToggle, onPutSelect, onCallSelect, selectedPutStrike, selectedCallStrike }: {
   step: EnhancedStepLog;
   isExpanded: boolean;
   onToggle: () => void;
+  onPutSelect?: (strike: number | null) => void;
+  onCallSelect?: (strike: number | null) => void;
+  selectedPutStrike?: number | null;
+  selectedCallStrike?: number | null;
 }) {
   const statusColors = {
     passed: 'text-emerald-400',
@@ -211,7 +262,15 @@ function StepRow({ step, isExpanded, onToggle }: {
         <div className="px-4 pb-4 pt-0 ml-7 border-l border-zinc-800">
           <ReasoningSection reasoning={step.reasoning} />
           <MetricsSection metrics={step.metrics} />
-          {step.nearbyStrikes && <NearbyStrikesTable strikes={step.nearbyStrikes} />}
+          {step.nearbyStrikes && (
+            <NearbyStrikesTable
+              strikes={step.nearbyStrikes}
+              onPutSelect={onPutSelect}
+              onCallSelect={onCallSelect}
+              selectedPutStrike={selectedPutStrike}
+              selectedCallStrike={selectedCallStrike}
+            />
+          )}
           {step.error && (
             <div className="mt-3 p-3 bg-red-950/30 border border-red-900 rounded">
               <div className="text-red-400 font-medium">{step.error.message}</div>
@@ -290,7 +349,15 @@ function SummarySection({ summary }: { summary: EnhancedEngineLog['summary'] }) 
 /**
  * Main EngineLog component
  */
-export default function EngineLog({ log, isRunning = false, className = '' }: EngineLogProps) {
+export default function EngineLog({
+  log,
+  isRunning = false,
+  className = '',
+  onPutSelect,
+  onCallSelect,
+  selectedPutStrike,
+  selectedCallStrike,
+}: EngineLogProps) {
   const [expandedSteps, setExpandedSteps] = useState<Set<number>>(new Set([1, 2, 3, 4, 5]));
 
   const toggleStep = (step: number) => {
@@ -374,6 +441,10 @@ export default function EngineLog({ log, isRunning = false, className = '' }: En
               step={step}
               isExpanded={expandedSteps.has(step.step)}
               onToggle={() => toggleStep(step.step)}
+              onPutSelect={onPutSelect}
+              onCallSelect={onCallSelect}
+              selectedPutStrike={selectedPutStrike}
+              selectedCallStrike={selectedCallStrike}
             />
           ))}
         </div>

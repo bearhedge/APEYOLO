@@ -14,6 +14,11 @@ export interface LogLine {
   timestamp: string;
   text: string;
   type: 'header' | 'success' | 'info' | 'result' | 'ready' | 'error';
+  // Optional strike data for clickable strike rows
+  strikeData?: {
+    strike: number;
+    optionType: 'PUT' | 'CALL';
+  };
 }
 
 export interface OptionStrike {
@@ -29,6 +34,10 @@ interface MainAreaProps {
   isAnalyzing: boolean;
   progress: number;
   isReady: boolean;
+  onPutSelect?: (strike: number) => void;
+  onCallSelect?: (strike: number) => void;
+  selectedPutStrike?: number | null;
+  selectedCallStrike?: number | null;
 }
 
 export function MainArea({
@@ -36,6 +45,10 @@ export function MainArea({
   isAnalyzing,
   progress,
   isReady,
+  onPutSelect,
+  onCallSelect,
+  selectedPutStrike,
+  selectedCallStrike,
 }: MainAreaProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -113,21 +126,56 @@ export function MainArea({
           padding: '12px 16px',
         }}
       >
-        {lines.map((line, i) => (
-          <div
-            key={i}
-            style={{
-              display: 'flex',
-              gap: 8,
-              marginBottom: 4,
-              color: getLineColor(line.type),
-            }}
-          >
-            <span style={{ color: '#666', minWidth: 70 }}>{line.timestamp}</span>
-            <span style={{ minWidth: 16 }}>{getLinePrefix(line.type)}</span>
-            <span style={{ whiteSpace: 'pre-wrap' }}>{line.text}</span>
-          </div>
-        ))}
+        {lines.map((line, i) => {
+          const isClickable = !!line.strikeData;
+          const isSelected = line.strikeData && (
+            (line.strikeData.optionType === 'PUT' && selectedPutStrike === line.strikeData.strike) ||
+            (line.strikeData.optionType === 'CALL' && selectedCallStrike === line.strikeData.strike)
+          );
+
+          const handleClick = () => {
+            if (!line.strikeData) return;
+            console.log('[MainArea] Strike clicked:', line.strikeData);
+            if (line.strikeData.optionType === 'PUT' && onPutSelect) {
+              onPutSelect(line.strikeData.strike);
+            } else if (line.strikeData.optionType === 'CALL' && onCallSelect) {
+              onCallSelect(line.strikeData.strike);
+            }
+          };
+
+          return (
+            <div
+              key={i}
+              onClick={isClickable ? handleClick : undefined}
+              style={{
+                display: 'flex',
+                gap: 8,
+                marginBottom: 4,
+                color: isSelected ? '#00ffff' : getLineColor(line.type),
+                cursor: isClickable ? 'pointer' : 'default',
+                padding: isClickable ? '4px 8px' : '0',
+                marginLeft: isClickable ? '-8px' : '0',
+                background: isSelected ? 'rgba(0, 255, 255, 0.1)' : isClickable ? 'transparent' : 'transparent',
+                borderLeft: isSelected ? '2px solid #00ffff' : 'none',
+                transition: 'all 0.15s ease',
+              }}
+              onMouseEnter={(e) => {
+                if (isClickable && !isSelected) {
+                  e.currentTarget.style.background = 'rgba(255, 255, 255, 0.05)';
+                }
+              }}
+              onMouseLeave={(e) => {
+                if (isClickable && !isSelected) {
+                  e.currentTarget.style.background = 'transparent';
+                }
+              }}
+            >
+              <span style={{ color: '#666', minWidth: 70 }}>{line.timestamp}</span>
+              <span style={{ minWidth: 16 }}>{getLinePrefix(line.type)}</span>
+              <span style={{ whiteSpace: 'pre-wrap' }}>{line.text}</span>
+            </div>
+          );
+        })}
 
         {/* Blinking cursor */}
         {!isReady && isAnalyzing && (

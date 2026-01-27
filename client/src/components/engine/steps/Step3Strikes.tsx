@@ -86,6 +86,11 @@ function StrikeRow({
   const ask = streamedData?.ask ?? candidate.ask;
   const delta = streamedData?.delta ?? candidate.delta;
 
+  const handleClick = () => {
+    console.log('[StrikeRow] Clicked:', { strike: candidate.strike, optionType, isSelected });
+    onSelect();
+  };
+
   const rowClasses = [
     'grid grid-cols-4 gap-2 px-3 py-3 rounded-lg cursor-pointer transition-all min-h-[44px]',
     isSelected
@@ -98,7 +103,7 @@ function StrikeRow({
   const colorClass = optionType === 'PUT' ? 'text-red-400' : 'text-green-400';
 
   return (
-    <div className={rowClasses} onClick={onSelect}>
+    <div className={rowClasses} onClick={handleClick}>
       {/* Strike */}
       <div className="flex items-center gap-1">
         {isRecommended && <Star className="w-3 h-3 text-amber-400 fill-amber-400" />}
@@ -247,6 +252,16 @@ export function Step3Strikes({
     [callCandidates, recommendedCallStrike]
   );
 
+  // Debug logging for visibility
+  console.log('[Step3Strikes] Visible strikes:', {
+    inputPuts: putCandidates.length,
+    inputCalls: callCandidates.length,
+    visiblePuts: visiblePuts.length,
+    visibleCalls: visibleCalls.length,
+    selectedPutStrike,
+    selectedCallStrike,
+  });
+
   // Streaming option data
   const putStrikesToStream = useMemo(() => visiblePuts.map(c => c.strike), [visiblePuts]);
   const callStrikesToStream = useMemo(() => visibleCalls.map(c => c.strike), [visibleCalls]);
@@ -369,7 +384,16 @@ export function Step3Strikes({
                   isSelected={selectedPutStrike === candidate.strike}
                   isRecommended={recommendedPutStrike === candidate.strike}
                   optionType="PUT"
-                  onSelect={() => onPutSelect(selectedPutStrike === candidate.strike ? null : candidate.strike)}
+                  onSelect={() => {
+                    const newValue = selectedPutStrike === candidate.strike ? null : candidate.strike;
+                    console.log('[Step3Strikes] PUT onSelect called:', {
+                      strike: candidate.strike,
+                      currentSelected: selectedPutStrike,
+                      newValue,
+                      onPutSelectExists: typeof onPutSelect === 'function'
+                    });
+                    onPutSelect(newValue);
+                  }}
                 />
               ))
             ) : (
@@ -404,7 +428,16 @@ export function Step3Strikes({
                   isSelected={selectedCallStrike === candidate.strike}
                   isRecommended={recommendedCallStrike === candidate.strike}
                   optionType="CALL"
-                  onSelect={() => onCallSelect(selectedCallStrike === candidate.strike ? null : candidate.strike)}
+                  onSelect={() => {
+                    const newValue = selectedCallStrike === candidate.strike ? null : candidate.strike;
+                    console.log('[Step3Strikes] CALL onSelect called:', {
+                      strike: candidate.strike,
+                      currentSelected: selectedCallStrike,
+                      newValue,
+                      onCallSelectExists: typeof onCallSelect === 'function'
+                    });
+                    onCallSelect(newValue);
+                  }}
                 />
               ))
             ) : (

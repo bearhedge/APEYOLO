@@ -19,6 +19,8 @@ export interface OptionChainViewerProps {
   isExpanded: boolean;
   onToggle: () => void;
   expiration?: string;
+  onPutSelect?: (strike: number | null) => void;
+  onCallSelect?: (strike: number | null) => void;
 }
 
 export function OptionChainViewer({
@@ -28,7 +30,9 @@ export function OptionChainViewer({
   optionChain,
   isExpanded,
   onToggle,
-  expiration = '0DTE'
+  expiration = '0DTE',
+  onPutSelect,
+  onCallSelect,
 }: OptionChainViewerProps) {
   // Filter to show 5-7 strikes around selected strikes
   const filterStrikes = (strikes: OptionStrike[], selectedStrike?: number): OptionStrike[] => {
@@ -112,10 +116,11 @@ export function OptionChainViewer({
                         return (
                           <tr
                             key={strike.strike}
+                            onClick={() => onPutSelect?.(isSelected ? null : strike.strike)}
                             className={`
                               ${isSelected ? 'bg-red-500/20 font-medium' : ''}
                               ${inTargetRange && !isSelected ? 'bg-green-500/10' : ''}
-                              hover:bg-white/5 transition
+                              hover:bg-white/5 transition cursor-pointer
                             `}
                           >
                             <td className="px-3 py-2">
@@ -163,10 +168,11 @@ export function OptionChainViewer({
                         return (
                           <tr
                             key={strike.strike}
+                            onClick={() => onCallSelect?.(isSelected ? null : strike.strike)}
                             className={`
                               ${isSelected ? 'bg-green-500/20 font-medium' : ''}
                               ${inTargetRange && !isSelected ? 'bg-green-500/10' : ''}
-                              hover:bg-white/5 transition
+                              hover:bg-white/5 transition cursor-pointer
                             `}
                           >
                             <td className="px-3 py-2">

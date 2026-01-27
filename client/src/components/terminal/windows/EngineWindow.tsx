@@ -260,7 +260,7 @@ export function EngineWindow() {
   }, [analysis, strategy, contracts]);
 
   // Add log line helper
-  const addLogLine = useCallback((text: string, type: LogLine['type']) => {
+  const addLogLine = useCallback((text: string, type: LogLine['type'], strikeData?: { strike: number; optionType: 'PUT' | 'CALL' }) => {
     const now = new Date();
     const timestamp = now.toLocaleTimeString('en-US', {
       hour12: false,
@@ -268,7 +268,7 @@ export function EngineWindow() {
       minute: '2-digit',
       second: '2-digit',
     });
-    setLogLines((prev) => [...prev, { timestamp, text, type }]);
+    setLogLines((prev) => [...prev, { timestamp, text, type, strikeData }]);
   }, []);
 
   // Track which log entries we've added to prevent duplicates
@@ -319,11 +319,11 @@ export function EngineWindow() {
       const putCandidates = step3Data?.nearbyStrikes?.puts || [];
       const callCandidates = step3Data?.nearbyStrikes?.calls || [];
 
-      // Print PUT option chain
+      // Print PUT option chain - CLICKABLE
       if (putCandidates.length > 0) {
-        addLogLine(`PUTS (0DTE) - ${putCandidates.length} strikes:`, 'success');
+        addLogLine(`PUTS (0DTE) - ${putCandidates.length} strikes (click to select):`, 'success');
         addLogLine('─────────────────────────────────', 'info');
-        putCandidates.slice(0, 5).forEach((p: any) => {
+        putCandidates.slice(0, 10).forEach((p: any) => {
           const isSelected = Number(p.strike) === Number(putStrikeVal);
           const arrow = isSelected ? '→ ' : '  ';
           const selected = isSelected ? ' ← SELECTED' : '';
@@ -331,16 +331,21 @@ export function EngineWindow() {
           const ask = p.ask ?? 0;
           const delta = Math.abs(p.delta ?? 0);
           const deltaStr = `.${(delta * 100).toFixed(0).padStart(2, '0')}`;
-          addLogLine(`${arrow}${p.strike}  │  ${bid.toFixed(2)}/${ask.toFixed(2)}  │  ${deltaStr}${selected}`, isSelected ? 'result' : 'info');
+          // Include strikeData so row is clickable
+          addLogLine(
+            `${arrow}${p.strike}  │  ${bid.toFixed(2)}/${ask.toFixed(2)}  │  ${deltaStr}${selected}`,
+            isSelected ? 'result' : 'info',
+            { strike: p.strike, optionType: 'PUT' }
+          );
         });
         addLogLine('─────────────────────────────────', 'info');
       }
 
-      // Print CALL option chain
+      // Print CALL option chain - CLICKABLE
       if (callCandidates.length > 0) {
-        addLogLine(`CALLS (0DTE) - ${callCandidates.length} strikes:`, 'success');
+        addLogLine(`CALLS (0DTE) - ${callCandidates.length} strikes (click to select):`, 'success');
         addLogLine('─────────────────────────────────', 'info');
-        callCandidates.slice(0, 5).forEach((c: any) => {
+        callCandidates.slice(0, 10).forEach((c: any) => {
           const isSelected = Number(c.strike) === Number(callStrikeVal);
           const arrow = isSelected ? '→ ' : '  ';
           const selected = isSelected ? ' ← SELECTED' : '';
@@ -348,7 +353,12 @@ export function EngineWindow() {
           const ask = c.ask ?? 0;
           const delta = Math.abs(c.delta ?? 0);
           const deltaStr = `.${(delta * 100).toFixed(0).padStart(2, '0')}`;
-          addLogLine(`${arrow}${c.strike}  │  ${bid.toFixed(2)}/${ask.toFixed(2)}  │  ${deltaStr}${selected}`, isSelected ? 'result' : 'info');
+          // Include strikeData so row is clickable
+          addLogLine(
+            `${arrow}${c.strike}  │  ${bid.toFixed(2)}/${ask.toFixed(2)}  │  ${deltaStr}${selected}`,
+            isSelected ? 'result' : 'info',
+            { strike: c.strike, optionType: 'CALL' }
+          );
         });
         addLogLine('─────────────────────────────────', 'info');
       }
@@ -587,6 +597,18 @@ export function EngineWindow() {
         isAnalyzing={isAnalyzing}
         progress={progress}
         isReady={hudState === 'ready'}
+        onPutSelect={(strike) => {
+          console.log('[EngineWindow] PUT selected:', strike);
+          setPutStrike(strike);
+          addLogLine(`PUT strike selected: ${strike}`, 'success');
+        }}
+        onCallSelect={(strike) => {
+          console.log('[EngineWindow] CALL selected:', strike);
+          setCallStrike(strike);
+          addLogLine(`CALL strike selected: ${strike}`, 'success');
+        }}
+        selectedPutStrike={putStrike}
+        selectedCallStrike={callStrike}
       />
 
       {/* Command input - always visible */}

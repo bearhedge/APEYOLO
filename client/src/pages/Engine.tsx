@@ -115,6 +115,16 @@ export function Engine({
   const [selectedPutStrike, setSelectedPutStrike] = useState<number | null>(null);
   const [selectedCallStrike, setSelectedCallStrike] = useState<number | null>(null);
 
+  // Wrapped handlers with logging
+  const handlePutSelect = (strike: number | null) => {
+    console.log('[Engine] handlePutSelect called:', { strike, prev: selectedPutStrike });
+    setSelectedPutStrike(strike);
+  };
+  const handleCallSelect = (strike: number | null) => {
+    console.log('[Engine] handleCallSelect called:', { strike, prev: selectedCallStrike });
+    setSelectedCallStrike(strike);
+  };
+
   // Direction override state
   const [directionOverride, setDirectionOverride] = useState<TradeDirection | null>(null);
 
@@ -560,6 +570,15 @@ export function Engine({
         const putCandidates = showPuts ? (smartPuts.length > 0 ? smartPuts : fallbackPuts) : [];
         const callCandidates = showCalls ? (smartCalls.length > 0 ? smartCalls : fallbackCalls) : [];
 
+        console.log('[Engine] Step3Strikes rendering with:', {
+          putCandidatesCount: putCandidates.length,
+          callCandidatesCount: callCandidates.length,
+          selectedPutStrike,
+          selectedCallStrike,
+          handlePutSelectType: typeof handlePutSelect,
+          handleCallSelectType: typeof handleCallSelect,
+        });
+
         return (
           <Step3Strikes
             underlyingPrice={effectiveAnalysis?.q3Strikes?.underlyingPrice ?? spyPrice}
@@ -569,8 +588,8 @@ export function Engine({
             selectedCallStrike={selectedCallStrike}
             recommendedPutStrike={effectiveAnalysis?.q3Strikes?.selectedPut?.strike ?? null}
             recommendedCallStrike={effectiveAnalysis?.q3Strikes?.selectedCall?.strike ?? null}
-            onPutSelect={setSelectedPutStrike}
-            onCallSelect={setSelectedCallStrike}
+            onPutSelect={handlePutSelect}
+            onCallSelect={handleCallSelect}
             onContinue={handleStrikeContinue}
             expectedPremium={premiumPerContract}
             isStreamLoading={isStreamLoading}
