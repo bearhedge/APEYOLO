@@ -1045,85 +1045,23 @@ export async function selectStrikes(
     selection.awaitingUserSelection = true;
 
   } else {
-    // IBKR unavailable - log warning and continue with mock data for display
-    console.warn(`[Step3] Option chain returned NULL or EMPTY - will use mock data for display`);
-    console.log(`[Step3] fullChain: ${JSON.stringify(fullChain)}`);
-    dataSource = 'mock';
-    // Use fallback underlying price if available from fullChain
-    if (fullChain?.underlyingPrice && fullChain.underlyingPrice > 0) {
-      actualUnderlyingPrice = fullChain.underlyingPrice;
-    }
-  }
+    // IBKR completely unavailable - throw error with diagnostics for debugging
+    console.error(`[Step3] Option chain returned NULL or EMPTY from fetchFullOptionChain`);
+    console.error(`[Step3] fullChain: ${JSON.stringify(fullChain)}`);
 
-  // FALLBACK: If nearbyStrikes is still empty (no IBKR data), populate from mock
-  if (!selection.nearbyStrikes ||
-      (selection.nearbyStrikes.puts.length === 0 && selection.nearbyStrikes.calls.length === 0)) {
-    console.log(`[Step3] No IBKR nearby strikes - using mock data for display`);
+    // Create a detailed error with diagnostics attached
+    const diagnostics = fullChain?.diagnostics;
+    const errorMessage = diagnostics
+      ? `[IBKR] Option chain unavailable. Diagnostics: conid=${diagnostics.conid}, month=${diagnostics.monthFormatted}, puts=${diagnostics.putCount}, calls=${diagnostics.callCount}, price=$${diagnostics.underlyingPrice}, snapshot=${diagnostics.snapshotRaw?.slice(0, 100)}, strikes=${diagnostics.strikesRaw?.slice(0, 100)}`
+      : '[IBKR] Option chain unavailable - cannot proceed without real IBKR data';
 
-    const mockPuts = getMockOptionChain(actualUnderlyingPrice, 'PUT');
-    const mockCalls = getMockOptionChain(actualUnderlyingPrice, 'CALL');
-
-    selection.nearbyStrikes = {
-      puts: mockPuts.slice(0, 5).map(s => ({
-        strike: s.strike,
-        bid: s.bid,
-        ask: s.ask,
-        delta: s.delta,
-        oi: s.openInterest
-      })),
-      calls: mockCalls.slice(0, 5).map(s => ({
-        strike: s.strike,
-        bid: s.bid,
-        ask: s.ask,
-        delta: s.delta,
-        oi: s.openInterest
-      }))
+    const error = new Error(errorMessage) as Error & {
+      diagnostics?: typeof diagnostics;
+      isOptionChainError?: boolean;
     };
-
-    // Also populate smartCandidates from mock data for UI display
-    if (!selection.smartCandidates ||
-        (selection.smartCandidates.puts.length === 0 && selection.smartCandidates.calls.length === 0)) {
-      selection.smartCandidates = {
-        puts: mockPuts.slice(0, 5).map(s => ({
-          strike: s.strike,
-          optionType: 'PUT' as const,
-          bid: s.bid,
-          ask: s.ask,
-          spread: s.ask - s.bid,
-          delta: s.delta,
-          openInterest: s.openInterest ?? 0,
-          yield: ((s.bid + s.ask) / 2) / actualUnderlyingPrice,
-          yieldPct: `${((((s.bid + s.ask) / 2) / actualUnderlyingPrice) * 100).toFixed(3)}%`,
-          qualityScore: 3 as const,
-          qualityReasons: ['Mock data - verify with live market'],
-          isEngineRecommended: false,
-          isUserSelected: false
-        })),
-        calls: mockCalls.slice(0, 5).map(s => ({
-          strike: s.strike,
-          optionType: 'CALL' as const,
-          bid: s.bid,
-          ask: s.ask,
-          spread: s.ask - s.bid,
-          delta: s.delta,
-          openInterest: s.openInterest ?? 0,
-          yield: ((s.bid + s.ask) / 2) / actualUnderlyingPrice,
-          yieldPct: `${((((s.bid + s.ask) / 2) / actualUnderlyingPrice) * 100).toFixed(3)}%`,
-          qualityScore: 3 as const,
-          qualityReasons: ['Mock data - verify with live market'],
-          isEngineRecommended: false,
-          isUserSelected: false
-        }))
-      };
-
-      // Mark first candidates as engine recommended
-      if (selection.smartCandidates.puts.length > 0) {
-        selection.smartCandidates.puts[0].isEngineRecommended = true;
-      }
-      if (selection.smartCandidates.calls.length > 0) {
-        selection.smartCandidates.calls[0].isEngineRecommended = true;
-      }
-    }
+    error.diagnostics = diagnostics;
+    error.isOptionChainError = true;
+    throw error;
   }
 
   // Calculate totals
