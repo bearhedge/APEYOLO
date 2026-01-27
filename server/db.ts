@@ -13,9 +13,51 @@ if (!DATABASE_URL) {
 }
 
 // Create pool only if DATABASE_URL is configured
+// Pool settings optimized for Cloud Run + Cloud SQL via VPC connector
 export const pool = DATABASE_URL
-  ? new Pool({ connectionString: DATABASE_URL })
+  ? new Pool({
+      connectionString: DATABASE_URL,
+      max: 20,                        // Max connections (default: 10)
+      idleTimeoutMillis: 30000,       // Close idle connections after 30s
+      connectionTimeoutMillis: 10000, // Fail fast if can't connect in 10s
+      statement_timeout: 30000,       // Kill queries over 30s
+    })
   : null;
+
+/**
+ * Retry wrapper for database operations
+ * Handles transient connection failures (common with Cloud SQL + VPC)
+ */
+export async function withRetry<T>(
+  operation: () => Promise<T>,
+  maxRetries = 3,
+  delayMs = 1000
+): Promise<T> {
+  let lastError: Error | undefined;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await operation();
+    } catch (error: any) {
+      lastError = error;
+
+      // Don't retry on auth or syntax errors
+      if (error.code === '28P01' || error.code === '42601' || error.code === '42P01') {
+        throw error;
+      }
+
+      if (attempt === maxRetries) {
+        console.error(`[DB] All ${maxRetries} attempts failed:`, error.message);
+        throw error;
+      }
+
+      console.warn(`[DB] Attempt ${attempt}/${maxRetries} failed: ${error.message}, retrying in ${delayMs * attempt}ms...`);
+      await new Promise(r => setTimeout(r, delayMs * attempt));
+    }
+  }
+
+  throw lastError || new Error('Retry failed');
+}
 
 // Export db instance (or null if not configured)
 export const db = pool ? drizzle(pool, { schema }) : null;
