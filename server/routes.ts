@@ -2865,7 +2865,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
           const initStatus = diag.init.status;
 
           // WebSocket status for the websocket diagnostic step
-          const wsDetailedStatusForCheck = getIbkrWebSocketDetailedStatus();
+          // Wrap in try-catch to prevent 500 errors when WebSocket disconnects
+          let wsDetailedStatusForCheck: ReturnType<typeof getIbkrWebSocketDetailedStatus> | null = null;
+          try {
+            wsDetailedStatusForCheck = getIbkrWebSocketDetailedStatus();
+          } catch (err) {
+            console.error('[IBKR Status] getIbkrWebSocketDetailedStatus (env) failed:', err);
+          }
           const hasRealDataFlow = wsDetailedStatusForCheck?.hasRealData === true;
 
           // Auth is complete when all 4 auth steps succeed
@@ -2930,7 +2936,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
                 success: initStatus === 200
               },
               websocket: (() => {
-                const wsDetailedStatus = getIbkrWebSocketDetailedStatus();
+                let wsDetailedStatus: ReturnType<typeof getIbkrWebSocketDetailedStatus> | null = null;
+                try {
+                  wsDetailedStatus = getIbkrWebSocketDetailedStatus();
+                } catch (err) {
+                  console.error('[IBKR Status] getIbkrWebSocketDetailedStatus (env websocket) failed:', err);
+                }
                 if (!wsDetailedStatus) {
                   return { status: 0, message: 'Not initialized', success: false, connected: false, authenticated: false, subscriptions: 0 };
                 }
@@ -3003,21 +3014,38 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
 
       // User has credentials - get their connection status from the per-user client
-      const diag = getDiagnosticsFromClient(userBroker.api);
+      // Wrap diagnostic calls in try-catch to prevent 500 errors when WebSocket disconnects
+      let diag: IbkrDiagnostics | null = null;
+      try {
+        diag = getDiagnosticsFromClient(userBroker.api);
+      } catch (err) {
+        console.error('[IBKR Status] getDiagnosticsFromClient failed:', err);
+      }
 
       // If WebSocket is authenticated, HTTP auth definitely succeeded
       // (WebSocket requires valid HTTP session cookies from OAuth flow)
-      const wsStatusForUser = getIbkrWebSocketStatus();
+      let wsStatusForUser: ReturnType<typeof getIbkrWebSocketStatus> | null = null;
+      try {
+        wsStatusForUser = getIbkrWebSocketStatus();
+      } catch (err) {
+        console.error('[IBKR Status] getIbkrWebSocketStatus failed:', err);
+      }
       const wsAuthenticatedForUser = wsStatusForUser?.authenticated === true;
 
       // Use effective status: if WS authenticated, all HTTP steps succeeded
-      const effectiveOAuthStatusUser = wsAuthenticatedForUser ? 200 : diag.oauth.status;
-      const effectiveSSOStatusUser = wsAuthenticatedForUser ? 200 : diag.sso.status;
-      const effectiveValidateStatusUser = wsAuthenticatedForUser ? 200 : diag.validate.status;
-      const effectiveInitStatusUser = wsAuthenticatedForUser ? 200 : diag.init.status;
+      // If diag is null (threw), use 0 (not attempted) as fallback
+      const effectiveOAuthStatusUser = wsAuthenticatedForUser ? 200 : (diag?.oauth?.status ?? 0);
+      const effectiveSSOStatusUser = wsAuthenticatedForUser ? 200 : (diag?.sso?.status ?? 0);
+      const effectiveValidateStatusUser = wsAuthenticatedForUser ? 200 : (diag?.validate?.status ?? 0);
+      const effectiveInitStatusUser = wsAuthenticatedForUser ? 200 : (diag?.init?.status ?? 0);
 
       // Check for real data flow (non-zero SPY price)
-      const wsDetailedStatusForUserCheck = getIbkrWebSocketDetailedStatus();
+      let wsDetailedStatusForUserCheck: ReturnType<typeof getIbkrWebSocketDetailedStatus> | null = null;
+      try {
+        wsDetailedStatusForUserCheck = getIbkrWebSocketDetailedStatus();
+      } catch (err) {
+        console.error('[IBKR Status] getIbkrWebSocketDetailedStatus failed:', err);
+      }
       const hasRealDataFlowForUser = wsDetailedStatusForUserCheck?.hasRealData === true;
 
       // Check all 4 authentication steps + real data flow
@@ -3037,7 +3065,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           .limit(1);
         if (creds.length > 0) {
           accountId = creds[0].accountId || 'Not set';
-          clientId = creds[0].clientId.substring(0, 10) + '***';
+          clientId = creds[0]?.clientId ? creds[0].clientId.substring(0, 10) + '***' : 'unknown';
         }
       }
 
@@ -3091,7 +3119,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
           },
           // WebSocket status for real-time data streaming
           websocket: (() => {
-            const wsDetailedStatusUser = getIbkrWebSocketDetailedStatus();
+            let wsDetailedStatusUser: ReturnType<typeof getIbkrWebSocketDetailedStatus> | null = null;
+            try {
+              wsDetailedStatusUser = getIbkrWebSocketDetailedStatus();
+            } catch (err) {
+              console.error('[IBKR Status] getIbkrWebSocketDetailedStatus (user websocket) failed:', err);
+            }
             if (!wsDetailedStatusUser) {
               return { status: 0, message: 'Not initialized', success: false, connected: false, authenticated: false, subscriptions: 0 };
             }
