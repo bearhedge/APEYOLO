@@ -469,6 +469,17 @@ const DEFAULT_SMART_FILTER: SmartFilterConfig = {
   minYield: 0.0003,       // Minimum yield 0.03% (premium / underlying)
 };
 
+// Off-hours filter: relax bid/spread/liquidity but keep delta filtering
+// Historical data has synthetic ±2% spreads and may lack real-time OI
+const OFF_HOURS_SMART_FILTER: SmartFilterConfig = {
+  deltaMin: 0.05,         // Keep delta filtering (still valid from historical prices)
+  deltaMax: 0.25,         // Keep delta filtering
+  minBid: 0,              // Allow $0 bids (historical data may have zeros)
+  maxSpread: 1.00,        // Allow wide spreads (synthetic ±2% = ~$0.20 spread)
+  minLiquidity: 0,        // Disable OI filter (may be stale)
+  minYield: 0,            // Disable yield filter (synthetic prices unreliable)
+};
+
 // ATM range for strike display (±$8 from underlying)
 const ATM_RANGE = 8;
 
