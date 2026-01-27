@@ -182,6 +182,9 @@ class IbkrClient {
   // Option conid cache - persists for current trading day (6 hour TTL)
   private optionConidCache: Map<string, { conid: number; cachedAt: number }> = new Map();
   private readonly OPTION_CONID_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 hours
+  // Account info cache - NAV doesn't change frequently, cache for 5 minutes
+  private accountInfoCache: { data: AccountInfo; cachedAt: number } | null = null;
+  private readonly ACCOUNT_INFO_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
   private last: IbkrDiagnostics = {
     oauth: { status: 0, ts: "" },     // 0 = "Not attempted" (shows gray in UI)
     sso: { status: 0, ts: "" },
@@ -1402,6 +1405,12 @@ class IbkrClient {
   }
 
   async getAccount(): Promise<AccountInfo> {
+    // Check cache first - NAV doesn't change frequently
+    if (this.accountInfoCache && (Date.now() - this.accountInfoCache.cachedAt) < this.ACCOUNT_INFO_CACHE_TTL_MS) {
+      console.log(`[IBKR][getAccount] Returning cached data (age: ${Math.round((Date.now() - this.accountInfoCache.cachedAt) / 1000)}s)`);
+      return this.accountInfoCache.data;
+    }
+
     const maxRetries = 3;
     const retryDelay = 2000;
     const accountId = this.accountId || process.env.IBKR_ACCOUNT_ID || "";
@@ -1479,6 +1488,9 @@ class IbkrClient {
         excessLiquidity: excessLiq,
         marginLoan: marginLoan,
       };
+      // Cache the result
+      this.accountInfoCache = { data: info, cachedAt: Date.now() };
+      console.log(`[IBKR][getAccount] Cached account info (TTL: ${this.ACCOUNT_INFO_CACHE_TTL_MS / 1000}s)`);
       return info;
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err));
