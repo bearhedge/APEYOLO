@@ -1013,7 +1013,14 @@ export async function selectStrikes(
 
     // === SMART STRIKE FILTERING ===
     // Apply intelligent filtering for "elite" strikes with quality scoring
-    const smartFilterConfig = DEFAULT_SMART_FILTER;
+    // Use relaxed filters during off-hours (historical data)
+    const isOffHours = fullChain.isHistorical || false;
+    const smartFilterConfig = isOffHours ? OFF_HOURS_SMART_FILTER : DEFAULT_SMART_FILTER;
+
+    if (isOffHours) {
+      console.log(`[Step3] OFF-HOURS MODE: Using relaxed filters for historical data`);
+    }
+
     selection.filterConfig = smartFilterConfig;
 
     // Filter PUTs with smart criteria
