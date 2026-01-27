@@ -82,6 +82,7 @@ export function EngineWindow() {
     completedSteps,
     analysis,
     error: analysisError,
+    stepResults,
   } = useEngineAnalysis({
     symbol: 'SPY',
     strategy: engineStrategy,
@@ -304,16 +305,19 @@ export function EngineWindow() {
     }
 
     if (completedSteps.has(3) && !loggedSteps.has('step3')) {
-      const putStrikeVal = analysis?.q3Strikes?.selectedPut?.strike;
-      const callStrikeVal = analysis?.q3Strikes?.selectedCall?.strike;
+      // Use stepResults for streaming (available immediately when step completes),
+      // fall back to analysis for after final assembly
+      const step3Data = stepResults?.step3;
+      const putStrikeVal = step3Data?.putStrike?.strike;
+      const callStrikeVal = step3Data?.callStrike?.strike;
 
       // Set selected strikes
       if (putStrikeVal) setPutStrike(putStrikeVal);
       if (callStrikeVal) setCallStrike(callStrikeVal);
 
-      // Get candidate strikes from analysis
-      const putCandidates = analysis?.q3Strikes?.smartCandidates?.puts || [];
-      const callCandidates = analysis?.q3Strikes?.smartCandidates?.calls || [];
+      // Get candidate strikes from step3 results (smartCandidates or nearbyStrikes)
+      const putCandidates = step3Data?.smartCandidates?.puts || step3Data?.nearbyStrikes?.puts || [];
+      const callCandidates = step3Data?.smartCandidates?.calls || step3Data?.nearbyStrikes?.calls || [];
 
       // Print PUT option chain
       if (putCandidates.length > 0) {
@@ -323,8 +327,11 @@ export function EngineWindow() {
           const isSelected = p.strike === putStrikeVal;
           const arrow = isSelected ? '→ ' : '  ';
           const selected = isSelected ? ' ← SELECTED' : '';
-          const delta = `.${Math.abs(p.delta * 100).toFixed(0).padStart(2, '0')}`;
-          addLogLine(`${arrow}${p.strike}  │  ${p.bid.toFixed(2)}/${p.ask.toFixed(2)}  │  ${delta}${selected}`, isSelected ? 'result' : 'info');
+          const bid = p.bid ?? 0;
+          const ask = p.ask ?? 0;
+          const delta = Math.abs(p.delta ?? 0);
+          const deltaStr = `.${(delta * 100).toFixed(0).padStart(2, '0')}`;
+          addLogLine(`${arrow}${p.strike}  │  ${bid.toFixed(2)}/${ask.toFixed(2)}  │  ${deltaStr}${selected}`, isSelected ? 'result' : 'info');
         });
         addLogLine('─────────────────────────────────', 'info');
       }
@@ -337,8 +344,11 @@ export function EngineWindow() {
           const isSelected = c.strike === callStrikeVal;
           const arrow = isSelected ? '→ ' : '  ';
           const selected = isSelected ? ' ← SELECTED' : '';
-          const delta = `.${Math.abs(c.delta * 100).toFixed(0).padStart(2, '0')}`;
-          addLogLine(`${arrow}${c.strike}  │  ${c.bid.toFixed(2)}/${c.ask.toFixed(2)}  │  ${delta}${selected}`, isSelected ? 'result' : 'info');
+          const bid = c.bid ?? 0;
+          const ask = c.ask ?? 0;
+          const delta = Math.abs(c.delta ?? 0);
+          const deltaStr = `.${(delta * 100).toFixed(0).padStart(2, '0')}`;
+          addLogLine(`${arrow}${c.strike}  │  ${bid.toFixed(2)}/${ask.toFixed(2)}  │  ${deltaStr}${selected}`, isSelected ? 'result' : 'info');
         });
         addLogLine('─────────────────────────────────', 'info');
       }
@@ -353,10 +363,12 @@ export function EngineWindow() {
     }
 
     if (completedSteps.has(4) && !loggedSteps.has('step4')) {
-      const contractCount = analysis?.q4Size?.recommendedContracts ?? contracts;
-      const nav = ibkrStatus?.nav ?? 100000;
-      const maxLoss = (analysis?.tradeProposal?.maxLoss ?? 0);
-      const totalCredit = (analysis?.q3Strikes?.selectedPut?.premium ?? 0) + (analysis?.q3Strikes?.selectedCall?.premium ?? 0);
+      // Use stepResults for immediate streaming
+      const step3Data = stepResults?.step3;
+      const step4Data = stepResults?.step4;
+      const contractCount = step4Data?.contracts ?? analysis?.q4Size?.recommendedContracts ?? contracts;
+      const maxLoss = step3Data?.marginRequired ? step3Data.marginRequired * contractCount * 0.1 : (analysis?.tradeProposal?.maxLoss ?? 0);
+      const totalCredit = step3Data?.expectedPremium ?? ((analysis?.q3Strikes?.selectedPut?.premium ?? 0) + (analysis?.q3Strikes?.selectedCall?.premium ?? 0));
       setContracts(contractCount);
       addLogLine(`Contracts: ${contractCount} | Credit: $${totalCredit.toFixed(2)} | Max Loss: $${maxLoss.toFixed(0)}`, 'result');
       addLogLine(`[↑↓ put strike] [←→ call strike] [ENTER: APE IN]`, 'info');
@@ -367,7 +379,7 @@ export function EngineWindow() {
     if (completedSteps.size >= 4 && !isAnalyzing && hudState === 'analyzing') {
       setHudState('ready');
     }
-  }, [completedSteps, isAnalyzing, analysis, hudState, addLogLine, contracts, credit, ibkrStatus?.nav, spreadWidth, loggedSteps, wsVix]);
+  }, [completedSteps, isAnalyzing, analysis, hudState, addLogLine, contracts, credit, ibkrStatus?.nav, spreadWidth, loggedSteps, wsVix, stepResults]);
 
   // Stream agent activities to log
   useEffect(() => {
