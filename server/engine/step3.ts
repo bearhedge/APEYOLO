@@ -8,6 +8,7 @@
 import { TradeDirection } from './step2';
 import { getOptionChainWithStrikes } from '../broker/ibkr';
 import { getOptionChainStreamer, CachedOptionChain } from '../broker/optionChainStreamer';
+import { getMarketStatus } from '../services/marketCalendar';
 import type { StepReasoning, StepMetric, NearbyStrike } from '../../shared/types/engineLog';
 import type {
   SmartStrikeCandidate,
@@ -1015,7 +1016,9 @@ export async function selectStrikes(
     // === SMART STRIKE FILTERING ===
     // Apply intelligent filtering for "elite" strikes with quality scoring
     // Use relaxed filters during off-hours (historical data)
-    const isOffHours = fullChain.isHistorical || false;
+    // Detect off-hours from market calendar (more reliable than IBKR flag)
+    const marketStatus = getMarketStatus();
+    const isOffHours = !marketStatus.isOpen || fullChain.isHistorical || false;
     const smartFilterConfig = isOffHours ? OFF_HOURS_SMART_FILTER : DEFAULT_SMART_FILTER;
 
     if (isOffHours) {
