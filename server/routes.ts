@@ -61,6 +61,7 @@ import {
   getVWAP,
 } from "./services/marketMetrics.js";
 import { getSPYVWAP, getCachedVWAP } from "./services/yahooVwapService.js";
+import { fetchOvernightQuote } from "./services/overnightQuoteService.js";
 
 // Helper function to get session from request
 async function getSessionFromRequest(req: any) {
@@ -2428,6 +2429,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
+      // Track if we're using delayed Yahoo data
+      let isDelayed = false;
+      let dataSource = 'ibkr';
+
+      // If IBKR cache is stale (>5 min) and we're in extended hours, try Yahoo fallback
+      const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+      const isExtendedHours = marketState === 'OVERNIGHT' || marketState === 'PRE' || marketState === 'POST';
+      const dataAge = wsManager?.getDataAge() || Infinity;
+      const isStale = !spyData?.last || spyData.last <= 0 || dataAge > STALE_THRESHOLD_MS;
+
+      if (isStale && isExtendedHours) {
+        console.log(`[Snapshot] IBKR data stale (age=${dataAge}ms), trying Yahoo fallback...`);
+        const overnightQuote = await fetchOvernightQuote('SPY');
+        if (overnightQuote && overnightQuote.extendedPrice > 0) {
+          spyData = {
+            last: overnightQuote.extendedPrice,
+            bid: null,
+            ask: null,
+            timestamp: new Date(overnightQuote.timestamp),
+            dayHigh: 0,
+            dayLow: 0,
+            openPrice: overnightQuote.regularMarketPrice,
+          };
+          isDelayed = true;
+          dataSource = 'yahoo';
+          console.log(`[Snapshot] Yahoo fallback: SPY=$${overnightQuote.extendedPrice.toFixed(2)} (${overnightQuote.extendedChange >= 0 ? '+' : ''}${overnightQuote.extendedChange.toFixed(2)})`);
+        }
+      }
+
       if (!spyData?.last || spyData.last <= 0) {
         console.warn('[Snapshot] No live SPY data');
         return res.json({
@@ -2435,6 +2465,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
           available: false,
           source: 'none',
           marketState,
+          isDelayed: false,
           message: 'No live SPY data available'
         });
       }
@@ -2444,9 +2475,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const spyAsk = spyData.ask || null;
       const vixPrice = vixData?.last || 0;
       const timestamp = spyData.timestamp;
-      const dataAge = wsManager?.getDataAge() || 0;
 
-      console.log(`[Snapshot] LIVE: SPY=$${spyPrice} (bid=${spyBid}, ask=${spyAsk}), VIX=${vixPrice}, age=${dataAge}ms`);
+      console.log(`[Snapshot] ${isDelayed ? 'DELAYED' : 'LIVE'}: SPY=$${spyPrice} (bid=${spyBid}, ask=${spyAsk}), VIX=${vixPrice}, source=${dataSource}`);
 
       // Fetch previous close once per session (needed for change % calculation)
       if (needsPreviousClose()) {
@@ -2484,8 +2514,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
       return res.json({
         ok: true,
         available: true,
-        source: 'ibkr',
+        source: dataSource,
         marketState,
+        isDelayed,  // True when using Yahoo fallback during extended hours
         snapshot: {
           spyPrice,
           spyChange,
@@ -2493,9 +2524,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
           spyBid,
           spyAsk,
           spyPrevClose: metrics.spyPrevClose,
-          dayHigh: spyData.dayHigh || 0,  // ✅ Real IBKR data (not fake ±0.5%)
-          dayLow: spyData.dayLow || 0,    // ✅ Real IBKR data (not fake ±0.5%)
-          openPrice: spyData.openPrice,   // ✅ Real open price
+          dayHigh: spyData.dayHigh || 0,  // Real IBKR data (0 if using Yahoo)
+          dayLow: spyData.dayLow || 0,    // Real IBKR data (0 if using Yahoo)
+          openPrice: spyData.openPrice,   // Real open price
           vix: vixPrice,
           vixChange,
           vixChangePct,

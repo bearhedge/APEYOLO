@@ -17,6 +17,7 @@ interface TopBarProps {
   vixIsClose?: boolean;  // true if VIX is showing closing price
   isConnected: boolean;
   wsConnected?: boolean;
+  isDelayed?: boolean;   // true when using Yahoo fallback during extended hours
   mode: 'MANUAL' | 'AUTO';
   autoCountdown?: number; // seconds until next auto-analyze
   onModeToggle: () => void;
@@ -59,6 +60,7 @@ export function TopBar({
   vixIsClose,
   isConnected,
   wsConnected,
+  isDelayed,
   mode,
   autoCountdown,
   onModeToggle,
@@ -182,19 +184,22 @@ export function TopBar({
           )}
         </span>
 
-        {/* Connection - based on whether we have live data */}
+        {/* Connection status - LIVE (green) | DELAYED (amber) | OFFLINE (gray) */}
         <span style={{ display: 'flex', alignItems: 'center', gap: 4 }}>
           <span
             style={{
               width: 8,
               height: 8,
               borderRadius: '50%',
-              background: spyMid > 0 ? '#4ade80' : '#ef4444',
+              background: spyMid > 0 ? (isDelayed ? '#f59e0b' : '#4ade80') : '#ef4444',
               display: 'inline-block',
             }}
           />
-          <span style={{ color: spyMid > 0 ? '#4ade80' : '#888', fontSize: 11 }}>
-            {spyMid > 0 ? 'LIVE' : 'OFFLINE'}
+          <span style={{
+            color: spyMid > 0 ? (isDelayed ? '#f59e0b' : '#4ade80') : '#888',
+            fontSize: 11
+          }}>
+            {spyMid > 0 ? (isDelayed ? 'DELAYED' : 'LIVE') : 'OFFLINE'}
           </span>
         </span>
       </div>

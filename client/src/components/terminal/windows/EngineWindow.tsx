@@ -70,6 +70,9 @@ export function EngineWindow() {
   const [wsVixPrevClose, setWsVixPrevClose] = useState(0);
   const [wsVixIsClose, setWsVixIsClose] = useState(false);
 
+  // Delayed data indicator (when using Yahoo fallback during extended hours)
+  const [isDelayed, setIsDelayed] = useState(false);
+
   // Engine analysis hook - map HUD strategy to engine strategy
   const engineStrategy = strategy === 'put-spread' ? 'put-only' : strategy === 'call-spread' ? 'call-only' : 'strangle';
   const {
@@ -132,6 +135,79 @@ export function EngineWindow() {
       unsubscribe();
     };
   }, [onChartPriceUpdate, wsConnected]);
+
+  // Poll for extended hours data (OVERNIGHT, PRE, POST sessions)
+  // When IBKR WebSocket is stale, server uses Yahoo Finance fallback
+  useEffect(() => {
+    // Detect extended hours (client-side approximation)
+    const getMarketSession = () => {
+      const now = new Date();
+      const et = new Date(now.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+      const day = et.getDay();
+      const hour = et.getHours();
+      const min = et.getMinutes();
+      const time = hour * 60 + min;
+
+      // Weekend
+      if (day === 0 || day === 6) return 'CLOSED';
+      // Pre-market: 4:00 AM - 9:30 AM
+      if (time >= 240 && time < 570) return 'PRE';
+      // Regular: 9:30 AM - 4:00 PM
+      if (time >= 570 && time < 960) return 'OPEN';
+      // After-hours: 4:00 PM - 8:00 PM
+      if (time >= 960 && time < 1200) return 'AH';
+      // Overnight: 8:00 PM - 4:00 AM
+      return 'OVERNIGHT';
+    };
+
+    const session = getMarketSession();
+    const isExtendedHours = session === 'OVERNIGHT' || session === 'PRE' || session === 'AH';
+
+    if (!isExtendedHours) {
+      setIsDelayed(false);
+      return;
+    }
+
+    // Poll every 2 minutes during extended hours
+    const fetchSnapshot = async () => {
+      try {
+        const res = await fetch('/api/broker/stream/snapshot', { credentials: 'include' });
+        if (!res.ok) return;
+
+        const data = await res.json();
+        if (data.ok && data.available) {
+          // Update delayed flag
+          setIsDelayed(data.isDelayed || false);
+
+          // Update prices from snapshot if WebSocket is stale
+          if (data.isDelayed && data.snapshot) {
+            const snap = data.snapshot;
+            if (snap.spyPrice > 0) {
+              setWsSpyPrice(snap.spyPrice);
+              setWsSpyBid(snap.spyBid || snap.spyPrice);
+              setWsSpyAsk(snap.spyAsk || snap.spyPrice);
+              setWsSpyPrevClose(snap.spyPrevClose || 0);
+            }
+            if (snap.vix > 0) {
+              setWsVix(snap.vix);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[EngineWindow] Overnight snapshot fetch failed:', err);
+      }
+    };
+
+    // Fetch immediately and then every 2 minutes
+    fetchSnapshot();
+    const interval = setInterval(fetchSnapshot, 2 * 60 * 1000);
+    console.log('[EngineWindow] Started extended hours polling (every 2 min)');
+
+    return () => {
+      clearInterval(interval);
+      console.log('[EngineWindow] Stopped extended hours polling');
+    };
+  }, []); // Run once on mount, session detection happens inside
 
   // Execute trade mutation
   const executeMutation = useMutation({
@@ -481,6 +557,7 @@ export function EngineWindow() {
         vixIsClose={wsVixIsClose}
         isConnected={isConnected}
         wsConnected={isWsConnected}
+        isDelayed={isDelayed}
         mode={mode}
         autoCountdown={mode === 'AUTO' ? autoCountdown : undefined}
         onModeToggle={handleModeToggle}
