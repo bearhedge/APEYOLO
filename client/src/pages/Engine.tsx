@@ -387,8 +387,8 @@ export function Engine({
       const result = await executePaperTrade(proposalToExecute);
       toast.success(`Trade executed! ${result.message || 'ID: ' + result.tradeId}`, { id: 'execute' });
 
-      // Mark step 4 complete
-      setCompletedSteps(prev => new Set([...prev, 4]));
+      // Mark step 3 (APE IN) complete
+      setCompletedSteps(prev => new Set([...prev, 3]));
     } catch (err: any) {
       console.error('[Engine] Execute error:', err);
       toast.error(err.message || 'Failed to execute trade', { id: 'execute' });
@@ -397,7 +397,7 @@ export function Engine({
     }
   }, [localProposal, selectedPutStrike, selectedCallStrike, executePaperTrade, environment]);
 
-  // Handle Step 4 (Exit): Cancel - go back to Strikes
+  // Handle cancel: go back to Strikes
   const handleCancel = useCallback(() => {
     setCurrentStep(2);
   }, []);
