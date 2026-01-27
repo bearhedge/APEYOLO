@@ -315,16 +315,16 @@ export function EngineWindow() {
       if (putStrikeVal) setPutStrike(putStrikeVal);
       if (callStrikeVal) setCallStrike(callStrikeVal);
 
-      // Get candidate strikes from step3 results (smartCandidates or nearbyStrikes)
-      const putCandidates = step3Data?.smartCandidates?.puts || step3Data?.nearbyStrikes?.puts || [];
-      const callCandidates = step3Data?.smartCandidates?.calls || step3Data?.nearbyStrikes?.calls || [];
+      // Always use nearbyStrikes for complete chain (smartCandidates filters too aggressively)
+      const putCandidates = step3Data?.nearbyStrikes?.puts || [];
+      const callCandidates = step3Data?.nearbyStrikes?.calls || [];
 
       // Print PUT option chain
       if (putCandidates.length > 0) {
         addLogLine(`PUTS (0DTE) - ${putCandidates.length} strikes:`, 'success');
         addLogLine('─────────────────────────────────', 'info');
         putCandidates.slice(0, 5).forEach((p: any) => {
-          const isSelected = p.strike === putStrikeVal;
+          const isSelected = Number(p.strike) === Number(putStrikeVal);
           const arrow = isSelected ? '→ ' : '  ';
           const selected = isSelected ? ' ← SELECTED' : '';
           const bid = p.bid ?? 0;
@@ -341,7 +341,7 @@ export function EngineWindow() {
         addLogLine(`CALLS (0DTE) - ${callCandidates.length} strikes:`, 'success');
         addLogLine('─────────────────────────────────', 'info');
         callCandidates.slice(0, 5).forEach((c: any) => {
-          const isSelected = c.strike === callStrikeVal;
+          const isSelected = Number(c.strike) === Number(callStrikeVal);
           const arrow = isSelected ? '→ ' : '  ';
           const selected = isSelected ? ' ← SELECTED' : '';
           const bid = c.bid ?? 0;
