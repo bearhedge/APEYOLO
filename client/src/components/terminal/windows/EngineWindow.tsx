@@ -474,6 +474,7 @@ export function EngineWindow() {
         spyBid={wsSpyBid}
         spyAsk={wsSpyAsk}
         spyPrevClose={wsSpyPrevClose}
+        vixPrice={wsVix}
         vixBid={wsVixBid}
         vixAsk={wsVixAsk}
         vixPrevClose={wsVixPrevClose}

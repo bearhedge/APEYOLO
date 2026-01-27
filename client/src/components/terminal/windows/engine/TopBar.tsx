@@ -10,6 +10,7 @@ interface TopBarProps {
   spyBid: number;
   spyAsk: number;
   spyPrevClose: number;
+  vixPrice?: number;  // Primary VIX price (last) - VIX is an index, bid/ask are usually 0
   vixBid: number;
   vixAsk: number;
   vixPrevClose: number;
@@ -51,6 +52,7 @@ export function TopBar({
   spyBid,
   spyAsk,
   spyPrevClose,
+  vixPrice,
   vixBid,
   vixAsk,
   vixPrevClose,
@@ -95,7 +97,10 @@ export function TopBar({
 
   // Calculate midpoint for % change
   const spyMid = (spyBid + spyAsk) / 2;
-  const vixMid = (vixBid + vixAsk) / 2;
+  // VIX is an index - use price directly, fall back to bid/ask mid
+  const vixMid = vixPrice && vixPrice > 0
+    ? vixPrice
+    : (vixBid + vixAsk) / 2;
 
   // Persist VIX value when available
   useEffect(() => {
