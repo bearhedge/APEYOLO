@@ -111,6 +111,7 @@ export interface StrikeSelection {
   rejectedStrikes?: StrikeRejection[];
   filterConfig?: SmartFilterConfig;
   awaitingUserSelection?: boolean;
+  isHistorical?: boolean;  // Indicates off-hours data (last close prices)
 }
 
 /**
@@ -1065,6 +1066,7 @@ export async function selectStrikes(
 
     // Set awaiting user selection flag for gated flow
     selection.awaitingUserSelection = true;
+    selection.isHistorical = fullChain.isHistorical || false;
 
   } else {
     // IBKR completely unavailable - throw error with diagnostics for debugging
