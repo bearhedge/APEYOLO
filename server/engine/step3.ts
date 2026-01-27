@@ -759,6 +759,7 @@ async function fetchFullOptionChain(symbol: string, expirationStr?: string): Pro
 
     // Always capture diagnostics for debugging
     const diagnostics = chainData?.diagnostics;
+    const isHistorical = chainData?.isHistorical || false;
 
     if (!chainData || (chainData.underlyingPrice === 0 && chainData.puts.length === 0 && chainData.calls.length === 0)) {
       console.log('[Step3] No real option chain data available from IBKR');
@@ -771,6 +772,7 @@ async function fetchFullOptionChain(symbol: string, expirationStr?: string): Pro
         vix: chainData?.vix,
         expectedMove: chainData?.expectedMove,
         source: 'http',
+        isHistorical,
         diagnostics,
       };
     }
@@ -801,7 +803,7 @@ async function fetchFullOptionChain(symbol: string, expirationStr?: string): Pro
       impliedVolatility: opt.iv ?? 0.20,
     }));
 
-    console.log(`[Step3] HTTP snapshot: ${putStrikes.length} PUTs, ${callStrikes.length} CALLs (VIX: ${chainData.vix}, expected move: $${chainData.expectedMove?.toFixed(2)}), underlying: $${chainData.underlyingPrice}`);
+    console.log(`[Step3] HTTP snapshot: ${putStrikes.length} PUTs, ${callStrikes.length} CALLs (VIX: ${chainData.vix}, expected move: $${chainData.expectedMove?.toFixed(2)}), underlying: $${chainData.underlyingPrice}${isHistorical ? ' [HISTORICAL]' : ''}`);
     return {
       putStrikes,
       callStrikes,
@@ -809,6 +811,7 @@ async function fetchFullOptionChain(symbol: string, expirationStr?: string): Pro
       vix: chainData.vix,
       expectedMove: chainData.expectedMove,
       source: 'http',
+      isHistorical,
       diagnostics,
     };
   } catch (err) {
