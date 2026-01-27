@@ -4,8 +4,6 @@ import {
   EngineWizardLayout,
   Step1Market,
   Step3Strikes,
-  Step4Size,
-  Step5Exit,
   type StepId,
 } from '@/components/engine';
 import { useEngine } from '@/hooks/useEngine';
@@ -235,7 +233,7 @@ export function Engine({
   // Advance to next step
   const advanceStep = useCallback(() => {
     setCompletedSteps(prev => new Set([...prev, currentStep]));
-    if (currentStep < 4) {
+    if (currentStep < 3) {
       setCurrentStep((currentStep + 1) as StepId);
     }
   }, [currentStep]);
@@ -582,20 +580,7 @@ export function Engine({
         );
 
       case 3:
-        return (
-          <Step4Size
-            riskTier={riskTier}
-            onRiskTierChange={handleRiskTierChange}
-            accountValue={accountValue}
-            recommendedContracts={recommendedContracts}
-            premiumPerContract={premiumPerContract * 100}
-            marginRequired={marginPerContract}
-            maxRiskPercent={maxRiskPercent}
-            onContinue={advanceStep}
-          />
-        );
-
-      case 4:
+        // Combined Review & APE IN step
         if (!filteredProposal || filteredProposal.legs.length === 0) {
           return (
             <div className="text-center py-12 text-zinc-400">
@@ -605,19 +590,81 @@ export function Engine({
         }
 
         return (
-          <Step5Exit
-            stopMultiplier={stopMultiplier}
-            onStopMultiplierChange={(m) => setStopMultiplier(m)}
-            proposal={filteredProposal}
-            entryPremium={filteredProposal.entryPremiumTotal}
-            stopLossPrice={filteredProposal.stopLossPrice || 0}
-            maxLoss={filteredProposal.maxLoss || 0}
-            guardRailsPassed={effectiveAnalysis?.guardRails?.passed ?? true}
-            violations={effectiveAnalysis?.guardRails?.violations ?? []}
-            onExecute={handleExecuteTrade}
-            onCancel={handleCancel}
-            isExecuting={isExecuting}
-          />
+          <div className="space-y-6">
+            {/* Position Summary */}
+            <div className="bg-zinc-900/50 rounded-lg p-4 border border-zinc-800">
+              <h3 className="text-sm font-medium text-zinc-400 mb-3">Position Summary</h3>
+              <div className="grid grid-cols-3 gap-4 text-sm">
+                <div>
+                  <span className="text-zinc-500">Contracts:</span>
+                  <span className="ml-2 text-white font-mono">{recommendedContracts}</span>
+                </div>
+                <div>
+                  <span className="text-zinc-500">Credit:</span>
+                  <span className="ml-2 text-green-400 font-mono">${(premiumPerContract * 100 * recommendedContracts).toFixed(0)}</span>
+                </div>
+                <div>
+                  <span className="text-zinc-500">Max Loss:</span>
+                  <span className="ml-2 text-red-400 font-mono">${filteredProposal.maxLoss?.toFixed(0) || 'N/A'}</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Selected Strikes */}
+            <div className="bg-zinc-900/50 rounded-lg p-4 border border-zinc-800">
+              <h3 className="text-sm font-medium text-zinc-400 mb-3">Selected Strikes</h3>
+              <div className="space-y-2">
+                {filteredProposal.legs.map((leg, i) => (
+                  <div key={i} className="flex justify-between text-sm">
+                    <span className={leg.optionType === 'PUT' ? 'text-red-400' : 'text-green-400'}>
+                      {leg.optionType} ${leg.strike}
+                    </span>
+                    <span className="text-zinc-300 font-mono">
+                      ${leg.bid?.toFixed(2)} / ${leg.ask?.toFixed(2)}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Exit Rules */}
+            <div className="bg-zinc-900/50 rounded-lg p-4 border border-zinc-800">
+              <h3 className="text-sm font-medium text-zinc-400 mb-3">Exit Rules</h3>
+              <div className="text-sm text-zinc-300">
+                <p>Stop Loss: {stopMultiplier}x premium (${(filteredProposal.entryPremiumTotal * stopMultiplier).toFixed(0)})</p>
+                <p>Take Profit: 50% of max profit</p>
+              </div>
+            </div>
+
+            {/* APE IN Button */}
+            <div className="flex gap-3">
+              <button
+                onClick={handleCancel}
+                className="flex-1 px-4 py-3 border border-zinc-700 text-zinc-300 rounded-lg hover:bg-zinc-800 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleExecuteTrade}
+                disabled={isExecuting || !(effectiveAnalysis?.guardRails?.passed ?? true)}
+                className="flex-1 px-4 py-3 bg-green-600 hover:bg-green-700 disabled:bg-zinc-700 disabled:text-zinc-500 text-white font-semibold rounded-lg transition-colors"
+              >
+                {isExecuting ? 'Executing...' : 'APE IN'}
+              </button>
+            </div>
+
+            {/* Guard Rails Warnings */}
+            {effectiveAnalysis?.guardRails?.violations?.length > 0 && (
+              <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3">
+                <p className="text-red-400 text-sm font-medium">Guard Rails Violated:</p>
+                <ul className="text-red-300 text-xs mt-1">
+                  {effectiveAnalysis.guardRails.violations.map((v: string, i: number) => (
+                    <li key={i}>• {v}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
         );
     }
   };
