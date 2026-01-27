@@ -1191,13 +1191,30 @@ class IbkrClient {
         return;
       }
 
+      // FLOW LOGGING: Step 1/5 - OAuth
+      console.log('[IBKR][FLOW] Step 1/5: Starting OAuth token acquisition...');
+      console.log('[IBKR][FLOW] - accessToken exists:', !!this.accessToken);
+      console.log('[IBKR][FLOW] - accessToken expired:', this.accessTokenExpiryMs < Date.now());
+
       const oauth = await this.getOAuthToken();
+      console.log('[IBKR][FLOW] Step 1/5: OAuth complete, status:', this.last.oauth.status);
+
+      // FLOW LOGGING: Step 2/5 - SSO
+      console.log('[IBKR][FLOW] Step 2/5: Starting SSO session creation...');
+      console.log('[IBKR][FLOW] - ssoSessionId exists:', !!this.ssoSessionId);
+      console.log('[IBKR][FLOW] - ssoAccessToken exists:', !!this.ssoAccessToken);
+
       await this.createSSOSession(oauth);
+      console.log('[IBKR][FLOW] Step 2/5: SSO complete, status:', this.last.sso.status);
       // After SSO, a 3s delay is already applied in createSSOSession()
+
+      // FLOW LOGGING: Step 3/5 - Validate
+      console.log('[IBKR][FLOW] Step 3/5: Starting session validation...');
 
       // Try validate first, but don't fail if it returns 401 - try init anyway
       const v = await this.validateSso();
       this.lastValidateTimeMs = Date.now();
+      console.log('[IBKR][FLOW] Step 3/5: Validate complete, status:', this.last.validate.status);
 
       if (v === 200) {
         console.log('[IBKR] Validate succeeded, proceeding to init');
@@ -1223,7 +1240,11 @@ class IbkrClient {
       // Tickle once before init
       await this.tickle();
 
+      // FLOW LOGGING: Step 4/5 - Init
+      console.log('[IBKR][FLOW] Step 4/5: Starting broker init...');
+
       await this.initBrokerageWithSso();
+      console.log('[IBKR][FLOW] Step 4/5: Init complete, status:', this.last.init.status);
 
       // REMOVED: establishGateway() causes infinite 401 loop with SSO DH auth
       // The init already establishes the gateway (returns authenticated=true)
@@ -1233,6 +1254,13 @@ class IbkrClient {
       await this.primeMarketData();
 
       this.lastInitTimeMs = Date.now();
+
+      // FLOW LOGGING: Summary
+      console.log('[IBKR][FLOW] === FLOW COMPLETE ===');
+      console.log('[IBKR][FLOW] OAuth:', this.last.oauth.status);
+      console.log('[IBKR][FLOW] SSO:', this.last.sso.status);
+      console.log('[IBKR][FLOW] Validate:', this.last.validate.status);
+      console.log('[IBKR][FLOW] Init:', this.last.init.status);
       return;
     } catch (err: any) {
       const msg = String(err?.message || err);

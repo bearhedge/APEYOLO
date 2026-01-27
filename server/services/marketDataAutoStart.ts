@@ -87,6 +87,8 @@ export function setConnectionMode(mode: 'oauth' | 'relay'): void {
  * Called on server startup - includes retry logic
  */
 export async function autoStartMarketDataStream(): Promise<void> {
+  console.log('[AutoStart] === AUTO-START TRIGGERED ===');
+  console.log('[AutoStart] Connection mode:', getConnectionMode());
   console.log('[MarketDataAutoStart] Attempting to auto-start WebSocket streaming...');
 
   // Try to start with retries
@@ -163,7 +165,9 @@ export async function startWebSocketStream(): Promise<void> {
     getBroker();
 
     // Ensure IBKR client is ready (this will restore tokens from database)
+    console.log('[AutoStart] Calling ensureIbkrReady()...');
     await ensureIbkrReady();
+    console.log('[AutoStart] ensureIbkrReady() returned');
 
     // Get credentials for WebSocket
     const cookieString = await getIbkrCookieString();
@@ -174,6 +178,9 @@ export async function startWebSocketStream(): Promise<void> {
     }
 
     console.log('[MarketDataAutoStart] Starting WebSocket with cookies...');
+
+    // FLOW LOGGING: Step 5/5 - WebSocket
+    console.log('[IBKR][FLOW] Step 5/5: Starting WebSocket connection...');
 
     // Initialize WebSocket
     const wsManager = initIbkrWebSocket(cookieString, sessionToken);
@@ -230,6 +237,7 @@ export async function startWebSocketStream(): Promise<void> {
     // Connect to IBKR
     await wsManager.connect();
     console.log('[MarketDataAutoStart] WebSocket connected!');
+    console.log('[IBKR][FLOW] Step 5/5: WebSocket complete');
 
     // Start proactive OAuth token refresher
     startTokenRefresher();
