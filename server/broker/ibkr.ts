@@ -3170,49 +3170,7 @@ class IbkrClient {
     console.log(`[IBKR][resolveOptionConid][${reqId}] Searching: underlying=${underlying}(${underlyingConid}), exp=${expiration}, right=${right}, strike=${strike}`);
 
     try {
-      // Use secdef/search with option parameters
-      const searchUrl = `/v1/api/iserver/secdef/search`;
-      const params = new URLSearchParams({
-        symbol: underlying,
-        secType: 'OPT',
-        strike: strike.toString(),
-        right: right,
-        month: this.formatMonthForIBKR(expiration.slice(0, 6)), // MMMy format (DEC25, not 202512)
-      });
-
-      const resp = await this.httpGetWithBridgeRetry(`${searchUrl}?${params.toString()}`, `resolveOptionConid:search:${reqId}`);
-      const bodySnippet = JSON.stringify(resp.data || {}).slice(0, 500);
-      console.log(`[IBKR][resolveOptionConid][${reqId}] Search response: status=${resp.status} body=${bodySnippet}`);
-
-      if (resp.status === 200 && Array.isArray(resp.data)) {
-        // Look for exact match on strike, right, AND expiration date
-        for (const contract of resp.data) {
-          const cStrike = parseFloat(contract.strike || '0');
-          const cRight = contract.right || '';
-          const cMaturity = contract.maturityDate || '';
-
-          // Match within 0.01 tolerance for floating point, AND verify maturity date matches
-          const strikeMatch = Math.abs(cStrike - strike) < 0.01;
-          const rightMatch = cRight.toUpperCase() === right;
-          const maturityMatch = cMaturity === expiration;
-
-          if (strikeMatch && rightMatch && maturityMatch) {
-            const conid = parseInt(contract.conid, 10);
-            console.log(`[IBKR][resolveOptionConid][${reqId}] Found match: conid=${conid}, strike=${cStrike}, right=${cRight}, maturity=${cMaturity}`);
-            // Cache the result
-            this.optionConidCache.set(cacheKey, { conid, cachedAt: Date.now() });
-            return conid;
-          } else if (strikeMatch && rightMatch && !maturityMatch) {
-            // Log near-misses to diagnose maturity format issues
-            console.log(`[IBKR][resolveOptionConid][${reqId}] Maturity mismatch: got '${cMaturity}', want '${expiration}' (strike=${cStrike}, right=${cRight})`);
-          }
-        }
-
-        // If no exact match, log available contracts for debugging (show maturity dates!)
-        console.log(`[IBKR][resolveOptionConid][${reqId}] No exact match found. Available: ${resp.data.slice(0, 5).map((c: any) => `${c.strike}${c.right}@${c.maturityDate}(${c.conid})`).join(', ')}`);
-      }
-
-      // Alternative: Try the strikes endpoint to get available options
+      // Use strikes + info endpoints directly (search endpoint never returns option contracts)
       // NOTE: Do NOT use exchange=SMART - per IBKR docs and for consistency with getOptionChainWithStrikes
       const strikesUrl = `/v1/api/iserver/secdef/strikes`;
       const strikesParams = new URLSearchParams({
