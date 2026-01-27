@@ -350,7 +350,20 @@ export function EngineWindow() {
       const contractCount = analysis?.q4Size?.recommendedContracts ?? contracts;
       const nav = ibkrStatus?.nav ?? 100000;
       const maxLoss = (analysis?.tradeProposal?.maxLoss ?? 0);
-      const totalCredit = (analysis?.q3Strikes?.selectedPut?.premium ?? 0) + (analysis?.q3Strikes?.selectedCall?.premium ?? 0);
+
+      // Calculate credit with fallback to nearby strikes data
+      let totalCredit = (analysis?.q3Strikes?.selectedPut?.premium ?? 0) + (analysis?.q3Strikes?.selectedCall?.premium ?? 0);
+
+      // Fallback: estimate from nearby strikes if premium is 0
+      if (totalCredit === 0) {
+        const smartPuts = analysis?.q3Strikes?.smartCandidates?.puts || [];
+        const smartCalls = analysis?.q3Strikes?.smartCandidates?.calls || [];
+        const nearbyPut = smartPuts.find((p: any) => p.isEngineRecommended);
+        const nearbyCall = smartCalls.find((c: any) => c.isEngineRecommended);
+        totalCredit = ((nearbyPut?.bid ?? 0) + (nearbyPut?.ask ?? 0)) / 2 +
+                      ((nearbyCall?.bid ?? 0) + (nearbyCall?.ask ?? 0)) / 2;
+      }
+
       setContracts(contractCount);
       addLogLine(`Contracts: ${contractCount} | Credit: $${totalCredit.toFixed(2)} | Max Loss: $${maxLoss.toFixed(0)}`, 'result');
       addLogLine(`[↑↓ put strike] [←→ call strike] [ENTER: APE IN]`, 'info');
