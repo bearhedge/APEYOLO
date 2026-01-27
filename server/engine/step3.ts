@@ -1013,58 +1013,57 @@ export async function selectStrikes(
       selection.nearbyStrikes = nearbyStrikes;
     }
 
-    // === SMART STRIKE FILTERING ===
-    // Apply intelligent filtering for "elite" strikes with quality scoring
-    // Use relaxed filters during off-hours (historical data)
-    // Detect off-hours from market calendar (more reliable than IBKR flag)
-    const marketStatus = getMarketStatus();
-    const isOffHours = !marketStatus.isOpen || fullChain.isHistorical || false;
-    const smartFilterConfig = isOffHours ? OFF_HOURS_SMART_FILTER : DEFAULT_SMART_FILTER;
-
-    if (isOffHours) {
-      console.log(`[Step3] OFF-HOURS MODE: Using relaxed filters for historical data`);
-    }
-
-    selection.filterConfig = smartFilterConfig;
-
-    // Filter PUTs with smart criteria
-    const smartPuts = filterSmartStrikes(
-      fullChain.putStrikes,
-      'PUT',
-      actualUnderlyingPrice,
-      smartFilterConfig,
-      selection.putStrike?.strike
-    );
-
-    // Filter CALLs with smart criteria
-    const smartCalls = filterSmartStrikes(
-      fullChain.callStrikes,
-      'CALL',
-      actualUnderlyingPrice,
-      smartFilterConfig,
-      selection.callStrike?.strike
-    );
-
-    // Populate smart candidates
-    selection.smartCandidates = {
-      puts: smartPuts.candidates,
-      calls: smartCalls.candidates
+    // === SMART CANDIDATES (NO FILTERING) ===
+    // Convert nearbyStrikes to SmartStrikeCandidate format
+    // Shows all strikes in ATM range, letting user decide
+    const convertToCandidate = (
+      s: { strike: number; bid: number; ask: number; delta: number; oi?: number },
+      optionType: 'PUT' | 'CALL'
+    ): SmartStrikeCandidate => {
+      const spread = s.ask - s.bid;
+      const premium = (s.bid + s.ask) / 2;
+      const yieldValue = premium / actualUnderlyingPrice;
+      return {
+        strike: s.strike,
+        optionType,
+        bid: s.bid,
+        ask: s.ask,
+        spread,
+        delta: s.delta,
+        gamma: undefined,
+        theta: undefined,
+        vega: undefined,
+        iv: undefined,
+        openInterest: s.oi ?? 0,
+        volume: undefined,
+        yield: yieldValue,
+        yieldPct: `${(yieldValue * 100).toFixed(3)}%`,
+        qualityScore: 3, // Default score - no filtering
+        qualityReasons: [],
+        isEngineRecommended: s.strike === selection.putStrike?.strike || s.strike === selection.callStrike?.strike,
+        isUserSelected: false
+      };
     };
 
-    // Collect all rejections
-    selection.rejectedStrikes = [...smartPuts.rejections, ...smartCalls.rejections];
+    // Populate smart candidates directly from nearbyStrikes (no filtering)
+    selection.smartCandidates = {
+      puts: nearbyStrikes.puts.map(s => convertToCandidate(s, 'PUT')),
+      calls: nearbyStrikes.calls.map(s => convertToCandidate(s, 'CALL'))
+    };
 
-    console.log(`[Step3] Smart filtering: ${smartPuts.candidates.length} viable PUTs, ${smartCalls.candidates.length} viable CALLs`);
-    console.log(`[Step3] Rejected strikes: ${selection.rejectedStrikes.length}`);
+    // No rejections since we're not filtering
+    selection.rejectedStrikes = [];
 
-    // Log top candidates
-    if (smartPuts.candidates.length > 0) {
-      const topPut = smartPuts.candidates[0];
-      console.log(`[Step3] Top PUT: $${topPut.strike} (${topPut.qualityScore}⭐, yield: ${topPut.yieldPct}, delta: ${topPut.delta.toFixed(2)})`);
+    console.log(`[Step3] Smart candidates: ${selection.smartCandidates.puts.length} PUTs, ${selection.smartCandidates.calls.length} CALLs (no filtering)`);
+
+    // Log top candidates from converted list
+    if (selection.smartCandidates.puts.length > 0) {
+      const topPut = selection.smartCandidates.puts[0];
+      console.log(`[Step3] Top PUT: $${topPut.strike} (yield: ${topPut.yieldPct}, delta: ${topPut.delta.toFixed(2)})`);
     }
-    if (smartCalls.candidates.length > 0) {
-      const topCall = smartCalls.candidates[0];
-      console.log(`[Step3] Top CALL: $${topCall.strike} (${topCall.qualityScore}⭐, yield: ${topCall.yieldPct}, delta: ${topCall.delta.toFixed(2)})`);
+    if (selection.smartCandidates.calls.length > 0) {
+      const topCall = selection.smartCandidates.calls[0];
+      console.log(`[Step3] Top CALL: $${topCall.strike} (yield: ${topCall.yieldPct}, delta: ${topCall.delta.toFixed(2)})`);
     }
 
     // Set awaiting user selection flag for gated flow
