@@ -134,17 +134,15 @@ export default function AppHeader() {
           </span>
         </div>
 
-        {/* IBKR Status - synced with Engine and Settings */}
+        {/* IBKR Status - Simple: LIVE when SPY data flowing, OFFLINE otherwise */}
         <div className="text-sm flex items-center gap-1.5" data-testid="ibkr-status">
-          {isConnecting ? (
-            <RefreshCw className="h-3.5 w-3.5 text-yellow-500 animate-spin" />
-          ) : brokerConnected ? (
+          {brokerConnected ? (
             <Zap className="h-3.5 w-3.5 text-green-500" />
           ) : (
             <XCircle className="h-3.5 w-3.5 text-red-500" />
           )}
-          <span className={`font-medium ${brokerConnected ? 'text-green-500' : isConnecting ? 'text-yellow-500' : 'text-red-500'}`}>
-            {isConnecting ? 'Connecting...' : brokerConnected ? 'IBKR' : 'Disconnected'}
+          <span className={`font-medium ${brokerConnected ? 'text-green-500' : 'text-red-500'}`}>
+            {brokerConnected ? 'LIVE' : 'OFFLINE'}
           </span>
         </div>
         <div className="text-sm" data-testid="account-number">
