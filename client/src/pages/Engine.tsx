@@ -608,8 +608,81 @@ export function Engine({
           );
         }
 
+        // Kelly Criterion calculations
+        const putDelta = Math.abs(filteredProposal.legs.find(l => l.optionType === 'PUT')?.delta ?? 0);
+        const callDelta = Math.abs(filteredProposal.legs.find(l => l.optionType === 'CALL')?.delta ?? 0);
+        const avgDelta = filteredProposal.legs.length === 2
+          ? (putDelta + callDelta) / 2
+          : putDelta || callDelta;
+
+        const winRate = 1 - avgDelta;           // e.g., 0.85 for delta 0.15
+        const lossRate = avgDelta;              // e.g., 0.15
+        const payoffRatio = 0.5;                // credit / max_loss at 3x stop
+        const kellyPercent = Math.max(0, winRate - lossRate / payoffRatio);  // e.g., 0.55
+
+        // Account/margin data
+        const cash = effectiveAnalysis?.q4PositionSize?.inputs?.nav
+          ?? effectiveAnalysis?.q4Size?.inputs?.accountValue
+          ?? accountValue
+          ?? 0;
+        const kellyMarginPerContract = effectiveAnalysis?.q4PositionSize?.marginPerContract
+          ?? effectiveAnalysis?.q4Size?.marginPerContract
+          ?? marginPerContract
+          ?? 10000;
+
+        // Kelly contracts calculation
+        const kellyContracts = kellyMarginPerContract > 0
+          ? Math.floor((kellyPercent * cash) / kellyMarginPerContract)
+          : 0;
+        const maxContracts = kellyMarginPerContract > 0
+          ? Math.floor(cash / kellyMarginPerContract)
+          : 0;
+
+        // Per-contract values for display
+        const premiumDisplay = premiumPerContract * 100;  // in dollars
+        const maxLossPerContract = premiumDisplay * (stopMultiplier - 1);
+
         return (
           <div className="space-y-6">
+            {/* Kelly Sizing */}
+            <div className="bg-zinc-900/50 rounded-lg p-4 border border-zinc-800">
+              <h3 className="text-sm font-medium text-zinc-400 mb-3">Kelly Sizing</h3>
+              <div className="grid grid-cols-3 gap-4 text-sm mb-4">
+                <div>
+                  <div className="text-zinc-500 text-xs mb-1">Win Rate</div>
+                  <div className="text-white font-mono text-lg">{(winRate * 100).toFixed(0)}%</div>
+                  <div className="text-zinc-600 text-xs">(from delta)</div>
+                </div>
+                <div>
+                  <div className="text-zinc-500 text-xs mb-1">Kelly %</div>
+                  <div className="text-green-400 font-mono text-lg">{(kellyPercent * 100).toFixed(0)}%</div>
+                  <div className="text-zinc-600 text-xs">(optimal bet)</div>
+                </div>
+                <div>
+                  <div className="text-zinc-500 text-xs mb-1">Contracts</div>
+                  <div className="text-blue-400 font-mono text-lg">{kellyContracts} <span className="text-zinc-500 text-sm">(max: {maxContracts})</span></div>
+                  <div className="text-zinc-600 text-xs">(Kelly-sized)</div>
+                </div>
+              </div>
+              <div className="grid grid-cols-3 gap-4 text-sm border-t border-zinc-800 pt-3">
+                <div>
+                  <div className="text-zinc-500 text-xs mb-1">Premium</div>
+                  <div className="text-green-400 font-mono">${premiumDisplay.toFixed(0)}</div>
+                  <div className="text-zinc-600 text-xs">(per contract)</div>
+                </div>
+                <div>
+                  <div className="text-zinc-500 text-xs mb-1">Margin</div>
+                  <div className="text-white font-mono">${kellyMarginPerContract.toLocaleString()}</div>
+                  <div className="text-zinc-600 text-xs">(per contract)</div>
+                </div>
+                <div>
+                  <div className="text-zinc-500 text-xs mb-1">Max Loss ({stopMultiplier}x)</div>
+                  <div className="text-red-400 font-mono">${maxLossPerContract.toFixed(0)}</div>
+                  <div className="text-zinc-600 text-xs">(per contract)</div>
+                </div>
+              </div>
+            </div>
+
             {/* Position Summary */}
             <div className="bg-zinc-900/50 rounded-lg p-4 border border-zinc-800">
               <h3 className="text-sm font-medium text-zinc-400 mb-3">Position Summary</h3>
