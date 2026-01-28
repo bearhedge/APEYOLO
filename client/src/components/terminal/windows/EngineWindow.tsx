@@ -29,6 +29,14 @@ import {
   type Strategy,
 } from './engine';
 
+// Selected strike with pricing data for reactive calculations
+interface SelectedStrike {
+  strike: number;
+  bid: number;
+  ask: number;
+  delta: number;
+}
+
 // Agent command mapping
 type AgentCommand = '/vix' | '/market' | '/positions' | '/analyze' | '/help';
 
@@ -52,8 +60,8 @@ export function EngineWindow() {
   // Strategy and position state
   const [strategy, setStrategy] = useState<Strategy>('strangle');
   const [contracts, setContracts] = useState(2);
-  const [putStrike, setPutStrike] = useState<number | null>(null);
-  const [callStrike, setCallStrike] = useState<number | null>(null);
+  const [putStrike, setPutStrike] = useState<SelectedStrike | null>(null);
+  const [callStrike, setCallStrike] = useState<SelectedStrike | null>(null);
   const [spreadWidth, setSpreadWidth] = useState(5);
   const [stopLossPrice, setStopLossPrice] = useState(0);
 
@@ -301,16 +309,20 @@ export function EngineWindow() {
   const isConnected = ibkrStatus?.connected ?? false;
   const isWsConnected = wsConnected;
 
-  // Calculate credit
-  const credit = useMemo(() => {
-    if (!analysis?.q3Strikes) return 0;
-    const putPremium = analysis.q3Strikes.selectedPut?.premium ?? 0;
-    const callPremium = analysis.q3Strikes.selectedCall?.premium ?? 0;
+  // Reactive credit and maxLoss calculation based on selected strikes
+  const { credit, maxLoss: reactiveMaxLoss } = useMemo(() => {
+    const putBid = putStrike?.bid ?? 0;
+    const callBid = callStrike?.bid ?? 0;
+    const creditValue = (putBid + callBid) * contracts * 100;
 
-    if (strategy === 'put-spread') return putPremium * contracts;
-    if (strategy === 'call-spread') return callPremium * contracts;
-    return (putPremium + callPremium) * contracts;
-  }, [analysis, strategy, contracts]);
+    const putNotional = (putStrike?.strike ?? 0) * 100;
+    const callNotional = (callStrike?.strike ?? 0) * 100;
+    const marginRate = (putStrike && callStrike) ? 0.12 : 0.18;
+    const margin = (putNotional + callNotional) * marginRate;
+    const maxLossValue = margin * contracts * 0.1;
+
+    return { credit: creditValue, maxLoss: maxLossValue };
+  }, [putStrike, callStrike, contracts]);
 
   // Add log line helper
   const addLogLine = useCallback((text: string, type: LogLine['type'], strikeData?: { strike: number; optionType: 'PUT' | 'CALL' }) => {
@@ -361,29 +373,64 @@ export function EngineWindow() {
       // Use stepResults for streaming (available immediately when step completes),
       // fall back to analysis for after final assembly
       const step3Data = stepResults?.step3;
-      const putStrikeVal = step3Data?.putStrike?.strike;
-      const callStrikeVal = step3Data?.callStrike?.strike;
+      const putStrikeData = step3Data?.putStrike;
+      const callStrikeData = step3Data?.callStrike;
 
-      // Set selected strikes and store engine recommendations
-      if (putStrikeVal) {
-        setPutStrike(putStrikeVal);
-        setEnginePutStrike(putStrikeVal);
+      // Set selected strikes as full objects and store engine recommendations
+      if (putStrikeData?.strike) {
+        setPutStrike({
+          strike: putStrikeData.strike,
+          bid: putStrikeData.bid ?? 0,
+          ask: putStrikeData.ask ?? 0,
+          delta: putStrikeData.delta ?? 0,
+        });
+        setEnginePutStrike(putStrikeData.strike);
       }
-      if (callStrikeVal) {
-        setCallStrike(callStrikeVal);
-        setEngineCallStrike(callStrikeVal);
+      if (callStrikeData?.strike) {
+        setCallStrike({
+          strike: callStrikeData.strike,
+          bid: callStrikeData.bid ?? 0,
+          ask: callStrikeData.ask ?? 0,
+          delta: callStrikeData.delta ?? 0,
+        });
+        setEngineCallStrike(callStrikeData.strike);
       }
 
       // Always use nearbyStrikes for complete chain (smartCandidates filters too aggressively)
       const putCandidates = step3Data?.nearbyStrikes?.puts || [];
       const callCandidates = step3Data?.nearbyStrikes?.calls || [];
+      const expirationDate = stepResults?.step3?.expirationDate || '';
+      const expirationLabel = expirationDate ? `0DTE ${expirationDate}` : '0DTE';
+
+      // Add data timestamp with market status
+      const now = new Date();
+      const etTime = now.toLocaleTimeString('en-US', {
+        timeZone: 'America/New_York',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: false
+      });
+      // Determine market status based on ET time
+      const etHour = parseInt(now.toLocaleString('en-US', { timeZone: 'America/New_York', hour: '2-digit', hour12: false }));
+      const etMinute = parseInt(now.toLocaleString('en-US', { timeZone: 'America/New_York', minute: '2-digit' }));
+      const etTimeMinutes = etHour * 60 + etMinute;
+      let marketStatus = 'Pre-market';
+      if (etTimeMinutes >= 570 && etTimeMinutes < 960) { // 9:30 AM - 4:00 PM
+        marketStatus = 'Market open';
+      } else if (etTimeMinutes >= 960 && etTimeMinutes < 1200) { // 4:00 PM - 8:00 PM
+        marketStatus = 'After-hours';
+      } else if (etTimeMinutes >= 1200 || etTimeMinutes < 240) { // 8:00 PM - 4:00 AM
+        marketStatus = 'Overnight';
+      }
+      addLogLine(`Data as of: ${etTime} ET (${marketStatus})`, 'info');
 
       // Print PUT option chain - CLICKABLE
       if (putCandidates.length > 0) {
-        addLogLine(`PUTS (0DTE) - ${putCandidates.length} strikes (click to select):`, 'success');
+        addLogLine(`PUTS (${expirationLabel}) - ${putCandidates.length} strikes (click to select):`, 'success');
         addLogLine('─────────────────────────────────', 'info');
         putCandidates.slice(0, 10).forEach((p: any) => {
-          const isSelected = Number(p.strike) === Number(putStrikeVal);
+          const isSelected = Number(p.strike) === Number(putStrikeData?.strike);
           const arrow = isSelected ? '→ ' : '  ';
           const selected = isSelected ? ' ← SELECTED' : '';
           const bid = p.bid ?? 0;
@@ -402,10 +449,10 @@ export function EngineWindow() {
 
       // Print CALL option chain - CLICKABLE
       if (callCandidates.length > 0) {
-        addLogLine(`CALLS (0DTE) - ${callCandidates.length} strikes (click to select):`, 'success');
+        addLogLine(`CALLS (${expirationLabel}) - ${callCandidates.length} strikes (click to select):`, 'success');
         addLogLine('─────────────────────────────────', 'info');
         callCandidates.slice(0, 10).forEach((c: any) => {
-          const isSelected = Number(c.strike) === Number(callStrikeVal);
+          const isSelected = Number(c.strike) === Number(callStrikeData?.strike);
           const arrow = isSelected ? '→ ' : '  ';
           const selected = isSelected ? ' ← SELECTED' : '';
           const bid = c.bid ?? 0;
@@ -506,9 +553,8 @@ export function EngineWindow() {
     setHudState('structuring');
 
     // Get average delta from selected strikes for rails validation
-    const step3Data = stepResults?.step3;
-    const putDelta = step3Data?.putStrike?.delta ?? 0;
-    const callDelta = step3Data?.callStrike?.delta ?? 0;
+    const putDelta = putStrike?.delta ?? 0;
+    const callDelta = callStrike?.delta ?? 0;
     const avgDelta = (Math.abs(putDelta) + Math.abs(callDelta)) / 2;
 
     // Validate against DeFi Rails
@@ -524,7 +570,7 @@ export function EngineWindow() {
       setHudState('ready');
     }
     // If rails fail, stay in structuring with blocked APE IN
-  }, [hudState, stepResults, contracts, validateRails]);
+  }, [hudState, putStrike, callStrike, contracts, validateRails]);
 
   // Handle BACK button - return to strikes_selected from structuring
   const handleBack = useCallback(() => {
@@ -620,18 +666,30 @@ export function EngineWindow() {
   // Handle put strike adjustment (only when ready)
   const handlePutStrikeAdjust = useCallback((dir: 'up' | 'down') => {
     if (hudState !== 'ready' || putStrike === null) return;
-    const newStrike = dir === 'up' ? putStrike + 1 : putStrike - 1;
-    setPutStrike(newStrike);
-    addLogLine(`Put strike: ${putStrike} → ${newStrike}`, 'info');
-  }, [hudState, putStrike, addLogLine]);
+    const candidates = stepResults?.step3?.nearbyStrikes?.puts || [];
+    const currentIdx = candidates.findIndex((c: any) => c.strike === putStrike.strike);
+    const newIdx = dir === 'up' ? currentIdx + 1 : currentIdx - 1;
+    if (newIdx >= 0 && newIdx < candidates.length) {
+      const newData = candidates[newIdx];
+      const newStrikeObj = { strike: newData.strike, bid: newData.bid ?? 0, ask: newData.ask ?? 0, delta: newData.delta ?? 0 };
+      setPutStrike(newStrikeObj);
+      addLogLine(`Put strike: $${putStrike.strike} → $${newStrikeObj.strike}`, 'info');
+    }
+  }, [hudState, putStrike, addLogLine, stepResults]);
 
   // Handle call strike adjustment (only when ready)
   const handleCallStrikeAdjust = useCallback((dir: 'up' | 'down') => {
     if (hudState !== 'ready' || callStrike === null) return;
-    const newStrike = dir === 'up' ? callStrike + 1 : callStrike - 1;
-    setCallStrike(newStrike);
-    addLogLine(`Call strike: ${callStrike} → ${newStrike}`, 'info');
-  }, [hudState, callStrike, addLogLine]);
+    const candidates = stepResults?.step3?.nearbyStrikes?.calls || [];
+    const currentIdx = candidates.findIndex((c: any) => c.strike === callStrike.strike);
+    const newIdx = dir === 'up' ? currentIdx + 1 : currentIdx - 1;
+    if (newIdx >= 0 && newIdx < candidates.length) {
+      const newData = candidates[newIdx];
+      const newStrikeObj = { strike: newData.strike, bid: newData.bid ?? 0, ask: newData.ask ?? 0, delta: newData.delta ?? 0 };
+      setCallStrike(newStrikeObj);
+      addLogLine(`Call strike: $${callStrike.strike} → $${newStrikeObj.strike}`, 'info');
+    }
+  }, [hudState, callStrike, addLogLine, stepResults]);
 
   // Keyboard controls - enabled when ready
   useKeyboardControls({
@@ -708,26 +766,26 @@ export function EngineWindow() {
       {hudState === 'structuring' || hudState === 'ready' ? (
         <TradeStructure
           putStrike={putStrike ? {
-            strike: putStrike,
-            bid: stepResults?.step3?.putStrike?.bid ?? 0,
-            ask: stepResults?.step3?.putStrike?.ask ?? 0,
-            delta: stepResults?.step3?.putStrike?.delta ?? 0,
-            premium: stepResults?.step3?.putStrike?.premium ?? 0,
+            strike: putStrike.strike,
+            bid: putStrike.bid,
+            ask: putStrike.ask,
+            delta: putStrike.delta,
+            premium: (putStrike.bid + putStrike.ask) / 2,
           } : null}
           callStrike={callStrike ? {
-            strike: callStrike,
-            bid: stepResults?.step3?.callStrike?.bid ?? 0,
-            ask: stepResults?.step3?.callStrike?.ask ?? 0,
-            delta: stepResults?.step3?.callStrike?.delta ?? 0,
-            premium: stepResults?.step3?.callStrike?.premium ?? 0,
+            strike: callStrike.strike,
+            bid: callStrike.bid,
+            ask: callStrike.ask,
+            delta: callStrike.delta,
+            premium: (callStrike.bid + callStrike.ask) / 2,
           } : null}
           enginePutStrike={enginePutStrike}
           engineCallStrike={engineCallStrike}
           contracts={contracts}
           strategy={strategy}
-          expectedCredit={stepResults?.step3?.expectedPremium ?? ((analysis?.q3Strikes?.selectedPut?.premium ?? 0) + (analysis?.q3Strikes?.selectedCall?.premium ?? 0))}
+          expectedCredit={credit / 100}
           marginRequired={stepResults?.step3?.marginRequired ?? analysis?.q4Size?.totalMarginRequired ?? 0}
-          maxLoss={analysis?.tradeProposal?.maxLoss ?? 0}
+          maxLoss={reactiveMaxLoss}
           stopLossPrice={stopLossPrice}
           railsResult={railsResult}
           activeRail={activeRail}
@@ -742,18 +800,66 @@ export function EngineWindow() {
           isAnalyzing={isAnalyzing}
           progress={progress}
           isReady={false}
-          onPutSelect={(strike) => {
-            console.log('[EngineWindow] PUT selected:', strike);
-            setPutStrike(strike);
-            addLogLine(`PUT strike selected: ${strike}`, 'success');
+          onPutSelect={(strikeNum) => {
+            console.log('[EngineWindow] PUT selected:', strikeNum);
+            // Toggle off if clicking the same strike
+            if (putStrike?.strike === strikeNum) {
+              setPutStrike(null);
+              const callBid = callStrike?.bid ?? 0;
+              const newCredit = callBid * contracts * 100;
+              const label = callStrike ? '(CALL only)' : '(no strikes selected)';
+              addLogLine(`PUT strike deselected: $${strikeNum} | Credit: $${newCredit.toFixed(2)} ${label}`, 'info');
+              return;
+            }
+            // Look up full strike data from candidates
+            const candidates = stepResults?.step3?.nearbyStrikes?.puts || [];
+            const strikeData = candidates.find((c: any) => c.strike === strikeNum);
+            if (strikeData) {
+              const newStrike = {
+                strike: strikeData.strike,
+                bid: strikeData.bid ?? 0,
+                ask: strikeData.ask ?? 0,
+                delta: strikeData.delta ?? 0,
+              };
+              setPutStrike(newStrike);
+              // Calculate new credit with this strike
+              const putBid = newStrike.bid;
+              const callBid = callStrike?.bid ?? 0;
+              const newCredit = (putBid + callBid) * contracts * 100;
+              addLogLine(`PUT strike selected: $${strikeNum} | Credit: $${newCredit.toFixed(2)}`, 'success');
+            }
           }}
-          onCallSelect={(strike) => {
-            console.log('[EngineWindow] CALL selected:', strike);
-            setCallStrike(strike);
-            addLogLine(`CALL strike selected: ${strike}`, 'success');
+          onCallSelect={(strikeNum) => {
+            console.log('[EngineWindow] CALL selected:', strikeNum);
+            // Toggle off if clicking the same strike
+            if (callStrike?.strike === strikeNum) {
+              setCallStrike(null);
+              const putBid = putStrike?.bid ?? 0;
+              const newCredit = putBid * contracts * 100;
+              const label = putStrike ? '(PUT only)' : '(no strikes selected)';
+              addLogLine(`CALL strike deselected: $${strikeNum} | Credit: $${newCredit.toFixed(2)} ${label}`, 'info');
+              return;
+            }
+            // Look up full strike data from candidates
+            const candidates = stepResults?.step3?.nearbyStrikes?.calls || [];
+            const strikeData = candidates.find((c: any) => c.strike === strikeNum);
+            if (strikeData) {
+              const newStrike = {
+                strike: strikeData.strike,
+                bid: strikeData.bid ?? 0,
+                ask: strikeData.ask ?? 0,
+                delta: strikeData.delta ?? 0,
+              };
+              setCallStrike(newStrike);
+              // Calculate new credit with this strike
+              const putBid = putStrike?.bid ?? 0;
+              const callBid = newStrike.bid;
+              const newCredit = (putBid + callBid) * contracts * 100;
+              addLogLine(`CALL strike selected: $${strikeNum} | Credit: $${newCredit.toFixed(2)}`, 'success');
+            }
           }}
-          selectedPutStrike={putStrike}
-          selectedCallStrike={callStrike}
+          selectedPutStrike={putStrike?.strike ?? null}
+          selectedCallStrike={callStrike?.strike ?? null}
         />
       )}
 
@@ -768,8 +874,8 @@ export function EngineWindow() {
       <SelectionBar
         strategy={strategy}
         onStrategyChange={setStrategy}
-        putStrike={putStrike}
-        callStrike={callStrike}
+        putStrike={putStrike?.strike ?? null}
+        callStrike={callStrike?.strike ?? null}
         putSpread={spreadWidth}
         callSpread={spreadWidth}
       />
@@ -784,6 +890,7 @@ export function EngineWindow() {
         onReset={handleReset}
         isExecuting={executeMutation.isPending}
         canExecute={!railsResult || railsResult.allowed}
+        canNext={putStrike !== null || callStrike !== null}
       />
 
       {/* Help overlay */}

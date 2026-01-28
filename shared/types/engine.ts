@@ -262,6 +262,7 @@ export interface Q3Strikes {
   expectedPremiumPerContract: number;
   dataSource: 'IBKR' | 'MOCK';
   underlyingPrice: number;
+  expirationDate?: string;        // Human-readable: "Jan 28, 2026"
 
   inputs: {
     targetDeltaMin: number;      // 0.15
@@ -269,6 +270,7 @@ export interface Q3Strikes {
     targetDeltaIdeal: number;    // 0.18
     symbol: string;
     expiration: string;
+    expirationMode?: string;     // "0DTE" or "WEEKLY"
   };
 
   // Smart Strike Selection (Interactive UI)

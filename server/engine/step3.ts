@@ -93,6 +93,7 @@ export interface StrikeSelection {
   expectedPremium: number;
   marginRequired: number;
   reasoning: string;
+  expirationDate?: string; // Human-readable format: "Jan 28, 2026"
   nearbyStrikes?: {
     puts: Array<{ strike: number; bid: number; ask: number; delta: number; oi?: number }>;
     calls: Array<{ strike: number; bid: number; ask: number; delta: number; oi?: number }>;
@@ -880,10 +881,19 @@ export async function selectStrikes(
   const expirationStr = getExpirationString(expirationMode);
   console.log(`[Step3] Expiration: ${expirationDate.toISOString().split('T')[0]} (${expirationMode})`);
 
+  // Format expiration date as human-readable: "Jan 28, 2026"
+  const formattedExpirationDate = expirationDate.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+    timeZone: 'America/New_York'
+  });
+
   const selection: StrikeSelection = {
     expectedPremium: 0,
     marginRequired: 0,
-    reasoning: ''
+    reasoning: '',
+    expirationDate: formattedExpirationDate
   };
 
   let actualUnderlyingPrice = underlyingPrice;

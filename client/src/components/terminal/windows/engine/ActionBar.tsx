@@ -18,6 +18,7 @@ interface ActionBarProps {
   onReset: () => void;
   isExecuting: boolean;
   canExecute: boolean; // Based on rails validation
+  canNext?: boolean; // Whether NEXT button should be enabled (default: true)
 }
 
 export function ActionBar({
@@ -29,6 +30,7 @@ export function ActionBar({
   onReset,
   isExecuting,
   canExecute,
+  canNext = true,
 }: ActionBarProps) {
   // Determine main action based on state
   const getMainAction = () => {
@@ -38,7 +40,7 @@ export function ActionBar({
       case 'analyzing':
         return { label: 'ANALYZING...', handler: () => {}, disabled: true };
       case 'strikes_selected':
-        return { label: 'NEXT', handler: onNext, disabled: false };
+        return { label: canNext ? 'NEXT' : 'SELECT STRIKES', handler: onNext, disabled: !canNext };
       case 'structuring':
         return { label: 'BACK', handler: onBack, disabled: false };
       case 'ready':

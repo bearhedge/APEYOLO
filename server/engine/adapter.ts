@@ -255,6 +255,7 @@ function adaptStrikes(
     expectedPremiumPerContract: strikes?.expectedPremium ?? 0,
     dataSource,
     underlyingPrice: actualPrice,
+    expirationDate: strikes?.expirationDate,
 
     inputs: {
       targetDeltaMin: 0.15,
