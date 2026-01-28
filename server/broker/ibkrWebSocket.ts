@@ -154,6 +154,8 @@ export class IbkrWebSocketManager {
   private circuitBreakerCooldownUntil: number = 0;
   private cooldownTimeout: NodeJS.Timeout | null = null;
   private readonly CIRCUIT_BREAKER_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+  // Track when real WebSocket data has been received (not just seeded from DB)
+  private hasReceivedRealWebSocketData: boolean = false;
   // Heartbeat validation: detect dead connections
   private lastHeartbeatSent: number = 0;
   private lastHeartbeatAck: number = 0;
@@ -560,6 +562,7 @@ export class IbkrWebSocketManager {
     }
 
     this.isConnected = false;
+    this.hasReceivedRealWebSocketData = false;
     this.subscriptions.clear();
     // Note: Don't clear marketDataCache - preserve last known prices for display
     // Only clear subscription state since we'll need to resubscribe after reconnect
@@ -701,6 +704,13 @@ export class IbkrWebSocketManager {
 
       // Try to parse as JSON
       const msg = JSON.parse(data);
+
+      // Handle IBKR's JSON heartbeat (different from 'tic' - IBKR sends hb messages)
+      if (msg.topic === 'hb' || msg.hb !== undefined) {
+        this.lastHeartbeatAck = Date.now();
+        this.missedHeartbeats = 0;
+        return; // Heartbeat acknowledged
+      }
 
       // Log ALL messages for debugging
       const topic = msg.topic || 'no-topic';
@@ -913,6 +923,7 @@ export class IbkrWebSocketManager {
 
     // Update connection state machine if this is SPY data
     if (conid === SPY_CONID && cached.last > 0) {
+      this.hasReceivedRealWebSocketData = true;
       getConnectionStateManager().setDataReceived(cached.last);
     }
 
@@ -1029,6 +1040,13 @@ export class IbkrWebSocketManager {
   }
 
   /**
+   * Check if real WebSocket data has been received (not just seeded from DB)
+   */
+  hasRealDataReceived(): boolean {
+    return this.hasReceivedRealWebSocketData;
+  }
+
+  /**
    * Get detailed WebSocket status for debugging
    */
   getDetailedStatus(): {
@@ -1062,21 +1080,11 @@ export class IbkrWebSocketManager {
 
     // Send 'tic' every 25 seconds to keep connection alive
     // IBKR typically requires activity every 30 seconds
+    // Note: IBKR does NOT echo 'tic' back - the client just sends it to keep the connection alive.
+    // Dead connection detection is handled by the health check (startHealthCheck) which monitors
+    // actual data flow, not heartbeat acknowledgments.
     this.heartbeatInterval = setInterval(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        // FIX: Check if previous heartbeat was acknowledged
-        if (this.lastHeartbeatSent > this.lastHeartbeatAck) {
-          this.missedHeartbeats++;
-          console.warn(`[IbkrWS] Missed heartbeat (${this.missedHeartbeats}/${this.MAX_MISSED_HEARTBEATS})`);
-
-          if (this.missedHeartbeats >= this.MAX_MISSED_HEARTBEATS) {
-            console.error('[IbkrWS] Connection dead - forcing reconnect');
-            this.disconnect();
-            this.scheduleReconnect();
-            return;
-          }
-        }
-
         this.lastHeartbeatSent = Date.now();
         this.ws.send('tic');
         // Record heartbeat in connection state machine
@@ -1444,12 +1452,19 @@ export function getIbkrWebSocketDetailedStatus(): {
 
   // hasRealData = true ONLY if:
   // 1. We have a non-zero SPY price
-  // 2. SPY data was received recently (within 5 minutes during market hours)
-  // Using 5 min to detect stale data faster - prevents showing Friday prices on Saturday
+  // 2. SPY data was received recently (within STATUS_STALE_THRESHOLD_MS)
+  // 3. Real WebSocket data has been received (not just DB-seeded cache)
+  // Note: This threshold (10 min) is MORE lenient than STALE_THRESHOLD_MS (3 min) which triggers reconnect
+  // Using 10 min for status display prevents flickering when data arrives in bursts
   // This prevents false positives when:
   // - Only options data is streaming (lastDataReceived is set but SPY isn't)
   // - Cache is seeded from DB but no actual WebSocket data flowing
-  const hasRealSpyData = spyPrice !== null && spyDataAge !== null && spyDataAge < 300000; // 5 min
+  const STATUS_STALE_THRESHOLD_MS = 600000; // 10 min for status display (prevents flickering)
+  const hasRealSpyData =
+    spyPrice !== null &&
+    spyDataAge !== null &&
+    spyDataAge < STATUS_STALE_THRESHOLD_MS &&
+    wsManagerInstance.hasRealDataReceived();
 
   return {
     connected: status.connected,

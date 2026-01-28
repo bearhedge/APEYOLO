@@ -2975,6 +2975,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
                   return { status: 0, message: 'Not initialized', success: false, connected: false, authenticated: false, subscriptions: 0 };
                 }
 
+                // Log status for debugging flickering issues
+                console.log(`[IbkrWS][STATUS] auth=${wsDetailedStatus.authenticated} hasRealData=${wsDetailedStatus.hasRealData} spyPrice=${wsDetailedStatus.spyPrice} spyAge=${wsDetailedStatus.spyDataAge}ms`);
+
                 // Check for subscription errors first
                 if (wsDetailedStatus.subscriptionError) {
                   return {
