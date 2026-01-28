@@ -437,23 +437,41 @@ function calculateExpectedPremium(putStrike?: Strike, callStrike?: Strike): numb
 
 /**
  * Calculate margin requirement for selected strikes
- * For naked options: ~15-20% of notional
- * For strangles: ~12% due to offsetting
+ *
+ * Uses Reg T margin rates based on empirical IBKR observations:
+ * - Single leg: ~15% of notional (more conservative)
+ * - Strangle: ~12% of notional (offsetting risk reduces margin)
+ *
+ * Formula: margin = underlyingPrice × 100 × marginRate
+ *
+ * This scales correctly with any underlying (SPY, QQQ, stocks, etc.)
+ *
+ * Example calculations:
+ * - SPY @ $696, single PUT: $696 × 100 × 0.15 = $10,440 USD
+ * - SPY @ $696, strangle: $696 × 100 × 0.12 = $8,352 USD
+ *
  * @param putStrike - Selected put strike
  * @param callStrike - Selected call strike
- * @returns Estimated margin requirement
+ * @param underlyingPrice - Current price of the underlying (optional, falls back to strike)
+ * @returns Estimated margin requirement in USD
  */
-function calculateMarginRequirement(putStrike?: Strike, callStrike?: Strike): number {
-  let margin = 0;
-  const marginRate = putStrike && callStrike ? 0.12 : 0.18; // Lower for strangles
+const SINGLE_LEG_MARGIN_RATE = 0.15;
+const STRANGLE_MARGIN_RATE = 0.12;
 
-  if (putStrike) {
-    margin += putStrike.strike * 100 * marginRate;
-  }
+function calculateMarginRequirement(
+  putStrike?: Strike,
+  callStrike?: Strike,
+  underlyingPrice?: number
+): number {
+  const isStrangle = putStrike && callStrike;
+  const marginRate = isStrangle ? STRANGLE_MARGIN_RATE : SINGLE_LEG_MARGIN_RATE;
 
-  if (callStrike) {
-    margin += callStrike.strike * 100 * marginRate;
-  }
+  // Use underlying price for accurate scaling
+  // Fall back to strike price if underlying not available
+  const price = underlyingPrice || putStrike?.strike || callStrike?.strike || 0;
+
+  // Margin = underlying × 100 × rate
+  const margin = price * 100 * marginRate;
 
   return Number(margin.toFixed(2));
 }
@@ -1102,7 +1120,7 @@ export async function selectStrikes(
 
   // Calculate totals
   selection.expectedPremium = calculateExpectedPremium(selection.putStrike, selection.callStrike);
-  selection.marginRequired = calculateMarginRequirement(selection.putStrike, selection.callStrike);
+  selection.marginRequired = calculateMarginRequirement(selection.putStrike, selection.callStrike, actualUnderlyingPrice);
 
   // CRITICAL: Validate premium - if $0, warn that bid/ask data is unavailable (market likely closed)
   if (selection.expectedPremium <= 0) {

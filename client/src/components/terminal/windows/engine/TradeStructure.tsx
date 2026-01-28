@@ -188,20 +188,47 @@ export function TradeStructure({
         <div style={{ color: '#4ade80', marginBottom: 8, fontSize: 12 }}>
           RISK METRICS
         </div>
-        <div
-          style={{
-            display: 'grid',
-            gridTemplateColumns: 'repeat(2, 1fr)',
-            gap: 12,
-          }}
-        >
-          <MetricCard label="CONTRACTS" value={contracts.toString()} />
-          <MetricCard label="CREDIT" value={`$${(expectedCredit * 100 * contracts).toFixed(0)}`} highlight />
-          <MetricCard label="MARGIN REQ" value={`$${marginRequired.toFixed(0)}`} />
-          <MetricCard label="MAX LOSS" value={`$${maxLoss.toFixed(0)}`} warning />
-          <MetricCard label="STOP LOSS" value={`$${stopLossPrice.toFixed(2)}`} />
-          <MetricCard label="RISK/REWARD" value={`1:${((expectedCredit * 100 * contracts) / maxLoss).toFixed(1)}`} />
-        </div>
+        {(() => {
+          // Calculate derived metrics
+          const totalCredit = expectedCredit * 100 * contracts;
+          const riskReward = maxLoss > 0 ? totalCredit / maxLoss : 0;
+
+          // Win probability based on average delta (delta ≈ P(ITM))
+          // P(profit) ≈ 1 - |avgDelta|
+          const putDelta = Math.abs(putStrike?.delta ?? 0);
+          const callDelta = Math.abs(callStrike?.delta ?? 0);
+          const avgDelta = putStrike && callStrike
+            ? (putDelta + callDelta) / 2
+            : putDelta || callDelta;
+          const winProb = 1 - avgDelta;
+
+          // Expected Value = P(win) × Credit - P(loss) × MaxLoss
+          const expectedValue = winProb * totalCredit - avgDelta * maxLoss;
+
+          return (
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(2, 1fr)',
+                gap: 12,
+              }}
+            >
+              <MetricCard label="CONTRACTS" value={contracts.toString()} />
+              <MetricCard label="CREDIT" value={`$${totalCredit.toFixed(0)}`} highlight />
+              <MetricCard label="MARGIN REQ" value={`$${marginRequired.toFixed(0)}`} />
+              <MetricCard label="MAX LOSS" value={`$${maxLoss.toFixed(0)}`} warning />
+              <MetricCard label="STOP LOSS" value={`$${stopLossPrice.toFixed(2)}`} />
+              <MetricCard label="RISK/REWARD" value={riskReward > 0 ? `1:${(1/riskReward).toFixed(1)}` : 'N/A'} />
+              <MetricCard label="WIN PROB" value={`${(winProb * 100).toFixed(0)}%`} highlight={winProb >= 0.65} />
+              <MetricCard
+                label="EXP VALUE"
+                value={`${expectedValue >= 0 ? '+' : ''}$${expectedValue.toFixed(0)}`}
+                highlight={expectedValue > 0}
+                warning={expectedValue < 0}
+              />
+            </div>
+          );
+        })()}
       </div>
 
       {/* Comparison Panel - Engine vs User */}

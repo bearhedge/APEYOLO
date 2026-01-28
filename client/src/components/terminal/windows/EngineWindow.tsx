@@ -310,18 +310,25 @@ export function EngineWindow() {
   const isWsConnected = wsConnected;
 
   // Reactive credit and maxLoss calculation based on selected strikes
-  const { credit, maxLoss: reactiveMaxLoss } = useMemo(() => {
+  // Max Loss is calculated from the 6x stop loss rule:
+  //   Stop Loss Price = Premium × 6
+  //   Max Loss = (Stop Price - Premium) × 100 × Contracts
+  const STOP_MULTIPLIER = 6;
+
+  const { credit, maxLoss: reactiveMaxLoss, calculatedStopLoss } = useMemo(() => {
     const putBid = putStrike?.bid ?? 0;
     const callBid = callStrike?.bid ?? 0;
-    const creditValue = (putBid + callBid) * contracts * 100;
+    const premium = putBid + callBid; // Total premium per share
+    const creditValue = premium * contracts * 100;
 
-    const putNotional = (putStrike?.strike ?? 0) * 100;
-    const callNotional = (callStrike?.strike ?? 0) * 100;
-    const marginRate = (putStrike && callStrike) ? 0.12 : 0.18;
-    const margin = (putNotional + callNotional) * marginRate;
-    const maxLossValue = margin * contracts * 0.1;
+    // Stop loss price = premium × 6 (the Layer 2 stop rule from step5)
+    const stopPrice = premium * STOP_MULTIPLIER;
 
-    return { credit: creditValue, maxLoss: maxLossValue };
+    // Max loss = (stop price - premium) × 100 × contracts
+    // This is the loss incurred if we buy back at 6x what we sold for
+    const maxLossValue = (stopPrice - premium) * 100 * contracts;
+
+    return { credit: creditValue, maxLoss: maxLossValue, calculatedStopLoss: stopPrice };
   }, [putStrike, callStrike, contracts]);
 
   // Add log line helper
@@ -483,13 +490,23 @@ export function EngineWindow() {
       const step3Data = stepResults?.step3;
       const step4Data = stepResults?.step4;
       const contractCount = step4Data?.contracts ?? analysis?.q4Size?.recommendedContracts ?? contracts;
-      const maxLoss = step3Data?.marginRequired ? step3Data.marginRequired * contractCount * 0.1 : (analysis?.tradeProposal?.maxLoss ?? 0);
-      const totalCredit = step3Data?.expectedPremium ?? ((analysis?.q3Strikes?.selectedPut?.premium ?? 0) + (analysis?.q3Strikes?.selectedCall?.premium ?? 0));
       setContracts(contractCount);
-      // Set stop loss price from analysis
-      const stopLoss = analysis?.q5Exit?.stopLossPrice ?? analysis?.tradeProposal?.stopLossPrice ?? 0;
+
+      // Calculate total premium from selected strikes (or step3 data)
+      const putPremium = step3Data?.putStrike?.bid ?? 0;
+      const callPremium = step3Data?.callStrike?.bid ?? 0;
+      const totalPremiumPerShare = putPremium + callPremium;
+      const totalCredit = step3Data?.expectedPremium ?? totalPremiumPerShare * 100;
+
+      // Calculate stop loss using 6x multiplier (Layer 2 stop rule)
+      const stopLoss = totalPremiumPerShare * STOP_MULTIPLIER;
       setStopLossPrice(stopLoss);
-      addLogLine(`Contracts: ${contractCount} | Credit: $${totalCredit.toFixed(2)} | Max Loss: $${maxLoss.toFixed(0)}`, 'result');
+
+      // Calculate max loss from stop-based formula:
+      // Max Loss = (Stop Price - Premium) × 100 × Contracts
+      const maxLoss = (stopLoss - totalPremiumPerShare) * 100 * contractCount;
+
+      addLogLine(`Contracts: ${contractCount} | Credit: $${totalCredit.toFixed(2)} | Stop: $${stopLoss.toFixed(2)} | Max Loss: $${maxLoss.toFixed(0)}`, 'result');
       addLogLine(`Click NEXT to review trade structure`, 'info');
       setLoggedSteps(prev => new Set([...prev, 'step4']));
     }
