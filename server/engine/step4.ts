@@ -27,8 +27,6 @@ const MAX_LOSS_PCT: Record<RiskProfile, number> = {
   AGGRESSIVE: 0.03,    // 3% max loss
 };
 
-// Hard cap on contracts per side (safety limit)
-const MAX_CONTRACTS_PER_SIDE = 2;
 
 export interface PositionSize {
   contracts: number;
@@ -150,8 +148,8 @@ export async function calculatePositionSize(
     riskProfile
   );
 
-  // Apply hard cap on contracts (safety limit)
-  const contracts = Math.min(calculatedContracts, MAX_CONTRACTS_PER_SIDE);
+  // Use calculated contracts (margin is the only limit)
+  const contracts = calculatedContracts;
   const maxLossPct = MAX_LOSS_PCT[riskProfile];
 
   // Calculate totals
