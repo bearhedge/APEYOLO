@@ -144,12 +144,21 @@ export class IbkrWebSocketManager {
   private lastPersist = new Map<number, number>();
   // Auto-healing: health check interval that detects stale data and auto-reconnects
   private healthCheckInterval: NodeJS.Timeout | null = null;
-  private readonly STALE_THRESHOLD_MS = 60000; // Data older than 60s = stale
+  private readonly STALE_THRESHOLD_MS = 180000; // Data older than 3 min = stale (reduced false positives)
   private readonly HEALTH_CHECK_INTERVAL_MS = 30000; // Check every 30s
   // Circuit breaker for bad credentials - stop retrying after 10 consecutive auth failures
   private consecutiveAuthFailures = 0;
   private readonly MAX_AUTH_FAILURES = 10;
   private circuitBreakerOpen = false; // When true, requires manual re-entry of credentials
+  // Circuit breaker auto-reset: cooldown period before automatic retry
+  private circuitBreakerCooldownUntil: number = 0;
+  private cooldownTimeout: NodeJS.Timeout | null = null;
+  private readonly CIRCUIT_BREAKER_COOLDOWN_MS = 5 * 60 * 1000; // 5 minutes
+  // Heartbeat validation: detect dead connections
+  private lastHeartbeatSent: number = 0;
+  private lastHeartbeatAck: number = 0;
+  private missedHeartbeats: number = 0;
+  private readonly MAX_MISSED_HEARTBEATS = 3;
   // Mutex for connect() to prevent race conditions with simultaneous connection attempts
   private connectPromise: Promise<void> | null = null;
 
@@ -403,7 +412,8 @@ export class IbkrWebSocketManager {
                 console.log(`[IbkrWS] Auth failure count: ${this.consecutiveAuthFailures}/${this.MAX_AUTH_FAILURES}`);
                 if (this.consecutiveAuthFailures >= this.MAX_AUTH_FAILURES) {
                   this.circuitBreakerOpen = true;
-                  console.error('[IbkrWS] CIRCUIT BREAKER OPEN - Too many auth failures. Manual credential re-entry required.');
+                  this.circuitBreakerCooldownUntil = Date.now() + this.CIRCUIT_BREAKER_COOLDOWN_MS;
+                  console.error('[IbkrWS] CIRCUIT BREAKER OPEN - 5 min cooldown before auto-retry');
                 }
                 clearTimeout(connectionTimeout);
                 // Clean up and close connection - the 'close' handler will trigger scheduleReconnect
@@ -682,8 +692,10 @@ export class IbkrWebSocketManager {
 
   private handleMessage(data: string): void {
     try {
-      // Check for heartbeat response
+      // FIX: Check for heartbeat response and acknowledge it
       if (data === 'tic') {
+        this.lastHeartbeatAck = Date.now();
+        this.missedHeartbeats = 0;
         return; // Heartbeat acknowledged
       }
 
@@ -1043,11 +1055,29 @@ export class IbkrWebSocketManager {
 
   private startHeartbeat(): void {
     this.stopHeartbeat();
+    // Reset heartbeat tracking
+    this.lastHeartbeatSent = 0;
+    this.lastHeartbeatAck = 0;
+    this.missedHeartbeats = 0;
 
     // Send 'tic' every 25 seconds to keep connection alive
     // IBKR typically requires activity every 30 seconds
     this.heartbeatInterval = setInterval(() => {
       if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+        // FIX: Check if previous heartbeat was acknowledged
+        if (this.lastHeartbeatSent > this.lastHeartbeatAck) {
+          this.missedHeartbeats++;
+          console.warn(`[IbkrWS] Missed heartbeat (${this.missedHeartbeats}/${this.MAX_MISSED_HEARTBEATS})`);
+
+          if (this.missedHeartbeats >= this.MAX_MISSED_HEARTBEATS) {
+            console.error('[IbkrWS] Connection dead - forcing reconnect');
+            this.disconnect();
+            this.scheduleReconnect();
+            return;
+          }
+        }
+
+        this.lastHeartbeatSent = Date.now();
         this.ws.send('tic');
         // Record heartbeat in connection state machine
         getConnectionStateManager().recordHeartbeat();
@@ -1125,11 +1155,24 @@ export class IbkrWebSocketManager {
   }
 
   private scheduleReconnect(): void {
-    // CIRCUIT BREAKER: Stop retrying if credentials are known to be bad
+    // CIRCUIT BREAKER: Check cooldown and auto-reset after 5 minutes
     if (this.circuitBreakerOpen) {
-      console.error('[IbkrWS] Circuit breaker is OPEN - not scheduling reconnect.');
-      console.error('[IbkrWS] Please verify credentials and click "Test Connection" to reset.');
-      return;
+      const now = Date.now();
+      if (now < this.circuitBreakerCooldownUntil) {
+        const remainingMs = this.circuitBreakerCooldownUntil - now;
+        console.log(`[IbkrWS] Circuit breaker cooldown: ${Math.ceil(remainingMs / 1000)}s remaining`);
+        if (!this.cooldownTimeout) {
+          this.cooldownTimeout = setTimeout(() => {
+            this.cooldownTimeout = null;
+            this.resetCircuitBreaker();
+            console.log('[IbkrWS] Circuit breaker cooldown expired - retrying');
+            this.scheduleReconnect();
+          }, remainingMs + 1000);
+        }
+        return;
+      }
+      console.log('[IbkrWS] Circuit breaker cooldown expired - retrying');
+      this.resetCircuitBreaker();
     }
 
     // Reset reconnect attempts after 5 minutes of trying (don't give up forever)
@@ -1160,24 +1203,32 @@ export class IbkrWebSocketManager {
     console.log(`[IbkrWS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
 
     setTimeout(async () => {
-      // Refresh credentials before reconnecting
+      // FIX: Get fresh credentials and validate token before reconnecting
       if (this.credentialRefreshCallback) {
         try {
-          console.log('[IbkrWS] Refreshing credentials before reconnection...');
+          console.log('[IbkrWS] Getting fresh credentials before reconnect...');
           const { cookieString, sessionToken } = await this.credentialRefreshCallback();
+
+          // FIX: Validate session token was actually returned
+          if (!sessionToken) {
+            console.error('[IbkrWS] No session token returned - will retry');
+            this.scheduleReconnect();
+            return;
+          }
+
           this.cookieString = cookieString;
           this.sessionToken = sessionToken;
-          console.log(`[IbkrWS] Credentials refreshed. Cookie length: ${cookieString?.length || 0}, Has session: ${!!sessionToken}`);
+          this.sessionTokenExpiresAt = Date.now() + (540 * 1000);
+          console.log(`[IbkrWS] Fresh token: ${sessionToken.substring(0, 8)}...`);
         } catch (err) {
-          console.error('[IbkrWS] Failed to refresh credentials, will retry later:', err);
-          // Don't try to connect with stale credentials - schedule another attempt
+          console.error('[IbkrWS] Credential refresh failed:', err);
           this.scheduleReconnect();
           return;
         }
       }
 
       this.connect().catch((err) => {
-        console.error('[IbkrWS] Reconnection failed:', err.message);
+        console.error('[IbkrWS] Reconnect failed:', err.message);
       });
     }, delay);
   }

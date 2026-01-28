@@ -1501,6 +1501,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   });
 
   // Warm the full IBKR flow and return diagnostics (JSON) - SECURED
+  // FIX: Now initializes WebSocket after successful auth (previously only ran auth)
   app.get('/api/broker/warm', requireAuth, async (req, res) => {
     try {
       const userBroker = await getBrokerForUser(req.user!.id);
@@ -1508,7 +1509,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
         return res.status(400).json({ ok: false, error: 'No IBKR credentials configured' });
       }
       const diag = await ensureClientReady(userBroker.api);
-      return res.status(200).json({ ok: true, diag });
+
+      const allConnected =
+        diag.oauth.status === 200 &&
+        diag.sso.status === 200 &&
+        diag.validate.status === 200 &&
+        diag.init.status === 200;
+
+      // FIX: If auth successful, ensure WebSocket is connected
+      if (allConnected) {
+        const wsManager = getIbkrWebSocketManager();
+        if (!wsManager?.connected) {
+          console.log('[/api/broker/warm] Auth OK, starting WebSocket...');
+          const cookieString = await getCookieStringFromClient(userBroker.api);
+          const sessionToken = await getSessionTokenFromClient(userBroker.api);
+          if (cookieString && sessionToken) {
+            const ws = initIbkrWebSocket(cookieString, sessionToken);
+            await ws.connect();
+            ws.subscribe(756733, { symbol: 'SPY', type: 'stock' });
+            ws.subscribe(13455763, { symbol: 'VIX', type: 'stock' });
+            startTokenRefresher();
+            console.log('[/api/broker/warm] WebSocket connected and subscribed');
+          }
+        }
+      }
+
+      return res.status(200).json({ ok: allConnected, diag });
     } catch (err: any) {
       const userBroker = await getBrokerForUser(req.user!.id);
       const diag = getDiagnosticsFromClient(userBroker.api);

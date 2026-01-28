@@ -362,8 +362,18 @@ export async function startWebSocketStream(): Promise<void> {
 /**
  * Start periodic health check to ensure WebSocket stays connected
  * Also verifies SPY/VIX subscriptions exist and adds them if missing
+ *
+ * FIX: DISABLED - WebSocket manager has its own health check (startHealthCheck in ibkrWebSocket.ts)
+ * Having two health checks causes race conditions and duplicate reconnect attempts.
+ * The WebSocket manager's health check is more reliable as it has direct access to connection state.
  */
 function startHealthCheck(): void {
+  // DISABLED: WebSocket manager has its own health check
+  // Having two causes race conditions and duplicate reconnect attempts
+  console.log('[MarketDataAutoStart] Health check disabled - using WebSocket manager health check');
+  return;
+
+  // --- Original code below (unreachable) ---
   if (healthCheckInterval) {
     return; // Already running
   }
