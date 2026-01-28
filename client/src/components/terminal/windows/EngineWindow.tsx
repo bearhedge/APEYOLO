@@ -226,6 +226,42 @@ export function EngineWindow() {
     };
   }, []); // Run once on mount, session detection happens inside
 
+  // Helper to map server errors to user-friendly messages
+  const mapErrorToUserMessage = (errData: any): string => {
+    const reason = errData.reason || errData.error || 'Unknown error';
+
+    // Check for specific error codes in the reason
+    if (reason.includes('STRIKE_NOT_AVAILABLE')) {
+      const match = reason.match(/Strike (\d+(?:\.\d+)?) (PUT|CALL)/);
+      if (match) {
+        return `Strike ${match[1]} ${match[2]} not available for today's expiration`;
+      }
+      return 'Selected strike not available for today';
+    }
+
+    if (reason.includes('EXPIRATION_NOT_FOUND')) {
+      return "Today's expiration not available - market may be closed";
+    }
+
+    if (reason.includes('UNDERLYING_NOT_FOUND')) {
+      return 'Symbol not found in IBKR';
+    }
+
+    if (reason.includes('TIMEOUT') || reason.includes('timed out')) {
+      return 'IBKR response timeout - please try again';
+    }
+
+    if (reason.includes('API_ERROR') || reason.includes('5')) {
+      return 'IBKR connection error - please try again';
+    }
+
+    if (reason.includes('401') || reason.includes('auth')) {
+      return 'IBKR authentication error - check connection status';
+    }
+
+    return reason;
+  };
+
   // Execute trade mutation
   const executeMutation = useMutation({
     mutationFn: async (proposal: any) => {
@@ -237,7 +273,8 @@ export function EngineWindow() {
       });
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || 'Failed to execute trade');
+        const errorMessage = mapErrorToUserMessage(errData);
+        throw new Error(errorMessage);
       }
       return res.json();
     },

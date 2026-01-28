@@ -53,6 +53,17 @@ if (!(globalThis as any).crypto) {
 
 type SsoResult = { ok: boolean; status: number; body?: any; reqId?: string };
 
+// Structured result for option conid resolution
+export interface ConidResolutionResult {
+  success: boolean;
+  conid?: number;
+  error?: {
+    code: 'UNDERLYING_NOT_FOUND' | 'STRIKE_NOT_AVAILABLE' | 'EXPIRATION_NOT_FOUND' | 'API_ERROR' | 'TIMEOUT';
+    message: string;
+    details?: any;
+  };
+}
+
 async function createSsoSession(baseUrl: string, accessToken: string): Promise<SsoResult> {
   const base = (baseUrl || 'https://api.ibkr.com').replace(/\/$/, '');
   const url = `${base}/gw/api/v1/sso-sessions`;
@@ -1747,6 +1758,61 @@ class IbkrClient {
     return resp;
   }
 
+  /**
+   * Retry wrapper with exponential backoff for transient IBKR API errors.
+   * Retries on: 5xx errors, 429 rate limit, network timeouts
+   * Does NOT retry on: 4xx client errors (except 429)
+   */
+  private async httpGetWithRetry(
+    url: string,
+    context: string,
+    maxRetries: number = 3
+  ): Promise<AxiosResponse> {
+    const delays = [500, 1000, 2000]; // Exponential backoff
+    let lastError: Error | null = null;
+
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      try {
+        const resp = await this.httpGetWithBridgeRetry(url, context);
+
+        // Success or client error (non-retryable)
+        if (resp.status < 500 && resp.status !== 429) {
+          return resp;
+        }
+
+        // Server error or rate limit - retry if attempts remain
+        if (attempt < maxRetries) {
+          const delay = delays[attempt] || 2000;
+          console.log(`[IBKR][${context}] Got ${resp.status}, retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`);
+          await this.sleep(delay);
+          continue;
+        }
+
+        // Max retries exhausted
+        return resp;
+      } catch (err: any) {
+        lastError = err;
+
+        // Network errors are retryable
+        const isNetworkError = err.code === 'ECONNREFUSED' ||
+                               err.code === 'ETIMEDOUT' ||
+                               err.code === 'ENOTFOUND' ||
+                               err.message?.includes('timeout');
+
+        if (isNetworkError && attempt < maxRetries) {
+          const delay = delays[attempt] || 2000;
+          console.log(`[IBKR][${context}] Network error (${err.code || err.message}), retrying in ${delay}ms (attempt ${attempt + 1}/${maxRetries})`);
+          await this.sleep(delay);
+          continue;
+        }
+
+        throw err;
+      }
+    }
+
+    throw lastError || new Error(`${context} failed after ${maxRetries} retries`);
+  }
+
   async resolveConid(symbol: string): Promise<number | null> {
     // Known conids for common symbols (instant resolution, no API call needed)
     // This prevents timeouts during off-hours when IBKR returns 503 errors
@@ -1969,8 +2035,8 @@ class IbkrClient {
       // Step 2: Get option conids for each strike via secdef/search
       for (const strike of selectedPuts) {
         try {
-          const optConid = await this.resolveOptionConid(symbol, targetExpiration, 'PUT', strike);
-          if (optConid) {
+          const conidResult = await this.resolveOptionConid(symbol, targetExpiration, 'PUT', strike);
+          if (conidResult.success && conidResult.conid) {
             options.push({
               strike,
               type: 'put',
@@ -1988,8 +2054,8 @@ class IbkrClient {
 
       for (const strike of selectedCalls) {
         try {
-          const optConid = await this.resolveOptionConid(symbol, targetExpiration, 'CALL', strike);
-          if (optConid) {
+          const conidResult = await this.resolveOptionConid(symbol, targetExpiration, 'CALL', strike);
+          if (conidResult.success && conidResult.conid) {
             options.push({
               strike,
               type: 'call',
@@ -2362,8 +2428,8 @@ class IbkrClient {
             // No timeout - IBKR IS returning data, we just need to wait
             // Sequential processing of 20+ strikes takes 60-90s total,
             // but each individual request succeeds within a few seconds
-            const conid = await this.resolveOptionConid(symbol, targetExpiration, optType, strike);
-            if (conid) return { strike, conid };
+            const conidResult = await this.resolveOptionConid(symbol, targetExpiration, optType, strike);
+            if (conidResult.success && conidResult.conid) return { strike, conid: conidResult.conid };
           } catch (err) {
             console.error(`[IBKR][getOptionChainWithStrikes][${reqId}] Error resolving ${optType} strike ${strike}:`, err);
           }
@@ -3177,21 +3243,23 @@ class IbkrClient {
   /**
    * Resolve option contract conid for a specific strike/expiration
    * IBKR option search requires underlying conid, expiration, right (P/C), and strike
+   * Returns structured result with error details instead of null
    */
   private async resolveOptionConid(
     underlying: string,
     expiration: string, // YYYYMMDD format
     optionType: 'PUT' | 'CALL',
     strike: number
-  ): Promise<number | null> {
+  ): Promise<ConidResolutionResult> {
     const right = optionType === 'CALL' ? 'C' : 'P';
     const cacheKey = `${underlying}_${expiration}_${right}_${strike}`;
+    const reqId = randomUUID();
 
     // Check cache first
     const cached = this.optionConidCache.get(cacheKey);
     if (cached && Date.now() - cached.cachedAt < this.OPTION_CONID_CACHE_TTL_MS) {
       console.log(`[IBKR][resolveOptionConid] Cache hit: ${cacheKey} -> ${cached.conid}`);
-      return cached.conid;
+      return { success: true, conid: cached.conid };
     }
 
     await this.ensureAccountSelected();
@@ -3200,16 +3268,19 @@ class IbkrClient {
     const underlyingConid = await this.resolveConid(underlying);
     if (!underlyingConid) {
       console.log(`[IBKR][resolveOptionConid] Cannot resolve underlying conid for ${underlying}`);
-      return null;
+      return {
+        success: false,
+        error: {
+          code: 'UNDERLYING_NOT_FOUND',
+          message: `Cannot find underlying symbol ${underlying}`,
+        },
+      };
     }
-
-    const reqId = randomUUID();
 
     console.log(`[IBKR][resolveOptionConid][${reqId}] Searching: underlying=${underlying}(${underlyingConid}), exp=${expiration}, right=${right}, strike=${strike}`);
 
     try {
-      // Use strikes + info endpoints directly (search endpoint never returns option contracts)
-      // NOTE: Do NOT use exchange=SMART - per IBKR docs and for consistency with getOptionChainWithStrikes
+      // Use strikes + info endpoints directly with retry logic
       const strikesUrl = `/v1/api/iserver/secdef/strikes`;
       const strikesParams = new URLSearchParams({
         conid: underlyingConid.toString(),
@@ -3217,65 +3288,129 @@ class IbkrClient {
         month: this.formatMonthForIBKR(expiration.slice(0, 6)), // MMMy format
       });
 
-      const strikesResp = await this.httpGetWithBridgeRetry(`${strikesUrl}?${strikesParams.toString()}`, `resolveOptionConid:strikes:${reqId}`);
+      const strikesResp = await this.httpGetWithRetry(
+        `${strikesUrl}?${strikesParams.toString()}`,
+        `resolveOptionConid:strikes:${reqId}`
+      );
       console.log(`[IBKR][resolveOptionConid][${reqId}] Strikes response: status=${strikesResp.status}`);
 
+      if (strikesResp.status !== 200) {
+        return {
+          success: false,
+          error: {
+            code: 'API_ERROR',
+            message: `IBKR strikes API returned ${strikesResp.status}`,
+            details: { status: strikesResp.status, url: strikesUrl },
+          },
+        };
+      }
+
       if (strikesResp.status === 200 && strikesResp.data) {
-        // The strikes endpoint returns call and put strikes separately
         const strikesData = strikesResp.data;
         const availableStrikes = optionType === 'CALL' ? strikesData.call : strikesData.put;
 
-        // Diagnostic logging to debug CALL conid resolution failures
         console.log(`[IBKR][resolveOptionConid][${reqId}] Strikes data: put=${strikesData?.put?.length || 0} strikes, call=${strikesData?.call?.length || 0} strikes`);
         console.log(`[IBKR][resolveOptionConid][${reqId}] Looking for ${optionType} strike ${strike} in available: ${JSON.stringify(availableStrikes?.slice(0, 10) || [])}...`);
 
-        // Use tolerance-based matching instead of exact includes() to handle float precision
+        // Use tolerance-based matching
         const strikeExists = Array.isArray(availableStrikes) && availableStrikes.some(s => Math.abs(s - strike) < 0.01);
 
-        if (strikeExists) {
-          // Use secdef/info to get the actual conid for this specific strike
-          const infoUrl = `/v1/api/iserver/secdef/info`;
-          const infoParams = new URLSearchParams({
-            conid: underlyingConid.toString(),
-            sectype: 'OPT',
-            month: this.formatMonthForIBKR(expiration.slice(0, 6)), // MMMy format
-            strike: strike.toString(),
-            right: right,
-          });
+        if (!strikeExists) {
+          console.log(`[IBKR][resolveOptionConid][${reqId}] Strike ${strike} NOT in available ${optionType} strikes`);
+          return {
+            success: false,
+            error: {
+              code: 'STRIKE_NOT_AVAILABLE',
+              message: `Strike ${strike} ${optionType} not available for ${expiration}`,
+              details: {
+                requestedStrike: strike,
+                availableStrikes: availableStrikes?.slice(0, 20) || [],
+              },
+            },
+          };
+        }
 
-          const infoResp = await this.httpGetWithBridgeRetry(`${infoUrl}?${infoParams.toString()}`, `resolveOptionConid:info:${reqId}`);
-          console.log(`[IBKR][resolveOptionConid][${reqId}] Info response: status=${infoResp.status} body=${JSON.stringify(infoResp.data).slice(0, 300)}`);
+        // Use secdef/info to get the actual conid with retry
+        const infoUrl = `/v1/api/iserver/secdef/info`;
+        const infoParams = new URLSearchParams({
+          conid: underlyingConid.toString(),
+          sectype: 'OPT',
+          month: this.formatMonthForIBKR(expiration.slice(0, 6)),
+          strike: strike.toString(),
+          right: right,
+        });
 
-          if (infoResp.status === 200 && Array.isArray(infoResp.data)) {
-            for (const opt of infoResp.data) {
-              // CRITICAL: Filter by maturity date to get today's 0DTE, not expired options
-              const optMaturity = opt.maturityDate || '';
-              if (opt.conid && optMaturity === expiration) {
-                const foundConid = parseInt(opt.conid, 10);
-                console.log(`[IBKR][resolveOptionConid][${reqId}] Found via info: conid=${foundConid}, maturity=${optMaturity}`);
-                // Cache the result
-                this.optionConidCache.set(cacheKey, { conid: foundConid, cachedAt: Date.now() });
-                return foundConid;
-              } else if (opt.conid && optMaturity !== expiration) {
-                // Log maturity mismatch for diagnostics
-                console.log(`[IBKR][resolveOptionConid][${reqId}] Info maturity mismatch: got '${optMaturity}', want '${expiration}' (conid=${opt.conid})`);
-              }
+        const infoResp = await this.httpGetWithRetry(
+          `${infoUrl}?${infoParams.toString()}`,
+          `resolveOptionConid:info:${reqId}`
+        );
+        console.log(`[IBKR][resolveOptionConid][${reqId}] Info response: status=${infoResp.status} body=${JSON.stringify(infoResp.data).slice(0, 300)}`);
+
+        if (infoResp.status !== 200) {
+          return {
+            success: false,
+            error: {
+              code: 'API_ERROR',
+              message: `IBKR info API returned ${infoResp.status}`,
+              details: { status: infoResp.status, url: infoUrl },
+            },
+          };
+        }
+
+        if (infoResp.status === 200 && Array.isArray(infoResp.data)) {
+          for (const opt of infoResp.data) {
+            const optMaturity = opt.maturityDate || '';
+            if (opt.conid && optMaturity === expiration) {
+              const foundConid = parseInt(opt.conid, 10);
+              console.log(`[IBKR][resolveOptionConid][${reqId}] Found via info: conid=${foundConid}, maturity=${optMaturity}`);
+              this.optionConidCache.set(cacheKey, { conid: foundConid, cachedAt: Date.now() });
+              return { success: true, conid: foundConid };
+            } else if (opt.conid && optMaturity !== expiration) {
+              console.log(`[IBKR][resolveOptionConid][${reqId}] Info maturity mismatch: got '${optMaturity}', want '${expiration}'`);
             }
-            // Log what maturities we found if no match
-            console.log(`[IBKR][resolveOptionConid][${reqId}] Info returned maturities: ${infoResp.data.slice(0, 5).map((o: any) => o.maturityDate).join(', ')} - looking for ${expiration}`);
           }
-        } else {
-          // Strike not found in available strikes - this is why CALLs may be failing!
-          console.log(`[IBKR][resolveOptionConid][${reqId}] Strike ${strike} NOT in available ${optionType} strikes. Available ${optionType.toLowerCase()}s: ${JSON.stringify(availableStrikes?.slice(0, 15) || [])}`);
+
+          // Strike exists but no matching expiration found
+          const foundMaturities = infoResp.data.map((o: any) => o.maturityDate).filter(Boolean);
+          console.log(`[IBKR][resolveOptionConid][${reqId}] No matching expiration. Found: ${foundMaturities.join(', ')}`);
+          return {
+            success: false,
+            error: {
+              code: 'EXPIRATION_NOT_FOUND',
+              message: `Expiration ${expiration} not available for ${underlying} ${strike} ${optionType}`,
+              details: {
+                requestedExpiration: expiration,
+                availableExpirations: foundMaturities.slice(0, 10),
+              },
+            },
+          };
         }
       }
 
-    } catch (err) {
+    } catch (err: any) {
       console.error(`[IBKR][resolveOptionConid][${reqId}] Error:`, err);
+
+      const isTimeout = err.code === 'ETIMEDOUT' || err.message?.includes('timeout');
+      return {
+        success: false,
+        error: {
+          code: isTimeout ? 'TIMEOUT' : 'API_ERROR',
+          message: isTimeout
+            ? 'IBKR API request timed out after retries'
+            : `IBKR API error: ${err.message || 'Unknown error'}`,
+          details: { errorCode: err.code, errorMessage: err.message },
+        },
+      };
     }
 
     console.log(`[IBKR][resolveOptionConid][${reqId}] Could not resolve option conid`);
-    return null;
+    return {
+      success: false,
+      error: {
+        code: 'API_ERROR',
+        message: 'Could not resolve option conid - no matching contract found',
+      },
+    };
   }
 
   /**
@@ -3305,23 +3440,27 @@ class IbkrClient {
     }
 
     // Resolve the option contract conid
-    const optionConid = await this.resolveOptionConid(
+    const conidResult = await this.resolveOptionConid(
       params.symbol,
       params.expiration,
       params.optionType,
       params.strike
     );
 
-    if (!optionConid) {
-      const errorMsg = `Cannot resolve option conid for ${params.symbol} ${params.strike}${params.optionType === 'PUT' ? 'P' : 'C'} ${params.expiration}`;
+    if (!conidResult.success || !conidResult.conid) {
+      const errorMsg = conidResult.error?.message || `Cannot resolve option conid for ${params.symbol} ${params.strike}${params.optionType === 'PUT' ? 'P' : 'C'} ${params.expiration}`;
       console.error(`[IBKR][placeOptionOrder][${reqId}] ${errorMsg}`);
       await storage.createAuditLog({
         eventType: "IBKR_OPTION_ORDER",
         details: `FAILED: ${errorMsg}`,
         status: "FAILED"
       });
-      return { status: "rejected_no_option_conid" };
+      return {
+        status: `rejected_${conidResult.error?.code || 'no_option_conid'}`,
+        raw: { error: errorMsg },
+      };
     }
+    const optionConid = conidResult.conid;
 
     console.log(`[IBKR][placeOptionOrder][${reqId}] Resolved option conid: ${optionConid}`);
 
@@ -3476,23 +3615,28 @@ class IbkrClient {
     }
 
     // Resolve the option contract conid
-    const optionConid = await this.resolveOptionConid(
+    const conidResult = await this.resolveOptionConid(
       params.symbol,
       params.expiration,
       params.optionType,
       params.strike
     );
 
-    if (!optionConid) {
-      const errorMsg = `Cannot resolve option conid for ${params.symbol} ${params.strike}${params.optionType === 'PUT' ? 'P' : 'C'} ${params.expiration}`;
+    if (!conidResult.success || !conidResult.conid) {
+      const errorCode = conidResult.error?.code || 'no_option_conid';
+      const errorMsg = conidResult.error?.message || `Cannot resolve option conid for ${params.symbol} ${params.strike}${params.optionType === 'PUT' ? 'P' : 'C'} ${params.expiration}`;
       console.error(`[IBKR][placeOptionOrderWithStop][${reqId}] ${errorMsg}`);
       await storage.createAuditLog({
         eventType: "IBKR_BRACKET_ORDER",
         details: `FAILED: ${errorMsg}`,
         status: "FAILED"
       });
-      return { status: "rejected_no_option_conid" };
+      return {
+        status: `rejected_${errorCode}`,
+        error: errorMsg,
+      };
     }
+    const optionConid = conidResult.conid;
 
     console.log(`[IBKR][placeOptionOrderWithStop][${reqId}] Resolved option conid: ${optionConid}`);
 

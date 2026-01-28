@@ -1022,6 +1022,19 @@ router.post('/execute-paper', requireAuth, async (req, res) => {
         // FIX: Previously used portfolio-level stopLossPrice for all legs (bug: both got same 2.22)
         // Now each leg gets its own stop based on its own premium
 
+        // Log execution context for debugging
+        console.log(`[Engine/execute] Execution context:`, {
+          symbol: tradeProposal.symbol,
+          expiration,
+          legs: tradeProposal.legs.map((l: any) => ({
+            type: l.optionType,
+            strike: l.strike,
+            premium: l.premium,
+          })),
+          contracts: tradeProposal.contracts,
+          ibkrConnected: broker.status.provider === 'ibkr',
+        });
+
         for (const leg of tradeProposal.legs) {
           // Per-leg stop: 6x this leg's premium (e.g., PUT $0.70 → stop $4.20)
           const STOP_MULTIPLIER = 6; // 6x premium (Layer 2 backup)
