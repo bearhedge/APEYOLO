@@ -14,6 +14,7 @@ import { useState, useCallback, useMemo, useEffect } from 'react';
 import { useWebSocket } from '@/hooks/use-websocket';
 import { useEngineAnalysis } from '@/hooks/useEngineAnalysis';
 import { useAgentOperator } from '@/hooks/useAgentOperator';
+import { useRailsEnforcement } from '@/hooks/useRailsEnforcement';
 import { useQuery, useMutation } from '@tanstack/react-query';
 import {
   TopBar,
@@ -22,6 +23,7 @@ import {
   ActionBar,
   CommandInput,
   CommandMenu,
+  TradeStructure,
   useKeyboardControls,
   type LogLine,
   type Strategy,
@@ -53,10 +55,15 @@ export function EngineWindow() {
   const [putStrike, setPutStrike] = useState<number | null>(null);
   const [callStrike, setCallStrike] = useState<number | null>(null);
   const [spreadWidth, setSpreadWidth] = useState(5);
+  const [stopLossPrice, setStopLossPrice] = useState(0);
+
+  // Engine recommended strikes (for comparison in TradeStructure)
+  const [enginePutStrike, setEnginePutStrike] = useState<number | null>(null);
+  const [engineCallStrike, setEngineCallStrike] = useState<number | null>(null);
 
   // Log lines for streaming display
   const [logLines, setLogLines] = useState<LogLine[]>([]);
-  const [hudState, setHudState] = useState<'idle' | 'analyzing' | 'ready'>('idle');
+  const [hudState, setHudState] = useState<'idle' | 'analyzing' | 'strikes_selected' | 'structuring' | 'ready'>('idle');
 
   // WebSocket for real-time market data
   const { isConnected: wsConnected, onChartPriceUpdate } = useWebSocket();
@@ -111,6 +118,15 @@ export function EngineWindow() {
     },
     refetchInterval: 30000,
   });
+
+  // Rails enforcement for DeFi rails validation
+  const {
+    validate: validateRails,
+    result: railsResult,
+    activeRail,
+    isValidating: railsValidating,
+    clearResult: clearRailsResult,
+  } = useRailsEnforcement();
 
   // Subscribe to WebSocket price updates
   useEffect(() => {
@@ -311,9 +327,15 @@ export function EngineWindow() {
       const putStrikeVal = step3Data?.putStrike?.strike;
       const callStrikeVal = step3Data?.callStrike?.strike;
 
-      // Set selected strikes
-      if (putStrikeVal) setPutStrike(putStrikeVal);
-      if (callStrikeVal) setCallStrike(callStrikeVal);
+      // Set selected strikes and store engine recommendations
+      if (putStrikeVal) {
+        setPutStrike(putStrikeVal);
+        setEnginePutStrike(putStrikeVal);
+      }
+      if (callStrikeVal) {
+        setCallStrike(callStrikeVal);
+        setEngineCallStrike(callStrikeVal);
+      }
 
       // Always use nearbyStrikes for complete chain (smartCandidates filters too aggressively)
       const putCandidates = step3Data?.nearbyStrikes?.puts || [];
@@ -380,14 +402,17 @@ export function EngineWindow() {
       const maxLoss = step3Data?.marginRequired ? step3Data.marginRequired * contractCount * 0.1 : (analysis?.tradeProposal?.maxLoss ?? 0);
       const totalCredit = step3Data?.expectedPremium ?? ((analysis?.q3Strikes?.selectedPut?.premium ?? 0) + (analysis?.q3Strikes?.selectedCall?.premium ?? 0));
       setContracts(contractCount);
+      // Set stop loss price from analysis
+      const stopLoss = analysis?.q5Exit?.stopLossPrice ?? analysis?.tradeProposal?.stopLossPrice ?? 0;
+      setStopLossPrice(stopLoss);
       addLogLine(`Contracts: ${contractCount} | Credit: $${totalCredit.toFixed(2)} | Max Loss: $${maxLoss.toFixed(0)}`, 'result');
-      addLogLine(`[↑↓ put strike] [←→ call strike] [ENTER: APE IN]`, 'info');
+      addLogLine(`Click NEXT to review trade structure`, 'info');
       setLoggedSteps(prev => new Set([...prev, 'step4']));
     }
 
-    // When all steps complete
+    // When all steps complete - transition to strikes_selected (user must click NEXT)
     if (completedSteps.size >= 4 && !isAnalyzing && hudState === 'analyzing') {
-      setHudState('ready');
+      setHudState('strikes_selected');
     }
   }, [completedSteps, isAnalyzing, analysis, hudState, addLogLine, contracts, credit, ibkrStatus?.nav, spreadWidth, loggedSteps, wsVix, stepResults]);
 
@@ -432,7 +457,45 @@ export function EngineWindow() {
     setHudState('idle');
     setPutStrike(null);
     setCallStrike(null);
-  }, []);
+    setEnginePutStrike(null);
+    setEngineCallStrike(null);
+    clearRailsResult();
+  }, [clearRailsResult]);
+
+  // Handle NEXT button - transition to structuring and validate rails
+  const handleNext = useCallback(() => {
+    if (hudState !== 'strikes_selected') return;
+
+    setHudState('structuring');
+
+    // Get average delta from selected strikes for rails validation
+    const step3Data = stepResults?.step3;
+    const putDelta = step3Data?.putStrike?.delta ?? 0;
+    const callDelta = step3Data?.callStrike?.delta ?? 0;
+    const avgDelta = (Math.abs(putDelta) + Math.abs(callDelta)) / 2;
+
+    // Validate against DeFi Rails
+    const result = validateRails({
+      symbol: 'SPY',
+      side: 'SELL', // Credit strategies are SELL
+      delta: avgDelta,
+      contracts,
+    });
+
+    // If rails pass, enable APE IN (transition to ready)
+    if (result.allowed) {
+      setHudState('ready');
+    }
+    // If rails fail, stay in structuring with blocked APE IN
+  }, [hudState, stepResults, contracts, validateRails]);
+
+  // Handle BACK button - return to strikes_selected from structuring
+  const handleBack = useCallback(() => {
+    if (hudState === 'structuring' || hudState === 'ready') {
+      setHudState('strikes_selected');
+      clearRailsResult();
+    }
+  }, [hudState, clearRailsResult]);
 
   // Handle agent commands (typed /commands)
   const handleAgentCommand = useCallback((command: AgentCommand) => {
@@ -477,11 +540,13 @@ export function EngineWindow() {
     }
   }, [handleAgentCommand, agentProcessing, agentOperate, addLogLine]);
 
-  // Execute
+  // Execute - allowed in structuring (if rails pass) or ready state
   const handleExecute = useCallback(() => {
-    if (hudState !== 'ready' || !analysis?.tradeProposal) return;
+    const canExecuteState = hudState === 'ready' || hudState === 'structuring';
+    const railsAllow = !railsResult || railsResult.allowed;
+    if (!canExecuteState || !railsAllow || !analysis?.tradeProposal) return;
     executeMutation.mutate(analysis.tradeProposal);
-  }, [hudState, analysis, executeMutation]);
+  }, [hudState, railsResult, analysis, executeMutation]);
 
   // Mode toggle
   const handleModeToggle = useCallback(() => {
@@ -541,10 +606,21 @@ export function EngineWindow() {
       setContracts((c) => (dir === 'up' ? Math.min(c + 1, 10) : Math.max(c - 1, 1)));
     },
     onModeToggle: handleModeToggle,
-    onEnter: hudState === 'ready' ? handleExecute : handleAnalyze,
+    onEnter: () => {
+      // Enter key behavior depends on state
+      if (hudState === 'ready' || (hudState === 'structuring' && (!railsResult || railsResult.allowed))) {
+        handleExecute();
+      } else if (hudState === 'strikes_selected') {
+        handleNext();
+      } else {
+        handleAnalyze();
+      }
+    },
     onEscape: () => {
       if (showCommandMenu) {
         setShowCommandMenu(false);
+      } else if (hudState === 'structuring' || hudState === 'ready') {
+        handleBack();
       } else {
         handleReset();
       }
@@ -591,25 +667,58 @@ export function EngineWindow() {
         onModeToggle={handleModeToggle}
       />
 
-      {/* Main area - terminal log only */}
-      <MainArea
-        lines={logLines}
-        isAnalyzing={isAnalyzing}
-        progress={progress}
-        isReady={hudState === 'ready'}
-        onPutSelect={(strike) => {
-          console.log('[EngineWindow] PUT selected:', strike);
-          setPutStrike(strike);
-          addLogLine(`PUT strike selected: ${strike}`, 'success');
-        }}
-        onCallSelect={(strike) => {
-          console.log('[EngineWindow] CALL selected:', strike);
-          setCallStrike(strike);
-          addLogLine(`CALL strike selected: ${strike}`, 'success');
-        }}
-        selectedPutStrike={putStrike}
-        selectedCallStrike={callStrike}
-      />
+      {/* Main area - log view or trade structure view */}
+      {hudState === 'structuring' || hudState === 'ready' ? (
+        <TradeStructure
+          putStrike={putStrike ? {
+            strike: putStrike,
+            bid: stepResults?.step3?.putStrike?.bid ?? 0,
+            ask: stepResults?.step3?.putStrike?.ask ?? 0,
+            delta: stepResults?.step3?.putStrike?.delta ?? 0,
+            premium: stepResults?.step3?.putStrike?.premium ?? 0,
+          } : null}
+          callStrike={callStrike ? {
+            strike: callStrike,
+            bid: stepResults?.step3?.callStrike?.bid ?? 0,
+            ask: stepResults?.step3?.callStrike?.ask ?? 0,
+            delta: stepResults?.step3?.callStrike?.delta ?? 0,
+            premium: stepResults?.step3?.callStrike?.premium ?? 0,
+          } : null}
+          enginePutStrike={enginePutStrike}
+          engineCallStrike={engineCallStrike}
+          contracts={contracts}
+          strategy={strategy}
+          expectedCredit={stepResults?.step3?.expectedPremium ?? ((analysis?.q3Strikes?.selectedPut?.premium ?? 0) + (analysis?.q3Strikes?.selectedCall?.premium ?? 0))}
+          marginRequired={stepResults?.step3?.marginRequired ?? analysis?.q4Size?.totalMarginRequired ?? 0}
+          maxLoss={analysis?.tradeProposal?.maxLoss ?? 0}
+          stopLossPrice={stopLossPrice}
+          railsResult={railsResult}
+          activeRail={activeRail}
+          isValidating={railsValidating}
+          onContractsChange={setContracts}
+          onStopLossChange={setStopLossPrice}
+          onBack={handleBack}
+        />
+      ) : (
+        <MainArea
+          lines={logLines}
+          isAnalyzing={isAnalyzing}
+          progress={progress}
+          isReady={false}
+          onPutSelect={(strike) => {
+            console.log('[EngineWindow] PUT selected:', strike);
+            setPutStrike(strike);
+            addLogLine(`PUT strike selected: ${strike}`, 'success');
+          }}
+          onCallSelect={(strike) => {
+            console.log('[EngineWindow] CALL selected:', strike);
+            setCallStrike(strike);
+            addLogLine(`CALL strike selected: ${strike}`, 'success');
+          }}
+          selectedPutStrike={putStrike}
+          selectedCallStrike={callStrike}
+        />
+      )}
 
       {/* Command input - always visible */}
       <CommandInput
@@ -632,9 +741,12 @@ export function EngineWindow() {
       <ActionBar
         state={hudState}
         onAnalyze={handleAnalyze}
+        onNext={handleNext}
+        onBack={handleBack}
         onExecute={handleExecute}
         onReset={handleReset}
         isExecuting={executeMutation.isPending}
+        canExecute={!railsResult || railsResult.allowed}
       />
 
       {/* Help overlay */}
