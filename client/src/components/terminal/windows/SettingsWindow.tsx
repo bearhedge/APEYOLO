@@ -1,30 +1,13 @@
 /**
  * SettingsWindow - Configuration and preferences
  *
- * PORTED FROM: client/src/pages/Settings.tsx
- * Uses same API endpoints and logic, with terminal styling.
+ * Simplified IBKR connection status based on SPY data flow.
+ * Uses useBrokerStatus hook for WebSocket push-based updates.
  */
 
 import { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-
-interface IbkrStatus {
-  configured: boolean;
-  connected: boolean;
-  accountId?: string;
-  nav?: number;
-  environment?: 'paper' | 'live';
-  connectionMode?: 'oauth' | 'relay';
-  diagnostics?: {
-    oauth?: { status: number; message: string; success?: boolean };
-    sso?: { status: number; message: string; success?: boolean };
-    validate?: { status: number; message: string; success?: boolean };
-    validated?: { status: number; message: string; success?: boolean };
-    init?: { status: number; message: string; success?: boolean };
-    initialized?: { status: number; message: string; success?: boolean };
-    websocket?: { status: number; message: string; success?: boolean };
-  };
-}
+import { useBrokerStatus, useReconnectMutation } from '@/hooks/useBrokerStatus';
 
 interface SolanaInfo {
   walletAddress?: string;
@@ -41,22 +24,9 @@ export function SettingsWindow() {
   const queryClient = useQueryClient();
   const [showClearConfirm, setShowClearConfirm] = useState(false);
 
-  // Main IBKR status query - SAME AS Settings.tsx
-  const { data: ibkrStatus, refetch: refetchStatus } = useQuery<IbkrStatus>({
-    queryKey: ['/api/ibkr/status'],
-    queryFn: async () => {
-      const response = await fetch('/api/ibkr/status', { credentials: 'include' });
-      return response.json();
-    },
-    refetchInterval: (query) => {
-      const data = query.state.data as IbkrStatus | undefined;
-      if (!data?.configured) return false;
-      if (data?.configured && !data?.connected) return 3000;
-      return 30000;
-    },
-    refetchOnWindowFocus: true,
-    refetchOnMount: true,
-  });
+  // Simplified broker status - uses WebSocket push, no HTTP polling
+  const status = useBrokerStatus();
+  const reconnectMutation = useReconnectMutation();
 
   // Solana info query
   const { data: solana } = useQuery<SolanaInfo>({
@@ -76,51 +46,6 @@ export function SettingsWindow() {
       if (stored) return JSON.parse(stored);
       return { dataSource: 'websocket', environment: 'paper' };
     },
-  });
-
-  // Helper to refresh all IBKR-related caches
-  const refreshAllIbkrStatus = () => {
-    refetchStatus();
-    queryClient.refetchQueries({ queryKey: ['/api/broker/diag'] });
-    queryClient.refetchQueries({ queryKey: ['/api/account'] });
-    queryClient.refetchQueries({ queryKey: ['broker-status'] });
-  };
-
-  // Test connection - SAME AS Settings.tsx
-  const testConnectionMutation = useMutation({
-    mutationFn: async () => {
-      const res = await fetch('/api/ibkr/test', {
-        method: 'POST',
-        credentials: 'include',
-      });
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error || 'Connection test failed');
-      }
-      return res.json();
-    },
-    onSuccess: () => refreshAllIbkrStatus(),
-  });
-
-  // Reconnect via OAuth - SAME AS Settings.tsx
-  const reconnectMutation = useMutation({
-    mutationFn: async () => {
-      const res = await fetch('/api/broker/oauth', {
-        method: 'POST',
-        credentials: 'include',
-      });
-      return res.json();
-    },
-    onSuccess: () => refreshAllIbkrStatus(),
-  });
-
-  // Warm endpoint (full readiness flow) - SAME AS Settings.tsx
-  const warmMutation = useMutation({
-    mutationFn: async () => {
-      const res = await fetch('/api/broker/warm', { credentials: 'include' });
-      return res.json();
-    },
-    onSuccess: () => refreshAllIbkrStatus(),
   });
 
   // Clear all open orders
@@ -175,94 +100,39 @@ export function SettingsWindow() {
     },
   });
 
-  const isLoading = testConnectionMutation.isPending || reconnectMutation.isPending || warmMutation.isPending;
-
-  // Get diagnostics with fallbacks
-  const diag = ibkrStatus?.diagnostics;
-
   return (
     <div style={{ fontFamily: "'IBM Plex Mono', monospace", fontSize: 12 }}>
-      {/* IBKR Section */}
+      {/* IBKR Section - Simplified: connected = SPY data flowing */}
       <Section title="IBKR CONNECTION">
         <Row
           label="Status"
-          value={ibkrStatus?.connected ? 'CONNECTED' : 'DISCONNECTED'}
-          valueColor={ibkrStatus?.connected ? '#4ade80' : '#ef4444'}
+          value={status.connected ? 'CONNECTED' : 'DISCONNECTED'}
+          valueColor={status.connected ? '#4ade80' : '#ef4444'}
         />
-        {ibkrStatus?.accountId && <Row label="Account" value={ibkrStatus.accountId} />}
-        {ibkrStatus?.nav && <Row label="NAV" value={`$${ibkrStatus.nav.toLocaleString()}`} valueColor="#4ade80" />}
-        <Row label="Mode" value={ibkrStatus?.environment?.toUpperCase() || 'PAPER'} valueColor="#87ceeb" />
+        {status.account && <Row label="Account" value={status.account} />}
+        {status.spyPrice && (
+          <Row label="SPY" value={`$${status.spyPrice.toFixed(2)}`} valueColor="#4ade80" />
+        )}
+        <Row label="Mode" value={status.mode || 'PAPER'} valueColor="#87ceeb" />
 
-        {/* Action buttons */}
-        <div style={{ display: 'flex', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
-          <ActionButton
-            label={testConnectionMutation.isPending ? 'Testing...' : 'Test Connection'}
-            onClick={() => testConnectionMutation.mutate()}
-            disabled={isLoading}
-          />
-          <ActionButton
-            label={warmMutation.isPending ? 'Connecting...' : 'Reconnect'}
-            onClick={() => warmMutation.mutate()}
-            disabled={isLoading}
-          />
-        </div>
-
-        {/* Error display */}
-        {(testConnectionMutation.isError || reconnectMutation.isError || warmMutation.isError) && (
-          <p style={{ color: '#ef4444', fontSize: 11, marginTop: 8 }}>
-            &gt; ERROR: {testConnectionMutation.error?.message || reconnectMutation.error?.message || warmMutation.error?.message}
-          </p>
+        {/* Reconnect button - only when disconnected */}
+        {!status.connected && (
+          <div style={{ marginTop: 12 }}>
+            <ActionButton
+              label={reconnectMutation.isPending ? 'Connecting...' : 'Reconnect'}
+              onClick={() => reconnectMutation.mutate()}
+              disabled={reconnectMutation.isPending}
+            />
+          </div>
         )}
 
-        {/* Success display */}
-        {testConnectionMutation.isSuccess && (
-          <p style={{ color: '#4ade80', fontSize: 11, marginTop: 8 }}>
-            &gt; Connection test passed
+        {/* Error display */}
+        {reconnectMutation.isError && (
+          <p style={{ color: '#ef4444', fontSize: 11, marginTop: 8 }}>
+            &gt; ERROR: {reconnectMutation.error?.message}
           </p>
         )}
       </Section>
-
-      {/* Auth Pipeline - PORTED FROM Settings.tsx */}
-      {ibkrStatus?.configured && diag && (
-        <Section title="AUTH PIPELINE">
-          {ibkrStatus?.connectionMode === 'relay' ? (
-            <p style={{ color: '#666', fontSize: 11 }}>Not used in TWS/Gateway mode</p>
-          ) : (
-            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 4 }}>
-              <DiagStep
-                label="OAuth"
-                status={diag.oauth?.status || 0}
-                message={diag.oauth?.message}
-                success={diag.oauth?.success}
-              />
-              <DiagStep
-                label="SSO"
-                status={diag.sso?.status || 0}
-                message={diag.sso?.message}
-                success={diag.sso?.success}
-              />
-              <DiagStep
-                label="Validate"
-                status={diag.validate?.status || diag.validated?.status || 0}
-                message={diag.validate?.message || diag.validated?.message}
-                success={diag.validate?.success || diag.validated?.success}
-              />
-              <DiagStep
-                label="Init"
-                status={diag.init?.status || diag.initialized?.status || 0}
-                message={diag.init?.message || diag.initialized?.message}
-                success={diag.init?.success || diag.initialized?.success}
-              />
-              <DiagStep
-                label="WebSocket"
-                status={diag.websocket?.status || 0}
-                message={diag.websocket?.message}
-                success={diag.websocket?.success}
-              />
-            </div>
-          )}
-        </Section>
-      )}
 
       {/* Solana Section */}
       <Section title="SOLANA WALLET">
@@ -348,12 +218,12 @@ export function SettingsWindow() {
           <ActionButton
             label={testOrderMutation.isPending ? 'Testing...' : 'Test Order'}
             onClick={() => testOrderMutation.mutate()}
-            disabled={!ibkrStatus?.connected || testOrderMutation.isPending}
+            disabled={!status.connected || testOrderMutation.isPending}
           />
           <ActionButton
             label="Clear Open Orders"
             onClick={() => setShowClearConfirm(true)}
-            disabled={!ibkrStatus?.connected}
+            disabled={!status.connected}
             variant="danger"
           />
         </div>
@@ -484,31 +354,3 @@ function ActionButton({
   );
 }
 
-function DiagStep({
-  label,
-  status,
-  message,
-  success,
-}: {
-  label: string;
-  status: number;
-  message?: string;
-  success?: boolean;
-}) {
-  // Status: 0 = not attempted, 1 = in progress, 2 = complete, 200 = HTTP OK
-  const isComplete = status === 200 || status === 2 || success;
-  const isInProgress = status === 1;
-
-  const icon = isComplete ? '[OK]' : isInProgress ? '[..]' : '[X]';
-  const color = isComplete ? '#4ade80' : isInProgress ? '#f59e0b' : '#ef4444';
-
-  return (
-    <div
-      style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 10 }}
-      title={message || label}
-    >
-      <span style={{ color }}>{icon}</span>
-      <span style={{ color: '#888' }}>{label}</span>
-    </div>
-  );
-}
