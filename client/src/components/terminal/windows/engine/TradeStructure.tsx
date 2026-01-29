@@ -10,6 +10,7 @@
  */
 
 import type { EnforcementResult, Rail } from '@shared/types/rails';
+import { PositionSizingPanel } from './PositionSizingPanel';
 
 interface StrikeInfo {
   strike: number;
@@ -42,6 +43,31 @@ interface TradeStructureProps {
   onContractsChange: (n: number) => void;
   onStopLossChange: (price: number) => void;
   onBack: () => void;
+
+  // Position sizing data (new)
+  positionSizing?: {
+    capacity: {
+      navHKD: number;
+      bufferHKD: number;
+      marginalRateHKD: number;
+      maxContracts: number;
+    };
+    kelly: {
+      winRate: number;
+      lossRate: number;
+      payoffRatio: number;
+      kellyPercent: number;
+      creditPerContract: number;
+      maxLossAtStop: number;
+    };
+    optimalContracts: number;
+    maxContracts: number;
+  } | null;
+
+  // Market data for panel
+  spyPrice?: number;
+  vix?: number;
+  fxRate?: number;
 }
 
 export function TradeStructure({
@@ -61,6 +87,10 @@ export function TradeStructure({
   onContractsChange,
   onStopLossChange,
   onBack,
+  positionSizing,
+  spyPrice,
+  vix,
+  fxRate,
 }: TradeStructureProps) {
   // Format strategy for display
   const strategyLabel = strategy === 'strangle' ? 'STRANGLE' :
@@ -182,6 +212,41 @@ export function TradeStructure({
           </tbody>
         </table>
       </div>
+
+      {/* Position Sizing Panel - New Two-Layer Display */}
+      {positionSizing && (
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ color: '#4ade80', marginBottom: 8, fontSize: 12 }}>
+            POSITION SIZING
+          </div>
+          <PositionSizingPanel
+            spyPrice={spyPrice ?? 0}
+            vix={vix ?? 0}
+            avgDelta={
+              putStrike && callStrike
+                ? (Math.abs(putStrike.delta) + Math.abs(callStrike.delta)) / 2
+                : Math.abs(putStrike?.delta ?? callStrike?.delta ?? 0)
+            }
+            navHKD={positionSizing.capacity.navHKD}
+            fxRate={fxRate ?? 7.8}
+            putStrike={putStrike?.strike ?? null}
+            callStrike={callStrike?.strike ?? null}
+            premiumPerContract={
+              ((putStrike?.premium ?? 0) + (callStrike?.premium ?? 0)) * 100
+            }
+            stopMultiplier={stopLossPrice > 0 && expectedCredit > 0
+              ? Math.round(stopLossPrice / expectedCredit)
+              : 3
+            }
+            capacity={positionSizing.capacity}
+            kelly={positionSizing.kelly}
+            selectedContracts={contracts}
+            optimalContracts={positionSizing.optimalContracts}
+            maxContracts={positionSizing.maxContracts}
+            onContractsChange={onContractsChange}
+          />
+        </div>
+      )}
 
       {/* Risk Metrics Grid */}
       <div style={{ marginBottom: 20 }}>
