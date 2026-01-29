@@ -5,4 +5,5 @@ export { ActionBar } from './ActionBar';
 export { CommandInput } from './CommandInput';
 export { CommandMenu } from './CommandMenu';
 export { TradeStructure } from './TradeStructure';
+export { PositionSizingPanel } from './PositionSizingPanel';
 export { useKeyboardControls } from './useKeyboardControls';
