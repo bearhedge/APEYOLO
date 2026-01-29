@@ -421,10 +421,17 @@ export function Engine({
       .map(([key, val]) => `${key}: ${val}`)
     : [];
 
-  // Kelly Criterion calculation (available for execution)
+  // Kelly Criterion calculation using two-layer framework
   const kellyData = useMemo(() => {
     if (!filteredProposal || filteredProposal.legs.length === 0) {
-      return { kellyContracts: 1, kellyPercent: 0, winRate: 0, maxContracts: 0 };
+      return {
+        kellyContracts: 1,
+        kellyPercent: 0,
+        winRate: 0,
+        maxContracts: 0,
+        capacity: null,
+        kelly: null,
+      };
     }
 
     const putDelta = Math.abs(filteredProposal.legs.find(l => l.optionType === 'PUT')?.delta ?? 0);
@@ -433,12 +440,27 @@ export function Engine({
       ? (putDelta + callDelta) / 2
       : putDelta || callDelta;
 
-    const winRate = 1 - avgDelta;           // e.g., 0.85 for delta 0.15
-    const lossRate = avgDelta;              // e.g., 0.15
-    const payoffRatio = 0.5;                // credit / max_loss at 3x stop
+    // Get position sizing from analysis if available (new two-layer format)
+    const positionSizing = effectiveAnalysis?.q4Size?.positionSizing;
+
+    if (positionSizing) {
+      // Use server-calculated values
+      return {
+        kellyContracts: positionSizing.optimalContracts,
+        kellyPercent: positionSizing.kelly.kellyPercent,
+        winRate: positionSizing.kelly.winRate,
+        maxContracts: positionSizing.maxContracts,
+        capacity: positionSizing.capacity,
+        kelly: positionSizing.kelly,
+      };
+    }
+
+    // Fallback to client-side calculation
+    const winRate = 1 - avgDelta;
+    const lossRate = avgDelta;
+    const payoffRatio = 0.5; // credit / max_loss at 3x stop
     const kellyPercent = Math.max(0, winRate - lossRate / payoffRatio);
 
-    // Account/margin data
     const cash = effectiveAnalysis?.q4PositionSize?.inputs?.nav
       ?? effectiveAnalysis?.q4Size?.inputs?.accountValue
       ?? accountValue
@@ -455,7 +477,14 @@ export function Engine({
       ? Math.floor(cash / kellyMarginPerContract)
       : 0;
 
-    return { kellyContracts, kellyPercent, winRate, maxContracts };
+    return {
+      kellyContracts,
+      kellyPercent,
+      winRate,
+      maxContracts,
+      capacity: null,
+      kelly: null,
+    };
   }, [filteredProposal, effectiveAnalysis, accountValue, marginPerContract]);
 
   // Use Kelly-calculated contracts for execution
