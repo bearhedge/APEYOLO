@@ -17,6 +17,13 @@ import { latestPrices } from '@shared/schema';
 import { eq } from 'drizzle-orm';
 import { getConnectionStateManager } from './connectionState';
 
+// Debug log event type for real-time streaming to frontend
+export interface DebugLogEvent {
+  level: 'info' | 'warn' | 'error' | 'success';
+  message: string;
+  timestamp: string;
+}
+
 // Market data field codes from IBKR API
 export const IBKR_FIELDS = {
   LAST_PRICE: '31',
@@ -166,6 +173,9 @@ export class IbkrWebSocketManager {
   // Mutex for connect() to prevent race conditions with simultaneous connection attempts
   private connectPromise: Promise<void> | null = null;
 
+  // Debug log listeners for real-time event streaming to frontend
+  private debugListeners = new Set<(event: DebugLogEvent) => void>();
+
   constructor(cookieString: string, sessionToken?: string | null) {
     this.cookieString = cookieString;
     this.sessionToken = sessionToken || null;
@@ -173,6 +183,39 @@ export class IbkrWebSocketManager {
     if (sessionToken) {
       this.sessionTokenExpiresAt = Date.now() + (540 * 1000);
     }
+  }
+
+  /**
+   * Emit a debug log event to all registered listeners
+   */
+  private emitDebug(level: DebugLogEvent['level'], message: string): void {
+    const event: DebugLogEvent = {
+      level,
+      message,
+      timestamp: new Date().toISOString()
+    };
+    for (const listener of this.debugListeners) {
+      try {
+        listener(event);
+      } catch (err) {
+        console.error('[IbkrWS] Debug listener error:', err);
+      }
+    }
+  }
+
+  /**
+   * Register a debug log listener
+   */
+  addDebugListener(listener: (event: DebugLogEvent) => void): () => void {
+    this.debugListeners.add(listener);
+    return () => this.debugListeners.delete(listener);
+  }
+
+  /**
+   * Remove a debug log listener
+   */
+  removeDebugListener(listener: (event: DebugLogEvent) => void): void {
+    this.debugListeners.delete(listener);
   }
 
   /**
@@ -203,11 +246,13 @@ export class IbkrWebSocketManager {
     if (sessionToken) {
       this.sessionTokenExpiresAt = Date.now() + (expiresInSeconds * 1000);
       console.log(`[IbkrWS] Session token updated, expires in ${expiresInSeconds}s`);
+      this.emitDebug('info', `Session token refreshed (expires in ${expiresInSeconds}s)`);
 
       // Immediately send to active WebSocket connection
       if (this.ws && this.isConnected && this.ws.readyState === WebSocket.OPEN) {
         this.ws.send(JSON.stringify({ session: sessionToken }));
         console.log('[IbkrWS] Sent updated session token to active WebSocket');
+        this.emitDebug('success', 'Session token sent to active WebSocket');
       }
     } else {
       this.sessionTokenExpiresAt = 0;
@@ -347,6 +392,7 @@ export class IbkrWebSocketManager {
 
       try {
         console.log('[IbkrWS] Connecting to IBKR WebSocket...');
+        this.emitDebug('info', 'Connecting to IBKR WebSocket...');
         console.log(`[IbkrWS] URL: ${this.wsUrl}`);
         console.log(`[IbkrWS] Has session token: ${!!this.sessionToken}`);
         console.log(`[IbkrWS] Cookie length: ${this.cookieString?.length || 0}`);
@@ -360,6 +406,7 @@ export class IbkrWebSocketManager {
 
         this.ws.on('open', () => {
           console.log('[IbkrWS] WebSocket connection opened');
+          this.emitDebug('success', 'WebSocket connection opened');
           this.isConnected = true;
           this.isConnecting = false;
           this.reconnectAttempts = 0;
@@ -375,10 +422,12 @@ export class IbkrWebSocketManager {
           if (this.sessionToken) {
             const sessionMsg = JSON.stringify({ session: this.sessionToken });
             console.log(`[IbkrWS] Sending session authentication: {"session":"${this.sessionToken.substring(0, 8)}..."}`);
+            this.emitDebug('info', `Sending session authentication (token: ${this.sessionToken.substring(0, 8)}...)`);
             this.ws!.send(sessionMsg);
           } else {
             console.error('[IbkrWS] CRITICAL: No session token available for auth!');
             console.error('[IbkrWS] Aborting connection - cannot authenticate without token.');
+            this.emitDebug('error', 'No session token available - aborting connection');
             clearTimeout(connectionTimeout);
             this.ws!.close();
             this.isConnected = false;
@@ -422,13 +471,16 @@ export class IbkrWebSocketManager {
               // IBKR returns {"topic":"sts","authenticated":false} when session is invalid
               if (msg.authenticated === false) {
                 console.error('[IbkrWS] IBKR returned authenticated=false! Session token is invalid.');
+                this.emitDebug('error', 'Authentication failed - session token invalid');
                 // Increment auth failure counter for circuit breaker
                 this.consecutiveAuthFailures++;
                 console.log(`[IbkrWS] Auth failure count: ${this.consecutiveAuthFailures}/${this.MAX_AUTH_FAILURES}`);
+                this.emitDebug('warn', `Auth failure ${this.consecutiveAuthFailures}/${this.MAX_AUTH_FAILURES}`);
                 if (this.consecutiveAuthFailures >= this.MAX_AUTH_FAILURES) {
                   this.circuitBreakerOpen = true;
                   this.circuitBreakerCooldownUntil = Date.now() + this.CIRCUIT_BREAKER_COOLDOWN_MS;
                   console.error('[IbkrWS] CIRCUIT BREAKER OPEN - 5 min cooldown before auto-retry');
+                  this.emitDebug('error', 'Circuit breaker OPEN - 5 min cooldown before retry');
                 }
                 clearTimeout(connectionTimeout);
                 // Clean up and close connection - the 'close' handler will trigger scheduleReconnect
@@ -460,6 +512,7 @@ export class IbkrWebSocketManager {
               this.startHealthCheck();
               // Now that we've received sts, subscribe to market data
               console.log('[IbkrWS] sts received with auth success - subscribing to market data');
+              this.emitDebug('success', 'Authentication successful');
               this.resubscribeAll();
               resolve();
               return;
@@ -475,6 +528,7 @@ export class IbkrWebSocketManager {
 
             if (isAuthConfirmed) {
               console.log('[IbkrWS] WebSocket authenticated successfully');
+              this.emitDebug('success', 'WebSocket authenticated successfully');
               this.isAuthenticated = true;
               // Update connection state machine - now authenticated
               getConnectionStateManager().setWebSocketStatus(true, true);
@@ -582,6 +636,7 @@ export class IbkrWebSocketManager {
     this.subscriptionErrorMessage = null;
     // Keep lastDataReceived so frontend can show data age
     console.log('[IbkrWS] Disconnected (cache preserved for display)');
+    this.emitDebug('warn', 'WebSocket disconnected (cache preserved)');
   }
 
   /**
@@ -605,6 +660,7 @@ export class IbkrWebSocketManager {
     // Send subscription if connected AND authenticated
     if (this.isConnected && this.isAuthenticated && this.ws) {
       console.log(`[IbkrWS] Sending subscription for ${symbol} immediately`);
+      this.emitDebug('info', `Subscribing to ${symbol} (${conid})`);
       this.sendSubscribe(conid, fields);
     } else {
       console.log(`[IbkrWS] Subscription for ${symbol} queued (will send on connect/auth)`);
@@ -741,6 +797,7 @@ export class IbkrWebSocketManager {
           const errorMsg = typeof msg.error === 'string' ? msg.error : JSON.stringify(msg.error);
           const errorCode = msg.code;
           console.error(`[IbkrWS] Subscription error for ${msg.topic}: code=${errorCode} error=${errorMsg}`);
+          this.emitDebug('error', `Subscription error: ${errorMsg}`);
           // Track the subscription error - this means data is NOT flowing
           this.subscriptionErrorMessage = errorMsg;
 
@@ -758,6 +815,7 @@ export class IbkrWebSocketManager {
 
           if (isAuthError) {
             console.error('[IbkrWS] Authentication error detected! Forcing reconnect with fresh credentials...');
+            this.emitDebug('error', 'Auth error detected - forcing reconnect');
             // Use void to fire-and-forget the async reconnect
             void this.forceReconnectWithFreshCredentials();
             return; // Don't process further after triggering reconnect
@@ -765,9 +823,11 @@ export class IbkrWebSocketManager {
             // Non-auth error - track consecutive failures
             this.consecutiveSubscriptionErrors++;
             console.warn(`[IbkrWS] Non-auth subscription error #${this.consecutiveSubscriptionErrors}/3`);
+            this.emitDebug('warn', `Subscription error #${this.consecutiveSubscriptionErrors}/3`);
 
             if (this.consecutiveSubscriptionErrors >= 3) {
               console.error('[IbkrWS] 3+ consecutive subscription errors - forcing reconnect');
+              this.emitDebug('error', '3+ consecutive errors - forcing reconnect');
               this.consecutiveSubscriptionErrors = 0;
               void this.forceReconnectWithFreshCredentials();
               return;
@@ -1154,6 +1214,7 @@ export class IbkrWebSocketManager {
       const spyPrice = spyData?.last || 0;
       const vixPrice = vixData?.last || (vixData?.bid && vixData?.ask ? (vixData.bid + vixData.ask) / 2 : 0);
       console.log(`[IbkrWS] HEALTH CHECK: SPY=$${spyPrice.toFixed(2)} (${Math.round(spyAge/1000)}s old), VIX=${vixPrice.toFixed(2)} (${Math.round(vixAge/1000)}s old)`);
+      this.emitDebug('info', `Health check: SPY=$${spyPrice.toFixed(2)} (${Math.round(spyAge/1000)}s) VIX=${vixPrice.toFixed(2)} (${Math.round(vixAge/1000)}s)`);
 
       // CRITICAL: Only reconnect if SPY data is truly stale
       // VIX might not have 'last' price - that's OK if we have bid/ask
@@ -1163,11 +1224,13 @@ export class IbkrWebSocketManager {
 
       if (isSpyStale) {
         console.error(`[IbkrWS] ⚠️ SPY DATA STALE (${Math.round(spyAge/1000)}s old)! Auto-reconnecting...`);
+        this.emitDebug('error', `SPY data stale (${Math.round(spyAge/1000)}s old) - auto-reconnecting`);
 
         try {
           await this.forceFullReconnect();
         } catch (err: any) {
           console.error('[IbkrWS] Auto-reconnect failed:', err.message);
+          this.emitDebug('error', `Auto-reconnect failed: ${err.message}`);
         }
       } else if (isVixStale) {
         console.warn(`[IbkrWS] VIX data stale but SPY OK - not reconnecting`);
@@ -1194,6 +1257,7 @@ export class IbkrWebSocketManager {
   private resubscribeAll(): void {
     const count = this.subscriptions.size;
     console.log(`[IbkrWS] resubscribeAll() called with ${count} subscriptions`);
+    this.emitDebug('info', `Resubscribing to ${count} symbols`);
     for (const [conid, sub] of this.subscriptions) {
       console.log(`[IbkrWS] Resubscribing to ${sub.symbol || conid}`);
       this.sendSubscribe(conid, sub.fields);
@@ -1247,6 +1311,7 @@ export class IbkrWebSocketManager {
     const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1), 30000);
 
     console.log(`[IbkrWS] Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+    this.emitDebug('info', `Reconnecting in ${Math.round(delay/1000)}s (attempt ${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
 
     setTimeout(async () => {
       // FIX: Get fresh credentials and validate token before reconnecting
@@ -1287,6 +1352,7 @@ export class IbkrWebSocketManager {
   async forceFullReconnect(): Promise<void> {
     console.log('[IbkrWS] ========== FORCE FULL RECONNECT ==========');
     console.log('[IbkrWS] Destroying stale WebSocket and clearing all cached data...');
+    this.emitDebug('warn', 'Force full reconnect initiated');
 
     // 1. Stop all intervals
     this.stopHeartbeat();
@@ -1335,8 +1401,10 @@ export class IbkrWebSocketManager {
 
     // 7. Connect with fresh credentials
     console.log('[IbkrWS] Connecting with fresh credentials...');
+    this.emitDebug('info', 'Reconnecting with fresh credentials...');
     await this.connect();
     console.log('[IbkrWS] ========== RECONNECT COMPLETE ==========');
+    this.emitDebug('success', 'Reconnect complete');
   }
 
   /**

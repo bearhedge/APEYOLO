@@ -718,6 +718,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
     console.log('Client connected to websocket');
     wsClients.add(ws);
 
+    // Track debug log subscription for this client
+    let debugUnsubscribe: (() => void) | null = null;
+
     // Send initial data
     ws.send(JSON.stringify({
       type: 'connected',
@@ -734,12 +737,52 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     }));
 
-    // Handle incoming messages (ping/pong for keepalive)
+    // Handle incoming messages (ping/pong for keepalive, debug log subscriptions)
     ws.on('message', (data) => {
       try {
         const message = JSON.parse(data.toString());
         if (message.type === 'ping') {
           ws.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
+        }
+
+        // Handle debug log subscription
+        if (message.action === 'subscribe_debug_log') {
+          // Unsubscribe from any existing subscription first
+          if (debugUnsubscribe) {
+            debugUnsubscribe();
+          }
+
+          // Subscribe to debug events from the IBKR WebSocket manager
+          if (wsManagerInstance) {
+            debugUnsubscribe = wsManagerInstance.addDebugListener((event) => {
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({
+                  type: 'debug_log',
+                  level: event.level,
+                  message: event.message,
+                  timestamp: event.timestamp
+                }));
+              }
+            });
+            console.log('[WebSocket] Client subscribed to debug_log');
+          } else {
+            // Send a message indicating no IBKR WebSocket active
+            ws.send(JSON.stringify({
+              type: 'debug_log',
+              level: 'warn',
+              message: 'IBKR WebSocket not initialized',
+              timestamp: new Date().toISOString()
+            }));
+          }
+        }
+
+        // Handle debug log unsubscription
+        if (message.action === 'unsubscribe_debug_log') {
+          if (debugUnsubscribe) {
+            debugUnsubscribe();
+            debugUnsubscribe = null;
+            console.log('[WebSocket] Client unsubscribed from debug_log');
+          }
         }
       } catch (err) {
         // Ignore parse errors for non-JSON messages
@@ -841,6 +884,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
     ws.on('close', () => {
       clearInterval(interval);
       wsClients.delete(ws);
+      // Clean up debug log subscription
+      if (debugUnsubscribe) {
+        debugUnsubscribe();
+        debugUnsubscribe = null;
+      }
       console.log('Client disconnected from websocket');
     });
   });
