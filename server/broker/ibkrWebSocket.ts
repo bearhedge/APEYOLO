@@ -163,9 +163,6 @@ export class IbkrWebSocketManager {
   private readonly MAX_MISSED_HEARTBEATS = 3;
   // Mutex for connect() to prevent race conditions with simultaneous connection attempts
   private connectPromise: Promise<void> | null = null;
-  // Account info for simple status
-  private accountId: string | null = null;
-  private tradingMode: 'LIVE' | 'PAPER' | null = null;
 
   constructor(cookieString: string, sessionToken?: string | null) {
     this.cookieString = cookieString;
@@ -572,8 +569,6 @@ export class IbkrWebSocketManager {
     this.subscriptionErrorMessage = null;
     // Keep lastDataReceived so frontend can show data age
     console.log('[IbkrWS] Disconnected (cache preserved for display)');
-    // Broadcast disconnected status to all clients
-    broadcastSimpleConnectionStatus();
   }
 
   /**
@@ -930,8 +925,6 @@ export class IbkrWebSocketManager {
     if (conid === SPY_CONID && cached.last > 0) {
       this.hasReceivedRealWebSocketData = true;
       getConnectionStateManager().setDataReceived(cached.last);
-      // Broadcast simplified connection status to all clients
-      broadcastSimpleConnectionStatus();
     }
 
     // Notify all callbacks
@@ -1076,41 +1069,6 @@ export class IbkrWebSocketManager {
       circuitBreakerOpen: this.circuitBreakerOpen,
       consecutiveAuthFailures: this.consecutiveAuthFailures,
     };
-  }
-
-  /**
-   * Set account ID for simple status display
-   */
-  setAccountId(accountId: string | null): void {
-    this.accountId = accountId;
-  }
-
-  /**
-   * Get account ID for simple status
-   */
-  getAccountId(): string | null {
-    return this.accountId;
-  }
-
-  /**
-   * Set trading mode (LIVE or PAPER)
-   */
-  setMode(mode: 'LIVE' | 'PAPER' | null): void {
-    this.tradingMode = mode;
-  }
-
-  /**
-   * Get trading mode for simple status
-   */
-  getMode(): 'LIVE' | 'PAPER' | null {
-    return this.tradingMode;
-  }
-
-  /**
-   * Get cached market data for external use
-   */
-  getMarketData(conid: number): CachedMarketData | null {
-    return this.marketDataCache.get(conid) || null;
   }
 
   private startHeartbeat(): void {
@@ -1454,82 +1412,6 @@ export function getIbkrWebSocketStatus(): { connected: boolean; authenticated: b
 // Standard conids for diagnostic checks
 export const SPY_CONID = 756733;
 export const VIX_CONID = 13455763;
-
-/**
- * SIMPLE CONNECTION STATUS
- * Single source of truth: connected = SPY data flowing (received in last 10 seconds)
- * No OAuth status checks. No SSO checks. No 5-indicator reconciliation.
- */
-export interface SimpleConnectionStatus {
-  connected: boolean;
-  spyPrice: number | null;
-  lastUpdate: number | null;
-  account: string | null;
-  mode: 'LIVE' | 'PAPER' | null;
-}
-
-/**
- * Get simple connection status based on SPY data flow
- * Connected = SPY data received within the last 10 seconds
- */
-export function getSimpleConnectionStatus(): SimpleConnectionStatus {
-  if (!wsManagerInstance) {
-    return {
-      connected: false,
-      spyPrice: null,
-      lastUpdate: null,
-      account: null,
-      mode: null,
-    };
-  }
-
-  const spyData = wsManagerInstance.getCachedMarketData(SPY_CONID);
-  const now = Date.now();
-  const lastUpdate = spyData?.timestamp?.getTime() || null;
-  const connected = lastUpdate !== null && (now - lastUpdate) < 10000; // 10 seconds
-
-  return {
-    connected,
-    spyPrice: spyData?.last || null,
-    lastUpdate,
-    account: wsManagerInstance.getAccountId?.() || null,
-    mode: (process.env.IBKR_ENV?.toUpperCase() === 'PAPER' ? 'PAPER' : 'LIVE') as 'LIVE' | 'PAPER',
-  };
-}
-
-/**
- * Broadcast simple connection status to all WebSocket clients
- */
-export function broadcastSimpleConnectionStatus(): void {
-  const status = getSimpleConnectionStatus();
-  const broadcast = (global as any).broadcastConnectionStatus;
-  if (typeof broadcast === 'function') {
-    // Send in simplified format that frontend expects
-    broadcast({
-      phase: status.connected ? 'streaming' : 'disconnected',
-      simple: status, // Include simple status for new UI
-      // Legacy fields for backward compatibility
-      auth: {
-        oauth: { success: status.connected, timestamp: status.lastUpdate ? new Date(status.lastUpdate).toISOString() : null },
-        sso: { success: status.connected, timestamp: status.lastUpdate ? new Date(status.lastUpdate).toISOString() : null },
-        validate: { success: status.connected, timestamp: status.lastUpdate ? new Date(status.lastUpdate).toISOString() : null },
-        init: { success: status.connected, timestamp: status.lastUpdate ? new Date(status.lastUpdate).toISOString() : null },
-      },
-      websocket: {
-        connected: status.connected,
-        authenticated: status.connected,
-        lastHeartbeat: status.lastUpdate ? new Date(status.lastUpdate).toISOString() : null,
-      },
-      dataFlow: {
-        receiving: status.connected,
-        lastTick: status.lastUpdate ? new Date(status.lastUpdate).toISOString() : null,
-        spyPrice: status.spyPrice,
-        status: status.connected ? 'streaming' : 'none',
-      },
-      lastUpdated: new Date().toISOString(),
-    });
-  }
-}
 
 /**
  * Get detailed WebSocket status including real data flow verification

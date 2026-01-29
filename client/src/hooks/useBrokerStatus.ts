@@ -1,24 +1,16 @@
 /**
- * useBrokerStatus - Simplified broker connection status
- * Single source of truth: connected = SPY data flowing (received in last 10 seconds)
+ * useBrokerStatus - Unified hook for broker connection status
+ * Single source of truth used across Engine, Settings, and Header components
  *
- * Uses WebSocket push-based updates - no HTTP polling required.
+ * Two modes available:
+ * 1. useBrokerStatus() - HTTP-based (legacy, for initial load)
+ * 2. useConnectionStatus() - WebSocket push-based (preferred, real-time)
  */
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useQuery } from '@tanstack/react-query';
+import { useState, useEffect, useCallback } from 'react';
 import { useWebSocket, ConnectionStatusUpdate, getLatestConnectionStatus } from './use-websocket';
-import { useMutation } from '@tanstack/react-query';
 
-// Simple connection status interface
-export interface SimpleConnectionStatus {
-  connected: boolean;
-  spyPrice: number | null;
-  lastUpdate: number | null;
-  account: string | null;
-  mode: 'LIVE' | 'PAPER' | null;
-}
-
-// Legacy interfaces for backward compatibility
 export interface BrokerDiagnostics {
   oauth: { status: number; message: string };
   sso: { status: number; message: string };
@@ -36,84 +28,76 @@ export interface BrokerStatus {
 }
 
 interface UseBrokerStatusOptions {
+  /** Whether to enable polling */
+  enabled?: boolean;
   /** Callback when connection status changes */
   onStatusChange?: (connected: boolean) => void;
 }
 
 /**
- * PRIMARY HOOK: Simplified broker status based on SPY data flow
- * Connected = SPY data received within the last 10 seconds
- * No HTTP polling - uses WebSocket push updates
+ * Fetch broker status from API
+ */
+async function fetchBrokerStatus(): Promise<BrokerStatus> {
+  const response = await fetch('/api/ibkr/status');
+  if (!response.ok) {
+    throw new Error('Failed to fetch broker status');
+  }
+  return response.json();
+}
+
+/**
+ * Hook for unified broker status across the application
+ * Uses adaptive polling: faster when connecting, slower when stable
  */
 export function useBrokerStatus(options: UseBrokerStatusOptions = {}) {
-  const { onStatusChange } = options;
-  const { onConnectionStatusUpdate } = useWebSocket();
-  const [status, setStatus] = useState<ConnectionStatusUpdate | null>(getLatestConnectionStatus);
-  const prevConnected = useRef<boolean | null>(null);
+  const { enabled = true, onStatusChange } = options;
 
-  useEffect(() => {
-    const unsubscribe = onConnectionStatusUpdate((update) => {
-      setStatus(update);
-    });
-    return unsubscribe;
-  }, [onConnectionStatusUpdate]);
+  const query = useQuery<BrokerStatus>({
+    // Use same query key as Settings.tsx for unified cache
+    queryKey: ['/api/ibkr/status'],
+    queryFn: fetchBrokerStatus,
+    enabled,
+    // DISABLED - IBKR snapshots cost money
+    refetchInterval: false,
+    // Keep data fresh but allow some staleness
+    staleTime: 5000, // Consider fresh for 5s
+    // Don't refetch on window focus if recently fetched
+    refetchOnWindowFocus: true,
+    // Retry on error
+    retry: 2,
+    retryDelay: 1000,
+  });
 
-  // Get simple status from the update (new format) or derive from legacy
-  const simple = (status as any)?.simple as SimpleConnectionStatus | undefined;
-  const connected = simple?.connected ?? (status?.dataFlow?.status === 'streaming');
-  const spyPrice = simple?.spyPrice ?? status?.dataFlow?.spyPrice ?? null;
-  const account = simple?.account ?? null;
-  const mode = simple?.mode ?? null;
-  const lastUpdate = simple?.lastUpdate ?? (status?.dataFlow?.lastTick ? new Date(status.dataFlow.lastTick).getTime() : null);
-
-  // Notify on connection changes
-  useEffect(() => {
-    if (prevConnected.current !== null && prevConnected.current !== connected && onStatusChange) {
-      onStatusChange(connected);
-    }
-    prevConnected.current = connected;
-  }, [connected, onStatusChange]);
+  // Track connection changes
+  const connected = query.data?.connected ?? false;
+  const isConnecting = query.isFetching && !query.data?.connected;
 
   return {
-    // Simple status (primary)
-    connected,
-    spyPrice,
-    lastUpdate,
-    account,
-    mode,
-
     // Connection state
-    isConnecting: false, // No longer tracking intermediate states
-    isLoading: status === null,
-    isError: status?.phase === 'error',
-    error: status?.error ?? null,
+    connected,
+    isConnecting,
+    isLoading: query.isLoading,
+    isError: query.isError,
+    error: query.error,
 
-    // Legacy compatibility
-    provider: 'ibkr' as const,
-    environment: (mode === 'LIVE' ? 'live' : 'paper') as 'paper' | 'live',
-    lastChecked: status?.lastUpdated ?? null,
-    diagnostics: undefined, // No longer tracking detailed diagnostics
+    // Status details
+    status: query.data,
+    provider: query.data?.provider ?? 'mock',
+    environment: query.data?.environment ?? 'paper',
+    diagnostics: query.data?.diagnostics,
+    lastChecked: query.data?.lastChecked,
 
     // Actions
-    refetch: () => {}, // No-op since we use WebSocket push
+    refetch: query.refetch,
+
+    // Query state for advanced use
+    isFetching: query.isFetching,
+    isStale: query.isStale,
   };
 }
 
 /**
- * Hook for reconnecting to IBKR
- */
-export function useReconnectMutation() {
-  return useMutation({
-    mutationFn: async () => {
-      const response = await fetch('/api/settings/force-reconnect', { method: 'POST', credentials: 'include' });
-      return response.json();
-    },
-  });
-}
-
-/**
- * Legacy compatibility: Check if all 4 IBKR authentication phases passed
- * @deprecated Use useBrokerStatus().connected instead
+ * Check if all 4 IBKR authentication phases passed
  */
 export function isFullyConnected(diagnostics?: BrokerDiagnostics): boolean {
   if (!diagnostics) return false;
@@ -126,8 +110,7 @@ export function isFullyConnected(diagnostics?: BrokerDiagnostics): boolean {
 }
 
 /**
- * Legacy compatibility: Get connection phase status for display
- * @deprecated Use useBrokerStatus().connected instead - shows connected or disconnected
+ * Get connection phase status for display
  */
 export function getConnectionPhase(diagnostics?: BrokerDiagnostics): {
   phase: string;
@@ -166,8 +149,8 @@ export function getConnectionPhase(diagnostics?: BrokerDiagnostics): {
 }
 
 /**
- * Legacy hook: WebSocket push-based connection status
- * @deprecated Use useBrokerStatus() instead
+ * WebSocket push-based connection status hook
+ * Preferred over useBrokerStatus for real-time updates without polling
  */
 export function useConnectionStatus() {
   const { onConnectionStatusUpdate } = useWebSocket();
@@ -179,10 +162,6 @@ export function useConnectionStatus() {
     });
     return unsubscribe;
   }, [onConnectionStatusUpdate]);
-
-  // Get simple status from the update (new format)
-  const simple = (status as any)?.simple as SimpleConnectionStatus | undefined;
-  const connected = simple?.connected ?? (status?.dataFlow?.status === 'streaming');
 
   // Derive connection state from status
   const isAuthComplete = status?.auth
@@ -222,9 +201,6 @@ export function useConnectionStatus() {
     // Raw status from server
     rawStatus: status,
 
-    // Simple status (new)
-    simple,
-
     // Connection phase
     phase: status?.phase ?? 'disconnected',
     isAuthComplete,
@@ -232,13 +208,13 @@ export function useConnectionStatus() {
     isStale,
     hasError,
 
-    // Backward compatible fields - now use simple.connected
-    connected,
+    // Backward compatible fields
+    connected: isAuthComplete,
     diagnostics,
 
     // Data flow info
     dataFlow: status?.dataFlow ?? null,
-    spyPrice: simple?.spyPrice ?? status?.dataFlow?.spyPrice ?? null,
+    spyPrice: status?.dataFlow?.spyPrice ?? null,
     lastTick: status?.dataFlow?.lastTick ?? null,
 
     // WebSocket health

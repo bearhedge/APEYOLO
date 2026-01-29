@@ -39,7 +39,6 @@ import {
 } from '@/components/ui/select';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useTokenRefreshLogs, type RefreshLogEntry } from '@/hooks/useTokenRefreshLogs';
-import { IbkrConnectionSection } from '@/components/settings/IbkrConnectionSection';
 
 interface IbkrCredentialsStatus {
   configured: boolean;
@@ -993,8 +992,734 @@ export function Settings({
 
         {/* Centered content container */}
         <div className="max-w-3xl mx-auto">
-          {/* Simplified IBKR Connection Section */}
-          <IbkrConnectionSection />
+          {/* Unified IBKR Brokerage Card */}
+          <div className="bg-charcoal rounded-2xl border border-white/10 shadow-lg overflow-hidden">
+            {/* Card Header */}
+            <div className="flex items-center justify-between p-6 border-b border-white/10">
+              <div className="flex items-center gap-3">
+                <Building2 className="w-6 h-6" />
+                <h3 className="text-xl font-semibold">IBKR Brokerage</h3>
+              </div>
+              <div className="flex items-center gap-2">
+                {getConnectionIcon()}
+                <span className={`text-sm font-medium ${getConnectionStatusColor()}`}>
+                  {getConnectionStatus()}
+                </span>
+              </div>
+            </div>
+
+            {/* MODE Toggle - LIVE/PAPER */}
+            <div className="p-4 border-b border-white/10 bg-dark-gray/30">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-silver">Trading Mode</span>
+                <div className="flex items-center gap-2">
+                  <span className={`px-3 py-1 rounded-full text-sm font-medium ${
+                    ibkrStatus?.environment === 'live'
+                      ? 'bg-orange-500/20 text-orange-400 border border-orange-500/30'
+                      : 'bg-blue-500/20 text-blue-400 border border-blue-500/30'
+                  }`}>
+                    {ibkrStatus?.environment === 'live' ? 'LIVE' : 'PAPER'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            {/* ACCOUNT SUMMARY Section */}
+            {ibkrStatus?.configured && (
+              <div className="p-6 border-b border-white/10">
+                <h4 className="text-sm font-medium text-silver uppercase tracking-wider mb-4">Account Summary</h4>
+                <div className="grid grid-cols-4 gap-3">
+                  <div className="p-3 bg-dark-gray rounded-lg">
+                    <p className="text-xs text-silver mb-1">Account ID</p>
+                    <p className="text-sm font-mono font-medium">{ibkrStatus?.accountId || '—'}</p>
+                  </div>
+                  <div className="p-3 bg-dark-gray rounded-lg">
+                    <p className="text-xs text-silver mb-1">Portfolio Value</p>
+                    <p className="text-sm font-medium tabular-nums">
+                      {ibkrStatus?.nav
+                        ? `$${ibkrStatus.nav.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                        : ibkrStatus?.netValue
+                          ? `$${ibkrStatus.netValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                          : '—'}
+                    </p>
+                  </div>
+                  <div className="p-3 bg-dark-gray rounded-lg">
+                    <p className="text-xs text-silver mb-1">Buying Power</p>
+                    <p className="text-sm font-medium tabular-nums">
+                      {ibkrStatus?.buyingPower
+                        ? `$${ibkrStatus.buyingPower.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                        : '—'}
+                    </p>
+                  </div>
+                  <div className="p-3 bg-dark-gray rounded-lg">
+                    <p className="text-xs text-silver mb-1">Last Updated</p>
+                    <p className="text-sm text-silver flex items-center gap-1">
+                      <Clock className="w-3 h-3" />
+                      {ibkrStatus?.lastUpdated
+                        ? (() => {
+                            const diff = Date.now() - new Date(ibkrStatus.lastUpdated).getTime();
+                            const mins = Math.floor(diff / 60000);
+                            return mins < 1 ? 'Just now' : `${mins}m ago`;
+                          })()
+                        : '—'}
+                    </p>
+                  </div>
+                </div>
+
+                {/* Connection Status Indicators - Compact */}
+                {ibkrStatus?.diagnostics && connectionMethod === 'oauth' && (
+                  <div className="mt-4 flex items-center gap-3 text-xs">
+                    <span className="text-silver">Status:</span>
+                    <div className="flex items-center gap-2">
+                      <span className={`flex items-center gap-1 ${ibkrStatus.diagnostics.oauth?.success ? 'text-green-400' : 'text-zinc-500'}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${ibkrStatus.diagnostics.oauth?.success ? 'bg-green-400' : 'bg-zinc-500'}`} />
+                        OAuth
+                      </span>
+                      <span className={`flex items-center gap-1 ${ibkrStatus.diagnostics.sso?.success ? 'text-green-400' : 'text-zinc-500'}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${ibkrStatus.diagnostics.sso?.success ? 'bg-green-400' : 'bg-zinc-500'}`} />
+                        SSO
+                      </span>
+                      <span className={`flex items-center gap-1 ${ibkrStatus.diagnostics.websocket?.success ? 'text-green-400' : 'text-zinc-500'}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${ibkrStatus.diagnostics.websocket?.success ? 'bg-green-400' : 'bg-zinc-500'}`} />
+                        WebSocket
+                      </span>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Error Display - User Friendly */}
+            {(ibkrStatus?.errorMessage || userCredentials?.errorMessage) && (
+              (() => {
+                const error = translateIbkrError(ibkrStatus?.errorMessage || userCredentials?.errorMessage);
+                if (!error) return null;
+                return (
+                  <div className="mx-6 mt-4 p-4 bg-red-900/20 border border-red-500/30 rounded-lg">
+                    <div className="flex items-start gap-3">
+                      <AlertCircle className="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" />
+                      <div className="flex-1">
+                        <p className="text-sm font-medium text-red-400">{error.title}</p>
+                        <p className="text-xs text-red-300/80 mt-1">{error.message}</p>
+                      </div>
+                      {error.action && (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="text-xs border-red-500/30 text-red-400 hover:bg-red-500/10"
+                          onClick={() => {
+                            if (error.action === 'Update Credentials') {
+                              setShowCredentialsForm(true);
+                              setShowAdvanced(true);
+                            } else {
+                              testCredentialsMutation.mutate();
+                            }
+                          }}
+                        >
+                          {error.action}
+                        </Button>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()
+            )}
+
+            {/* CONNECTION METHOD Toggle */}
+            <div className="p-6 border-b border-white/10">
+              <h4 className="text-sm font-medium text-silver uppercase tracking-wider mb-4">Connection Method</h4>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => handleConnectionMethodChange('oauth')}
+                  disabled={connectionModeLoading}
+                  className={`flex-1 p-4 rounded-lg border-2 transition-all ${
+                    connectionMethod === 'oauth'
+                      ? 'border-electric bg-electric/10 text-white'
+                      : 'border-white/10 bg-dark-gray text-silver hover:border-white/30'
+                  } ${connectionModeLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  <div className="flex items-center gap-3">
+                    {connectionModeLoading && connectionMethod !== 'oauth' ? (
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                    ) : (
+                      <Key className="w-5 h-5" />
+                    )}
+                    <div className="text-left">
+                      <p className="font-medium">OAuth 2.0</p>
+                      <p className="text-xs opacity-70">Direct API connection via IBKR OAuth</p>
+                    </div>
+                  </div>
+                </button>
+                <button
+                  onClick={() => handleConnectionMethodChange('relay')}
+                  disabled={connectionModeLoading}
+                  className={`flex-1 p-4 rounded-lg border-2 transition-all ${
+                    connectionMethod === 'relay'
+                      ? 'border-electric bg-electric/10 text-white'
+                      : 'border-white/10 bg-dark-gray text-silver hover:border-white/30'
+                  } ${connectionModeLoading ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  <div className="flex items-center gap-3">
+                    {connectionModeLoading && connectionMethod !== 'relay' ? (
+                      <Loader2 className="w-5 h-5 animate-spin" />
+                    ) : (
+                      <Database className="w-5 h-5" />
+                    )}
+                    <div className="text-left">
+                      <p className="font-medium">TWS/Gateway</p>
+                      <p className="text-xs opacity-70">Local relay via TWS or IB Gateway</p>
+                    </div>
+                  </div>
+                </button>
+              </div>
+              {connectionMethod === 'relay' && (
+                <p className="text-xs text-electric mt-2">OAuth WebSocket disconnected. You can now connect TWS/Gateway locally.</p>
+              )}
+            </div>
+
+            {/* Test/Order Results - shown when present */}
+            {(testResult || orderResult || clearResult || credTestResult) && (
+              <div className={`p-6 border-b border-white/10 transition-opacity ${connectionMethod !== 'oauth' ? 'opacity-40' : ''}`}>
+                {testResult && (
+                  <div className={`p-3 rounded-lg border ${
+                    testResult.success ? 'bg-green-900/20 border-green-500/30' : 'bg-red-900/20 border-red-500/30'
+                  }`}>
+                    <p className={`text-sm font-medium ${testResult.success ? 'text-green-400' : 'text-red-400'}`}>
+                      Connection Test: {testResult.message}
+                    </p>
+                  </div>
+                )}
+
+                {credTestResult && (
+                  <div className={`${testResult ? 'mt-3' : ''} p-3 rounded-lg border ${
+                    credTestResult.success ? 'bg-green-900/20 border-green-500/30' : 'bg-red-900/20 border-red-500/30'
+                  }`}>
+                    <p className={`text-sm font-medium ${credTestResult.success ? 'text-green-400' : 'text-red-400'}`}>
+                      {credTestResult.message}
+                    </p>
+                    {credTestResult.account && (
+                      <p className="text-xs text-silver mt-1">
+                        Account: {credTestResult.account.accountId} | NAV: ${credTestResult.account.netValue?.toLocaleString()}
+                      </p>
+                    )}
+                  </div>
+                )}
+
+                {orderResult && (
+                  <div className={`${testResult || credTestResult ? 'mt-3' : ''} p-3 rounded-lg border ${
+                    orderResult.success ? 'bg-green-900/20 border-green-500/30' : 'bg-red-900/20 border-red-500/30'
+                  }`}>
+                    <p className={`text-sm font-medium ${orderResult.success ? 'text-green-400' : 'text-red-400'}`}>
+                      Test Order: {orderResult.message || (orderResult.success ? 'Order Submitted' : 'Order Failed')}
+                    </p>
+                    {orderResult.orderId && (
+                      <p className="text-xs text-silver mt-1">Order ID: {orderResult.orderId}</p>
+                    )}
+                  </div>
+                )}
+
+                {clearResult && (
+                  <div className={`${testResult || credTestResult || orderResult ? 'mt-3' : ''} p-3 rounded-lg border ${
+                    clearResult.success ? 'bg-green-900/20 border-green-500/30' : 'bg-red-900/20 border-red-500/30'
+                  }`}>
+                    <p className={`text-sm font-medium ${clearResult.success ? 'text-green-400' : 'text-red-400'}`}>
+                      {clearResult.message || 'Clear Orders Result'}
+                    </p>
+                    {clearResult.cleared > 0 && (
+                      <p className="text-xs text-silver mt-1">Cleared {clearResult.cleared} order(s)</p>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* ADVANCED Section - Collapsible */}
+            <div className={`border-b border-white/10 transition-opacity ${connectionMethod !== 'oauth' ? 'opacity-40' : ''}`}>
+              <button
+                onClick={() => setShowAdvanced(!showAdvanced)}
+                className="w-full p-4 flex items-center justify-between text-left hover:bg-white/5 transition-colors"
+              >
+                <span className="text-sm font-medium text-silver uppercase tracking-wider">Advanced Settings</span>
+                <ChevronDown className={`w-4 h-4 text-silver transition-transform ${showAdvanced ? 'rotate-180' : ''}`} />
+              </button>
+
+              {showAdvanced && (
+                <div className="pb-6">
+                  {/* Data Source Info */}
+                  <div className="px-6 pb-4">
+                    <div className="p-3 rounded-lg border bg-electric/10 border-electric/30">
+                      <div className="flex items-center gap-2">
+                        <Zap className="w-4 h-4 text-electric" />
+                        <span className="text-sm text-white">WebSocket Streaming</span>
+                        <span className="text-xs bg-green-500/20 text-green-400 px-2 py-0.5 rounded-full">FREE</span>
+                      </div>
+                      <p className="text-xs text-silver mt-1">
+                        Real-time push updates • ~50ms latency • Covered by OPRA subscription
+                      </p>
+                    </div>
+                  </div>
+
+                  {/* Auth Pipeline - Detailed */}
+                  {ibkrStatus?.configured && ibkrStatus.diagnostics && connectionMethod === 'oauth' && (
+                    <div className="px-6 pb-4">
+                      <p className="text-xs text-silver mb-2">Auth Pipeline</p>
+                      <div className="p-3 bg-dark-gray rounded-lg">
+                        <div className="flex items-center gap-4 flex-wrap">
+                          <StatusStep
+                            name="OAuth"
+                            status={ibkrStatus.diagnostics.oauth?.status || 0}
+                            message={ibkrStatus.diagnostics.oauth?.message || 'Not attempted'}
+                            success={ibkrStatus.diagnostics.oauth?.success}
+                            compact
+                          />
+                          <StatusStep
+                            name="SSO"
+                            status={ibkrStatus.diagnostics.sso?.status || 0}
+                            message={ibkrStatus.diagnostics.sso?.message || 'Not attempted'}
+                            success={ibkrStatus.diagnostics.sso?.success}
+                            compact
+                          />
+                          <StatusStep
+                            name="Validate"
+                            status={ibkrStatus.diagnostics.validate?.status || ibkrStatus.diagnostics.validated?.status || 0}
+                            message={ibkrStatus.diagnostics.validate?.message || ibkrStatus.diagnostics.validated?.message || 'Not attempted'}
+                            success={ibkrStatus.diagnostics.validate?.success || ibkrStatus.diagnostics.validated?.success}
+                            compact
+                          />
+                          <StatusStep
+                            name="Init"
+                            status={ibkrStatus.diagnostics.init?.status || ibkrStatus.diagnostics.initialized?.status || 0}
+                            message={ibkrStatus.diagnostics.init?.message || ibkrStatus.diagnostics.initialized?.message || 'Not attempted'}
+                            success={ibkrStatus.diagnostics.init?.success || ibkrStatus.diagnostics.initialized?.success}
+                            compact
+                          />
+                          <StatusStep
+                            name="WebSocket"
+                            status={ibkrStatus.diagnostics.websocket?.status || 0}
+                            message={ibkrStatus.diagnostics.websocket?.message || 'Not initialized'}
+                            success={ibkrStatus.diagnostics.websocket?.success}
+                            compact
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Token Refresh Log Panel - Only visible for OAuth mode */}
+                  {connectionMethod === 'oauth' && (
+                    <TokenRefreshLogPanel />
+                  )}
+
+                  {/* Credentials Management */}
+                  <div className="px-6">
+                    <div className="flex items-center justify-between mb-3">
+                      <p className="text-xs text-silver">Credentials</p>
+                      <span className={`text-xs font-medium ${getCredentialStatusColor()}`}>
+                        {getCredentialStatusText()}
+                      </span>
+                    </div>
+
+                    {/* Current Credentials Display */}
+                    {userCredentials?.configured && !showCredentialsForm && (
+                      <div className="grid grid-cols-3 gap-3 mb-3">
+                        <div className="p-2 bg-dark-gray rounded-lg">
+                          <p className="text-xs text-silver mb-0.5">Client ID</p>
+                          <p className="text-xs font-mono truncate">{userCredentials.clientId}</p>
+                        </div>
+                        <div className="p-2 bg-dark-gray rounded-lg">
+                          <p className="text-xs text-silver mb-0.5">Username</p>
+                          <p className="text-xs font-mono">{userCredentials.credential}</p>
+                        </div>
+                        <div className="p-2 bg-dark-gray rounded-lg">
+                          <p className="text-xs text-silver mb-0.5">Last Connected</p>
+                          <p className="text-xs">
+                            {userCredentials.lastConnectedAt
+                              ? new Date(userCredentials.lastConnectedAt).toLocaleDateString()
+                              : '—'}
+                          </p>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Credentials Form - Keep existing form structure */}
+                    {showCredentialsForm && (
+                      <div className="space-y-4">
+                        <p className="text-sm text-silver">
+                          Enter your IBKR OAuth credentials from the API Gateway.
+                        </p>
+
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <Label htmlFor="cred-client-id" className="text-xs">Client ID *</Label>
+                            <Input
+                              id="cred-client-id"
+                              value={credClientId}
+                              onChange={(e) => setCredClientId(e.target.value)}
+                              placeholder="Your IBKR Client ID"
+                              className="input-monochrome mt-1 text-sm"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="cred-client-key-id" className="text-xs">Client Key ID *</Label>
+                            <Input
+                              id="cred-client-key-id"
+                              value={credClientKeyId}
+                              onChange={(e) => setCredClientKeyId(e.target.value)}
+                              placeholder="e.g., main"
+                              className="input-monochrome mt-1 text-sm"
+                            />
+                          </div>
+                        </div>
+
+                        <div>
+                          <Label htmlFor="cred-username" className="text-xs">IBKR Username *</Label>
+                          <Input
+                            id="cred-username"
+                            value={credUsername}
+                            onChange={(e) => setCredUsername(e.target.value)}
+                            placeholder="Your IBKR login username"
+                            className="input-monochrome mt-1 text-sm"
+                          />
+                        </div>
+
+                        <div>
+                          <div className="flex items-center justify-between">
+                            <Label htmlFor="cred-private-key" className="text-xs">Private Key (PEM) *</Label>
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => setShowPrivateKey(!showPrivateKey)}
+                              className="text-xs text-silver hover:text-white h-6"
+                            >
+                              {showPrivateKey ? <EyeOff className="w-3 h-3 mr-1" /> : <Eye className="w-3 h-3 mr-1" />}
+                              {showPrivateKey ? 'Hide' : 'Show'}
+                            </Button>
+                          </div>
+                          <Textarea
+                            id="cred-private-key"
+                            value={credPrivateKey}
+                            onChange={(e) => setCredPrivateKey(e.target.value)}
+                            placeholder="-----BEGIN PRIVATE KEY-----&#10;...&#10;-----END PRIVATE KEY-----"
+                            className={`input-monochrome mt-1 min-h-24 font-mono text-xs ${!showPrivateKey ? 'blur-sm hover:blur-none focus:blur-none' : ''}`}
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-4">
+                          <div>
+                            <Label htmlFor="cred-account-id" className="text-xs">Account ID (optional)</Label>
+                            <Input
+                              id="cred-account-id"
+                              value={credAccountId}
+                              onChange={(e) => setCredAccountId(e.target.value)}
+                              placeholder="U1234567"
+                              className="input-monochrome mt-1 text-sm"
+                            />
+                          </div>
+                          <div>
+                            <Label htmlFor="cred-environment" className="text-xs">Environment</Label>
+                            <Select value={credEnvironment} onValueChange={(v) => setCredEnvironment(v as 'paper' | 'live')}>
+                              <SelectTrigger className="input-monochrome mt-1 text-sm">
+                                <SelectValue />
+                              </SelectTrigger>
+                              <SelectContent className="bg-charcoal border-white/10">
+                                <SelectItem value="paper">Paper Trading</SelectItem>
+                                <SelectItem value="live">Live Trading</SelectItem>
+                              </SelectContent>
+                            </Select>
+                          </div>
+                        </div>
+
+                        <div>
+                          <Label htmlFor="cred-allowed-ip" className="text-xs">Allowed IP (optional)</Label>
+                          <Input
+                            id="cred-allowed-ip"
+                            value={credAllowedIp}
+                            onChange={(e) => setCredAllowedIp(e.target.value)}
+                            placeholder="Your server's static IP"
+                            className="input-monochrome mt-1 text-sm"
+                          />
+                        </div>
+
+                        {credSaveResult && (
+                          <div className={`p-3 rounded-lg border ${
+                            credSaveResult.success ? 'bg-green-900/20 border-green-500/30' : 'bg-red-900/20 border-red-500/30'
+                          }`}>
+                            <p className={`text-sm ${credSaveResult.success ? 'text-green-400' : 'text-red-400'}`}>
+                              {credSaveResult.message || credSaveResult.error}
+                            </p>
+                          </div>
+                        )}
+
+                        <div className="flex gap-2">
+                          <Button
+                            onClick={handleSaveCredentials}
+                            className="btn-primary flex-1"
+                            disabled={saveCredentialsMutation.isPending}
+                          >
+                            <Save className="w-4 h-4 mr-2" />
+                            {saveCredentialsMutation.isPending ? 'Saving...' : 'Save Credentials'}
+                          </Button>
+                          <Button
+                            onClick={() => {
+                              setShowCredentialsForm(false);
+                              setCredSaveResult(null);
+                            }}
+                            className="btn-secondary"
+                          >
+                            Cancel
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Credentials Actions */}
+                    {!showCredentialsForm && (
+                      <div className="flex gap-2">
+                        {!userCredentials?.configured ? (
+                          <Button
+                            onClick={() => setShowCredentialsForm(true)}
+                            className="btn-primary flex-1"
+                            size="sm"
+                          >
+                            <Key className="w-4 h-4 mr-2" />
+                            Add IBKR Credentials
+                          </Button>
+                        ) : (
+                          <>
+                            <Button
+                              onClick={() => setShowCredentialsForm(true)}
+                              className="btn-secondary flex-1"
+                              size="sm"
+                            >
+                              Update Credentials
+                            </Button>
+                            <Button
+                              onClick={() => {
+                                if (window.confirm('Are you sure you want to delete your IBKR credentials?')) {
+                                  deleteCredentialsMutation.mutate();
+                                }
+                              }}
+                              className="btn-secondary text-red-400 hover:text-red-300"
+                              size="sm"
+                              disabled={deleteCredentialsMutation.isPending}
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </Button>
+                          </>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* ACTIONS Section */}
+            <div className={`p-6 bg-dark-gray/50 transition-opacity ${connectionMethod !== 'oauth' ? 'opacity-40' : ''}`}>
+              {!ibkrStatus?.configured && (
+                <div className="p-3 bg-yellow-900/20 border border-yellow-500/30 rounded-lg mb-4">
+                  <p className="text-sm text-yellow-400">
+                    IBKR credentials not configured.{' '}
+                    <button
+                      onClick={() => setShowAdvanced(true)}
+                      className="underline hover:text-yellow-300"
+                    >
+                      Open Advanced Settings
+                    </button>
+                    {' '}to add your credentials.
+                  </p>
+                </div>
+              )}
+
+              <div className="flex gap-3 flex-wrap">
+                <Button
+                  onClick={() => testCredentialsMutation.mutate()}
+                  className="btn-primary"
+                  disabled={testCredentialsMutation.isPending || !userCredentials?.configured}
+                  data-testid="button-test-connection"
+                >
+                  {testCredentialsMutation.isPending ? 'Testing...' : 'Test Connection'}
+                </Button>
+
+                {ibkrStatus?.configured && !ibkrStatus?.connected && (
+                  <Button
+                    onClick={() => {
+                      setRetryCount(0);
+                      setBackoffMs(3000);
+                      reconnectMutation.mutate();
+                      startReconnectCooldown();
+                    }}
+                    className="btn-secondary"
+                    disabled={reconnectMutation.isPending || warmMutation.isPending || reconnectCooldown > 0}
+                    data-testid="button-reconnect"
+                  >
+                    <RefreshCw className={`w-4 h-4 mr-2 ${(reconnectMutation.isPending || warmMutation.isPending) ? 'animate-spin' : ''}`} />
+                    {reconnectMutation.isPending || warmMutation.isPending
+                      ? 'Reconnecting...'
+                      : reconnectCooldown > 0
+                        ? `Wait ${reconnectCooldown}s`
+                        : 'Force Reconnect'}
+                  </Button>
+                )}
+
+                {ibkrStatus?.connected && (
+                  <>
+                    <Button
+                      onClick={() => testOrderMutation.mutate()}
+                      className="btn-secondary"
+                      disabled={testOrderMutation.isPending}
+                      data-testid="button-test-order"
+                    >
+                      {testOrderMutation.isPending ? 'Placing...' : 'Test Order (Buy SPY)'}
+                    </Button>
+
+                    <Button
+                      onClick={() => clearOrdersMutation.mutate()}
+                      className="btn-secondary"
+                      disabled={clearOrdersMutation.isPending}
+                      data-testid="button-clear-orders"
+                    >
+                      <Trash2 className="w-4 h-4 mr-2" />
+                      {clearOrdersMutation.isPending ? 'Clearing...' : 'Clear Orders'}
+                    </Button>
+                  </>
+                )}
+              </div>
+            </div>
+
+            {/* TWS/GATEWAY RELAY Section - Only shown when relay is selected */}
+            {connectionMethod === 'relay' && (
+              <div className="p-6 border-t border-white/10">
+                <h4 className="text-sm font-medium text-silver uppercase tracking-wider mb-4">TWS/Gateway Relay</h4>
+
+                {/* API Key Section */}
+                <div className="space-y-4 mb-6">
+                  <h5 className="text-sm font-medium text-white">API Key</h5>
+
+                  {apiKey ? (
+                    <div className="space-y-3">
+                      {/* Show masked key */}
+                      <div className="flex items-center gap-2">
+                        <code className="bg-black/50 px-3 py-2 rounded text-sm font-mono flex-1">
+                          {showApiKey && newlyGeneratedKey ? newlyGeneratedKey : apiKey.key}
+                        </code>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => setShowApiKey(!showApiKey)}
+                          disabled={!newlyGeneratedKey}
+                          title={newlyGeneratedKey ? (showApiKey ? 'Hide key' : 'Show key') : 'Full key only visible after generation'}
+                        >
+                          {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={copyApiKey}
+                          title="Copy to clipboard"
+                        >
+                          <Copy className="w-4 h-4" />
+                        </Button>
+                      </div>
+
+                      {/* Key info */}
+                      <p className="text-xs text-silver">
+                        Created: {new Date(apiKey.createdAt).toLocaleDateString()}
+                        {apiKey.lastUsedAt && ` \u2022 Last used: ${new Date(apiKey.lastUsedAt).toLocaleDateString()}`}
+                      </p>
+
+                      {/* Actions */}
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => {
+                            if (apiKey && window.confirm('This will invalidate your current API key. Continue?')) {
+                              deleteApiKeyMutation.mutate(apiKey.id, {
+                                onSuccess: () => {
+                                  generateApiKeyMutation.mutate();
+                                }
+                              });
+                            }
+                          }}
+                          disabled={generateApiKeyMutation.isPending || deleteApiKeyMutation.isPending}
+                        >
+                          <RefreshCw className={`w-4 h-4 mr-2 ${generateApiKeyMutation.isPending ? 'animate-spin' : ''}`} />
+                          Regenerate
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          onClick={() => {
+                            if (apiKey && window.confirm('Are you sure you want to delete this API key?')) {
+                              deleteApiKeyMutation.mutate(apiKey.id);
+                            }
+                          }}
+                          disabled={deleteApiKeyMutation.isPending}
+                        >
+                          <Trash2 className="w-4 h-4 mr-2" />
+                          Delete
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <Button
+                      onClick={() => generateApiKeyMutation.mutate()}
+                      disabled={generateApiKeyMutation.isPending}
+                    >
+                      <Key className="w-4 h-4 mr-2" />
+                      {generateApiKeyMutation.isPending ? 'Generating...' : 'Generate API Key'}
+                    </Button>
+                  )}
+
+                  {/* Show full key once after generation */}
+                  {newlyGeneratedKey && (
+                    <div className="p-4 bg-green-500/10 border border-green-500/30 rounded">
+                      <p className="text-sm text-green-400 mb-2">
+                        Copy your API key now - it won't be shown again!
+                      </p>
+                      <code className="bg-black px-3 py-2 rounded text-sm font-mono block break-all">
+                        {newlyGeneratedKey}
+                      </code>
+                    </div>
+                  )}
+                </div>
+
+                {/* Connection Instructions */}
+                <div className="p-4 bg-dark-gray rounded-lg border border-white/10 mb-4">
+                  <p className="text-sm text-silver mb-3">
+                    Connect your local TWS or IB Gateway to APE-YOLO using the relay connector.
+                  </p>
+                  <div className="bg-black/30 rounded p-3 font-mono text-sm">
+                    <p className="text-silver mb-2">To connect:</p>
+                    <p className="text-electric">1. Start TWS or IB Gateway and log in</p>
+                    <p className="text-electric">2. Enable API connections in TWS settings</p>
+                    <p className="text-electric">3. Run the relay connector:</p>
+                    <p className="text-white mt-2 bg-black/50 p-2 rounded">
+                      npx apeyolo-connect --api-key {newlyGeneratedKey || apiKey?.key || 'YOUR_API_KEY'}
+                    </p>
+                  </div>
+                </div>
+                {/* Relay Connection Status - dynamic based on data flow */}
+                {ibkrStatus?.diagnostics?.websocket?.hasRealData ? (
+                  <div className="flex items-center gap-2 text-green-400">
+                    <CheckCircle className="w-4 h-4" />
+                    <span className="text-sm">Relay connected - receiving data</span>
+                  </div>
+                ) : ibkrStatus?.diagnostics?.websocket?.connected ? (
+                  <div className="flex items-center gap-2 text-blue-400">
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span className="text-sm">Relay connected - waiting for data</span>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-2 text-yellow-400">
+                    <AlertCircle className="w-4 h-4" />
+                    <span className="text-sm">Relay not connected - run the connector command above</span>
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
 
           {/* Solana On-Chain Card */}
           <div className="bg-charcoal rounded-2xl border border-white/10 shadow-lg overflow-hidden mt-6">
