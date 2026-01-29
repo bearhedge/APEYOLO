@@ -137,6 +137,8 @@ export class IbkrWebSocketManager {
   private lastDataReceived: Date | null = null;
   // Track subscription errors (e.g., "Missing iserver bridge")
   private subscriptionErrorMessage: string | null = null;
+  // Track consecutive non-auth subscription errors for backup reconnect
+  private consecutiveSubscriptionErrors: number = 0;
   // Session token expiry tracking - proactive refresh before expiry
   private sessionTokenExpiresAt: number = 0;
   private sessionRefreshInterval: NodeJS.Timeout | null = null;
@@ -144,7 +146,7 @@ export class IbkrWebSocketManager {
   private lastPersist = new Map<number, number>();
   // Auto-healing: health check interval that detects stale data and auto-reconnects
   private healthCheckInterval: NodeJS.Timeout | null = null;
-  private readonly STALE_THRESHOLD_MS = 180000; // Data older than 3 min = stale (reduced false positives)
+  private readonly STALE_THRESHOLD_MS = 90000; // 90 seconds - detect dead connections faster
   private readonly HEALTH_CHECK_INTERVAL_MS = 30000; // Check every 30s
   // Circuit breaker for bad credentials - stop retrying after 10 consecutive auth failures
   private consecutiveAuthFailures = 0;
@@ -298,10 +300,21 @@ export class IbkrWebSocketManager {
    * 5. Then subscribe to market data
    */
   async connect(timeoutMs: number = 30000): Promise<void> {
-    // Mutex: if a connection attempt is already in progress, return the same promise
+    // Mutex: if a connection attempt is already in progress, wait with timeout
     if (this.connectPromise) {
-      console.log('[IbkrWS] Connection already in progress, returning existing promise');
-      return this.connectPromise;
+      console.log('[IbkrWS] Connection already in progress, waiting with timeout...');
+      // Don't wait forever for hung connections
+      const waitTimeout = new Promise<void>((_, reject) =>
+        setTimeout(() => reject(new Error('Connect wait timeout')), timeoutMs + 5000)
+      );
+      try {
+        await Promise.race([this.connectPromise, waitTimeout]);
+        return;
+      } catch (err: any) {
+        console.warn(`[IbkrWS] Previous connect hung or failed: ${err.message}, starting fresh`);
+        this.connectPromise = null;
+        // Fall through to start new connection
+      }
     }
 
     if (this.isConnected) {
@@ -664,6 +677,8 @@ export class IbkrWebSocketManager {
       console.log('[IbkrWS] Clearing subscription error - data flowing again');
       this.subscriptionErrorMessage = null;
     }
+    // Reset consecutive error counter when data flows successfully
+    this.consecutiveSubscriptionErrors = 0;
   }
 
   /**
@@ -746,6 +761,17 @@ export class IbkrWebSocketManager {
             // Use void to fire-and-forget the async reconnect
             void this.forceReconnectWithFreshCredentials();
             return; // Don't process further after triggering reconnect
+          } else {
+            // Non-auth error - track consecutive failures
+            this.consecutiveSubscriptionErrors++;
+            console.warn(`[IbkrWS] Non-auth subscription error #${this.consecutiveSubscriptionErrors}/3`);
+
+            if (this.consecutiveSubscriptionErrors >= 3) {
+              console.error('[IbkrWS] 3+ consecutive subscription errors - forcing reconnect');
+              this.consecutiveSubscriptionErrors = 0;
+              void this.forceReconnectWithFreshCredentials();
+              return;
+            }
           }
         } else {
           // Market data update - clear any previous error since data is flowing
@@ -1103,6 +1129,18 @@ export class IbkrWebSocketManager {
     this.healthCheckInterval = setInterval(async () => {
       // Only check if we think we're connected
       if (!this.isConnected || !this.isAuthenticated) return;
+
+      // CRITICAL: If there's a subscription error, data isn't flowing even if we're "connected"
+      if (this.subscriptionErrorMessage) {
+        console.error(`[IbkrWS] ⚠️ SUBSCRIPTION ERROR ACTIVE: ${this.subscriptionErrorMessage}`);
+        console.error('[IbkrWS] Forcing reconnect to clear subscription error...');
+        try {
+          await this.forceFullReconnect();
+        } catch (err: any) {
+          console.error('[IbkrWS] Reconnect failed:', err.message);
+        }
+        return;
+      }
 
       // Check if SPY data is fresh (SPY is our canary)
       const spyData = this.marketDataCache.get(SPY_CONID);
