@@ -105,7 +105,7 @@ export function useBrokerStatus(options: UseBrokerStatusOptions = {}) {
 export function useReconnectMutation() {
   return useMutation({
     mutationFn: async () => {
-      const response = await fetch('/api/broker/oauth', { method: 'POST', credentials: 'include' });
+      const response = await fetch('/api/settings/force-reconnect', { method: 'POST', credentials: 'include' });
       return response.json();
     },
   });

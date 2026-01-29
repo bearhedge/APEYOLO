@@ -1493,7 +1493,7 @@ export function getSimpleConnectionStatus(): SimpleConnectionStatus {
     spyPrice: spyData?.last || null,
     lastUpdate,
     account: wsManagerInstance.getAccountId?.() || null,
-    mode: wsManagerInstance.getMode?.() || null,
+    mode: (process.env.IBKR_ENV?.toUpperCase() === 'PAPER' ? 'PAPER' : 'LIVE') as 'LIVE' | 'PAPER',
   };
 }
 
