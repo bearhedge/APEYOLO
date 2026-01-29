@@ -680,6 +680,25 @@ export function EngineWindow() {
     return (engineStep / 5) * 100;
   }, [isAnalyzing, engineStep, completedSteps.size]);
 
+  // Extract position sizing data from step 4
+  const positionSizingData = useMemo(() => {
+    const step4 = stepResults?.step4 || analysis?.q4Size;
+    if (!step4) return null;
+
+    // Check for new two-layer format
+    if (step4.capacity && step4.kelly) {
+      return {
+        capacity: step4.capacity,
+        kelly: step4.kelly,
+        optimalContracts: step4.optimalContracts ?? step4.contracts ?? contracts,
+        maxContracts: step4.maxContracts ?? step4.capacity.maxContracts,
+      };
+    }
+
+    // Legacy format - no position sizing breakdown
+    return null;
+  }, [stepResults?.step4, analysis?.q4Size, contracts]);
+
   // Handle put strike adjustment (only when ready)
   const handlePutStrikeAdjust = useCallback((dir: 'up' | 'down') => {
     if (hudState !== 'ready' || putStrike === null) return;
@@ -810,6 +829,10 @@ export function EngineWindow() {
           onContractsChange={setContracts}
           onStopLossChange={setStopLossPrice}
           onBack={handleBack}
+          positionSizing={positionSizingData}
+          spyPrice={spyPrice}
+          vix={vix}
+          fxRate={7.8}
         />
       ) : (
         <MainArea
