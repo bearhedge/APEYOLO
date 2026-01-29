@@ -1,35 +1,63 @@
 /**
  * Step 4: Position Sizing
- * Determines how many contracts to trade using the 2% Max Loss Rule
  *
- * 2% Rule:
- * - Max risk per trade = X% of account net liquidation value
- * - Max loss per contract = (stop_multiplier - 1) × premium × 100
- * - contracts = floor(maxLossAllowed / maxLossPerContract)
+ * Two-Layer Framework:
+ * - Layer 1 (Capacity): Max contracts = (NAV - Buffer) / Marginal_Rate
+ * - Layer 2 (Kelly): Optimal contracts = Kelly% × Max_Contracts
  *
- * Risk profiles adjust the max loss percentage:
- * - CONSERVATIVE: 1% max loss
- * - BALANCED: 2% max loss
- * - AGGRESSIVE: 3% max loss
+ * Risk profiles adjust the Kelly-optimal position:
+ * - CONSERVATIVE: 50% of Kelly
+ * - BALANCED: 100% of Kelly
+ * - AGGRESSIVE: 150% of Kelly
  *
  * Also validates against margin requirements and buying power
  */
 
 import { StrikeSelection } from './step3';
 import type { StepReasoning, StepMetric } from '../../shared/types/engineLog';
+import {
+  calculateCapacity,
+  calculateKelly,
+  calculateOptimalContracts,
+  DEFAULT_POSITION_CONFIG,
+  type PositionSizingConfig,
+} from './positionSizingConfig';
 
 export type RiskProfile = 'CONSERVATIVE' | 'BALANCED' | 'AGGRESSIVE';
 
-// Max loss percentage by risk profile
+// Max loss percentage by risk profile (kept for backward compatibility)
 const MAX_LOSS_PCT: Record<RiskProfile, number> = {
   CONSERVATIVE: 0.01,  // 1% max loss
   BALANCED: 0.02,      // 2% max loss
   AGGRESSIVE: 0.03,    // 3% max loss
 };
 
-
 export interface PositionSize {
+  // Core outputs
   contracts: number;
+  optimalContracts: number;
+  maxContracts: number;
+
+  // Layer 1: Capacity
+  capacity: {
+    navHKD: number;
+    bufferHKD: number;
+    availableCapital: number;
+    marginalRateHKD: number;
+    maxContracts: number;
+  };
+
+  // Layer 2: Kelly
+  kelly: {
+    winRate: number;
+    lossRate: number;
+    payoffRatio: number;
+    kellyPercent: number;
+    creditPerContract: number;
+    maxLossAtStop: number;
+  };
+
+  // Existing fields (kept for backwards compatibility)
   marginPerContract: number;
   totalMarginRequired: number;
   buyingPowerUsed: number;
@@ -38,7 +66,6 @@ export interface PositionSize {
   maxLossTotal: number;
   maxLossAllowed: number;
   reasoning: string;
-  // Enhanced logging
   stepReasoning?: StepReasoning[];
   stepMetrics?: StepMetric[];
 }
@@ -78,157 +105,111 @@ function calculateMarginPerContract(strikeSelection: StrikeSelection): number {
 }
 
 /**
- * Calculate max loss per contract based on stop loss multiplier
- * @param premiumPerContract - Premium collected per contract (in dollars)
- * @param stopMultiplier - Stop loss multiplier (e.g., 3 = stop at 3x premium)
- * @returns Max loss in dollars per contract
- */
-function calculateMaxLossPerContract(premiumPerContract: number, stopMultiplier: number): number {
-  // When sold premium rises to stopMultiplier × original premium, we close
-  // Loss = (newPrice - originalPrice) × 100
-  // Loss = ((stopMultiplier - 1) × originalPrice) × 100
-  return (stopMultiplier - 1) * premiumPerContract * 100;
-}
-
-/**
- * Calculate position size using the Max Loss Rule
- * @param netLiquidation - Account net liquidation value
- * @param maxLossPerContract - Max loss per contract in dollars
- * @param riskProfile - Risk profile to apply
- * @returns Number of contracts and max loss allowed
- */
-function calculateContractsByMaxLoss(
-  netLiquidation: number,
-  maxLossPerContract: number,
-  riskProfile: RiskProfile
-): { contracts: number; maxLossAllowed: number } {
-  const maxLossPct = MAX_LOSS_PCT[riskProfile];
-  const maxLossAllowed = netLiquidation * maxLossPct;
-
-  // Floor to ensure we don't exceed max loss
-  const contracts = Math.max(0, Math.floor(maxLossAllowed / maxLossPerContract));
-
-  return { contracts, maxLossAllowed };
-}
-
-/**
- * Main function: Calculate optimal position size using 2% max loss rule
+ * Main function: Calculate optimal position size using two-layer framework
  * @param strikeSelection - Selected strikes from Step 3
  * @param accountInfo - Current account information
  * @param riskProfile - Risk profile to use
  * @param stopMultiplier - Stop loss multiplier (default 3x)
+ * @param config - Position sizing configuration
  * @returns Position sizing decision
  */
 export async function calculatePositionSize(
   strikeSelection: StrikeSelection,
   accountInfo: AccountInfo,
   riskProfile: RiskProfile = 'BALANCED',
-  stopMultiplier: number = 6
+  stopMultiplier: number = 3,
+  config: PositionSizingConfig = DEFAULT_POSITION_CONFIG
 ): Promise<PositionSize> {
-  // Use netLiquidation if available, otherwise use buyingPower as proxy
-  const netLiq = accountInfo.netLiquidation || accountInfo.buyingPower;
+  // Get NAV in HKD (convert from USD if needed)
+  const navUSD = accountInfo.netLiquidation || accountInfo.buyingPower;
+  const navHKD = navUSD * config.fxRate;
 
-  // Calculate margin per contract (for secondary validation)
+  // Calculate average delta from selected strikes
+  const putDelta = Math.abs(strikeSelection.putStrike?.delta ?? 0);
+  const callDelta = Math.abs(strikeSelection.callStrike?.delta ?? 0);
+  const avgDelta = strikeSelection.putStrike && strikeSelection.callStrike
+    ? (putDelta + callDelta) / 2
+    : putDelta || callDelta;
+
+  // Calculate credit per contract
+  const putBid = strikeSelection.putStrike?.bid ?? 0;
+  const callBid = strikeSelection.callStrike?.bid ?? 0;
+  const creditPerShare = putBid + callBid;
+  const creditPerContract = creditPerShare * 100;
+
+  // Use new two-layer calculation
+  const sizing = calculateOptimalContracts(
+    navHKD,
+    avgDelta,
+    creditPerContract,
+    { ...config, stopMultiplier }
+  );
+
+  // Apply risk profile adjustment
+  const profileMultipliers: Record<RiskProfile, number> = {
+    CONSERVATIVE: 0.5,
+    BALANCED: 1.0,
+    AGGRESSIVE: 1.5,
+  };
+  const profiledContracts = Math.floor(sizing.optimalContracts * profileMultipliers[riskProfile]);
+  const contracts = Math.min(profiledContracts, sizing.maxContracts);
+
+  // Calculate margin values for backward compatibility
   const marginPerContract = calculateMarginPerContract(strikeSelection);
-
-  // Calculate expected premium (mid price)
-  const expectedPremium = strikeSelection.expectedPremium || 0;
-  const premiumPerContract = expectedPremium / 100; // Convert from cents to dollars if needed
-
-  // Calculate max loss per contract using stop multiplier
-  const maxLossPerContract = calculateMaxLossPerContract(
-    premiumPerContract > 0 ? premiumPerContract : 0.50, // Default to $0.50 if no premium
-    stopMultiplier
-  );
-
-  // Use dynamic calculation based on max loss per contract and risk profile
-  const { contracts: calculatedContracts, maxLossAllowed } = calculateContractsByMaxLoss(
-    netLiq,
-    maxLossPerContract,
-    riskProfile
-  );
-
-  // Use calculated contracts (margin is the only limit)
-  const contracts = calculatedContracts;
-  const maxLossPct = MAX_LOSS_PCT[riskProfile];
-
-  // Calculate totals
   const totalMarginRequired = contracts * marginPerContract;
   const buyingPowerUsed = totalMarginRequired;
   const buyingPowerRemaining = accountInfo.buyingPower - buyingPowerUsed;
+  const maxLossPerContract = sizing.maxLossAtStop;
   const maxLossTotal = contracts * maxLossPerContract;
+  const maxLossAllowed = navUSD * MAX_LOSS_PCT[riskProfile];
 
   // Build reasoning
-  const isStrangle = strikeSelection.putStrike && strikeSelection.callStrike;
-  const marginRate = isStrangle ? 12 : 18;
-  const riskRegime = strikeSelection.riskAssessment?.riskRegime || 'LOW';
+  const reasoning = `Capacity: ${sizing.maxContracts} max | Kelly: ${(sizing.kellyPercent * 100).toFixed(0)}% → ${sizing.kellyContracts} | Final: ${contracts} contracts`;
 
-  let reasoning = `Risk: ${riskRegime} → ${contracts} contracts. `;
-  reasoning += `Max loss @ ${stopMultiplier}x stop: $${maxLossTotal.toFixed(0)}. `;
-  reasoning += `Budget (${(maxLossPct * 100).toFixed(0)}% of $${netLiq.toLocaleString()}): $${maxLossAllowed.toFixed(0)}. `;
-
-  if (contracts === 0) {
-    reasoning += 'WARNING: Max loss per contract exceeds allowed risk.';
-  }
-
-  // Build enhanced reasoning Q&A
-  const maxLossPctDisplay = (maxLossPct * 100).toFixed(0);
+  // Build enhanced step reasoning
   const stepReasoning: StepReasoning[] = [
     {
-      question: 'Position sizing method?',
-      answer: `Risk regime (${riskRegime}) → ${contracts} contracts`
+      question: 'Layer 1: How many contracts can I afford?',
+      answer: `NAV ${navHKD.toLocaleString()} HKD - 50K buffer = ${sizing.availableCapital.toLocaleString()} HKD → ${sizing.maxContracts} contracts (@ 33K each)`
     },
     {
-      question: 'Budget?',
-      answer: `${maxLossPctDisplay}% of $${netLiq.toLocaleString()} = $${maxLossAllowed.toFixed(0)}`
+      question: 'Layer 2: What does Kelly say?',
+      answer: `Win ${(sizing.winRate * 100).toFixed(0)}% - Loss ${((1-sizing.winRate) * 100).toFixed(0)}% ÷ Payoff ${sizing.payoffRatio.toFixed(2)} = ${(sizing.kellyPercent * 100).toFixed(0)}% of bankroll`
     },
     {
-      question: 'Max loss per contract?',
-      answer: `Premium $${premiumPerContract.toFixed(2)} × (${stopMultiplier}-1) × 100 = $${maxLossPerContract.toFixed(0)}`
-    },
-    {
-      question: 'Total max loss?',
-      answer: `${contracts} × $${maxLossPerContract.toFixed(0)} = $${maxLossTotal.toFixed(0)} (within $${maxLossAllowed.toFixed(0)} budget)`
+      question: 'Combined: How many contracts?',
+      answer: `${(sizing.kellyPercent * 100).toFixed(0)}% × ${sizing.maxContracts} = ${sizing.kellyContracts} Kelly contracts → ${contracts} final (${riskProfile})`
     }
   ];
 
-  // Build enhanced metrics
-  const usedPct = ((buyingPowerUsed / accountInfo.buyingPower) * 100).toFixed(1);
   const stepMetrics: StepMetric[] = [
-    {
-      label: 'Contracts',
-      value: contracts,
-      status: contracts > 0 ? 'normal' : 'critical'
-    },
-    {
-      label: 'Max Loss Allowed',
-      value: `$${maxLossAllowed.toLocaleString()}`,
-      status: 'normal'
-    },
-    {
-      label: 'Max Loss/Contract',
-      value: `$${maxLossPerContract.toFixed(0)}`,
-      status: 'normal'
-    },
-    {
-      label: 'Total Max Loss',
-      value: `$${maxLossTotal.toFixed(0)}`,
-      status: maxLossTotal > maxLossAllowed ? 'critical' : 'normal'
-    },
-    {
-      label: 'Margin/Contract',
-      value: `$${marginPerContract.toFixed(0)}`,
-      status: 'normal'
-    },
-    {
-      label: 'BP Used',
-      value: `${usedPct}%`,
-      status: parseFloat(usedPct) > 50 ? 'warning' : 'normal'
-    }
+    { label: 'Max Contracts', value: sizing.maxContracts, status: 'normal' },
+    { label: 'Kelly %', value: `${(sizing.kellyPercent * 100).toFixed(0)}%`, status: 'normal' },
+    { label: 'Win Rate', value: `${(sizing.winRate * 100).toFixed(0)}%`, status: sizing.winRate >= 0.8 ? 'normal' : 'normal' },
+    { label: 'Optimal', value: sizing.optimalContracts, status: 'normal' },
+    { label: 'Final', value: contracts, status: contracts > 0 ? 'normal' : 'critical' },
+    { label: 'Max Loss', value: `$${maxLossTotal.toFixed(0)}`, status: maxLossTotal > maxLossAllowed ? 'warning' : 'normal' },
   ];
 
   return {
     contracts,
+    optimalContracts: sizing.optimalContracts,
+    maxContracts: sizing.maxContracts,
+    capacity: {
+      navHKD,
+      bufferHKD: config.bufferHKD,
+      availableCapital: sizing.availableCapital,
+      marginalRateHKD: config.marginalRateHKD,
+      maxContracts: sizing.maxContracts,
+    },
+    kelly: {
+      winRate: sizing.winRate,
+      lossRate: 1 - sizing.winRate,
+      payoffRatio: sizing.payoffRatio,
+      kellyPercent: sizing.kellyPercent,
+      creditPerContract,
+      maxLossAtStop: sizing.maxLossAtStop,
+    },
     marginPerContract: Number(marginPerContract.toFixed(2)),
     totalMarginRequired: Number(totalMarginRequired.toFixed(2)),
     buyingPowerUsed: Number(buyingPowerUsed.toFixed(2)),
@@ -238,15 +219,15 @@ export async function calculatePositionSize(
     maxLossAllowed: Number(maxLossAllowed.toFixed(2)),
     reasoning,
     stepReasoning,
-    stepMetrics
+    stepMetrics,
   };
 }
 
 /**
- * Test function to validate Step 4 logic
+ * Test function to validate Step 4 logic with two-layer framework
  */
 export async function testStep4(): Promise<void> {
-  console.log('Testing Step 4: Position Sizing (2% Max Loss Rule)\n');
+  console.log('Testing Step 4: Position Sizing (Two-Layer Framework)\n');
 
   // Mock account info
   const accountInfo: AccountInfo = {
@@ -258,25 +239,26 @@ export async function testStep4(): Promise<void> {
 
   console.log('Account Information:');
   console.log(`  Net Liquidation: $${accountInfo.netLiquidation?.toLocaleString()}`);
-  console.log(`  Buying Power: $${accountInfo.buyingPower.toLocaleString()}`);
-  console.log(`  2% Max Loss = $${((accountInfo.netLiquidation || 0) * 0.02).toLocaleString()}\n`);
+  console.log(`  NAV in HKD: ${((accountInfo.netLiquidation || 0) * 7.8).toLocaleString()} HKD`);
+  console.log(`  Buying Power: $${accountInfo.buyingPower.toLocaleString()}\n`);
 
   // Mock strike selection with premium
   const strikeSelection = {
-    putStrike: { strike: 585, expiration: new Date(), delta: -0.25, bid: 0.80, ask: 0.90 },
-    callStrike: { strike: 600, expiration: new Date(), delta: 0.25, bid: 0.75, ask: 0.85 },
-    expectedPremium: 85, // $0.85 premium per contract side
+    putStrike: { strike: 585, expiration: new Date(), delta: -0.15, bid: 0.80, ask: 0.90 },
+    callStrike: { strike: 600, expiration: new Date(), delta: 0.15, bid: 0.75, ask: 0.85 },
+    expectedPremium: 155, // Combined premium
     marginRequired: 7000,
     reasoning: 'STRANGLE'
   };
 
   console.log('Strike Selection:');
-  console.log(`  PUT: $${strikeSelection.putStrike.strike}`);
-  console.log(`  CALL: $${strikeSelection.callStrike.strike}`);
-  console.log(`  Expected Premium: $${(strikeSelection.expectedPremium / 100).toFixed(2)}/contract\n`);
+  console.log(`  PUT: $${strikeSelection.putStrike.strike} (delta: ${strikeSelection.putStrike.delta})`);
+  console.log(`  CALL: $${strikeSelection.callStrike.strike} (delta: ${strikeSelection.callStrike.delta})`);
+  console.log(`  Avg Delta: 0.15`);
+  console.log(`  Premium: $${(strikeSelection.putStrike.bid + strikeSelection.callStrike.bid).toFixed(2)}/share\n`);
 
   const riskProfiles: RiskProfile[] = ['CONSERVATIVE', 'BALANCED', 'AGGRESSIVE'];
-  const stopMultiplier = 6;
+  const stopMultiplier = 3;
 
   for (const profile of riskProfiles) {
     const sizing = await calculatePositionSize(
@@ -286,12 +268,12 @@ export async function testStep4(): Promise<void> {
       stopMultiplier
     );
 
-    console.log(`${profile} (${MAX_LOSS_PCT[profile] * 100}% max loss):`);
-    console.log(`  Max Loss Allowed: $${sizing.maxLossAllowed.toLocaleString()}`);
-    console.log(`  Max Loss/Contract: $${sizing.maxLossPerContract.toFixed(0)}`);
-    console.log(`  Contracts: ${sizing.contracts}`);
-    console.log(`  Total Max Loss: $${sizing.maxLossTotal.toFixed(0)}`);
-    console.log(`  Margin Required: $${sizing.totalMarginRequired.toLocaleString()}`);
+    console.log(`${profile}:`);
+    console.log(`  Capacity: ${sizing.capacity.maxContracts} max contracts`);
+    console.log(`  Kelly: ${(sizing.kelly.kellyPercent * 100).toFixed(0)}% → ${sizing.optimalContracts} optimal`);
+    console.log(`  Final: ${sizing.contracts} contracts`);
+    console.log(`  Win Rate: ${(sizing.kelly.winRate * 100).toFixed(0)}%`);
+    console.log(`  Max Loss: $${sizing.maxLossTotal.toFixed(0)}`);
     console.log('');
   }
 }
