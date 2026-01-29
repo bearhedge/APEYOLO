@@ -326,6 +326,37 @@ export interface Q4Size {
   stepName: 'Size';
   passed: boolean;
   confidence: number;
+
+  // New: Position sizing breakdown
+  positionSizing?: PositionSizingResult;
+}
+
+// =============================================================================
+// Position Sizing Breakdown (Two-Layer Framework)
+// =============================================================================
+
+export interface CapacityBreakdown {
+  navHKD: number;
+  bufferHKD: number;
+  availableCapital: number;
+  marginalRateHKD: number;
+  maxContracts: number;
+}
+
+export interface KellyBreakdown {
+  winRate: number;
+  lossRate: number;
+  payoffRatio: number;
+  kellyPercent: number;
+  creditPerContract: number;
+  maxLossAtStop: number;
+}
+
+export interface PositionSizingResult {
+  optimalContracts: number;
+  maxContracts: number;
+  capacity: CapacityBreakdown;
+  kelly: KellyBreakdown;
 }
 
 // =============================================================================
