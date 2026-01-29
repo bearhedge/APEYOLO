@@ -712,6 +712,20 @@ export class IbkrWebSocketManager {
   }
 
   /**
+   * Get age of SPY-specific data (not generic WebSocket activity)
+   * Returns null if no SPY data cached
+   *
+   * CRITICAL: Use this for stale detection instead of getDataAge()
+   * getDataAge() tracks ANY WebSocket message (VIX, options, etc.)
+   * During overnight hours, VIX/options may still stream while SPY is stale.
+   */
+  getSpyDataAge(): number | null {
+    const spyData = this.marketDataCache.get(SPY_CONID);
+    if (!spyData?.timestamp) return null;
+    return Date.now() - spyData.timestamp.getTime();
+  }
+
+  /**
    * Check if there are subscription errors preventing data flow
    */
   hasSubscriptionError(): boolean {

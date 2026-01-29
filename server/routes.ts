@@ -2538,11 +2538,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // If IBKR cache is stale (>5 min) and we're in extended hours, try Yahoo fallback
       const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
       const isExtendedHours = marketState === 'OVERNIGHT' || marketState === 'PRE' || marketState === 'POST';
-      const dataAge = wsManager?.getDataAge() || Infinity;
-      const isStale = !spyData?.last || spyData.last <= 0 || dataAge > STALE_THRESHOLD_MS;
+      // CRITICAL: Use SPY-specific data age, not generic WebSocket activity
+      // getDataAge() tracks ANY message (VIX, options) - SPY may be stale while others stream
+      const spyDataAge = wsManager?.getSpyDataAge() ?? Infinity;
+      const isStale = !spyData?.last || spyData.last <= 0 || spyDataAge > STALE_THRESHOLD_MS;
 
       if (isStale && isExtendedHours) {
-        console.log(`[Snapshot] IBKR data stale (age=${dataAge}ms), trying Yahoo fallback...`);
+        console.log(`[Snapshot] IBKR SPY data stale (age=${spyDataAge}ms), trying Yahoo fallback...`);
         const overnightQuote = await fetchOvernightQuote('SPY');
         if (overnightQuote && overnightQuote.extendedPrice > 0) {
           spyData = {
@@ -2805,11 +2807,39 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      // NO SNAPSHOT FALLBACK - WebSocket streaming is free with OPRA subscription
-      // Snapshot API costs $0.01-$0.03 per call, which adds up quickly at 1/second polling
+      // If IBKR data is stale and we're in overnight/extended hours, use Yahoo as fallback
+      // This is FREE (Yahoo Finance API) unlike IBKR snapshots which cost $0.01-$0.03 per call
+      const STALE_THRESHOLD_MS = 5 * 60 * 1000; // 5 minutes
+      const marketStatus = getMarketStatus();
+      const isExtendedHours = marketStatus?.isOvernight ||
+                              marketStatus?.reason?.startsWith('After hours') ||
+                              marketStatus?.reason?.startsWith('Pre-market');
+
+      if (isExtendedHours) {
+        // CRITICAL: Use SPY-specific data age, not generic WebSocket activity
+        // getDataAge() tracks ANY message (VIX, options) - SPY may be stale while others stream
+        const spyDataAge = wsManager?.getSpyDataAge() ?? Infinity;
+        const isStale = spyPrice <= 0 || spyDataAge > STALE_THRESHOLD_MS;
+
+        if (isStale) {
+          // Fetch from Yahoo overnight service (free, ~15min delayed)
+          try {
+            const overnightQuote = await fetchOvernightQuote('SPY');
+            if (overnightQuote && overnightQuote.extendedPrice > 0) {
+              spyPrice = overnightQuote.extendedPrice;
+              dataSource = 'yahoo';
+              console.log(`[SSE] Overnight fallback: SPY=$${spyPrice.toFixed(2)} (SPY age=${spyDataAge}ms, threshold=${STALE_THRESHOLD_MS}ms)`);
+            }
+          } catch (yahooErr: any) {
+            console.warn('[SSE] Yahoo overnight fallback failed:', yahooErr.message);
+          }
+        }
+      }
+
+      // Log if we still have no data after fallback attempts
       if (spyPrice <= 0) {
-        console.warn(`[SSE][COST-SAVED] WebSocket has no SPY data - NOT falling back to costly snapshot API`);
-        dataSource = 'ws-no-data';
+        console.warn(`[SSE][NO-DATA] WebSocket has no SPY data and Yahoo fallback unavailable`);
+        dataSource = 'none';
       }
 
       // Send updates if we have data
@@ -2827,8 +2857,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
             if (spyPrice > dayHigh) dayHigh = spyPrice;
             if (spyPrice < dayLow) dayLow = spyPrice;
 
-            const marketStatus = getMarketStatus();
-            const marketState = marketStatus?.isOpen ? 'REGULAR' : 'CLOSED';
+            const marketStatusForEvent = getMarketStatus();
+            const marketState = marketStatusForEvent?.isOpen ? 'REGULAR' :
+                               marketStatusForEvent?.isOvernight ? 'OVERNIGHT' : 'CLOSED';
             const metrics = getMetrics();
             const changePct = calculateChangePercent(spyPrice, metrics.spyPrevClose);
 
@@ -2878,7 +2909,11 @@ export async function registerRoutes(app: Express): Promise<Server> {
               changePct: calculateChangePercent(vixPrice, metrics.vixPrevClose),
               prevClose: metrics.vixPrevClose,
               ivRank: calculateIVRank(vixPrice),
-              marketState: getMarketStatus()?.isOpen ? 'REGULAR' : 'CLOSED',
+              marketState: (() => {
+                const vixMarketStatus = getMarketStatus();
+                return vixMarketStatus?.isOpen ? 'REGULAR' :
+                       vixMarketStatus?.isOvernight ? 'OVERNIGHT' : 'CLOSED';
+              })(),
               vwap: null,
               timestamp: new Date().toISOString(),
               updateNumber: updateCount,
